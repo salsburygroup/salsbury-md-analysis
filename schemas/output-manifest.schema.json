@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/salsburygroup/salsbury-md-analysis/schemas/output-manifest.schema.json",
+  "title": "Analysis Output Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "suite_commit", "profile_id", "modules", "technical_status", "scientific_status"],
+  "properties": {
+    "run_id": {"type": "string", "minLength": 1},
+    "suite_commit": {"type": "string"},
+    "profile_id": {"type": "string"},
+    "modules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["module_id", "status", "outputs"],
+        "properties": {
+          "module_id": {"type": "string"},
+          "status": {"enum": ["complete", "failed", "blocked", "skipped"]},
+          "outputs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["path", "sha256"],
+              "properties": {
+                "path": {"type": "string"},
+                "sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"}
+              }
+            }
+          },
+          "warnings": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "technical_status": {"enum": ["complete", "failed", "blocked", "partial"]},
+    "scientific_status": {"type": "string"},
+    "limitations": {"type": "array", "items": {"type": "string"}}
+  }
+}

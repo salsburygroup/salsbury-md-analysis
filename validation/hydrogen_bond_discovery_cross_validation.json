@@ -1,0 +1,431 @@
+{
+  "cases": [
+    {
+      "case_id": "authoritative_trex_hbond_fixture_lineage",
+      "metrics": {
+        "all_hashes_matched": true,
+        "replica_count": 3,
+        "selected_frame_count": 75
+      },
+      "passed": true,
+      "reference": "recorded topology, connectivity, source-DCD, and derived-frame SHA-256 values",
+      "tolerances": {
+        "all_hashes_must_match": true
+      }
+    },
+    {
+      "case_id": "automatic_chemistry_independent_topology_and_forcefield_crosscheck",
+      "metrics": {
+        "chemistry_summary": {
+          "acceptor_atom_count": 764,
+          "chemistry_confidence_atom_counts": {
+            "excluded": 4,
+            "template": 7414
+          },
+          "donor_atom_count": 690,
+          "entity_atom_counts": {
+            "ion": 4,
+            "nucleic_acid": 254,
+            "protein": 7160
+          }
+        },
+        "donor_hydrogen_pair_count": 822,
+        "forcefield_audit": {
+          "atom_identity_exact_match": true,
+          "donor_hydrogen_bond_count": 822,
+          "donor_hydrogen_bonds_present": 822,
+          "forcefield": "OpenMM charmm36_2024.xml",
+          "parameterized_atom_count": 7414,
+          "polar_acceptor_charge_at_most_minus_0p4_fraction": 1.0,
+          "polar_acceptor_count": 746,
+          "polar_acceptor_maximum_partial_charge_e": -0.49,
+          "polar_acceptor_minimum_partial_charge_e": -0.78,
+          "topology_bond_count_after_ion_exclusion": 7522
+        },
+        "mdtraj_common_n_o_donor_pair_count": 806,
+        "mdtraj_only_n_o_donor_pair_count": 0,
+        "suite_only_terminal_nucleic_donor_pair_count": 2,
+        "suite_only_terminal_nucleic_donor_pairs": [
+          "C:DG1:O5'-HO5'",
+          "D:DG1:O5'-HO5'"
+        ]
+      },
+      "passed": true,
+      "reference": "MDTraj PDB bonding and OpenMM CHARMM36 2024 residue templates/partial charges",
+      "tolerances": {
+        "mdtraj_only_n_o_donor_pair_count": 0,
+        "polar_acceptor_partial_charge_e_maximum": -0.4,
+        "provisional_atom_count": 0,
+        "suite_only_pairs": "explicitly bonded terminal nucleic hydroxyls only"
+      }
+    },
+    {
+      "case_id": "integrated_nucleic_hbond_discovery_mdtraj_crosscheck",
+      "metrics": {
+        "candidate_dictionary_exact_match": true,
+        "cutoff_agreement": {
+          "boundary_equivalent_mismatch_count": 0,
+          "by_cutoff": [
+            {
+              "boundary_equivalent_mismatch_count": 0,
+              "cutoff_id": "primary",
+              "exact_match_count": 91500,
+              "nonboundary_mismatch_count": 0,
+              "observation_count": 91500
+            },
+            {
+              "boundary_equivalent_mismatch_count": 0,
+              "cutoff_id": "sensitivity_da3_angle120",
+              "exact_match_count": 91500,
+              "nonboundary_mismatch_count": 0,
+              "observation_count": 91500
+            },
+            {
+              "boundary_equivalent_mismatch_count": 0,
+              "cutoff_id": "sensitivity_da3_angle135",
+              "exact_match_count": 91500,
+              "nonboundary_mismatch_count": 0,
+              "observation_count": 91500
+            },
+            {
+              "boundary_equivalent_mismatch_count": 0,
+              "cutoff_id": "sensitivity_da3.2_angle120",
+              "exact_match_count": 91500,
+              "nonboundary_mismatch_count": 0,
+              "observation_count": 91500
+            },
+            {
+              "boundary_equivalent_mismatch_count": 0,
+              "cutoff_id": "sensitivity_da3.2_angle135",
+              "exact_match_count": 91500,
+              "nonboundary_mismatch_count": 0,
+              "observation_count": 91500
+            },
+            {
+              "boundary_equivalent_mismatch_count": 0,
+              "cutoff_id": "sensitivity_da3.2_angle150",
+              "exact_match_count": 91500,
+              "nonboundary_mismatch_count": 0,
+              "observation_count": 91500
+            },
+            {
+              "boundary_equivalent_mismatch_count": 0,
+              "cutoff_id": "sensitivity_da3.5_angle120",
+              "exact_match_count": 91500,
+              "nonboundary_mismatch_count": 0,
+              "observation_count": 91500
+            },
+            {
+              "boundary_equivalent_mismatch_count": 0,
+              "cutoff_id": "sensitivity_da3.5_angle135",
+              "exact_match_count": 91500,
+              "nonboundary_mismatch_count": 0,
+              "observation_count": 91500
+            },
+            {
+              "boundary_equivalent_mismatch_count": 0,
+              "cutoff_id": "sensitivity_da3.5_angle150",
+              "exact_match_count": 91500,
+              "nonboundary_mismatch_count": 0,
+              "observation_count": 91500
+            }
+          ],
+          "comparison_count": 823500,
+          "exact_match_count": 823500,
+          "exact_match_fraction": 1.0,
+          "nonboundary_mismatch_count": 0
+        },
+        "cutoff_occupancy_count_mismatch_count": 0,
+        "integrated_feature_observation_count": 91500,
+        "maximum_angle_difference_degrees": 0.0005792304391822878,
+        "maximum_distance_difference_angstrom": 1.0495078839767302e-05,
+        "nucleic_candidate_count": 1220
+      },
+      "passed": true,
+      "reference": "MDTraj independent distance and angle kernels on all retained frames",
+      "tolerances": {
+        "angle_degrees": 0.001,
+        "cutoff_occupancy_count_mismatch_count": 0,
+        "distance_angstrom": 3e-05,
+        "nonboundary_cutoff_mismatch_count": 0
+      }
+    },
+    {
+      "case_id": "protein_nucleic_scope_deterministic_sample_mdtraj_crosscheck",
+      "metrics": {
+        "cutoff_agreement": {
+          "boundary_equivalent_mismatch_count": 0,
+          "by_cutoff": [
+            {
+              "boundary_equivalent_mismatch_count": 0,
+              "cutoff_id": "primary",
+              "exact_match_count": 76800,
+              "nonboundary_mismatch_count": 0,
+              "observation_count": 76800
+            },
+            {
+              "boundary_equivalent_mismatch_count": 0,
+              "cutoff_id": "sensitivity_da3_angle120",
+              "exact_match_count": 76800,
+              "nonboundary_mismatch_count": 0,
+              "observation_count": 76800
+            },
+            {
+              "boundary_equivalent_mismatch_count": 0,
+              "cutoff_id": "sensitivity_da3_angle135",
+              "exact_match_count": 76800,
+              "nonboundary_mismatch_count": 0,
+              "observation_count": 76800
+            },
+            {
+              "boundary_equivalent_mismatch_count": 0,
+              "cutoff_id": "sensitivity_da3.2_angle120",
+              "exact_match_count": 76800,
+              "nonboundary_mismatch_count": 0,
+              "observation_count": 76800
+            },
+            {
+              "boundary_equivalent_mismatch_count": 0,
+              "cutoff_id": "sensitivity_da3.2_angle135",
+              "exact_match_count": 76800,
+              "nonboundary_mismatch_count": 0,
+              "observation_count": 76800
+            },
+            {
+              "boundary_equivalent_mismatch_count": 0,
+              "cutoff_id": "sensitivity_da3.2_angle150",
+              "exact_match_count": 76800,
+              "nonboundary_mismatch_count": 0,
+              "observation_count": 76800
+            },
+            {
+              "boundary_equivalent_mismatch_count": 0,
+              "cutoff_id": "sensitivity_da3.5_angle120",
+              "exact_match_count": 76800,
+              "nonboundary_mismatch_count": 0,
+              "observation_count": 76800
+            },
+            {
+              "boundary_equivalent_mismatch_count": 0,
+              "cutoff_id": "sensitivity_da3.5_angle135",
+              "exact_match_count": 76800,
+              "nonboundary_mismatch_count": 0,
+              "observation_count": 76800
+            },
+            {
+              "boundary_equivalent_mismatch_count": 0,
+              "cutoff_id": "sensitivity_da3.5_angle150",
+              "exact_match_count": 76800,
+              "nonboundary_mismatch_count": 0,
+              "observation_count": 76800
+            }
+          ],
+          "comparison_count": 691200,
+          "exact_match_count": 691200,
+          "exact_match_fraction": 1.0,
+          "nonboundary_mismatch_count": 0
+        },
+        "full_candidate_reference_population_sensitivity": [
+          {
+            "candidate_with_at_least_one_present_frame_count": 64,
+            "cutoff_id": "primary",
+            "maximum_donor_acceptor_distance_angstrom": 3.0,
+            "minimum_donor_hydrogen_acceptor_angle_degrees": 150.0,
+            "per_replica_event_count": {
+              "430001": 233,
+              "431001": 235,
+              "432001": 238
+            },
+            "present_frame_candidate_event_count": 706
+          },
+          {
+            "candidate_with_at_least_one_present_frame_count": 76,
+            "cutoff_id": "sensitivity_da3_angle120",
+            "maximum_donor_acceptor_distance_angstrom": 3.0,
+            "minimum_donor_hydrogen_acceptor_angle_degrees": 120.0,
+            "per_replica_event_count": {
+              "430001": 306,
+              "431001": 283,
+              "432001": 326
+            },
+            "present_frame_candidate_event_count": 915
+          },
+          {
+            "candidate_with_at_least_one_present_frame_count": 71,
+            "cutoff_id": "sensitivity_da3_angle135",
+            "maximum_donor_acceptor_distance_angstrom": 3.0,
+            "minimum_donor_hydrogen_acceptor_angle_degrees": 135.0,
+            "per_replica_event_count": {
+              "430001": 286,
+              "431001": 275,
+              "432001": 297
+            },
+            "present_frame_candidate_event_count": 858
+          },
+          {
+            "candidate_with_at_least_one_present_frame_count": 92,
+            "cutoff_id": "sensitivity_da3.2_angle120",
+            "maximum_donor_acceptor_distance_angstrom": 3.2,
+            "minimum_donor_hydrogen_acceptor_angle_degrees": 120.0,
+            "per_replica_event_count": {
+              "430001": 385,
+              "431001": 367,
+              "432001": 416
+            },
+            "present_frame_candidate_event_count": 1168
+          },
+          {
+            "candidate_with_at_least_one_present_frame_count": 81,
+            "cutoff_id": "sensitivity_da3.2_angle135",
+            "maximum_donor_acceptor_distance_angstrom": 3.2,
+            "minimum_donor_hydrogen_acceptor_angle_degrees": 135.0,
+            "per_replica_event_count": {
+              "430001": 350,
+              "431001": 340,
+              "432001": 370
+            },
+            "present_frame_candidate_event_count": 1060
+          },
+          {
+            "candidate_with_at_least_one_present_frame_count": 71,
+            "cutoff_id": "sensitivity_da3.2_angle150",
+            "maximum_donor_acceptor_distance_angstrom": 3.2,
+            "minimum_donor_hydrogen_acceptor_angle_degrees": 150.0,
+            "per_replica_event_count": {
+              "430001": 281,
+              "431001": 283,
+              "432001": 292
+            },
+            "present_frame_candidate_event_count": 856
+          },
+          {
+            "candidate_with_at_least_one_present_frame_count": 107,
+            "cutoff_id": "sensitivity_da3.5_angle120",
+            "maximum_donor_acceptor_distance_angstrom": 3.5,
+            "minimum_donor_hydrogen_acceptor_angle_degrees": 120.0,
+            "per_replica_event_count": {
+              "430001": 449,
+              "431001": 435,
+              "432001": 508
+            },
+            "present_frame_candidate_event_count": 1392
+          },
+          {
+            "candidate_with_at_least_one_present_frame_count": 87,
+            "cutoff_id": "sensitivity_da3.5_angle135",
+            "maximum_donor_acceptor_distance_angstrom": 3.5,
+            "minimum_donor_hydrogen_acceptor_angle_degrees": 135.0,
+            "per_replica_event_count": {
+              "430001": 389,
+              "431001": 386,
+              "432001": 442
+            },
+            "present_frame_candidate_event_count": 1217
+          },
+          {
+            "candidate_with_at_least_one_present_frame_count": 76,
+            "cutoff_id": "sensitivity_da3.5_angle150",
+            "maximum_donor_acceptor_distance_angstrom": 3.5,
+            "minimum_donor_hydrogen_acceptor_angle_degrees": 150.0,
+            "per_replica_event_count": {
+              "430001": 296,
+              "431001": 304,
+              "432001": 334
+            },
+            "present_frame_candidate_event_count": 934
+          }
+        ],
+        "full_protein_nucleic_candidate_count": 63228,
+        "maximum_angle_difference_degrees": 0.0008337268653058061,
+        "maximum_distance_difference_angstrom": 1.2085264998518142e-05,
+        "population_sensitivity_is_monotonic": true,
+        "sampled_candidate_count": 1024,
+        "sampled_frame_count": 75
+      },
+      "passed": true,
+      "reference": "MDTraj independent geometry on an outcome-independent evenly spaced candidate sample",
+      "tolerances": {
+        "angle_degrees": 0.001,
+        "distance_angstrom": 3e-05,
+        "nonboundary_cutoff_mismatch_count": 0,
+        "population_sensitivity_is_monotonic": true
+      }
+    }
+  ],
+  "dataset": {
+    "atom_count": 7418,
+    "description": "Retained private three-replica TREX control; public evidence contains only hashes and bounded metrics.",
+    "explicit_connectivity_bond_count": 7522,
+    "fixture_manifest_sha256": "987ee6cf17e9433fb85518479a2b1bde3b85083926f23c160968d8fcc539fe7e",
+    "input_records": [
+      {
+        "kind": "topology",
+        "name": "control_no_water_topology.pdb",
+        "sha256": "3cdcef023de68a2c4fb5bed23fbcb9623a3ceb430f540c3fba008131ebff78ce",
+        "size_bytes": 601119
+      },
+      {
+        "kind": "connectivity",
+        "name": "control_no_water_topology.bonds.json",
+        "sha256": "85970f0f38df01c0378c5191cd99c71e62de9ce180f71e7249f9cc6a00eedd36",
+        "size_bytes": 269031
+      },
+      {
+        "kind": "derived_make_whole_trajectory",
+        "name": "trex_control__430001__3p01_to_249p91ns.xyz",
+        "replica_id": "430001",
+        "sha256": "f15784e51f08e2ede5dd483bc94b2968d7df0ab28bc99b1403049e82af5309b2",
+        "size_bytes": 7048381
+      },
+      {
+        "kind": "derived_make_whole_trajectory",
+        "name": "trex_control__431001__3p01_to_249p91ns.xyz",
+        "replica_id": "431001",
+        "sha256": "9bcddc2ca2e29d1903b2989ff948b5020245ad383fb816f13592ffd364c326b1",
+        "size_bytes": 7048395
+      },
+      {
+        "kind": "derived_make_whole_trajectory",
+        "name": "trex_control__432001__3p01_to_249p91ns.xyz",
+        "replica_id": "432001",
+        "sha256": "26304ead6b19302f0662964514a310970a08014295cd2a8af2761a5e97cb93f9",
+        "size_bytes": 7048514
+      }
+    ],
+    "replica_count": 3,
+    "selected_frame_count": 75,
+    "selected_frame_count_per_replica": [
+      25,
+      25,
+      25
+    ],
+    "selected_time_range_ns": [
+      3.01,
+      243.01
+    ],
+    "source_frame_count_per_replica": [
+      2470,
+      2470,
+      2470
+    ]
+  },
+  "limitations": [
+    "The real fixture contains standard protein, DNA, and Mg ions but no ligand or water; provisional generic-ligand chemistry and water-mediated networks are outside this case.",
+    "Protein-nucleic geometry uses an outcome-independent 1,024-candidate sample because the full 63,228-candidate frame matrix would create a disproportionate validation artifact; all 1,220 nucleic-nucleic candidates are checked through the integrated project runner.",
+    "Automatic discovery retains every chemically eligible donor-hydrogen-acceptor triple, so candidate enumeration and report volume scale with donor-hydrogen pairs times acceptors times frames times cutoff rules; production projects must set and review the existing resource gates.",
+    "The two MDTraj donor-bond omissions are terminal DNA O5'-HO5' pairs confirmed by both explicit connectivity and OpenMM, so they are retained as expected reference differences.",
+    "Agreement establishes implementation fidelity for the scoped definitions, not energetic importance, adequate sampling, convergence, or a biological mechanism."
+  ],
+  "module_id": "hydrogen_bond_discovery",
+  "overall_pass": true,
+  "reference_environment_versions": {
+    "MDTraj": "1.11.1",
+    "NumPy": "2.4.6",
+    "OpenMM": "8.5.2"
+  },
+  "release_boundary": "Validates standard protein/nucleic-acid automatic chemistry and direct-H-bond geometry on a retained TREX control fixture. It does not validate arbitrary ligand protonation, water-mediated networks, sampling adequacy, or a biological conclusion.",
+  "schema_version": "1.0",
+  "scientific_status": "scoped real-trajectory cross-validation passed",
+  "technical_status": "complete",
+  "validation_date": "2026-08-11"
+}

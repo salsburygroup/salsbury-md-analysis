@@ -1,0 +1,37 @@
+{
+  "profile_id": "reporting_standard_v1",
+  "profile_version": "1.0.0-draft",
+  "status": "experimental",
+  "time_series_policy": {
+    "default_primary_presentation": "histogram",
+    "default_histogram_rule": "scott",
+    "secondary_presentation": "time_series",
+    "exceptions": {"rmsd": "replica_resolved_time_series_primary"}
+  },
+  "presentation_priority": [
+    {"rank": 1, "result": "free_energy_or_occupancy_landscapes", "requirements": ["common_pca_basis_and_grid_for_matched_systems", "multiple_declared_smoothing_levels", "frame_to_basin_assignments", "basin_populations"]},
+    {"rank": 2, "result": "fes_basin_conformations", "requirements": ["top_populated_basins", "distinctive_basins_between_systems", "observed_representative_structures", "state_trajectory_exports"]},
+    {"rank": 3, "result": "clustering", "requirements": ["declared_parameter_sweeps", "exact_or_seeded_estimated_silhouette", "populations_by_system_replica_and_state"]},
+    {"rank": 4, "result": "cluster_conformations", "requirements": ["top_populated_clusters", "distinctive_clusters_between_systems", "observed_representative_structures", "state_trajectory_exports"]},
+    {"rank": 5, "result": "rmsf", "requirements": ["pooled_rmsf_profile", "vmd_newcartoon_colored_by_rmsf", "pdb_with_rmsf_in_bfactor_field"]},
+    {"rank": 6, "result": "other_physical_results", "requirements": ["between_system_physical_significance_when_comparing_systems", "physically_interesting_observations_for_single_systems", "explicit_uncertainty_and_interpretation_limits"]}
+  ],
+  "nonredundancy_resolution": "The repeated FES-conformation item in the originating request is represented once at rank 2; rank 4 contains the analogous clustering conformations.",
+  "cluster_partition_interpretation_policy": {
+    "replica_or_preparation_association": "report_and_retain",
+    "retained_outputs": [
+      "assignments",
+      "population_tables",
+      "representative_structures",
+      "state_trajectories"
+    ],
+    "interpretation_boundary": "Strong system, replica, starting-conformer, or preparation association describes ensemble separation and is not a failure or discard rule. Metastable-state and kinetic-state claims require independent evidence."
+  },
+  "scientific_limits": [
+    "Presentation priority does not establish statistical or biological importance.",
+    "FES basin silhouette is a secondary PCA-plane separability diagnostic and never defines minima.",
+    "Cluster silhouette does not establish metastability or kinetics.",
+    "Replica- or preparation-associated clusters remain valid descriptive partitions and are retained with explicit interpretation limits.",
+    "RMSF values written into PDB B-factor fields remain RMSF in angstrom, not crystallographic B factors."
+  ]
+}

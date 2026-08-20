@@ -1,0 +1,1633 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/salsburygroup/salsbury-md-analysis/schemas/project.schema.json",
+  "title": "Salsbury MD Analysis Project Configuration",
+  "$defs": {
+    "frameSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": ["mode"],
+          "properties": {"mode": {"const": "fixed_stride_v1"}},
+          "maxProperties": 1
+        },
+        {
+          "required": ["mode", "maximum_frames_per_replica"],
+          "properties": {
+            "mode": {"const": "uniform_per_replica_budget_v1"},
+            "maximum_frames_per_replica": {"type": "integer", "minimum": 1}
+          },
+          "maxProperties": 2
+        },
+        {
+          "required": [
+            "mode", "target_wall_seconds", "estimated_seconds_per_frame",
+            "minimum_frames_per_replica"
+          ],
+          "properties": {
+            "mode": {"const": "auto_resource_budget_v1"},
+            "target_wall_seconds": {"type": "number", "exclusiveMinimum": 0},
+            "estimated_seconds_per_frame": {"type": "number", "exclusiveMinimum": 0},
+            "minimum_frames_per_replica": {"type": "integer", "minimum": 1},
+            "fixed_overhead_seconds": {"type": "number", "minimum": 0},
+            "safety_factor": {"type": "number", "exclusiveMinimum": 0},
+            "sensitivity_check_policy": {"enum": ["off", "recommend", "require"]},
+            "estimated_peak_memory_mib": {"type": "number", "exclusiveMinimum": 0},
+            "target_memory_mib": {"type": "number", "exclusiveMinimum": 0},
+            "calibration_id": {"type": "string", "minLength": 1}
+          }
+        }
+      ]
+    },
+    "pcaSolver": {
+      "type": "object",
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": ["method"],
+          "properties": {"method": {"const": "dense_covariance_v1"}},
+          "maxProperties": 1
+        },
+        {
+          "required": [
+            "method", "oversampling", "power_iterations", "random_seed",
+            "maximum_sample_matrix_elements", "maximum_relative_residual"
+          ],
+          "properties": {
+            "method": {"const": "randomized_truncated_svd_v1"},
+            "oversampling": {"type": "integer", "minimum": 2},
+            "power_iterations": {"type": "integer", "minimum": 0},
+            "power_iteration_schedule": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"type": "integer", "minimum": 0}
+            },
+            "random_seed": {"type": "integer", "minimum": 0},
+            "maximum_sample_matrix_elements": {"type": "integer", "minimum": 1},
+            "maximum_relative_residual": {"type": "number", "exclusiveMinimum": 0}
+          }
+        }
+      ]
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "project_id",
+    "analysis_profile",
+    "system_manifest",
+    "analysis_output_root",
+    "sampling_mode",
+    "protected_locations"
+  ],
+  "properties": {
+    "project_id": {"type": "string", "minLength": 1},
+    "analysis_profile": {"type": "string", "minLength": 1},
+    "system_manifest": {"type": "string", "minLength": 1},
+    "analysis_output_root": {"type": "string", "minLength": 1},
+    "reference_system": {"type": ["string", "null"]},
+    "production_interval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end", "unit"],
+      "properties": {
+        "start": {"type": "number"},
+        "end": {"type": "number"},
+        "unit": {"enum": ["fs", "ps", "ns", "us"]}
+      }
+    },
+    "analysis_stride": {"type": ["integer", "string"], "minLength": 1},
+    "temperature_kelvin": {"type": "number", "exclusiveMinimum": 0},
+    "coordinate_unit": {"enum": ["angstrom", "nanometer"]},
+    "time_unit": {"enum": ["fs", "ps", "ns", "us"]},
+    "periodic_coordinate_policy": {
+      "enum": ["reject", "allow_wrapped_diagnostic", "make_whole", "unwrap_continuous", "preprocessed_make_whole"]
+    },
+    "preprocessed_coordinate_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cache_report", "cache_report_sha256"],
+      "properties": {
+        "cache_report": {"type": "string", "minLength": 1},
+        "cache_report_sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"}
+      }
+    },
+    "periodic_reconstruction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maximum_bond_length_angstrom", "cycle_closure_tolerance_angstrom"],
+      "properties": {
+        "maximum_bond_length_angstrom": {"type": "number", "exclusiveMinimum": 0},
+        "cycle_closure_tolerance_angstrom": {"type": "number", "exclusiveMinimum": 0},
+        "maximum_anchor_displacement_angstrom": {"type": "number", "exclusiveMinimum": 0}
+      }
+    },
+    "reference_connectivity": {"type": ["string", "null"], "minLength": 1},
+    "selections": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"pattern": "^[A-Za-z][A-Za-z0-9_-]*$"},
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": ["preset"],
+            "properties": {
+              "preset": {"enum": ["all", "backbone", "complex_trace", "heavy", "macromolecular_backbone", "molecular_payload", "solute_heavy"]}
+            }
+          },
+          {
+            "required": ["atom_names"],
+            "properties": {
+              "atom_names": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {"type": "string", "minLength": 1}
+              }
+            }
+          },
+          {
+            "required": ["residue_keys", "heavy_only"],
+            "properties": {
+              "heavy_only": {"type": "boolean"},
+              "residue_keys": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["chain_id", "residue_number", "insertion_code"],
+                  "properties": {
+                    "chain_id": {"type": "string"},
+                    "residue_number": {"type": "integer"},
+                    "insertion_code": {"type": "string"}
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "sampling_mode": {
+      "enum": ["UNBIASED_MD", "BIASED_MD", "ENHANCED_SAMPLING", "AI_ENSEMBLE"]
+    },
+    "statistical_weights": {"type": ["string", "null"]},
+    "reference_structure": {"type": ["string", "null"]},
+    "common_atom_policy": {"type": ["string", "null"]},
+    "definitions": {
+      "type": "object",
+      "properties": {
+        "structural_qc": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "near_coincident_distance_angstrom",
+            "maximum_near_coincident_pairs_per_frame",
+            "maximum_absolute_coordinate_angstrom",
+            "frame_stride"
+          ],
+          "properties": {
+            "near_coincident_distance_angstrom": {"type": "number", "exclusiveMinimum": 0},
+            "maximum_near_coincident_pairs_per_frame": {"type": "integer", "minimum": 0},
+            "maximum_absolute_coordinate_angstrom": {"type": "number", "exclusiveMinimum": 0},
+            "maximum_frame_atom_displacement_angstrom": {
+              "type": ["number", "null"],
+              "exclusiveMinimum": 0
+            },
+            "chemical_integrity": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "maximum_peptide_bond_angstrom",
+                "maximum_trans_omega_deviation_degrees",
+                "minimum_ca_chirality_volume_angstrom3",
+                "steric_clash_scale",
+                "maximum_steric_clashes_per_frame",
+                "allow_cis_proline",
+                "declared_covalent_links"
+              ],
+              "properties": {
+                "maximum_peptide_bond_angstrom": {"type": "number", "exclusiveMinimum": 0},
+                "maximum_trans_omega_deviation_degrees": {"type": "number", "exclusiveMinimum": 0, "maximum": 180},
+                "minimum_ca_chirality_volume_angstrom3": {"type": "number", "exclusiveMinimum": 0},
+                "steric_clash_scale": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+                "maximum_steric_clashes_per_frame": {"type": "integer", "minimum": 0},
+                "allow_cis_proline": {"type": "boolean"},
+                "declared_covalent_links": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["link_id", "atom_indices", "minimum_distance_angstrom", "maximum_distance_angstrom"],
+                    "properties": {
+                      "link_id": {"type": "string", "minLength": 1},
+                      "atom_indices": {
+                        "type": "array", "minItems": 2, "maxItems": 2,
+                        "items": {"type": "integer", "minimum": 0}
+                      },
+                      "minimum_distance_angstrom": {"type": "number", "exclusiveMinimum": 0},
+                      "maximum_distance_angstrom": {"type": "number", "exclusiveMinimum": 0}
+                    }
+                  }
+                }
+              }
+            },
+            "frame_stride": {"type": "integer", "minimum": 1}
+          }
+        },
+        "replica_rmsd_rg": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "alignment_selection",
+            "rmsd_selection",
+            "rg_selection",
+            "minimum_reference_coverage",
+            "frame_stride"
+          ],
+          "properties": {
+            "alignment_selection": {"type": "string", "minLength": 1},
+            "rmsd_selection": {"type": "string", "minLength": 1},
+            "rg_selection": {"type": "string", "minLength": 1},
+            "minimum_reference_coverage": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "frame_stride": {"type": "integer", "minimum": 1}
+          }
+        },
+        "pooled_rmsf": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "alignment_selection",
+            "analysis_selection",
+            "minimum_reference_coverage",
+            "frame_stride",
+            "time_block_size_frames",
+            "include_partial_final_block",
+            "minimum_replicas_for_uncertainty"
+          ],
+          "properties": {
+            "alignment_selection": {"type": "string", "minLength": 1},
+            "analysis_selection": {"type": "string", "minLength": 1},
+            "minimum_reference_coverage": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "frame_stride": {"type": "integer", "minimum": 1},
+            "time_block_size_frames": {"type": "integer", "minimum": 1},
+            "include_partial_final_block": {"type": "boolean"},
+            "minimum_replicas_for_uncertainty": {"type": "integer", "minimum": 1}
+          }
+        },
+        "dccm": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "alignment_selection",
+            "analysis_selection",
+            "minimum_reference_coverage",
+            "frame_stride",
+            "maximum_atoms",
+            "minimum_evaluated_frames_per_replica",
+            "minimum_variance_angstrom2"
+          ],
+          "properties": {
+            "alignment_selection": {"type": "string", "minLength": 1},
+            "analysis_selection": {"type": "string", "minLength": 1},
+            "minimum_reference_coverage": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "frame_stride": {"type": "integer", "minimum": 1},
+            "frame_selection": {"$ref": "#/$defs/frameSelection"},
+            "maximum_atoms": {"type": "integer", "minimum": 1},
+            "minimum_evaluated_frames_per_replica": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "minimum_variance_angstrom2": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          }
+        },
+        "generalized_correlation_and_information": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "feature_source",
+            "component_indices",
+            "bin_count",
+            "minimum_observations_per_replica",
+            "maximum_features"
+          ],
+          "properties": {
+            "feature_source": {"const": "common_pca"},
+            "component_indices": {
+              "type": "array",
+              "minItems": 2,
+              "uniqueItems": true,
+              "items": {"type": "integer", "minimum": 1}
+            },
+            "bin_count": {"type": "integer", "minimum": 2},
+            "minimum_observations_per_replica": {"type": "integer", "minimum": 1},
+            "maximum_features": {"type": "integer", "minimum": 2}
+          }
+        },
+        "individual_pca": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "alignment_selection",
+            "analysis_selection",
+            "minimum_reference_coverage",
+            "frame_stride",
+            "maximum_features",
+            "component_count",
+            "minimum_evaluated_frames_per_replica"
+          ],
+          "properties": {
+            "alignment_selection": {"type": "string", "minLength": 1},
+            "analysis_selection": {"type": "string", "minLength": 1},
+            "minimum_reference_coverage": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "frame_stride": {"type": "integer", "minimum": 1},
+            "frame_selection": {"$ref": "#/$defs/frameSelection"},
+            "projection_frame_stride": {"type": "integer", "minimum": 1},
+            "projection_frame_selection": {"$ref": "#/$defs/frameSelection"},
+            "solver": {"$ref": "#/$defs/pcaSolver"},
+            "maximum_features": {"type": "integer", "minimum": 1},
+            "component_count": {"type": "integer", "minimum": 1},
+            "minimum_evaluated_frames_per_replica": {
+              "type": "integer",
+              "minimum": 2
+            }
+          }
+        },
+        "common_pca": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "alignment_selection",
+            "analysis_selection",
+            "minimum_reference_coverage",
+            "frame_stride",
+            "maximum_features",
+            "component_count",
+            "minimum_evaluated_frames_per_replica",
+            "basis_weighting"
+          ],
+          "properties": {
+            "alignment_selection": {"type": "string", "minLength": 1},
+            "analysis_selection": {"type": "string", "minLength": 1},
+            "minimum_reference_coverage": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "frame_stride": {"type": "integer", "minimum": 1},
+            "frame_selection": {"$ref": "#/$defs/frameSelection"},
+            "projection_frame_stride": {"type": "integer", "minimum": 1},
+            "projection_frame_selection": {"$ref": "#/$defs/frameSelection"},
+            "solver": {"$ref": "#/$defs/pcaSolver"},
+            "maximum_features": {"type": "integer", "minimum": 1},
+            "component_count": {"type": "integer", "minimum": 1},
+            "minimum_evaluated_frames_per_replica": {
+              "type": "integer",
+              "minimum": 2
+            },
+            "basis_weighting": {"enum": ["frame", "replica_equal"]}
+            ,
+            "symmetry_expansion": {
+              "type": "object",
+              "required": [
+                "planning_schema", "applicable", "member_count", "members",
+                "observation_contract", "alignment_contract"
+              ],
+              "properties": {
+                "planning_schema": {"const": "salsbury-equivalent-oligomer-plan-v1"},
+                "applicable": {"const": true},
+                "member_count": {"type": "integer", "minimum": 2},
+                "members": {
+                  "type": "array",
+                  "minItems": 2,
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "member_id", "protein_chain_id", "nucleic_chain_ids",
+                      "analysis_atom_indices", "alignment_atom_indices"
+                    ],
+                    "properties": {
+                      "member_id": {"type": "string", "minLength": 1},
+                      "protein_chain_id": {"type": "string"},
+                      "nucleic_chain_ids": {
+                        "type": "array", "items": {"type": "string"}
+                      },
+                      "analysis_atom_indices": {
+                        "type": "array", "minItems": 1,
+                        "items": {"type": "integer", "minimum": 0}
+                      },
+                      "alignment_atom_indices": {
+                        "type": "array", "minItems": 3,
+                        "items": {"type": "integer", "minimum": 0}
+                      }
+                    }
+                  }
+                },
+                "observation_contract": {"type": "object"},
+                "alignment_contract": {"type": "string", "minLength": 1}
+              }
+            }
+          }
+        },
+        "time_lagged_independent_component_analysis": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "feature_source",
+            "component_indices",
+            "lag_frames",
+            "component_count",
+            "covariance_regularization",
+            "covariance_eigenvalue_cutoff",
+            "minimum_pairs_per_segment",
+            "maximum_features"
+          ],
+          "properties": {
+            "feature_source": {"const": "common_pca"},
+            "component_indices": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"type": "integer", "minimum": 1}
+            },
+            "lag_frames": {"type": "integer", "minimum": 1},
+            "component_count": {"type": "integer", "minimum": 1},
+            "covariance_regularization": {"type": "number", "minimum": 0},
+            "covariance_eigenvalue_cutoff": {"type": "number", "exclusiveMinimum": 0},
+            "minimum_pairs_per_segment": {"type": "integer", "minimum": 1},
+            "maximum_features": {"type": "integer", "minimum": 1}
+          }
+        },
+        "pca_fes_basins": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "x_component",
+            "y_component",
+            "padding_fraction",
+            "minimum_bin_count",
+            "population_block_size_frames",
+            "include_partial_final_block",
+            "maximum_grid_cells",
+            "density_estimator"
+          ],
+          "properties": {
+            "x_component": {"type": "integer", "minimum": 1},
+            "y_component": {"type": "integer", "minimum": 1},
+            "bins_x": {"type": "integer", "minimum": 2},
+            "bins_y": {"type": "integer", "minimum": 2},
+            "binning_rule": {
+              "enum": ["explicit", "scott", "freedman_diaconis", "rice"]
+            },
+            "minimum_bins_per_axis": {"type": "integer", "minimum": 2},
+            "maximum_bins_per_axis": {"type": "integer", "minimum": 2},
+            "smoothing_sigmas_bins": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"type": "number", "minimum": 0}
+            },
+            "primary_smoothing_sigma_bins": {"type": "number", "minimum": 0},
+            "maximum_silhouette_observations": {"type": "integer", "minimum": 1},
+            "silhouette_random_seed": {"type": "integer"},
+            "padding_fraction": {"type": "number", "minimum": 0},
+            "minimum_bin_count": {"type": "integer", "minimum": 1},
+            "population_block_size_frames": {"type": "integer", "minimum": 1},
+            "include_partial_final_block": {"type": "boolean"},
+            "maximum_grid_cells": {"type": "integer", "minimum": 4},
+            "density_estimator": {"const": "histogram"}
+          }
+        },
+        "clustering_kmeans": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "feature_source",
+            "standardize_features",
+            "k_values",
+            "random_seeds",
+            "maximum_iterations",
+            "center_tolerance",
+            "minimum_cluster_size",
+            "maximum_silhouette_observations"
+          ],
+          "oneOf": [
+            {"required": ["component_indices"], "properties": {"feature_source": {"const": "common_pca"}}},
+            {"required": ["component_indices"], "properties": {"feature_source": {"const": "tica"}}},
+            {"required": ["trajectory_feature_columns"], "properties": {"feature_source": {"const": "trajectory_features"}}}
+          ],
+          "properties": {
+            "feature_source": {"enum": ["common_pca", "tica", "trajectory_features"]},
+            "component_indices": {
+              "type": "array",
+              "minItems": 2,
+              "uniqueItems": true,
+              "items": {"type": "integer", "minimum": 1}
+            },
+            "trajectory_feature_columns": {
+              "type": "array", "minItems": 1,
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["feature_id", "value_indices"],
+                "properties": {
+                  "feature_id": {"type": "string", "minLength": 1},
+                  "value_indices": {
+                    "type": "array", "minItems": 1, "uniqueItems": true,
+                    "items": {"type": "integer", "minimum": 1}
+                  }
+                }
+              }
+            },
+            "standardize_features": {"type": "boolean"},
+            "k_values": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"type": "integer", "minimum": 2}
+            },
+            "random_seeds": {
+              "type": "array",
+              "minItems": 2,
+              "uniqueItems": true,
+              "items": {"type": "integer", "minimum": 0}
+            },
+            "maximum_iterations": {"type": "integer", "minimum": 1},
+            "center_tolerance": {"type": "number", "exclusiveMinimum": 0},
+            "minimum_cluster_size": {"type": "integer", "minimum": 1},
+            "maximum_silhouette_observations": {"type": "integer", "minimum": 1}
+          }
+        },
+        "representative_frames": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source",
+            "representatives_per_state",
+            "maximum_states",
+            "maximum_candidates"
+          ],
+          "properties": {
+            "source": {
+              "enum": ["clustering_kmeans", "pca_fes_basins"]
+            },
+            "representatives_per_state": {"type": "integer", "minimum": 1},
+            "maximum_states": {"type": "integer", "minimum": 1},
+            "maximum_candidates": {"type": "integer", "minimum": 1},
+            "fes_smoothing_sigma_bins": {"type": "number", "minimum": 0}
+          }
+        },
+        "state_coordinate_exports": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source", "export_id", "trajectory_format", "representatives_per_state",
+            "frame_stride_within_state", "maximum_states", "maximum_frames_per_state",
+            "maximum_total_frames", "existing_output_policy"
+          ],
+          "properties": {
+            "source": {
+              "enum": [
+                "clustering_kmeans", "clustering_hdbscan", "clustering_imwkmeans",
+                "alternative_clustering", "pca_fes_basins"
+              ]
+            },
+            "export_id": {
+              "type": "string", "minLength": 1, "maxLength": 80,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+            },
+            "trajectory_format": {"enum": ["pdb", "xyz"]},
+            "representatives_per_state": {"type": "integer", "minimum": 1},
+            "frame_stride_within_state": {"type": "integer", "minimum": 1},
+            "maximum_states": {"type": "integer", "minimum": 1},
+            "maximum_frames_per_state": {"type": "integer", "minimum": 1},
+            "maximum_total_frames": {"type": "integer", "minimum": 1},
+            "existing_output_policy": {"const": "fail"},
+            "write_trajectories": {
+              "type": "boolean",
+              "default": true,
+              "description": "Write multi-frame state trajectories. Observed representative PDB structures are always written."
+            },
+            "coordinate_selection": {"type": "string", "minLength": 1},
+            "fes_smoothing_sigma_bins": {"type": "number", "minimum": 0},
+            "alternative_algorithm": {"type": "string", "minLength": 1}
+          }
+        },
+        "clustering_hdbscan": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "feature_source", "standardize_features",
+            "minimum_cluster_sizes", "minimum_samples_values",
+            "cluster_selection_method", "allow_single_cluster",
+            "minimum_retained_fraction", "maximum_silhouette_observations"
+          ],
+          "oneOf": [
+            {"required": ["component_indices"], "properties": {"feature_source": {"const": "common_pca"}}},
+            {"required": ["component_indices"], "properties": {"feature_source": {"const": "tica"}}},
+            {"required": ["trajectory_feature_columns"], "properties": {"feature_source": {"const": "trajectory_features"}}}
+          ],
+          "properties": {
+            "feature_source": {"enum": ["common_pca", "tica", "trajectory_features"]},
+            "component_indices": {
+              "type": "array", "minItems": 2, "uniqueItems": true,
+              "items": {"type": "integer", "minimum": 1}
+            },
+            "trajectory_feature_columns": {
+              "type": "array", "minItems": 1,
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["feature_id", "value_indices"],
+                "properties": {
+                  "feature_id": {"type": "string", "minLength": 1},
+                  "value_indices": {
+                    "type": "array", "minItems": 1, "uniqueItems": true,
+                    "items": {"type": "integer", "minimum": 1}
+                  }
+                }
+              }
+            },
+            "standardize_features": {"type": "boolean"},
+            "minimum_cluster_sizes": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"type": "integer", "minimum": 2}
+            },
+            "minimum_samples_values": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"type": "integer", "minimum": 1}
+            },
+            "cluster_selection_method": {"enum": ["eom", "leaf"]},
+            "allow_single_cluster": {"type": "boolean"},
+            "minimum_retained_fraction": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+            "maximum_silhouette_observations": {"type": "integer", "minimum": 1}
+          }
+        },
+        "clustering_imwkmeans": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "feature_source",
+            "standardize_features",
+            "k_values",
+            "minkowski_p_values",
+            "initialization_ranks",
+            "maximum_iterations",
+            "objective_tolerance",
+            "minimum_cluster_size",
+            "weight_dispersion_floor",
+            "maximum_silhouette_observations"
+          ],
+          "oneOf": [
+            {"required": ["component_indices"], "properties": {"feature_source": {"const": "common_pca"}}},
+            {"required": ["component_indices"], "properties": {"feature_source": {"const": "tica"}}},
+            {"required": ["trajectory_feature_columns"], "properties": {"feature_source": {"const": "trajectory_features"}}}
+          ],
+          "properties": {
+            "feature_source": {"enum": ["common_pca", "tica", "trajectory_features"]},
+            "component_indices": {
+              "type": "array",
+              "minItems": 2,
+              "uniqueItems": true,
+              "items": {"type": "integer", "minimum": 1}
+            },
+            "trajectory_feature_columns": {
+              "type": "array", "minItems": 1,
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["feature_id", "value_indices"],
+                "properties": {
+                  "feature_id": {"type": "string", "minLength": 1},
+                  "value_indices": {
+                    "type": "array", "minItems": 1, "uniqueItems": true,
+                    "items": {"type": "integer", "minimum": 1}
+                  }
+                }
+              }
+            },
+            "standardize_features": {"type": "boolean"},
+            "k_values": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"type": "integer", "minimum": 2}
+            },
+            "minkowski_p_values": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"type": "number", "exclusiveMinimum": 1}
+            },
+            "initialization_ranks": {
+              "type": "array",
+              "minItems": 2,
+              "uniqueItems": true,
+              "items": {"type": "integer", "minimum": 0}
+            },
+            "maximum_iterations": {"type": "integer", "minimum": 1},
+            "objective_tolerance": {"type": "number", "exclusiveMinimum": 0},
+            "minimum_cluster_size": {"type": "integer", "minimum": 1},
+            "weight_dispersion_floor": {"type": "number", "exclusiveMinimum": 0},
+            "maximum_silhouette_observations": {"type": "integer", "minimum": 1}
+          }
+        },
+        "alternative_clustering": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "feature_source", "standardize_features", "algorithms", "k",
+            "random_seed", "maximum_iterations", "minkowski_p",
+            "quality_threshold_cutoff", "maximum_observations"
+          ],
+          "oneOf": [
+            {"required": ["component_indices"], "properties": {"feature_source": {"const": "common_pca"}}},
+            {"required": ["component_indices"], "properties": {"feature_source": {"const": "tica"}}},
+            {"required": ["trajectory_feature_columns"], "properties": {"feature_source": {"const": "trajectory_features"}}}
+          ],
+          "properties": {
+            "feature_source": {"enum": ["common_pca", "tica", "trajectory_features"]},
+            "component_indices": {
+              "type": "array", "minItems": 2, "uniqueItems": true,
+              "items": {"type": "integer", "minimum": 1}
+            },
+            "trajectory_feature_columns": {
+              "type": "array", "minItems": 1,
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["feature_id", "value_indices"],
+                "properties": {
+                  "feature_id": {"type": "string", "minLength": 1},
+                  "value_indices": {
+                    "type": "array", "minItems": 1, "uniqueItems": true,
+                    "items": {"type": "integer", "minimum": 1}
+                  }
+                }
+              }
+            },
+            "standardize_features": {"type": "boolean"},
+            "algorithms": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"enum": [
+                "pam", "mwpam", "ward", "gaussian_mixture",
+                "variational_gaussian_mixture", "affinity_propagation",
+                "mean_shift", "quality_threshold"
+              ]}
+            },
+            "k": {"type": "integer", "minimum": 2},
+            "k_values": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"type": "integer", "minimum": 2}
+            },
+            "random_seed": {"type": "integer", "minimum": 0},
+            "random_seeds": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"type": "integer", "minimum": 0}
+            },
+            "maximum_iterations": {"type": "integer", "minimum": 1},
+            "minkowski_p": {"type": "number", "exclusiveMinimum": 1},
+            "minkowski_p_values": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"type": "number", "exclusiveMinimum": 1}
+            },
+            "quality_threshold_cutoff": {"type": "number", "exclusiveMinimum": 0},
+            "quality_threshold_cutoffs": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"type": "number", "exclusiveMinimum": 0}
+            },
+            "affinity_damping": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+            "affinity_damping_values": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1}
+            },
+            "mean_shift_bandwidth": {"type": ["number", "null"], "exclusiveMinimum": 0},
+            "mean_shift_bandwidth_values": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"type": ["number", "null"], "exclusiveMinimum": 0}
+            },
+            "maximum_observations": {"type": "integer", "minimum": 1},
+            "maximum_exact_silhouette_observations": {"type": "integer", "minimum": 1},
+            "fit_sampling": {
+              "type": "object",
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "required": ["mode", "strides", "primary_stride"],
+                  "properties": {
+                    "mode": {"const": "integer_stride_per_replica_member_v1"},
+                    "strides": {
+                      "type": "array", "minItems": 1, "uniqueItems": true,
+                      "items": {"type": "integer", "minimum": 1}
+                    },
+                    "primary_stride": {"type": "integer", "minimum": 1}
+                  }
+                },
+                {
+                  "additionalProperties": false,
+                  "required": [
+                    "mode", "target_wall_hours", "member_observation_multiplier",
+                    "source_physical_frames_per_replica", "full_observation_count",
+                    "algorithm_plans", "scientific_boundary"
+                  ],
+                  "properties": {
+                    "mode": {"const": "algorithm_specific_integer_stride_v1"},
+                    "target_wall_hours": {"type": "number", "exclusiveMinimum": 0},
+                    "member_observation_multiplier": {"type": "integer", "minimum": 1},
+                    "source_physical_frames_per_replica": {
+                      "type": "array", "minItems": 1,
+                      "items": {"type": "integer", "minimum": 1}
+                    },
+                    "full_observation_count": {"type": "integer", "minimum": 1},
+                    "scientific_boundary": {"type": "string", "minLength": 1},
+                    "algorithm_plans": {
+                      "type": "object", "minProperties": 1,
+                      "additionalProperties": {"type": "object"}
+                    }
+                  }
+                },
+                {
+                  "additionalProperties": false,
+                  "required": [
+                    "mode", "budgets_per_replica", "primary_budget_per_replica"
+                  ],
+                  "properties": {
+                    "mode": {"const": "balanced_uniform_per_replica_sensitivity_v1"},
+                    "budgets_per_replica": {
+                      "type": "array", "minItems": 1, "uniqueItems": true,
+                      "items": {"type": "integer", "minimum": 1}
+                    },
+                    "primary_budget_per_replica": {"type": "integer", "minimum": 1}
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "pald_community_analysis": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "feature_source", "standardize_features", "maximum_observations",
+            "community_msm_enabled", "maximum_reported_intercommunity_ties"
+          ],
+          "oneOf": [
+            {"required": ["component_indices"], "properties": {"feature_source": {"const": "common_pca"}}},
+            {"required": ["component_indices"], "properties": {"feature_source": {"const": "tica"}}},
+            {"required": ["trajectory_feature_columns"], "properties": {"feature_source": {"const": "trajectory_features"}}}
+          ],
+          "properties": {
+            "feature_source": {"enum": ["common_pca", "tica", "trajectory_features"]},
+            "component_indices": {
+              "type": "array", "minItems": 2, "uniqueItems": true,
+              "items": {"type": "integer", "minimum": 1}
+            },
+            "trajectory_feature_columns": {
+              "type": "array", "minItems": 1,
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["feature_id", "value_indices"],
+                "properties": {
+                  "feature_id": {"type": "string", "minLength": 1},
+                  "value_indices": {
+                    "type": "array", "minItems": 1, "uniqueItems": true,
+                    "items": {"type": "integer", "minimum": 1}
+                  }
+                }
+              }
+            },
+            "standardize_features": {"type": "boolean"},
+            "maximum_observations": {"type": "integer", "minimum": 2},
+            "community_msm_enabled": {"type": "boolean"},
+            "maximum_reported_intercommunity_ties": {
+              "type": "integer", "minimum": 1
+            }
+          }
+        },
+        "markov_state_models": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "lag_frames",
+            "estimators",
+            "minimum_transition_count",
+            "maximum_states",
+            "ck_multiples",
+            "maximum_ck_rmse"
+          ],
+          "oneOf": [
+            {"required": ["assignment_source"]},
+            {"required": ["assignment_sources"]}
+          ],
+          "properties": {
+            "assignment_source": {
+              "enum": ["clustering_kmeans", "clustering_imwkmeans"]
+            },
+            "assignment_sources": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "uniqueItems": true,
+              "items": {"enum": ["best_clustering", "pca_fes_basins"]},
+              "allOf": [
+                {"contains": {"const": "best_clustering"}},
+                {"contains": {"const": "pca_fes_basins"}}
+              ]
+            },
+            "lag_frames": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"type": "integer", "minimum": 1}
+            },
+            "estimators": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"enum": ["reversible_symmetrized", "nonreversible_mle"]}
+            },
+            "minimum_transition_count": {"type": "integer", "minimum": 1},
+            "maximum_states": {"type": "integer", "minimum": 2},
+            "ck_multiples": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"type": "integer", "minimum": 2}
+            },
+            "maximum_ck_rmse": {"type": "number", "exclusiveMinimum": 0},
+            "vamp_cross_validation_folds": {"type": "integer", "minimum": 2},
+            "vamp_regularization": {"type": "number", "exclusiveMinimum": 0},
+            "maximum_implied_timescale_relative_range": {
+              "type": "number", "exclusiveMinimum": 0
+            },
+            "bootstrap_repeats": {"type": "integer", "minimum": 0},
+            "bootstrap_block_length_frames": {"type": "integer", "minimum": 2},
+            "bootstrap_confidence_level": {
+              "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1
+            },
+            "random_seed": {"type": "integer", "minimum": 0}
+          }
+        },
+        "dihedral_distributions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "angle_types",
+            "frame_stride",
+            "histogram_bins",
+            "maximum_reference_peptide_bond_angstrom",
+            "maximum_observations"
+          ],
+          "properties": {
+            "angle_types": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"enum": ["phi", "psi", "omega", "chi1", "chi2", "chi3", "chi4", "chi5"]}
+            },
+            "frame_stride": {"type": "integer", "minimum": 1},
+            "histogram_bins": {"type": "integer", "minimum": 4, "maximum": 360},
+            "maximum_reference_peptide_bond_angstrom": {"type": "number", "exclusiveMinimum": 0},
+            "maximum_observations": {"type": "integer", "minimum": 1}
+          }
+        },
+        "hydrogen_bonds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "features",
+            "frame_stride",
+            "maximum_donor_acceptor_distance_angstrom",
+            "minimum_donor_hydrogen_acceptor_angle_degrees",
+            "maximum_reference_donor_hydrogen_bond_angstrom",
+            "water_policy",
+            "condition_source",
+            "maximum_feature_observations"
+          ],
+          "properties": {
+            "features": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["feature_id", "donor_atom_index", "hydrogen_atom_index", "acceptor_atom_index"],
+                "properties": {
+                  "feature_id": {"type": "string", "minLength": 1},
+                  "donor_atom_index": {"type": "integer", "minimum": 0},
+                  "hydrogen_atom_index": {"type": "integer", "minimum": 0},
+                  "acceptor_atom_index": {"type": "integer", "minimum": 0}
+                }
+              }
+            },
+            "frame_stride": {"type": "integer", "minimum": 1},
+            "maximum_donor_acceptor_distance_angstrom": {"type": "number", "exclusiveMinimum": 0},
+            "minimum_donor_hydrogen_acceptor_angle_degrees": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 180},
+            "maximum_reference_donor_hydrogen_bond_angstrom": {"type": "number", "exclusiveMinimum": 0},
+            "water_policy": {"const": "exclude"},
+            "condition_source": {"enum": ["none", "clustering_kmeans"]},
+            "maximum_feature_observations": {"type": "integer", "minimum": 1}
+          }
+        },
+        "hydrogen_bond_discovery": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "chemistry_policy": {"enum": ["explicit_atoms_connectivity_v1", "automatic_topology_templates_v1"]},
+            "donor_atom_indices": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"type": "integer", "minimum": 0}
+            },
+            "acceptor_atom_indices": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"type": "integer", "minimum": 0}
+            },
+            "allowed_donor_elements": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            },
+            "allowed_acceptor_elements": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            },
+            "exclude_same_residue": {"type": "boolean"},
+            "water_policy": {"const": "exclude"},
+            "frame_stride": {"type": "integer", "minimum": 1},
+            "frame_selection": {"$ref": "#/$defs/frameSelection"},
+            "maximum_donor_acceptor_distance_angstrom": {"type": "number", "exclusiveMinimum": 0},
+            "minimum_donor_hydrogen_acceptor_angle_degrees": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 180},
+            "maximum_reference_donor_hydrogen_bond_angstrom": {"type": "number", "exclusiveMinimum": 0},
+            "maximum_candidate_bonds": {"type": "integer", "minimum": 1},
+            "maximum_feature_observations": {"type": "integer", "minimum": 1},
+            "output_mode": {"enum": ["dense_v1", "sparse_implicit_zero_v1"]},
+            "candidate_chunk_size": {"type": "integer", "minimum": 1},
+            "interaction_scope": {"enum": ["all_solute", "protein_protein", "protein_ligand", "protein_nucleic_acid", "nucleic_acid_nucleic_acid", "nucleic_acid_ligand", "ligand_ligand"]},
+            "cutoff_policy": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "preset": {"enum": ["mdanalysis_compatible_v1", "custom_v1"]},
+                "maximum_donor_acceptor_distance_angstrom": {"type": "number", "exclusiveMinimum": 0},
+                "minimum_donor_hydrogen_acceptor_angle_degrees": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 180},
+                "distance_sensitivity_angstrom": {"type": "array", "minItems": 1, "items": {"type": "number", "exclusiveMinimum": 0}},
+                "angle_sensitivity_degrees": {"type": "array", "minItems": 1, "items": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 180}}
+              },
+              "oneOf": [
+                {"required": ["preset"], "properties": {"preset": {"const": "mdanalysis_compatible_v1"}}, "maxProperties": 1},
+                {"required": ["preset", "maximum_donor_acceptor_distance_angstrom", "minimum_donor_hydrogen_acceptor_angle_degrees", "distance_sensitivity_angstrom", "angle_sensitivity_degrees"], "properties": {"preset": {"const": "custom_v1"}}}
+              ]
+            }
+          },
+          "oneOf": [
+            {
+              "required": ["chemistry_policy", "donor_atom_indices", "acceptor_atom_indices", "allowed_donor_elements", "allowed_acceptor_elements", "exclude_same_residue", "water_policy", "frame_stride", "maximum_donor_acceptor_distance_angstrom", "minimum_donor_hydrogen_acceptor_angle_degrees", "maximum_reference_donor_hydrogen_bond_angstrom", "maximum_candidate_bonds", "maximum_feature_observations"],
+              "properties": {"chemistry_policy": {"const": "explicit_atoms_connectivity_v1"}}
+            },
+            {
+              "required": ["chemistry_policy", "interaction_scope", "cutoff_policy", "exclude_same_residue", "water_policy", "frame_stride", "maximum_reference_donor_hydrogen_bond_angstrom", "maximum_candidate_bonds", "maximum_feature_observations"],
+              "properties": {"chemistry_policy": {"const": "automatic_topology_templates_v1"}}
+            }
+          ]
+        },
+        "water_mediated_hydrogen_bond_networks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "chemistry_policy", "interaction_scope", "water_identity_policy",
+            "maximum_bridge_length", "exclude_same_residue_endpoints", "frame_stride", "frame_selection",
+            "cutoff_policy", "maximum_reference_donor_hydrogen_bond_angstrom",
+            "neighbor_search", "maximum_solute_endpoints", "maximum_waters",
+            "maximum_evaluated_frames", "maximum_neighbor_pairs_per_frame",
+            "maximum_bridge_paths_per_frame", "maximum_sparse_records"
+          ],
+          "properties": {
+            "chemistry_policy": {"const": "automatic_topology_templates_v1"},
+            "interaction_scope": {"enum": ["all_solute", "protein_protein", "protein_ligand", "protein_nucleic_acid", "nucleic_acid_nucleic_acid", "nucleic_acid_ligand", "ligand_ligand"]},
+            "water_identity_policy": {"const": "standard_residue_names_connectivity_v1"},
+            "maximum_bridge_length": {"const": 1},
+            "exclude_same_residue_endpoints": {"type": "boolean"},
+            "frame_stride": {"type": "integer", "minimum": 1},
+            "frame_selection": {"$ref": "#/$defs/frameSelection"},
+            "cutoff_policy": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "preset": {"enum": ["mdanalysis_compatible_v1", "custom_v1"]},
+                "maximum_donor_acceptor_distance_angstrom": {"type": "number", "exclusiveMinimum": 0},
+                "minimum_donor_hydrogen_acceptor_angle_degrees": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 180},
+                "distance_sensitivity_angstrom": {"type": "array", "minItems": 1, "items": {"type": "number", "exclusiveMinimum": 0}},
+                "angle_sensitivity_degrees": {"type": "array", "minItems": 1, "items": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 180}}
+              },
+              "oneOf": [
+                {"required": ["preset"], "properties": {"preset": {"const": "mdanalysis_compatible_v1"}}, "maxProperties": 1},
+                {"required": ["preset", "maximum_donor_acceptor_distance_angstrom", "minimum_donor_hydrogen_acceptor_angle_degrees", "distance_sensitivity_angstrom", "angle_sensitivity_degrees"], "properties": {"preset": {"const": "custom_v1"}}}
+              ]
+            },
+            "maximum_reference_donor_hydrogen_bond_angstrom": {"type": "number", "exclusiveMinimum": 0},
+            "neighbor_search": {"const": "cell_list_v1"},
+            "maximum_solute_endpoints": {"type": "integer", "minimum": 2},
+            "maximum_waters": {"type": "integer", "minimum": 1},
+            "maximum_evaluated_frames": {"type": "integer", "minimum": 1},
+            "maximum_neighbor_pairs_per_frame": {"type": "integer", "minimum": 1},
+            "maximum_bridge_paths_per_frame": {"type": "integer", "minimum": 1},
+            "maximum_sparse_records": {"type": "integer", "minimum": 1}
+          }
+        },
+        "optional_observables": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["frame_stride", "features", "maximum_observations"],
+          "properties": {
+            "frame_stride": {"type": "integer", "minimum": 1},
+            "maximum_observations": {"type": "integer", "minimum": 1},
+            "features": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": ["feature_id", "question", "kind"],
+                "properties": {
+                  "feature_id": {"type": "string", "minLength": 1},
+                  "question": {"type": "string", "minLength": 1},
+                  "kind": {"enum": ["distance", "contact", "group_minimum_distance", "group_contact", "native_contact_fraction"]},
+                  "atom_indices": {
+                    "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true,
+                    "items": {"type": "integer", "minimum": 0}
+                  },
+                  "group_a_atom_indices": {
+                    "type": "array", "minItems": 1, "uniqueItems": true,
+                    "items": {"type": "integer", "minimum": 0}
+                  },
+                  "group_b_atom_indices": {
+                    "type": "array", "minItems": 1, "uniqueItems": true,
+                    "items": {"type": "integer", "minimum": 0}
+                  },
+                  "threshold_angstrom": {"type": "number", "exclusiveMinimum": 0},
+                  "reference_cutoff_angstrom": {"type": "number", "exclusiveMinimum": 0},
+                  "observation_cutoff_angstrom": {"type": "number", "exclusiveMinimum": 0},
+                  "minimum_atom_index_separation": {"type": "integer", "minimum": 1}
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "solvent_accessible_surface_area": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "surface_selection",
+            "occluder_selection",
+            "probe_radius_angstrom",
+            "sphere_point_count",
+            "frame_stride",
+            "maximum_surface_atoms",
+            "maximum_observations"
+          ],
+          "properties": {
+            "surface_selection": {"type": "string", "minLength": 1},
+            "occluder_selection": {"type": "string", "minLength": 1},
+            "probe_radius_angstrom": {"type": "number", "exclusiveMinimum": 0},
+            "sphere_point_count": {"type": "integer", "minimum": 240},
+            "frame_stride": {"type": "integer", "minimum": 1},
+            "frame_selection": {"$ref": "#/$defs/frameSelection"},
+            "maximum_surface_atoms": {"type": "integer", "minimum": 1},
+            "maximum_observations": {"type": "integer", "minimum": 1},
+            "element_radii_overrides_angstrom": {
+              "type": "object",
+              "additionalProperties": {"type": "number", "exclusiveMinimum": 0}
+            }
+          }
+        },
+        "radial_distribution_functions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["frame_stride", "maximum_observations", "features"],
+          "properties": {
+            "frame_stride": {"type": "integer", "minimum": 1},
+            "frame_selection": {"$ref": "#/$defs/frameSelection"},
+            "maximum_observations": {"type": "integer", "minimum": 1},
+            "features": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "feature_id", "question", "group_a_atom_indices",
+                  "group_b_atom_indices", "minimum_radius_angstrom",
+                  "maximum_radius_angstrom", "bin_width_angstrom"
+                ],
+                "properties": {
+                  "feature_id": {"type": "string", "minLength": 1},
+                  "question": {"type": "string", "minLength": 1},
+                  "group_a_atom_indices": {
+                    "type": "array", "minItems": 1, "uniqueItems": true,
+                    "items": {"type": "integer", "minimum": 0}
+                  },
+                  "group_b_atom_indices": {
+                    "type": "array", "minItems": 1, "uniqueItems": true,
+                    "items": {"type": "integer", "minimum": 0}
+                  },
+                  "minimum_radius_angstrom": {"type": "number", "minimum": 0},
+                  "maximum_radius_angstrom": {"type": "number", "exclusiveMinimum": 0},
+                  "bin_width_angstrom": {"type": "number", "exclusiveMinimum": 0}
+                }
+              }
+            }
+          }
+        },
+        "scalar_feature_distributions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "maximum_observations", "distributions"],
+          "properties": {
+            "source": {"const": "trajectory_features"},
+            "maximum_observations": {"type": "integer", "minimum": 1},
+            "distributions": {
+              "type": "array", "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "distribution_id", "question", "feature_id", "value_index",
+                  "binning_rule", "padding_fraction"
+                ],
+                "properties": {
+                  "distribution_id": {"type": "string", "minLength": 1},
+                  "question": {"type": "string", "minLength": 1},
+                  "feature_id": {"type": "string", "minLength": 1},
+                  "value_index": {"type": "integer", "minimum": 0},
+                  "binning_rule": {
+                    "enum": ["explicit", "scott", "freedman_diaconis", "rice"]
+                  },
+                  "padding_fraction": {"type": "number", "minimum": 0},
+                  "bin_count": {"type": "integer", "minimum": 2},
+                  "minimum_bins": {"type": "integer", "minimum": 2},
+                  "maximum_bins": {"type": "integer", "minimum": 2}
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "scalar_threshold_states": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "maximum_observations", "states"],
+          "properties": {
+            "source": {"const": "trajectory_features"},
+            "maximum_observations": {"type": "integer", "minimum": 1},
+            "states": {
+              "type": "array", "minItems": 1,
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": [
+                  "state_analysis_id", "question", "feature_id", "value_index",
+                  "operator", "threshold", "sensitivity_thresholds",
+                  "meets_threshold_label", "does_not_meet_threshold_label"
+                ],
+                "properties": {
+                  "state_analysis_id": {"type": "string", "minLength": 1},
+                  "question": {"type": "string", "minLength": 1},
+                  "feature_id": {"type": "string", "minLength": 1},
+                  "value_index": {"type": "integer", "minimum": 0},
+                  "operator": {"enum": ["less_than_or_equal", "greater_than_or_equal"]},
+                  "threshold": {"type": "number"},
+                  "sensitivity_thresholds": {
+                    "type": "array", "minItems": 1, "uniqueItems": true,
+                    "items": {"type": "number"}
+                  },
+                  "meets_threshold_label": {"type": "string", "minLength": 1},
+                  "does_not_meet_threshold_label": {"type": "string", "minLength": 1}
+                }
+              }
+            }
+          }
+        },
+        "convergence_uncertainty": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source_module", "metrics", "block_size_frames", "include_partial_final_block",
+            "minimum_blocks", "minimum_effective_sample_size",
+            "maximum_split_mean_difference_in_sd"
+          ],
+          "properties": {
+            "source_module": {"const": "replica_rmsd_rg"},
+            "metrics": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"enum": ["alignment_rmsd_angstrom", "rmsd_angstrom", "radius_of_gyration_angstrom"]}
+            },
+            "block_size_frames": {"type": "integer", "minimum": 1},
+            "include_partial_final_block": {"type": "boolean"},
+            "minimum_blocks": {"type": "integer", "minimum": 1},
+            "minimum_effective_sample_size": {"type": "number", "exclusiveMinimum": 0},
+            "maximum_split_mean_difference_in_sd": {"type": "number", "exclusiveMinimum": 0},
+            "replica_diagnostics": {"type": "boolean", "default": false},
+            "minimum_replicas_for_population_validity": {"type": "integer", "minimum": 1}
+          }
+        },
+        "grouped_ml": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "feature_source", "target_source", "group_strategy", "group_block_size_frames",
+            "estimator", "maximum_depth", "minimum_leaf_size",
+            "maximum_thresholds_per_feature", "permutation_repeats", "random_seed",
+            "minimum_groups", "maximum_observations"
+          ],
+          "properties": {
+            "feature_source": {"const": "clustering_kmeans_features"},
+            "target_source": {"const": "clustering_kmeans_assignments"},
+            "group_strategy": {"const": "segment_time_blocks"},
+            "group_block_size_frames": {"type": "integer", "minimum": 1},
+            "estimator": {"const": "decision_tree"},
+            "maximum_depth": {"type": "integer", "minimum": 1},
+            "minimum_leaf_size": {"type": "integer", "minimum": 1},
+            "maximum_thresholds_per_feature": {"type": "integer", "minimum": 1},
+            "permutation_repeats": {"type": "integer", "minimum": 1},
+            "random_seed": {"type": "integer", "minimum": 0},
+            "minimum_groups": {"type": "integer", "minimum": 2},
+            "maximum_observations": {"type": "integer", "minimum": 1}
+          }
+        },
+        "grouped_regularized_classification": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "feature_source", "target_source", "group_strategy",
+            "group_block_size_frames", "estimators",
+            "inverse_regularization_strengths", "elastic_net_l1_ratios",
+            "class_weight", "maximum_iterations", "minimum_outer_groups",
+            "minimum_inner_folds", "maximum_observations", "random_seed"
+          ],
+          "properties": {
+            "feature_source": {"const": "hydrogen_bond_discovery"},
+            "target_source": {"const": "system_id"},
+            "group_strategy": {"enum": ["replica", "segment", "segment_time_blocks"]},
+            "group_block_size_frames": {"type": "integer", "minimum": 1},
+            "estimators": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"enum": ["logistic_l2", "elastic_net"]}
+            },
+            "inverse_regularization_strengths": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"type": "number", "exclusiveMinimum": 0}
+            },
+            "elastic_net_l1_ratios": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"type": "number", "minimum": 0, "maximum": 1}
+            },
+            "class_weight": {"enum": ["none", "balanced"]},
+            "maximum_iterations": {"type": "integer", "minimum": 1},
+            "minimum_outer_groups": {"type": "integer", "minimum": 2},
+            "minimum_inner_folds": {"type": "integer", "minimum": 1},
+            "maximum_observations": {"type": "integer", "minimum": 1},
+            "random_seed": {"type": "integer", "minimum": 0}
+          }
+        },
+        "integrated_comparison": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["entries", "allow_failed_modules"],
+          "properties": {
+            "allow_failed_modules": {"type": "boolean"},
+            "entries": {
+              "type": "array", "minItems": 1,
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["entry_id", "module_id", "value_pointer", "label", "interpretation_type"],
+                "properties": {
+                  "entry_id": {"type": "string", "minLength": 1},
+                  "module_id": {"enum": ["replica_rmsd_rg", "pca_fes_basins", "clustering_kmeans", "optional_observables", "convergence_uncertainty"]},
+                  "value_pointer": {"type": "string", "pattern": "^/"},
+                  "label": {"type": "string", "minLength": 1},
+                  "interpretation_type": {"enum": ["technical", "descriptive", "exploratory", "inferential"]}
+                }
+              }
+            }
+          }
+        },
+        "secondary_structure": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["method", "executable", "frame_stride", "maximum_frames"],
+          "properties": {
+            "method": {"const": "mkdssp"},
+            "executable": {"type": "string", "minLength": 1},
+            "frame_stride": {"type": "integer", "minimum": 1},
+            "frame_selection": {"$ref": "#/$defs/frameSelection"},
+            "maximum_frames": {"type": "integer", "minimum": 1}
+          }
+        },
+        "nucleic_acid_structure": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "method", "executable", "frame_stride", "maximum_frames",
+            "timeout_seconds", "json_collection_fields"
+          ],
+          "properties": {
+            "method": {"const": "x3dna-dssr-json"},
+            "executable": {"type": "string", "minLength": 1},
+            "frame_stride": {"type": "integer", "minimum": 1},
+            "frame_selection": {"$ref": "#/$defs/frameSelection"},
+            "maximum_frames": {"type": "integer", "minimum": 1},
+            "timeout_seconds": {"type": "number", "exclusiveMinimum": 0},
+            "json_collection_fields": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            },
+            "numeric_queries": {
+              "type": "array",
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["query_id", "path", "missing_policy"],
+                "properties": {
+                  "query_id": {"type": "string", "minLength": 1},
+                  "path": {
+                    "type": "array", "minItems": 1,
+                    "items": {"type": "string", "minLength": 1}
+                  },
+                  "missing_policy": {"enum": ["skip", "fail"]}
+                }
+              }
+            }
+          }
+        },
+        "nucleic_acid_geometry": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "frame_stride", "maximum_frames", "rings", "plane_pairs", "block_count",
+            "histogram_rule", "histogram_padding_fraction", "minimum_histogram_bins",
+            "maximum_histogram_bins"
+          ],
+          "properties": {
+            "frame_stride": {"type": "integer", "minimum": 1},
+            "maximum_frames": {"type": "integer", "minimum": 1},
+            "rings": {
+              "type": "array", "minItems": 1,
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["ring_id", "atom_indices"],
+                "properties": {
+                  "ring_id": {"type": "string", "minLength": 1},
+                  "atom_indices": {
+                    "type": "array", "minItems": 4, "maxItems": 12,
+                    "uniqueItems": true,
+                    "items": {"type": "integer", "minimum": 0}
+                  }
+                }
+              }
+            },
+            "plane_pairs": {
+              "type": "array",
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["pair_id", "first_ring_id", "second_ring_id", "interpretation"],
+                "properties": {
+                  "pair_id": {"type": "string", "minLength": 1},
+                  "first_ring_id": {"type": "string", "minLength": 1},
+                  "second_ring_id": {"type": "string", "minLength": 1},
+                  "interpretation": {"enum": ["fused_ring_fold", "base_stacking"]}
+                }
+              }
+            },
+            "block_count": {"type": "integer", "minimum": 1},
+            "histogram_rule": {"enum": ["scott", "freedman_diaconis", "rice"]},
+            "histogram_padding_fraction": {"type": "number", "minimum": 0},
+            "minimum_histogram_bins": {"type": "integer", "minimum": 2},
+            "maximum_histogram_bins": {"type": "integer", "minimum": 2}
+          }
+        },
+        "ion_coordination_geometry": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "frame_stride", "maximum_frames", "ion_sites", "ion_pairs", "block_count",
+            "histogram_rule", "histogram_padding_fraction", "minimum_histogram_bins",
+            "maximum_histogram_bins"
+          ],
+          "properties": {
+            "frame_stride": {"type": "integer", "minimum": 1},
+            "maximum_frames": {"type": "integer", "minimum": 1},
+            "ion_sites": {
+              "type": "array", "minItems": 1,
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": [
+                  "site_id", "ion_atom_index", "candidate_ligand_atom_indices",
+                  "coordination_cutoff_angstrom", "geometry_templates"
+                ],
+                "properties": {
+                  "site_id": {"type": "string", "minLength": 1},
+                  "ion_atom_index": {"type": "integer", "minimum": 0},
+                  "candidate_ligand_atom_indices": {
+                    "type": "array", "minItems": 1, "uniqueItems": true,
+                    "items": {"type": "integer", "minimum": 0}
+                  },
+                  "coordination_cutoff_angstrom": {"type": "number", "exclusiveMinimum": 0},
+                  "geometry_templates": {
+                    "type": "array", "uniqueItems": true,
+                    "items": {"enum": [
+                      "linear", "trigonal_planar", "tetrahedral", "square_planar",
+                      "trigonal_bipyramidal", "square_pyramidal", "octahedral"
+                    ]}
+                  }
+                }
+              }
+            },
+            "ion_pairs": {
+              "type": "array",
+              "items": {
+                "type": "object", "additionalProperties": false,
+                "required": ["pair_id", "first_ion_atom_index", "second_ion_atom_index"],
+                "properties": {
+                  "pair_id": {"type": "string", "minLength": 1},
+                  "first_ion_atom_index": {"type": "integer", "minimum": 0},
+                  "second_ion_atom_index": {"type": "integer", "minimum": 0}
+                }
+              }
+            },
+            "block_count": {"type": "integer", "minimum": 1},
+            "histogram_rule": {"enum": ["scott", "freedman_diaconis", "rice"]},
+            "histogram_padding_fraction": {"type": "number", "minimum": 0},
+            "minimum_histogram_bins": {"type": "integer", "minimum": 2},
+            "maximum_histogram_bins": {"type": "integer", "minimum": 2}
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "requested_modules": {
+      "type": "array",
+      "items": {"type": "string"},
+      "uniqueItems": true
+    },
+    "compute_environment": {"type": ["string", "null"]},
+    "protected_locations": {
+      "type": "array",
+      "items": {"type": "string"},
+      "uniqueItems": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "periodic_coordinate_policy": {"const": "preprocessed_make_whole"}
+        },
+        "required": ["periodic_coordinate_policy"]
+      },
+      "then": {"required": ["preprocessed_coordinate_source"]}
+    },
+    {
+      "if": {
+        "properties": {
+          "periodic_coordinate_policy": {
+            "enum": ["make_whole", "unwrap_continuous"]
+          }
+        },
+        "required": ["periodic_coordinate_policy"]
+      },
+      "then": {"required": ["periodic_reconstruction"]}
+    },
+    {
+      "if": {
+        "properties": {
+          "periodic_coordinate_policy": {"const": "unwrap_continuous"}
+        },
+        "required": ["periodic_coordinate_policy"]
+      },
+      "then": {
+        "properties": {
+          "periodic_reconstruction": {
+            "required": ["maximum_anchor_displacement_angstrom"]
+          }
+        }
+      }
+    }
+  ]
+}

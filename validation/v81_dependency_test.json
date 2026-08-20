@@ -1,0 +1,25 @@
+{
+  "validation_schema": "salsbury-v81-dependency-test-v1",
+  "candidate_version": "0.0.1.dev81",
+  "recorded_at": "2026-08-20T07:06:00-04:00",
+  "execution_host": "Apollo Linux login node using the dependency-equipped v76 environment",
+  "python": "3.12.13",
+  "dependencies": {
+    "numpy": "2.5.2",
+    "scipy": "1.18.0",
+    "scikit-learn": "1.9.0",
+    "hdbscan": "0.8.44",
+    "openmm": "not installed; one expected optional test skip"
+  },
+  "command": "PYTHONPATH=.:src PYTHONDONTWRITEBYTECODE=1 python3.12 -m unittest discover -s tests -v",
+  "tests_run": 438,
+  "expected_skips": 1,
+  "failures": 0,
+  "errors": 0,
+  "elapsed_seconds": 30.189,
+  "measured_wall_seconds_with_runner": 31.81,
+  "maximum_resident_memory_kib": 167492,
+  "technical_status": "pass",
+  "scientific_status": "not evaluated",
+  "interpretation": "Dependency-equipped source-level regression result only; it is not evidence of scientific validity or a public release decision."
+}

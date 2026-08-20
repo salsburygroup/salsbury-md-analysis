@@ -1,0 +1,42 @@
+{
+  "slurm_profile_schema": "salsbury-slurm-profile-v1",
+  "profile_id": "replace-with-your-cluster-name",
+  "cluster_name": "replace-with-your-cluster-name",
+  "submit_command": "sbatch",
+  "status_command": "squeue",
+  "cancel_command": "scancel",
+  "account": null,
+  "unix_group": null,
+  "qos": null,
+  "partitions": {
+    "default": null,
+    "preflight": null,
+    "coordinate_cache": null,
+    "analysis": null,
+    "conformational": null,
+    "finalizer": null,
+    "large_memory": null
+  },
+  "environment": {
+    "python_executable": null,
+    "package_root": null,
+    "setup_commands": [],
+    "variables": {},
+    "umask": "0022"
+  },
+  "paths": {
+    "group_storage_root": null,
+    "scratch_root": null,
+    "allowed_output_roots": []
+  },
+  "resource_policy": {
+    "minimum_wall_minutes": 30,
+    "walltime_safety_factor": 1.5,
+    "walltime_overhead_minutes": 15,
+    "minimum_memory_gib": 2,
+    "memory_safety_factor": 1.5,
+    "memory_overhead_gib": 1,
+    "large_memory_threshold_gib": 96
+  },
+  "additional_sbatch_directives": []
+}

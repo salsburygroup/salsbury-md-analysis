@@ -1,0 +1,28 @@
+{
+  "calibration_schema": "salsbury-pald-planner-calibration-v1",
+  "calibration_date": "2026-08-16",
+  "technical_status": "complete",
+  "scientific_status": "not evaluated",
+  "implementation": "direct partitioned_local_depths Python implementation",
+  "execution": {
+    "cpu_count": 1,
+    "observation_count": 500,
+    "feature_count": 3,
+    "wall_seconds": 29.21,
+    "cpu_seconds": 28.637,
+    "maximum_rss_mib": 62.21875,
+    "exit_code": 0
+  },
+  "planner_model": {
+    "fixed_overhead_seconds": 0.5,
+    "time_scaling": "28.637 * (B / 500)^3 CPU seconds plus fixed overhead",
+    "memory_scaling": "62.21875 * (B / 500)^2 MiB with a 1 GiB reservation floor",
+    "workflow_time_safety_factor_applied_separately": true
+  },
+  "synthetic_feature_definition": "three deterministic modular-coordinate columns",
+  "limitations": [
+    "This is operational scaling evidence, not a scientific sampling recommendation.",
+    "Feature dimensionality, processor generation, Python and NumPy versions, and tie structure can change runtime.",
+    "A materially changed PaLD implementation or environment requires recalibration."
+  ]
+}

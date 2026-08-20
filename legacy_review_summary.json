@@ -1,0 +1,33 @@
+{
+  "docking_capability_count_excluded_and_routed_separately": 62,
+  "evidence_status_counts": {
+    "contract_mapped_unit_validated_legacy_numeric_not_run": 196,
+    "family_direct_numeric_or_formula_validated": 84,
+    "source_body_confirmed_non_estimator": 4,
+    "technical_destination_review_complete": 150
+  },
+  "final_decision_counts": {
+    "approved_contract_suite_successor": 196,
+    "approved_family_validated_suite_successor": 84,
+    "approved_historical_artifact": 7,
+    "approved_historical_utility_archive": 1,
+    "approved_noncore_scaffold_archive": 4,
+    "approved_noncore_utility_archive": 108,
+    "approved_project_or_publication_lock_only": 26,
+    "approved_test_evidence_archive": 8
+  },
+  "noncore_or_locked_capability_count": 154,
+  "private_final_ledger_sha256": "0c53227fb6f61f327ff9e3610cb8f685c3b596a8b48cf1fb2ad7060536ee3ea5",
+  "public_suite_successor_count": 280,
+  "registered_public_module_count": 44,
+  "release_boundary": "technical destination closure does not promote experimental modules or establish scientific support",
+  "remaining_unresolved_md_destination_count": 0,
+  "review_date": "2026-08-11",
+  "reviewed_md_capability_count": 434,
+  "schema_version": "1.0",
+  "scientific_support_granted_by_this_review": false,
+  "scope": "checksum-collapsed non-docking Salsbury-group Python capabilities",
+  "source_crosswalk_sha256": "0f55fb684dc21a5fcb5717b1d94f87e3548910827a9048accc079040328ddcf7",
+  "source_equivalence_matrix_sha256": "8841e2e5bd7def440190187540825e6a2608700334d4e660a9f5b381bf1803d7",
+  "technical_destination_review_closed": true
+}

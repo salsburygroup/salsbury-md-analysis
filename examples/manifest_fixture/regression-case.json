@@ -1,0 +1,42 @@
+{
+  "regression_id": "synthetic-rmsd-rg-contract-v1",
+  "module_id": "replica_rmsd_rg",
+  "project_manifest": "project.json",
+  "expected_identity": {
+    "project_manifest_sha256": "4225507943f55e2bef5e749e81b2265686d6d46a7dc6802841de95bf3fba998b",
+    "system_manifest_sha256": "ba5d26a615fa930bcec0e8b56caa6765d396f02959b8b85eab3ab5f13ad05ead",
+    "input_content_signature_sha256": "fbf803203569c06b509fdf02c71af8054619cd53db87fda0b3e0039e1625e6a4"
+  },
+  "assertions": [
+    {
+      "path": ["technical_status"],
+      "operator": "equal",
+      "expected": "complete"
+    },
+    {
+      "path": ["scientific_status"],
+      "operator": "equal",
+      "expected": "not evaluated"
+    },
+    {
+      "path": ["periodic_coordinate_policy"],
+      "operator": "equal",
+      "expected": "reject"
+    },
+    {
+      "path": ["systems", 0, "replicas", 0, "segments", 0, "timeseries", 1, "time"],
+      "operator": "close",
+      "expected": 2.0,
+      "absolute_tolerance": 1e-12
+    }
+  ],
+  "approval": {
+    "status": "candidate",
+    "owner": "Freddie Salsbury",
+    "reviewers": [],
+    "decision_utc": null,
+    "notes": [
+      "Synthetic software fixture only; this is not a real-project scientific regression."
+    ]
+  }
+}

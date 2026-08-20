@@ -1,0 +1,27 @@
+{
+  "systems": [
+    {
+      "system_id": "synthetic-one-atom-system",
+      "metadata": {
+        "purpose": "manifest software fixture only"
+      },
+      "replicas": [
+        {
+          "replica_id": "replica-1",
+          "topology": "data/one-atom.pdb",
+          "segments": [
+            {
+              "segment_id": "segment-1",
+              "trajectory": "data/two-frame.xyz",
+              "timing": {
+                "first_frame_time": 0.0,
+                "frame_interval": 2.0,
+                "unit": "ps"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

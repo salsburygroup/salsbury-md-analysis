@@ -1,0 +1,12 @@
+4
+short frame 0
+C 0 0 0
+N 1 0 0
+O 0 1 0
+C -1 2 0
+4
+short frame 1
+C 0 0 0
+N 1 0 0
+O 0 1 0
+C 1 2 0

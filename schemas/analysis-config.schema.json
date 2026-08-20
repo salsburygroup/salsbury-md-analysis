@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://salsburygroup.github.io/salsbury-md-analysis/schemas/analysis-config.schema.json",
+  "title": "Salsbury MD analysis preparation configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["config_schema"],
+  "properties": {
+    "config_schema": {"const": "salsbury-analysis-config-v1"},
+    "default_module_policy": {"const": "all_applicable"},
+    "modules": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {"type": "boolean", "default": true},
+          "options": {"type": "object"}
+        }
+      }
+    },
+    "views": {
+      "type": "object",
+      "description": "Topology-derived conformational views. Representative structures remain mandatory for enabled state analyses; state trajectories are independently configurable.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {"type": "boolean", "default": true},
+          "state_trajectory_exports_enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Whether this enabled view writes multi-frame state trajectories. Observed representative structures are still written. The generated macromolecular_trace default is false."
+          },
+          "state_coordinate_exports_enabled": {
+            "type": "boolean",
+            "description": "Deprecated alias for state_trajectory_exports_enabled."
+          },
+          "module_options": {
+            "type": "object",
+            "additionalProperties": {"type": "object"}
+          }
+        }
+      }
+    },
+    "reporting": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resource_table_enabled": {"type": "boolean", "default": true},
+        "finding_picker_enabled": {"type": "boolean", "default": true},
+        "maximum_findings": {"type": "integer", "minimum": 1, "default": 50}
+      }
+    },
+    "comparisons": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {"enum": ["all_pairs", "reference_vs_all"], "default": "all_pairs"},
+        "reference_system_id": {"type": ["string", "null"]},
+        "multiple_testing": {"const": "benjamini_hochberg"},
+        "alpha": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+        "run_per_system_analysis": {"type": "boolean", "default": true},
+        "run_shared_basis_comparisons": {"type": "boolean", "default": true}
+      }
+    },
+    "sampling": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "strategy": {"const": "balanced_deterministic_stride"},
+        "preserve_replica_balance": {"type": "boolean", "default": true},
+        "b_vs_2b_sensitivity": {"type": "boolean", "default": false},
+        "optional_replica_diagnostics": {"type": "boolean", "default": false}
+      }
+    },
+    "clustering": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "feature_space": {
+          "enum": ["tica", "common_pca"],
+          "default": "tica",
+          "description": "Coordinate space used by all enabled clustering methods."
+        },
+        "methods": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kmeans": {"$ref": "#/$defs/clusteringMethodEnabled"},
+            "hdbscan": {"$ref": "#/$defs/clusteringMethodDisabledByDefault"},
+            "intelligent_minkowski_weighted_kmeans": {"$ref": "#/$defs/clusteringMethodEnabled"},
+            "pam": {"$ref": "#/$defs/clusteringMethodEnabled"},
+            "minkowski_weighted_pam": {"$ref": "#/$defs/clusteringMethodEnabled"},
+            "ward": {"$ref": "#/$defs/clusteringMethodEnabled"},
+            "gaussian_mixture": {"$ref": "#/$defs/clusteringMethodEnabled"},
+            "variational_gaussian_mixture": {"$ref": "#/$defs/clusteringMethodEnabled"},
+            "affinity_propagation": {"$ref": "#/$defs/clusteringMethodEnabled"},
+            "mean_shift": {"$ref": "#/$defs/clusteringMethodEnabled"},
+            "quality_threshold": {"$ref": "#/$defs/clusteringMethodEnabled"}
+          }
+        }
+      }
+    },
+    "community_analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pald": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean", "default": false},
+            "community_msm_enabled": {"type": "boolean", "default": false}
+          }
+        }
+      }
+    },
+    "inference": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "automatic_chemical_context": {"type": "boolean", "default": true},
+        "ion_site_classification_enabled": {"type": "boolean", "default": true}
+      }
+    },
+    "oligomers": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "detect_automatically": {"type": "boolean", "default": true},
+        "pool_equivalent_members": {"type": "boolean", "default": true},
+        "members_are_independent_replicas": {
+          "const": false,
+          "description": "Equivalent members are paired observations within one physical frame, never independent simulation replicas."
+        }
+      }
+    },
+    "exports": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "payload": {"enum": ["complete_solute", "feature_atoms"], "default": "complete_solute"},
+        "include_hydrogens": {"type": "boolean", "default": true},
+        "include_ligands": {"type": "boolean", "default": true},
+        "include_cofactors": {"type": "boolean", "default": true},
+        "include_bound_ions": {"type": "boolean", "default": true},
+        "include_bulk_solvent": {"type": "boolean", "default": false},
+        "nearby_waters": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "representatives": {"$ref": "#/$defs/representativeNearbyWaters"},
+            "trajectories": {"$ref": "#/$defs/trajectoryNearbyWaters"}
+          }
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maximum_parallel_cpus": {"type": "integer", "minimum": 1, "default": 16},
+        "maximum_hours_per_cpu": {"type": "number", "exclusiveMinimum": 0, "default": 24.0},
+        "maximum_total_cpu_hours": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "readOnly": true,
+          "description": "Derived as maximum_parallel_cpus times maximum_hours_per_cpu."
+        },
+        "maximum_memory_gib": {"type": "number", "exclusiveMinimum": 0, "default": 128.0},
+        "maximum_scratch_gib": {"type": "number", "exclusiveMinimum": 0, "default": 512.0},
+        "planning_utilization": {"type": "number", "exclusiveMinimum": 0, "maximum": 1, "default": 0.85},
+        "pilot_budget_fraction": {"type": "number", "minimum": 0, "exclusiveMaximum": 1, "default": 0.05},
+        "fail_if_minimum_coverage_unaffordable": {"type": "boolean", "default": true},
+        "submission_adapter": {
+          "enum": ["unspecified", "local", "slurm"],
+          "default": "unspecified",
+          "description": "Optional launcher adapter. Scientific planning and project manifests do not depend on it."
+        },
+        "coordinate_cache": {
+          "enum": ["auto", "off", "required"],
+          "default": "auto",
+          "description": "Reuse a validated optimized coordinate cache when possible."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "clusteringMethodEnabled": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {"enabled": {"type": "boolean", "default": true}}
+    },
+    "clusteringMethodDisabledByDefault": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {"enabled": {"type": "boolean", "default": false}}
+    },
+    "representativeNearbyWaters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {"enum": ["none", "distance", "interaction", "persistent", "union"], "default": "interaction"},
+        "distance_cutoff_angstrom": {"type": "number", "exclusiveMinimum": 0, "default": 5.0},
+        "minimum_state_occupancy": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.0}
+      }
+    },
+    "trajectoryNearbyWaters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {"enum": ["none", "fixed_identity"], "default": "none"},
+        "distance_cutoff_angstrom": {"type": "number", "exclusiveMinimum": 0, "default": 5.0},
+        "minimum_state_occupancy": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.0}
+      }
+    }
+  }
+}

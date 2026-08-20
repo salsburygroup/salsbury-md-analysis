@@ -1,0 +1,46 @@
+{
+  "slurm_profile_schema": "salsbury-slurm-profile-v1",
+  "profile_id": "wfu-deac-salsbury-group-v1",
+  "cluster_name": "deac",
+  "submit_command": "/opt/scyld/slurm/bin/sbatch",
+  "status_command": "/opt/scyld/slurm/bin/squeue",
+  "cancel_command": "/opt/scyld/slurm/bin/scancel",
+  "account": "salsburygrp",
+  "unix_group": "salsburyGrp",
+  "qos": "normal",
+  "partitions": {
+    "default": "small",
+    "preflight": "small",
+    "coordinate_cache": "small",
+    "analysis": "small",
+    "conformational": "small",
+    "finalizer": "small",
+    "large_memory": "large"
+  },
+  "environment": {
+    "python_executable": "/deac/phy/salsburyGrp/software/salsbury-md-analysis/environments/v76/bin/python3.12",
+    "package_root": null,
+    "setup_commands": [],
+    "variables": {
+      "SALSBURY_CLUSTER_PROFILE": "deac"
+    },
+    "umask": "0002"
+  },
+  "paths": {
+    "group_storage_root": "/deac/phy/salsburyGrp",
+    "scratch_root": "/scratch",
+    "allowed_output_roots": [
+      "/deac/phy/salsburyGrp"
+    ]
+  },
+  "resource_policy": {
+    "minimum_wall_minutes": 30,
+    "walltime_safety_factor": 1.5,
+    "walltime_overhead_minutes": 15,
+    "minimum_memory_gib": 2,
+    "memory_safety_factor": 1.5,
+    "memory_overhead_gib": 1,
+    "large_memory_threshold_gib": 96
+  },
+  "additional_sbatch_directives": []
+}

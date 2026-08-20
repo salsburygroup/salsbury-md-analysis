@@ -1,0 +1,31 @@
+{
+  "project_id": "<project-id>",
+  "suite_repository": "https://github.com/salsburygroup/salsbury-md-analysis",
+  "suite_version": "<version-or-tag>",
+  "suite_commit": "<40-character-suite-commit>",
+  "project_commit": "<40-character-project-commit>",
+  "profile_id": "<profile-id>",
+  "environment_identity": "<environment-file-and-sha256>",
+  "input_manifest_sha256": "<64-character-input-manifest-sha256>",
+  "source_manifest_sha256": "<64-character-source-manifest-sha256>",
+  "authoritative_data_roots": [
+    "/absolute/path/to/authoritative/project/data"
+  ],
+  "owner": "<owner>",
+  "reviewers": [],
+  "technical_status": "blocked",
+  "scientific_status": "not evaluated",
+  "frame_budget_sensitivity": {
+    "policy": "off",
+    "status": "not_applicable",
+    "rationale": "Replace with completed, skipped, unavailable, planned, or not_applicable for the locked run."
+  },
+  "replica_diagnostics": {
+    "policy": "off",
+    "status": "not_applicable",
+    "rationale": "Optional exploratory diagnostic only; replica agreement and leave-one-replica-out are not acceptance measures."
+  },
+  "limitations": [
+    "Template only; replace every placeholder and validate before use."
+  ]
+}

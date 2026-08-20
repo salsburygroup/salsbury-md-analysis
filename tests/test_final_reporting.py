@@ -1,0 +1,599 @@
+import hashlib
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from salsbury_md_analysis.execution_resources import (
+    ExecutionResourceError,
+    analysis_report_sidecar,
+    summarize_execution_resources,
+)
+from salsbury_md_analysis.finding_picker import FindingPickerError, prioritize_findings
+
+
+class FinalReportingTests(unittest.TestCase):
+    def test_picker_scales_to_twenty_system_all_pair_comparison(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report_path = root / "results" / "rmsf" / "report.json"
+            report_path.parent.mkdir(parents=True)
+            systems = []
+            for index in range(20):
+                systems.append({
+                    "system_id": f"variant-{index:02d}",
+                    "atom_statistics": [{
+                        "common_atom_index": 0,
+                        "chain_id": "A",
+                        "residue_name": "ALA",
+                        "residue_number": 10,
+                        "insertion_code": "",
+                        "atom_name": "CA",
+                        "frame_pooled_rmsf_angstrom": 1.0 + index / 10.0,
+                    }],
+                })
+            report_path.write_text(json.dumps({
+                "module_id": "pooled_rmsf",
+                "technical_status": "complete",
+                "systems": systems,
+            }), encoding="utf-8")
+            report = prioritize_findings(root, maximum_findings=500)
+            self.assertEqual(report["scientific_status"], "not evaluated")
+            pairwise = [
+                row for row in report["findings"]
+                if row["comparison_family"] == "pooled_rmsf:pairwise_atom_difference"
+            ]
+            self.assertEqual(len(pairwise), 190)
+            self.assertEqual(report["candidate_count"], 210)
+
+            (root / "analysis-config.json").write_text(json.dumps({
+                "comparisons": {
+                    "mode": "reference_vs_all",
+                    "reference_system_id": "variant-00",
+                    "alpha": 0.05,
+                },
+            }), encoding="utf-8")
+            reference_report = prioritize_findings(root, maximum_findings=500)
+            reference_pairs = [
+                row for row in reference_report["findings"]
+                if row["comparison_family"] == "pooled_rmsf:pairwise_atom_difference"
+            ]
+            self.assertEqual(len(reference_pairs), 19)
+            self.assertTrue(all("variant-00" in row["system_ids"] for row in reference_pairs))
+
+    def test_picker_names_residue_and_interaction_level_findings(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def write(command, payload):
+                path = root / "results" / command / "report.json"
+                path.parent.mkdir(parents=True)
+                path.write_text(json.dumps({
+                    "technical_status": "complete", **payload,
+                }), encoding="utf-8")
+
+            atom_1 = {
+                "common_atom_index": 0, "chain_id": "A", "residue_name": "ALA",
+                "residue_number": 10, "insertion_code": "", "atom_name": "CA",
+            }
+            atom_2 = {
+                "common_atom_index": 1, "chain_id": "A", "residue_name": "GLY",
+                "residue_number": 11, "insertion_code": "", "atom_name": "CA",
+            }
+            write("rmsf", {
+                "module_id": "pooled_rmsf", "systems": [
+                    {"system_id": "control", "atom_statistics": [
+                        {**atom_1, "frame_pooled_rmsf_angstrom": 1.0},
+                        {**atom_2, "frame_pooled_rmsf_angstrom": 2.0},
+                    ]},
+                    {"system_id": "variant", "atom_statistics": [
+                        {**atom_1, "frame_pooled_rmsf_angstrom": 3.0},
+                        {**atom_2, "frame_pooled_rmsf_angstrom": 1.5},
+                    ]},
+                ],
+            })
+            write("dccm", {
+                "module_id": "dccm", "analysis_atoms": [atom_1, atom_2],
+                "systems": [
+                    {"system_id": "control", "frame_pooled_dccm": {
+                        "matrix": [[1.0, 0.8], [0.8, 1.0]],
+                    }},
+                    {"system_id": "variant", "frame_pooled_dccm": {
+                        "matrix": [[1.0, -0.2], [-0.2, 1.0]],
+                    }},
+                ],
+            })
+            write("hydrogen-bond-discovery", {
+                "module_id": "hydrogen_bond_discovery",
+                "candidate_dictionary": [{
+                    "bond_id": "D0-H2-A1", "donor_atom_index": 0,
+                    "hydrogen_atom_index": 2, "acceptor_atom_index": 1,
+                }],
+                "atom_dictionary": [
+                    {"atom_index": 0, "identity": atom_1},
+                    {"atom_index": 1, "identity": atom_2},
+                ],
+                "frame_bond_matrix": [
+                    {"system_id": "control", "present_bond_ids": ["D0-H2-A1"]},
+                    {"system_id": "control", "present_bond_ids": ["D0-H2-A1"]},
+                    {"system_id": "variant", "present_bond_ids": []},
+                    {"system_id": "variant", "present_bond_ids": ["D0-H2-A1"]},
+                ],
+            })
+            write("sasa", {
+                "module_id": "solvent_accessible_surface_area",
+                "replicas": [
+                    {"system_id": system_id, "replica_id": "replica-1",
+                     "per_residue_summaries": [{
+                         "chain_id": "A", "residue_number": 10,
+                         "insertion_code": "", "residue_name": "ALA",
+                         "summary_angstrom2": {"mean": value},
+                     }]}
+                    for system_id, value in (("control", 10.0), ("variant", 14.0))
+                ],
+            })
+            for system_id, system_values in (
+                ("control", (("replica-1", 4.0), ("replica-2", 5.0))),
+                ("variant", (("replica-1", 8.0), ("replica-2", 9.0))),
+            ):
+                write(f"optional-observables-{system_id}", {
+                    "module_id": "optional_observables",
+                    "feature_reports": [
+                        {"system_id": system_id, "replica_id": replica_id,
+                         "feature_id": "active-site-distance", "kind": "distance",
+                         "question": "active-site separation",
+                         "distance_summary_angstrom": {"count": 100, "mean": value}}
+                        for replica_id, value in system_values
+                    ],
+                })
+            for command, module_id, metric in (
+                ("nucleic-acid-geometry", "nucleic_acid_geometry", "minor_groove_width"),
+                ("ion-geometry", "ion_coordination_geometry", "coordination_number"),
+            ):
+                write(command, {
+                    "module_id": module_id,
+                    "replica_reports": [
+                        {"system_id": system_id, "replica_id": replica_id,
+                         "metric_summaries": {metric: {"mean": value}},
+                         "late_minus_early_metric_means": {metric: value / 10.0}}
+                        for system_id, replica_id, value in (
+                            ("control", "replica-1", 4.0),
+                            ("control", "replica-2", 5.0),
+                            ("variant", "replica-1", 7.0),
+                            ("variant", "replica-2", 8.0),
+                        )
+                    ],
+                })
+            write("rdf", {
+                "module_id": "radial_distribution_functions",
+                "feature_reports": [
+                    {"system_id": system_id, "replica_id": replica_id,
+                     "feature_id": "mg-dna", "bins": [{
+                         "bin_index": 3, "center_radius_angstrom": 2.1, "g_r": value,
+                     }]}
+                    for system_id, replica_id, value in (
+                        ("control", "replica-1", 2.0),
+                        ("control", "replica-2", 2.2),
+                        ("variant", "replica-1", 4.0),
+                        ("variant", "replica-2", 4.2),
+                    )
+                ],
+            })
+            write("dihedrals", {
+                "module_id": "dihedral_distributions",
+                "circular_summaries": [
+                    {"system_id": system_id, "replica_id": "replica-1",
+                     "chain_id": "A", "residue_number": 10,
+                     "insertion_code": "", "angle_type": "chi",
+                     "mean_angle_degrees": value}
+                    for system_id, value in (("control", 20.0), ("variant", 80.0))
+                ],
+            })
+            write("water-networks", {
+                "module_id": "water_mediated_hydrogen_bond_networks",
+                "endpoint_dictionary": [
+                    {"system_id": system_id, "replica_id": "replica-1",
+                     "atom_index": atom_index, "identity": identity}
+                    for system_id in ("control", "variant")
+                    for atom_index, identity in ((0, atom_1), (1, atom_2))
+                ],
+                "observed_bridge_dictionary": [{
+                    "bridge_id": "W0-1", "first_endpoint_atom_index": 0,
+                    "second_endpoint_atom_index": 1,
+                }],
+                "bridge_occupancies": [
+                    {"system_id": system_id, "replica_id": "replica-1",
+                     "bridge_id": "W0-1", "cutoff_id": "primary",
+                     "occupancy_fraction": value}
+                    for system_id, value in (("control", 0.2), ("variant", 0.7))
+                ],
+            })
+            report = prioritize_findings(root, maximum_findings=50)
+            self.assertEqual(report["scientific_status"], "not evaluated")
+            statements = "\n".join(row["statement"] for row in report["findings"])
+            self.assertIn("Largest descriptive atom-level RMSF difference", statements)
+            self.assertIn("A:ALA10:CA", statements)
+            self.assertIn("Largest descriptive DCCM difference", statements)
+            self.assertIn("Largest descriptive direct-hydrogen-bond occupancy", statements)
+            self.assertIn("Largest descriptive residue SASA difference", statements)
+            self.assertIn("Largest descriptive declared-observable difference", statements)
+            observable_finding = next(
+                row for row in report["findings"]
+                if row["comparison_family"] == "optional_observables:pairwise_feature_difference"
+            )
+            self.assertEqual(len(observable_finding["report_paths"]), 2)
+            self.assertIn("Largest descriptive nucleic_acid_geometry metric difference", statements)
+            self.assertIn("Largest descriptive ion_coordination_geometry metric difference", statements)
+            self.assertIn("Largest descriptive RDF difference", statements)
+            self.assertIn("Largest descriptive circular-mean dihedral difference", statements)
+            self.assertIn("Largest descriptive shared one-water-bridge occupancy", statements)
+            self.assertEqual(
+                [row["finding_id"] for row in report["findings"]],
+                [f"finding-{index:06d}" for index in range(1, report["reported_count"] + 1)],
+            )
+            self.assertTrue(all(
+                row["statistically_significant"] is None for row in report["findings"]
+            ))
+
+    def test_resource_table_and_multisystem_finding_picker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report_path = root / "results" / "pca-fes-basins" / "report.json"
+            report_path.parent.mkdir(parents=True)
+            report_path.write_text(json.dumps({
+                "module_id": "pca_fes_basins",
+                "technical_status": "complete",
+                "observation_accounting": {
+                    "source_physical_frame_count": 30000,
+                    "symmetry_expanded_observation_count": 60000,
+                },
+                "execution_resources": {
+                    "computer_hostname": "node1", "slurm_job_id": "1",
+                    "requested_cpu_count": 4, "requested_memory": "65536",
+                    "requested_time_limit": "04:00:00", "wall_seconds": 12.0,
+                    "total_cpu_seconds": 30.0, "maximum_resident_memory_mib": 500.0,
+                },
+                "primary_smoothing_sigma_bins": 1.0,
+                "landscape": {"basins": [{
+                    "basin_id": 1, "assigned_fraction": 0.7,
+                }]},
+                "state_population_comparison": {
+                    "pairwise_system_differences": [{
+                        "left_system_id": "control", "right_system_id": "variant",
+                        "state_fraction_differences": [{
+                            "state_id": 1,
+                            "left_minus_right_fraction_of_all_evaluated": 0.25,
+                        }],
+                    }],
+                },
+            }), encoding="utf-8")
+            alternative_path = (
+                root / "results" / "alternative-clustering" / "report.json"
+            )
+            alternative_path.parent.mkdir(parents=True)
+            alternative_path.write_text(json.dumps({
+                "module_id": "alternative_clustering",
+                "technical_status": "complete",
+                "observation_count": 60000,
+                "fit_observation_count": 3000,
+                "full_assignment_observation_count": 60000,
+                "feature_contract": {
+                    "observation_count": 60000,
+                    "observation_accounting": {
+                        "source_physical_frame_count": 30000,
+                        "selected_physical_frame_count": 30000,
+                        "symmetry_expanded_observation_count": 60000,
+                        "basis_selected_physical_frame_count": 750,
+                        "basis_member_observation_count": 1500,
+                        "member_count": 2,
+                    },
+                    "symmetry_expansion": {"member_count": 2},
+                },
+                "algorithm_results": [{
+                    "algorithm": "partition_around_medoids",
+                    "silhouette_evaluation": {
+                        "evaluated_observation_count": 1000,
+                    },
+                }],
+                "execution_resources": {
+                    "computer_hostname": "node2", "slurm_job_id": "2",
+                    "requested_cpu_count": 4, "requested_memory": "65536",
+                    "requested_time_limit": "04:00:00", "wall_seconds": 30.0,
+                    "total_cpu_seconds": 80.0, "maximum_resident_memory_mib": 700.0,
+                },
+            }), encoding="utf-8")
+            for path in (report_path, alternative_path):
+                raw = path.read_bytes()
+                payload = json.loads(raw)
+                sidecar = analysis_report_sidecar(
+                    payload, path,
+                    report_sha256=hashlib.sha256(raw).hexdigest(),
+                    report_size_bytes=len(raw),
+                )
+                Path(str(path) + ".summary.json").write_text(
+                    json.dumps(sidecar), encoding="utf-8"
+                )
+            (root / "workflow-stages.json").write_text(json.dumps({
+                "stages": [{"commands": ["pca-fes-basins"]}],
+            }), encoding="utf-8")
+            resource_report = summarize_execution_resources(root)
+            self.assertEqual(resource_report["row_count"], 2)
+            self.assertEqual(resource_report["scientific_status"], "not evaluated")
+            csv_text = Path(resource_report["csv_path"]).read_text(encoding="utf-8")
+            self.assertIn("60000", csv_text)
+            markdown_text = Path(resource_report["markdown_path"]).read_text(
+                encoding="utf-8"
+            )
+            for field in (
+                "module_id", "technical_status", "requested_memory",
+                "maximum_resident_memory_mib", "slurm_job_id",
+                "model_fit_equivalent_physical_frames",
+            ):
+                self.assertIn(field, markdown_text)
+            resource_payload = json.loads(
+                Path(resource_report["json_path"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(resource_payload["scientific_status"], "not evaluated")
+            alternative = next(
+                row for row in resource_payload["rows"]
+                if row["module_id"] == "alternative_clustering"
+            )
+            self.assertEqual(alternative["basis_selected_physical_frames"], 750)
+            self.assertEqual(alternative["basis_member_observations"], 1500)
+            self.assertEqual(alternative["model_fit_observations"], 3000)
+            self.assertEqual(alternative["model_fit_equivalent_physical_frames"], 1500)
+            self.assertEqual(alternative["full_assignment_observations"], 60000)
+            self.assertEqual(alternative["silhouette_evaluation_observations"], 1000)
+            findings = prioritize_findings(root, maximum_findings=10)
+            self.assertGreaterEqual(findings["reported_count"], 2)
+            self.assertEqual(findings["findings"][0]["category"], "free_energy_surface")
+            self.assertIsNone(findings["findings"][0]["statistically_significant"])
+
+    def test_sidecars_are_rejected_after_report_or_size_tampering(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report_path = root / "results" / "pca-fes-basins" / "report.json"
+            report_path.parent.mkdir(parents=True)
+            payload = {
+                "module_id": "pca_fes_basins",
+                "technical_status": "complete",
+                "observation_accounting": {
+                    "source_physical_frame_count": 10,
+                    "symmetry_expanded_observation_count": 10,
+                },
+                "execution_resources": {
+                    "computer_hostname": "node1",
+                    "requested_cpu_count": 1,
+                    "requested_memory": "1024",
+                    "wall_seconds": 1.0,
+                    "total_cpu_seconds": 1.0,
+                    "maximum_resident_memory_mib": 1.0,
+                },
+                "landscape": {"basins": []},
+            }
+            raw = json.dumps(payload).encode("utf-8")
+            report_path.write_bytes(raw)
+            sidecar = analysis_report_sidecar(
+                payload, report_path,
+                report_sha256=hashlib.sha256(raw).hexdigest(),
+                report_size_bytes=len(raw),
+            )
+            sidecar_path = Path(str(report_path) + ".summary.json")
+            sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+            prioritize_findings(root)
+            summarize_execution_resources(root)
+
+            report_path.write_bytes(raw + b"\n")
+            with self.assertRaises(FindingPickerError):
+                prioritize_findings(root)
+            with self.assertRaises(ExecutionResourceError):
+                summarize_execution_resources(root)
+
+            report_path.write_bytes(raw)
+            sidecar["report_size_bytes"] = len(raw) + 1
+            sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+            with self.assertRaises(FindingPickerError):
+                prioritize_findings(root)
+            with self.assertRaises(ExecutionResourceError):
+                summarize_execution_resources(root)
+
+    def test_resource_table_uses_instrumented_planner_frame_coverage_fallback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report_path = root / "results" / "secondary-structure" / "report.json"
+            report_path.parent.mkdir(parents=True)
+            report_path.write_text(json.dumps({
+                "module_id": "secondary_structure",
+                "technical_status": "complete",
+                "planner_benchmark": {
+                    "frame_coverage": {
+                        "estimator_selected_frame_count": 300,
+                        "symmetry_expanded_observation_count": 300,
+                    },
+                },
+                "execution_resources": {
+                    "computer_hostname": "node1",
+                    "requested_cpu_count": 1,
+                    "requested_memory": "32768",
+                    "wall_seconds": 1426.0,
+                    "total_cpu_seconds": 1400.0,
+                    "maximum_resident_memory_mib": 181.0,
+                },
+            }), encoding="utf-8")
+            resource_report = summarize_execution_resources(root)
+            payload = json.loads(
+                Path(resource_report["json_path"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(payload["rows"][0]["selected_source_physical_frames"], 300)
+            self.assertEqual(payload["rows"][0]["symmetry_expanded_observations"], 300)
+            hbond_path = root / "results" / "hydrogen-bond-discovery" / "report.json"
+            hbond_path.parent.mkdir(parents=True)
+            hbond_path.write_text(json.dumps({
+                "module_id": "hydrogen_bond_discovery",
+                "technical_status": "complete",
+                "evaluated_frame_count": 4200,
+                "candidate_diagnostics": [
+                    {"segment_id": f"candidate-{index}", "evaluated_frame_count": 4200}
+                    for index in range(3)
+                ],
+                "execution_resources": {
+                    "computer_hostname": "node1", "requested_cpu_count": 1,
+                    "requested_memory": "32768", "wall_seconds": 10.0,
+                    "total_cpu_seconds": 9.0, "maximum_resident_memory_mib": 100.0,
+                },
+            }), encoding="utf-8")
+            expanded = summarize_execution_resources(root)
+            expanded_payload = json.loads(
+                Path(expanded["json_path"]).read_text(encoding="utf-8")
+            )
+            hbond = next(
+                row for row in expanded_payload["rows"]
+                if row["module_id"] == "hydrogen_bond_discovery"
+            )
+            self.assertEqual(hbond["selected_source_physical_frames"], 4200)
+            self.assertIsNone(hbond["full_assignment_observations"])
+            dihedral_path = root / "results" / "dihedrals" / "report.json"
+            dihedral_path.parent.mkdir(parents=True)
+            dihedral_path.write_text(json.dumps({
+                "module_id": "dihedral_distributions",
+                "technical_status": "complete",
+                "observation_count": 8736000,
+                "planner_benchmark": {
+                    "frame_coverage": {
+                        "estimator_selected_frame_count": 4200,
+                        "symmetry_expanded_observation_count": 4200,
+                    },
+                },
+                "execution_resources": {
+                    "computer_hostname": "node1", "requested_cpu_count": 1,
+                    "requested_memory": "32768", "wall_seconds": 10.0,
+                    "total_cpu_seconds": 9.0, "maximum_resident_memory_mib": 100.0,
+                },
+            }), encoding="utf-8")
+            final = summarize_execution_resources(root)
+            final_payload = json.loads(
+                Path(final["json_path"]).read_text(encoding="utf-8")
+            )
+            dihedral = next(
+                row for row in final_payload["rows"]
+                if row["module_id"] == "dihedral_distributions"
+            )
+            self.assertEqual(dihedral["selected_source_physical_frames"], 4200)
+            self.assertEqual(dihedral["symmetry_expanded_observations"], 4200)
+            self.assertIsNone(dihedral["full_assignment_observations"])
+
+    def test_atom_frame_observations_do_not_replace_physical_frame_coverage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project_path = root / "project.json"
+            project_path.write_text(json.dumps({
+                "definitions": {
+                    "solvent_accessible_surface_area": {
+                        "maximum_surface_atoms": 2380,
+                    },
+                },
+            }), encoding="utf-8")
+            report_path = root / "results" / "sasa" / "report.json"
+            report_path.parent.mkdir(parents=True)
+            payload = {
+                "module_id": "solvent_accessible_surface_area",
+                "technical_status": "complete",
+                "project_manifest_path": str(project_path),
+                "frame_selection": {
+                    "source_frame_count": 100,
+                    "selected_frame_count": 100,
+                    "coverage_fraction": 1.0,
+                },
+                "observation_count": 238000,
+                "execution_resources": {
+                    "computer_hostname": "node1",
+                    "requested_cpu_count": 1,
+                    "requested_memory": "32768",
+                    "wall_seconds": 10.0,
+                    "total_cpu_seconds": 9.0,
+                    "maximum_resident_memory_mib": 100.0,
+                },
+            }
+            raw = json.dumps(payload).encode("utf-8")
+            report_path.write_bytes(raw)
+            sidecar = analysis_report_sidecar(
+                payload, report_path,
+                report_sha256=hashlib.sha256(raw).hexdigest(),
+                report_size_bytes=len(raw),
+            )
+            evidence = sidecar["resource_evidence"]
+            self.assertEqual(evidence["selected_source_physical_frames"], 100)
+            self.assertEqual(evidence["symmetry_expanded_observations"], 100)
+
+            segment_payload = {
+                **payload,
+                "frame_selection": None,
+                "module_id": "dihedral_distributions",
+                "observation_count": 148000,
+                "segment_reports": [{
+                    "system_id": "system-1",
+                    "replica_id": "replica-1",
+                    "segment_id": "production",
+                    "source_frame_count": 100,
+                    "evaluated_frame_count": 100,
+                    "torsion_definition_count": 1480,
+                }],
+            }
+            segment_raw = json.dumps(segment_payload).encode("utf-8")
+            segment_sidecar = analysis_report_sidecar(
+                segment_payload, report_path,
+                report_sha256=hashlib.sha256(segment_raw).hexdigest(),
+                report_size_bytes=len(segment_raw),
+            )
+            segment_evidence = segment_sidecar["resource_evidence"]
+            self.assertEqual(
+                segment_evidence["selected_source_physical_frames"], 100
+            )
+            self.assertEqual(
+                segment_evidence["symmetry_expanded_observations"], 100
+            )
+
+            scalar_payload = {
+                **payload,
+                "frame_selection": None,
+                "module_id": "scalar_feature_distributions",
+                "observation_count": 600,
+                "planner_benchmark": {
+                    "frame_coverage": {
+                        "estimator_selected_frame_count": 600,
+                        "symmetry_expanded_observation_count": 600,
+                    },
+                },
+                "distribution_reports": [
+                    {
+                        "feature_id": f"feature-{feature}",
+                        "assignments": [
+                            {
+                                "system_id": "system-1",
+                                "replica_id": "replica-1",
+                                "segment_id": "production",
+                                "source_frame_index": frame,
+                            }
+                            for frame in range(100)
+                        ],
+                    }
+                    for feature in range(6)
+                ],
+            }
+            scalar_raw = json.dumps(scalar_payload).encode("utf-8")
+            scalar_sidecar = analysis_report_sidecar(
+                scalar_payload, report_path,
+                report_sha256=hashlib.sha256(scalar_raw).hexdigest(),
+                report_size_bytes=len(scalar_raw),
+            )
+            scalar_evidence = scalar_sidecar["resource_evidence"]
+            self.assertEqual(
+                scalar_evidence["selected_source_physical_frames"], 100
+            )
+            self.assertEqual(
+                scalar_evidence["symmetry_expanded_observations"], 100
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()

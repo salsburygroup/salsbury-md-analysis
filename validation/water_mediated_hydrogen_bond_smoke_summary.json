@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "validation_date": "2026-08-11",
+  "module_id": "water_mediated_hydrogen_bond_networks",
+  "technical_status": "complete",
+  "scientific_status": "not evaluated",
+  "scope": "Bounded ten-frame real-solvated-trajectory scalability and execution smoke test; no source coordinates are distributed.",
+  "input_lineage": {
+    "dataset_description": "Retained private solvated protein-nucleic-acid control state",
+    "coordinate_sha256": "86d3ecce63c76178b09c8c2ad95d321d3c1dd2ae1ef0ff5f9684047df91cdc45",
+    "connectivity_sha256": "cfcaad82b3702e71cc8f26bacfe272b3b44ea7745b972c6196d74fc9152a7a36",
+    "trajectory_sha256": "922431527b93339c864c0fc684a245523efe2701595ee205a08922240076798a",
+    "input_content_signature_sha256": "a52621a385ca6ec5f194f5fa821f013e7dde703c054f4f73b1db307167ee3233"
+  },
+  "execution": {
+    "atom_count": 85206,
+    "connectivity_bond_count": 59286,
+    "water_molecule_count": 25882,
+    "solute_endpoint_count": 1354,
+    "source_trajectory_declared_frame_count": 100,
+    "frame_stride": 10,
+    "evaluated_frame_count": 10,
+    "evaluated_neighbor_pair_count": 15405,
+    "observed_bridge_count_all_cutoffs": 924,
+    "observed_primary_bridge_count": 316,
+    "sparse_path_record_count_all_cutoffs": 11546,
+    "any_water_residence_run_count": 458,
+    "same_water_residence_run_count": 486,
+    "representative_frame_count": 316,
+    "warning_count": 0
+  },
+  "resource_observation": {
+    "wall_time_seconds": 52.3,
+    "wall_time_status": "environment-specific observation, not a benchmark guarantee",
+    "spatial_contract": "Cell-list neighbor filtering avoided construction of a solute-endpoint-by-water Cartesian matrix."
+  },
+  "required_caveats": [
+    "This was a bounded strided subset of one trajectory, not a convergence or sampling validation.",
+    "No independent water-bridge implementation was compared against this real trajectory subset.",
+    "Residence, water exchange, and cutoff sensitivity were technically exercised, but were not interpreted scientifically from this bounded subset.",
+    "A completed run does not validate protonation, water kinetics, energetic importance, affinity, mechanism, or a biological conclusion."
+  ]
+}

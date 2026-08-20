@@ -1,0 +1,44 @@
+{
+  "systems": [
+    {
+      "system_id": "short",
+      "replicas": [
+        {
+          "replica_id": "r1",
+          "topology": "reference.pdb",
+          "segments": [
+            {
+              "segment_id": "s1",
+              "trajectory": "short.xyz",
+              "timing": {
+                "first_frame_time": 5,
+                "frame_interval": 2,
+                "unit": "ps"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "system_id": "long",
+      "replicas": [
+        {
+          "replica_id": "r1",
+          "topology": "reference.pdb",
+          "segments": [
+            {
+              "segment_id": "s1",
+              "trajectory": "long.xyz",
+              "timing": {
+                "first_frame_time": 0,
+                "frame_interval": 1,
+                "unit": "ps"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

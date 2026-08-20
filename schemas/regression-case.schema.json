@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/salsburygroup/salsbury-md-analysis/schemas/regression-case.schema.json",
+  "title": "Hash-Pinned Analysis Regression Case",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "regression_id",
+    "module_id",
+    "project_manifest",
+    "expected_identity",
+    "assertions",
+    "approval"
+  ],
+  "properties": {
+    "regression_id": {"type": "string", "minLength": 1},
+    "module_id": {
+      "enum": [
+        "structural_integrity_qc",
+        "replica_rmsd_rg",
+        "pooled_rmsf",
+        "dccm",
+        "individual_pca",
+        "common_pca"
+      ]
+    },
+    "project_manifest": {"type": "string", "minLength": 1},
+    "expected_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project_manifest_sha256",
+        "system_manifest_sha256",
+        "input_content_signature_sha256"
+      ],
+      "properties": {
+        "project_manifest_sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+        "system_manifest_sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+        "input_content_signature_sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"}
+      }
+    },
+    "assertions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "operator", "expected"],
+        "properties": {
+          "path": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": ["string", "integer"]}
+          },
+          "operator": {"enum": ["equal", "close", "contains", "is_null"]},
+          "expected": {},
+          "absolute_tolerance": {"type": "number", "minimum": 0}
+        }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "owner", "reviewers", "notes"],
+      "properties": {
+        "status": {"enum": ["candidate", "approved", "retired"]},
+        "owner": {"type": "string", "minLength": 1},
+        "reviewers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "decision_utc": {"type": ["string", "null"]},
+        "notes": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "approved"}}},
+          "then": {
+            "required": ["decision_utc"],
+            "properties": {"reviewers": {"minItems": 1}, "decision_utc": {"type": "string", "minLength": 1}}
+          }
+        }
+      ]
+    }
+  }
+}

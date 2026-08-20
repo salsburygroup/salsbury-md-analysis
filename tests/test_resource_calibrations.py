@@ -1,0 +1,207 @@
+import hashlib
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from salsbury_md_analysis.resource_calibrations import (
+    SCHEMA, TIMEOUT_SCHEMA, build_resource_calibration_catalog,
+    load_resource_calibration_catalog, redact_resource_calibration_catalog,
+)
+
+
+class ResourceCalibrationTests(unittest.TestCase):
+    def test_hash_bound_cpu_memory_and_coverage_are_aggregated(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report = root / "report.json"
+            report.write_text('{"technical_status":"complete"}\n', encoding="utf-8")
+            digest = hashlib.sha256(report.read_bytes()).hexdigest()
+            sidecar = root / "report.json.summary.json"
+            sidecar.write_text(json.dumps({
+                "technical_status": "complete", "module_id": "ion_atmosphere",
+                "report_path": str(report), "report_sha256": digest,
+                "resource_evidence": {
+                    "selected_source_physical_frames": 20,
+                    "symmetry_expanded_observations": 20,
+                    "execution_resources": {
+                        "total_cpu_seconds": 10.0, "wall_seconds": 11.0,
+                        "maximum_resident_memory_mib": 100.0,
+                        "computer_hostname": "test", "platform": "test",
+                        "requested_cpu_count": 1,
+                    },
+                },
+            }), encoding="utf-8")
+            catalog = build_resource_calibration_catalog([sidecar])
+            catalog_path = root / "catalog.json"
+            catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+            resolved = load_resource_calibration_catalog(catalog_path)["ion_atmosphere"]
+        self.assertEqual(resolved["maximum_measured_selected_frame_count"], 20)
+        self.assertEqual(resolved["maximum_resident_memory_mib"], 100.0)
+        self.assertAlmostEqual(resolved["conservative_cpu_seconds_per_frame"], 0.5)
+        self.assertEqual(catalog["catalog_schema"], SCHEMA)
+        self.assertEqual(resolved["complete_measurement_count"], 1)
+        self.assertEqual(resolved["censored_timeout_count"], 0)
+
+    def test_timeout_is_censored_lower_bound_not_completed_coverage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            timeout = root / "timeout.json"
+            timeout.write_text(json.dumps({
+                "evidence_schema": TIMEOUT_SCHEMA,
+                "technical_status": "timeout",
+                "scientific_status": "not evaluated",
+                "module_id": "ion_atmosphere",
+                "scheduler_job_id": 123,
+                "selected_source_physical_frames": 60_000,
+                "symmetry_expanded_observations": 60_000,
+                "elapsed_seconds": 28_800.0,
+                "allocated_cpu_count": 1,
+                "maximum_resident_memory_mib": 300.0,
+            }), encoding="utf-8")
+            catalog = build_resource_calibration_catalog(
+                [], timeout_records=[timeout]
+            )
+            catalog_path = root / "catalog.json"
+            catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+            resolved = load_resource_calibration_catalog(
+                catalog_path, censored_timeout_safety_factor=2.0
+            )["ion_atmosphere"]
+        self.assertEqual(resolved["complete_measurement_count"], 0)
+        self.assertEqual(resolved["censored_timeout_count"], 1)
+        self.assertEqual(resolved["maximum_measured_selected_frame_count"], 0)
+        self.assertEqual(resolved["maximum_timeout_target_frame_count"], 60_000)
+        self.assertEqual(
+            resolved["calibration_evidence_status"], "censored_lower_bound_only"
+        )
+        self.assertAlmostEqual(
+            resolved["maximum_censored_cpu_seconds_per_frame_lower_bound"],
+            28_800.0 / 60_000,
+        )
+        self.assertAlmostEqual(
+            resolved["conservative_cpu_seconds_per_frame"],
+            2.0 * 28_800.0 / 60_000,
+        )
+
+    def test_completed_and_timeout_rates_are_kept_separate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report = root / "report.json"
+            report.write_text('{"technical_status":"complete"}\n', encoding="utf-8")
+            digest = hashlib.sha256(report.read_bytes()).hexdigest()
+            sidecar = root / "report.json.summary.json"
+            sidecar.write_text(json.dumps({
+                "technical_status": "complete", "module_id": "structural_integrity_qc",
+                "report_path": str(report), "report_sha256": digest,
+                "resource_evidence": {
+                    "selected_source_physical_frames": 100,
+                    "symmetry_expanded_observations": 100,
+                    "execution_resources": {
+                        "total_cpu_seconds": 100.0, "wall_seconds": 101.0,
+                        "maximum_resident_memory_mib": 100.0,
+                    },
+                },
+            }), encoding="utf-8")
+            timeout = root / "timeout.json"
+            timeout.write_text(json.dumps({
+                "evidence_schema": TIMEOUT_SCHEMA,
+                "technical_status": "timeout",
+                "module_id": "structural_integrity_qc",
+                "selected_source_physical_frames": 100,
+                "symmetry_expanded_observations": 100,
+                "elapsed_seconds": 200.0,
+                "allocated_cpu_count": 1,
+            }), encoding="utf-8")
+            catalog = build_resource_calibration_catalog(
+                [sidecar], timeout_records=[timeout]
+            )
+            catalog_path = root / "catalog.json"
+            catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+            resolved = load_resource_calibration_catalog(
+                catalog_path, censored_timeout_safety_factor=1.5
+            )["structural_integrity_qc"]
+        self.assertEqual(resolved["complete_measurement_count"], 1)
+        self.assertEqual(resolved["censored_timeout_count"], 1)
+        self.assertEqual(resolved["maximum_measured_selected_frame_count"], 100)
+        self.assertAlmostEqual(resolved["conservative_cpu_seconds_per_frame"], 3.0)
+
+    def test_base_catalog_can_be_extended_without_losing_entries(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report = root / "report.json"
+            report.write_text("{}\n", encoding="utf-8")
+            digest = hashlib.sha256(report.read_bytes()).hexdigest()
+            sidecar = root / "report.json.summary.json"
+            sidecar.write_text(json.dumps({
+                "technical_status": "complete", "module_id": "old_module",
+                "report_path": str(report), "report_sha256": digest,
+                "resource_evidence": {
+                    "selected_source_physical_frames": 10,
+                    "symmetry_expanded_observations": 10,
+                    "execution_resources": {
+                        "total_cpu_seconds": 10.0, "wall_seconds": 10.0,
+                        "maximum_resident_memory_mib": 10.0,
+                    },
+                },
+            }), encoding="utf-8")
+            base = build_resource_calibration_catalog([sidecar])
+            base_path = root / "base.json"
+            base_path.write_text(json.dumps(base), encoding="utf-8")
+            timeout = root / "timeout.json"
+            timeout.write_text(json.dumps({
+                "evidence_schema": TIMEOUT_SCHEMA,
+                "technical_status": "timeout",
+                "module_id": "new_module",
+                "selected_source_physical_frames": 20,
+                "symmetry_expanded_observations": 20,
+                "elapsed_seconds": 20.0,
+                "allocated_cpu_count": 1,
+            }), encoding="utf-8")
+            extended = build_resource_calibration_catalog(
+                [], timeout_records=[timeout], base_catalogs=[base_path]
+            )
+        self.assertEqual(extended["entry_count"], 2)
+        self.assertEqual(extended["complete_execution_count"], 1)
+        self.assertEqual(extended["censored_timeout_count"], 1)
+        self.assertEqual(extended["base_catalogs"][0]["entry_count"], 1)
+
+    def test_redacted_catalog_retains_planner_values_without_private_locations(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report = root / "report.json"
+            report.write_text("{}\n", encoding="utf-8")
+            digest = hashlib.sha256(report.read_bytes()).hexdigest()
+            sidecar = root / "report.json.summary.json"
+            sidecar.write_text(json.dumps({
+                "technical_status": "complete", "module_id": "ion_atmosphere",
+                "report_path": str(report), "report_sha256": digest,
+                "resource_evidence": {
+                    "selected_source_physical_frames": 10,
+                    "symmetry_expanded_observations": 10,
+                    "execution_resources": {
+                        "total_cpu_seconds": 20.0, "wall_seconds": 21.0,
+                        "maximum_resident_memory_mib": 30.0,
+                        "computer_hostname": "private-node",
+                        "requested_cpu_count": 1,
+                    },
+                },
+            }), encoding="utf-8")
+            full = build_resource_calibration_catalog([sidecar])
+            redacted = redact_resource_calibration_catalog(full)
+            redacted_path = root / "redacted.json"
+            redacted_path.write_text(json.dumps(redacted), encoding="utf-8")
+            resolved = load_resource_calibration_catalog(redacted_path)[
+                "ion_atmosphere"
+            ]
+        rendered = json.dumps(redacted)
+        self.assertNotIn(str(root), rendered)
+        self.assertNotIn("private-node", rendered)
+        self.assertIn(full["entries"][0]["source_sidecar_sha256"], rendered)
+        self.assertEqual(resolved["maximum_measured_selected_frame_count"], 10)
+        self.assertAlmostEqual(
+            resolved["conservative_cpu_seconds_per_frame"], 2.0
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

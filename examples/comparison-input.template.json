@@ -1,0 +1,27 @@
+{
+  "request_schema": "salsbury-comparative-analysis-input-v1",
+  "systems": [
+    {
+      "system_id": "control",
+      "pdb": "/absolute/path/control.pdb",
+      "psf": "/absolute/path/control.psf",
+      "trajectories": [
+        "/absolute/path/control-replica-1.dcd",
+        "/absolute/path/control-replica-2.dcd"
+      ],
+      "frame_interval_ps": 10.0,
+      "first_frame_time_ps": 0.0
+    },
+    {
+      "system_id": "variant-1",
+      "pdb": "/absolute/path/variant-1.pdb",
+      "psf": "/absolute/path/variant-1.psf",
+      "trajectories": [
+        "/absolute/path/variant-1-replica-1.dcd",
+        "/absolute/path/variant-1-replica-2.dcd"
+      ],
+      "frame_interval_ps": 10.0,
+      "first_frame_time_ps": 0.0
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "validation_schema": "salsbury-v80-installed-local-execution-v1",
+  "candidate_version": "0.0.1.dev80",
+  "recorded_at": "2026-08-20",
+  "execution_host_class": "Apollo Linux login node",
+  "installation_kind": "isolated virtual environment from built wheel",
+  "wheel_sha256": "a0d88b6ec0d3917ac9c9ff10f8dfad63f6368baa90e05c296ed8b9056185934a",
+  "fixture": {
+    "kind": "real bounded TBA trajectory prefix",
+    "source_physical_frames": 100,
+    "atom_count": 11184,
+    "bond_count": 7634
+  },
+  "execution": {
+    "submission_adapter": "local",
+    "maximum_parallel_cpus": 1,
+    "maximum_parallel_memory_gib": 64.0,
+    "maximum_campaign_hours": 8.0,
+    "phase_count": 9,
+    "task_count": 35,
+    "remaining_phase_count": 0,
+    "elapsed_wall_seconds": 242.82,
+    "user_cpu_seconds": 215.10,
+    "system_cpu_seconds": 8.78,
+    "maximum_resident_memory_kib": 165656
+  },
+  "local_execution_report_sha256": "7c1dff06f2a591459430ecd60414d6f8bb83cbc94ab0584690d7402a343f48e9",
+  "timing_log_sha256": "bd42a22e76dd6e5961b252bbaf2f56303c3366aaf8ed64b84c1a9a977f5c068c",
+  "technical_status": "complete",
+  "scientific_status": "not evaluated",
+  "interpretation": "This bounded installed-wheel run verifies the generated local dependency order and output contracts without Slurm. It is not a performance promise for larger systems and does not validate TBA science."
+}

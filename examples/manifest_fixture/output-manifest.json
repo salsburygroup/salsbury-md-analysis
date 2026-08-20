@@ -1,0 +1,25 @@
+{
+  "run_id": "synthetic-manifest-fixture-run",
+  "suite_commit": "unreleased-working-tree",
+  "profile_id": "standard_md_v1",
+  "modules": [
+    {
+      "module_id": "provenance_manifest",
+      "status": "complete",
+      "outputs": [
+        {
+          "path": "data/example-output.txt",
+          "sha256": "5d35899ed209f63c707ec94e06bfec90606353b27ade5ea14b82beeed129902e"
+        }
+      ],
+      "warnings": [
+        "Synthetic manifest-layer fixture only."
+      ]
+    }
+  ],
+  "technical_status": "complete",
+  "scientific_status": "not evaluated",
+  "limitations": [
+    "This output does not validate any molecular-simulation analysis."
+  ]
+}

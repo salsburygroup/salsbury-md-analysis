@@ -1,0 +1,75 @@
+{
+  "schema_version": "1.0",
+  "validation_date": "2026-08-11",
+  "module_id": "water_mediated_hydrogen_bond_networks",
+  "technical_status": "complete",
+  "scientific_status": "not evaluated",
+  "scope": "Balanced all-replica execution smoke test on the published-Miller TREX1 8-oxoG protein-DNA lesion set. No source coordinates or private paths are distributed.",
+  "input_lineage": {
+    "dataset_description": "Published-Miller/OL21 TREX1 lesion package: three protein-DNA 8-oxoG replicas with Mg ions",
+    "topology_sha256": "ffa038652e885c568e634ca9425ebd5e7159a83efde9122ab70a418fa06d0389",
+    "openmm_system_sha256": "7c629e068c8a77dd8c3828c3fd8fb7132d5e6fa604a10d0a9a3e795c5c4bad56",
+    "portable_connectivity_sha256": "d898b46ef568ffc28702628c6bcb1e16f23c9300b1284ef66ebe7bfd0de9acc2",
+    "aggregate_100ps_trajectory_sha256": {
+      "replica_1": "a2af2000d5bded147c77d05d675cc8c3782d76bf5644887c8ceadd503e44acba",
+      "replica_2": "61865536e9e53c7197821810888e6a60b4cda2ac0cd10bae74733dcadd7c8fe6",
+      "replica_3": "309e5fbca3a9977a2a8b4ef4afe65f2a769b6ab65062627fa500b7f5fcfd4495"
+    },
+    "input_content_signature_sha256": "168bc48feda2352ef2c0f01b9b376e81c38c05a7c71097151ffa8272c63c0e1b",
+    "connectivity_method": "The matching OpenMM System XML supplied harmonic/custom bond terms and constraints; no residue-template or distance-based bond inference was used."
+  },
+  "available_information": {
+    "raw_10ps_frame_count_per_replica": 10000,
+    "raw_10ps_frame_count_all_replicas": 30000,
+    "aggregate_100ps_frame_count_per_replica": 1000,
+    "aggregate_100ps_frame_count_all_replicas": 3000,
+    "aggregate_time_range_ns": [0.1, 100.0]
+  },
+  "system_inventory": {
+    "atom_count": 85199,
+    "water_molecule_count": 25879,
+    "magnesium_ion_count": 4,
+    "modified_dna_residue_name": "8OG",
+    "modified_dna_residue_count": 2,
+    "modified_dna_atom_count": 70,
+    "protein_atom_count": 7160,
+    "nucleic_acid_atom_count": 256
+  },
+  "execution": {
+    "periodic_coordinate_policy": "make_whole",
+    "interaction_scope": "protein_nucleic_acid",
+    "frame_selection_mode": "uniform_per_replica_budget_v1",
+    "maximum_frames_per_replica": 10,
+    "selected_frame_count_per_replica": 10,
+    "selected_frame_count_all_replicas": 30,
+    "selection_contract": "Uniform deterministic sampling over each replica's full 1,000-frame aggregate history, including its first and last frames.",
+    "solute_endpoint_count_per_replica": 1356,
+    "templated_8og_endpoint_count_per_replica": 22,
+    "observed_bridge_count_all_cutoffs": 172,
+    "occupancy_row_count_all_cutoffs": 800,
+    "sparse_path_record_count_all_cutoffs": 1440,
+    "reference_donor_hydrogen_gate_angstrom": 1.5,
+    "warning_count": 0,
+    "shared_planner_refactor_check": {
+      "source_frame_count_per_replica": 1000,
+      "requested_frame_count_per_replica": 100,
+      "selected_frame_count_per_replica": 100,
+      "first_selected_source_frame_index": 0,
+      "last_selected_source_frame_index": 999,
+      "replica_count": 3,
+      "scope": "Read-only source-count and deterministic selection-plan check only; no estimator was rerun."
+    }
+  },
+  "scaling_contract": {
+    "full_raw_coverage": "Declare all 30 source segments, set frame_selection.maximum_frames_per_replica to 10000, and set maximum_evaluated_frames to at least 30000.",
+    "resource_limited_coverage": "Use the same uniform per-replica policy with a predeclared smaller budget; the JSON report records total source frames and selected coverage for every replica and segment.",
+    "dcd_efficiency": "For non-continuous periodic policies, unselected DCD coordinate payloads are record-envelope validated but not decoded or reconstructed. Continuous unwrapping deliberately processes every raw frame to maintain image history."
+  },
+  "required_caveats": [
+    "Thirty all-replica aggregate frames are a technical integration smoke test, not a convergence, sampling, or biological validation.",
+    "The 30,000 raw 10-ps source frames were authenticated from the package inventory but were not all evaluated in this bounded local run.",
+    "Mg ions were authenticated in the topology but are excluded from hydrogen-bond donor/acceptor roles; their coordination belongs to the ion-geometry module.",
+    "No independent water-bridge implementation was compared against this real lesion subset.",
+    "Completed execution does not establish water residence kinetics, energetic importance, affinity, causality, or a biological conclusion."
+  ]
+}

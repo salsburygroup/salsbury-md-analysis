@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/salsburygroup/salsbury-md-analysis/schemas/system-manifest.schema.json",
+  "title": "System and Continuous-Segment Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["systems"],
+  "properties": {
+    "systems": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["system_id", "replicas"],
+        "properties": {
+          "system_id": {"type": "string", "minLength": 1},
+          "metadata": {"type": "object"},
+          "replicas": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["replica_id", "topology", "segments"],
+              "properties": {
+                "replica_id": {"type": "string", "minLength": 1},
+                "topology": {"type": "string", "minLength": 1},
+                "connectivity": {"type": ["string", "null"], "minLength": 1},
+                "segments": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["segment_id", "trajectory"],
+                    "oneOf": [
+                      {"required": ["timing"], "not": {"required": ["sample_axis"]}},
+                      {"required": ["sample_axis"], "not": {"required": ["timing"]}}
+                    ],
+                    "properties": {
+                      "segment_id": {"type": "string", "minLength": 1},
+                      "trajectory": {"type": "string", "minLength": 1},
+                      "continuous_with_previous": {"type": "boolean", "default": false},
+                      "weights": {"type": ["string", "null"]},
+                      "timing": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["first_frame_time", "frame_interval", "unit"],
+                        "properties": {
+                          "first_frame_time": {"type": "number"},
+                          "frame_interval": {"type": "number", "exclusiveMinimum": 0},
+                          "unit": {"enum": ["fs", "ps", "ns", "us"]}
+                        }
+                      },
+                      "sample_axis": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["first_sample_index", "sample_interval"],
+                        "properties": {
+                          "first_sample_index": {"type": "integer", "minimum": 0},
+                          "sample_interval": {"type": "integer", "minimum": 1}
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

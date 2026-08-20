@@ -1,0 +1,1 @@
+Synthetic manifest-layer output fixture; not a scientific result.

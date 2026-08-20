@@ -1,0 +1,17 @@
+{
+  "config_schema": "salsbury-analysis-config-v1",
+  "execution": {
+    "submission_adapter": "local",
+    "maximum_parallel_cpus": 8,
+    "maximum_hours_per_cpu": 24,
+    "maximum_memory_gib": 64,
+    "maximum_scratch_gib": 256,
+    "planning_utilization": 0.85,
+    "pilot_budget_fraction": 0.05,
+    "finalization_headroom_fraction": 0.05,
+    "time_safety_factor": 1.5,
+    "memory_safety_factor": 1.25,
+    "censored_timeout_safety_factor": 1.5,
+    "coordinate_cache": "auto"
+  }
+}

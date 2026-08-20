@@ -1,0 +1,19 @@
+{
+  "config_schema": "salsbury-analysis-config-v1",
+  "execution": {
+    "submission_adapter": "slurm",
+    "slurm_profile": "../slurm/deac.json",
+    "maximum_parallel_cpus": 32,
+    "maximum_hours_per_cpu": 24,
+    "maximum_memory_gib": 128,
+    "maximum_scratch_gib": 512,
+    "planning_utilization": 0.85,
+    "pilot_budget_fraction": 0.05,
+    "finalization_headroom_fraction": 0.05,
+    "time_safety_factor": 1.5,
+    "memory_safety_factor": 1.25,
+    "censored_timeout_safety_factor": 1.5,
+    "coordinate_cache": "auto",
+    "resource_calibration_catalog": "../apollo_measured_resource_calibrations_v2.json"
+  }
+}

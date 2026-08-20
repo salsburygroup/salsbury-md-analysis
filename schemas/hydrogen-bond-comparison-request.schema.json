@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/salsburygroup/salsbury-md-analysis/schemas/hydrogen-bond-comparison-request.schema.json",
+  "title": "Grouped hydrogen-bond comparison request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["conditions"],
+  "properties": {
+    "comparison_id": {"type": "string", "minLength": 1},
+    "conditions": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["condition_id", "report"],
+        "properties": {
+          "condition_id": {"type": "string", "minLength": 1},
+          "report": {"type": "string", "minLength": 1},
+          "system_id": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "cutoff_id": {"type": "string", "minLength": 1, "default": "primary"},
+    "group_donor_hydrogens": {"const": true, "default": true},
+    "expected_interaction_scope": {
+      "enum": [
+        "all_solute", "protein_protein", "protein_ligand",
+        "protein_nucleic_acid", "nucleic_acid_nucleic_acid",
+        "nucleic_acid_ligand", "ligand_ligand"
+      ]
+    },
+    "homolog_mappings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["condition_id", "match", "canonical_updates"],
+        "properties": {
+          "condition_id": {"type": "string", "minLength": 1},
+          "match": {"$ref": "#/$defs/partialIdentity"},
+          "canonical_updates": {"$ref": "#/$defs/partialIdentity"}
+        }
+      }
+    },
+    "top_n": {"type": "integer", "minimum": 1, "default": 100}
+  },
+  "$defs": {
+    "partialIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "chain_id": {"type": "string"},
+        "residue_number": {"type": "integer"},
+        "insertion_code": {"type": "string"},
+        "residue_name": {"type": "string"},
+        "atom_name": {"type": "string"},
+        "altloc": {"type": "string"},
+        "element": {"type": "string"}
+      }
+    }
+  }
+}
