@@ -9,7 +9,7 @@ write local and Slurm launchers. It will not modify the simulation inputs.
 
 ## Status
 
-This repository is a cleaned **pre-release experimental toolkit**. It contains
+Version 0.1.0 is the first cleaned **experimental toolkit release**. It contains
 45 registered MD, core, and reporting modules. Every registered module has an
 implementation and automated tests, but none is yet marked `supported` for
 unreviewed production or publication use. Technical completion and scientific
@@ -94,6 +94,10 @@ redistributed by this repository.
 The quick-start initializer discovers `mkdssp`/`dssp` either on `PATH` or next
 to the active Python interpreter, which covers the reviewed Conda environment
 without requiring a separate executable argument.
+
+The bundled NEMO tutorial trajectory and group-generated topology are licensed
+separately under CC BY 4.0; the starting PDB retains its PDB provenance. See
+[`LICENSE-DATA.md`](LICENSE-DATA.md) and the fixture's recorded provenance.
 
 ## Use
 

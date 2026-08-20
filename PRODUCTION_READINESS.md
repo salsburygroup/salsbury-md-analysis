@@ -1,19 +1,20 @@
 # Production-readiness assessment
 
 Assessment date: 2026-08-20  
-Candidate: `0.1.0a1`
+Candidate: `0.1.0`
 
 ## Decision boundary
 
-This private repository candidate is being prepared for a possible future
-**public experimental alpha**. It has not been made public and is not presented
+This private repository contains the proposed `v0.1.0` experimental release. It
+has not been made public and is not presented
 as a supported scientific release.
 Every registered module remains `experimental`; technical completion, scheduler
 success, and scientific validity are separate statuses.
 
 The source contains 45 of 45 MD/core/reporting modules in the registry and
-standard profile. The original dependency-equipped candidate test is retained
-in `validation/v0.1.0a1_dependency_test.json`. The later memory-planning update,
+standard profile. The exact release dependency test is retained in
+`validation/v0.1.0_dependency_test.json`. Earlier candidate evidence remains in
+`validation/v0.1.0a1_dependency_test.json`. The later memory-planning update,
 including its exact source hashes, 457-test result, generated-document check,
 low-memory NEMO preparation, and private-remote readback, is recorded separately
 in `validation/v0.1.0a1_memory_planner_update_test.json`.
@@ -50,7 +51,7 @@ states require the original simulation topology and explicit project review.
 | Gate | Current evidence | Interpretation |
 |---|---|---|
 | Registry/profile | 45 of 45 modules with exact-set tests | Coverage contract, not scientific approval |
-| Dependency-equipped suite | Machine-readable record in `validation/v0.1.0a1_dependency_test.json` | Software behavior in the recorded environment only |
+| Dependency-equipped suite | Machine-readable release record in `validation/v0.1.0_dependency_test.json`, with earlier candidate evidence retained separately | Software behavior in the recorded environments only |
 | Memory-planner update | Source-hash-bound 457-test, low-memory preparation, and GitHub Actions record in `validation/v0.1.0a1_memory_planner_update_test.json` | Current update behavior on the recorded workstation and CI matrix; scientific status remains unevaluated |
 | GitHub Actions | Six successful Linux/macOS jobs for Python 3.10--3.12 plus the successful isolated artifact-build/install job | Technical portability and packaging gate for the tested head; rerun after every later commit |
 | Installed local workflow | One-CPU, 100-frame TBA result in `validation/v80_installed_local_execution_test.json` | Local-adapter portability check, not a performance or scientific claim |
@@ -70,9 +71,9 @@ bounded software test. Every current module and final-summary JSON uses
 `scientific_status: not evaluated` unless a later, separate human review record
 says otherwise.
 
-## Before a future public alpha
+## Before a future public release
 
-1. Do not change repository visibility or tag a public alpha until Linux/macOS
+1. Do not change repository visibility or tag a public release until Linux/macOS
    CI for Python 3.10--3.12 and the isolated artifact-install job pass for the
    exact candidate commit.
 2. Retain the final source-archive and wheel hashes with the release evidence.
@@ -80,10 +81,9 @@ says otherwise.
    `RELEASE_RIGHTS_REVIEW.md` and re-open it when third-party material is added.
 4. Protect the public default branch and add a backup reviewer when one is
    available.
-5. Keep the NEMO tutorial's source hashes and provenance with the release, and
-   record an explicit data-license decision before making its scientific
-   trajectory fixture public. Its technical acceptance does not imply adequate
-   sampling or scientific validation.
+5. Keep the NEMO tutorial's source hashes, explicit CC BY 4.0 data license, and
+   PDB provenance with the release. Its technical acceptance does not imply
+   adequate sampling or scientific validation.
 
 Independent module-by-module scientific review remains the gate for changing a
 module from `experimental` to `supported`; it is not silently implied by making

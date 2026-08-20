@@ -42,6 +42,9 @@ physical interval by itself. Supplying the independently recorded interval is
 therefore mandatory. Full hashes, derivation details, publication identifiers,
 and limitations are in
 [`data/FIXTURE_PROVENANCE.json`](data/FIXTURE_PROVENANCE.json).
+The group-generated PSF and tutorial trajectory subset are available under CC
+BY 4.0 as described in the repository's [`LICENSE-DATA.md`](../../LICENSE-DATA.md).
+The PDB-derived starting coordinates retain their PDB 2JVX provenance.
 
 ## 1. Create an environment
 

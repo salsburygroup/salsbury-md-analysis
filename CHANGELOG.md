@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0a1
+## 0.1.0 - 2026-08-20
 
 - Replace fixed small-system legacy memory charges with conservative
   atom-count or measured-observation transfer, while retaining explicit floors
@@ -9,8 +9,8 @@
   and smallest module/method disable set; add an explicit
   `--auto-disable-to-fit-memory` path that preserves both requested and reduced
   configs for single-system and comparison campaigns.
-- Prepare the first public alpha from the tested dev86 implementation without
-  changing its scientific algorithms or defaults.
+- Prepare the first experimental release from the tested dev86 implementation
+  without changing its scientific algorithms or defaults.
 - Record the source, fixture, dependency, and external-tool provenance review
   for public source distribution.
 - Extend continuous integration with a clean wheel and source-archive build,
