@@ -61,7 +61,7 @@ can be used instead.
 The ordinary test suite uses the Python standard-library `unittest` framework
 and the selected package dependencies. It does not require MDTraj.
 
-`scripts/run_hydrogen_bond_discovery_cross_validation.py` is a maintainer
+`validation/maintainer/run_hydrogen_bond_discovery_cross_validation.py` is a maintainer
 validation program, not a user analysis command and not part of the generic
 workflow. It uses MDTraj 1.11.1 as an independent distance/angle and topology
 reference and OpenMM 8.5.2 as an independent force-field/template reference.
@@ -76,6 +76,12 @@ scientific package implements its own numerical or chemical logic. Users do
 not need to repeat it for routine analysis. Maintainers should rerun it when
 the relevant chemistry templates, geometry definitions, coordinate handling,
 or comparison engine changes.
+
+Anyone can run the smaller public synthetic check at
+`validation/public/run_hydrogen_bond_synthetic_validation.py`. It uses only the
+base runtime, recomputes the simple reference geometry independently, and does
+not require access to retained TREX inputs. It complements rather than replaces
+the real-trajectory maintainer validation.
 
 MDTraj license source: [MDTraj](https://github.com/mdtraj/mdtraj).
 
