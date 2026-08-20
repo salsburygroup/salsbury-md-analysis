@@ -3,6 +3,7 @@ include CHANGELOG.md
 include CITATION.cff
 include LICENSE
 include LICENSE-DOCS.md
+include DEPENDENCIES_AND_LICENSES.md
 include CONTRIBUTING.md
 include PRODUCTION_READINESS.md
 include PUBLICATION_REPOSITORY_POLICY.md
@@ -14,6 +15,8 @@ recursive-include environments *.md *.txt
 recursive-include examples *.json *.md *.pdb *.xyz *.txt
 recursive-include profiles *.json
 recursive-include schemas *.json
+recursive-include validation/maintainer *.md *.py
+recursive-include validation/public *.md *.py
 include validation/hydrogen_bond_discovery_cross_validation.json
 include validation/pald_planner_calibration.json
 include validation/scientific_validation_summary.json

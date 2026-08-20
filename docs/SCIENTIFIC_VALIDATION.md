@@ -155,6 +155,16 @@ The bounded hydrogen-bond evidence is
 Its private-evidence hash permits later integrity verification without
 publishing restricted trajectories or storage paths.
 
+The corresponding real-trajectory rerun harness lives under
+[`validation/maintainer`](../validation/maintainer/README.md). It is retained
+for maintainers, is not a generic-workflow module or user command, and requires
+authorized access to the immutable fixture plus its independent reference
+engines. A small public synthetic check that uses only the declared base
+runtime is documented under
+[`validation/public`](../validation/public/README.md). The synthetic check is a
+portable implementation check; it does not replace the retained
+real-trajectory cross-validation.
+
 The separate public-safe water-network smoke summary is
 [`validation/water_mediated_hydrogen_bond_smoke_summary.json`](../validation/water_mediated_hydrogen_bond_smoke_summary.json).
 It records a completed stride-10 evaluation of 10 frames from a 100-frame DCD

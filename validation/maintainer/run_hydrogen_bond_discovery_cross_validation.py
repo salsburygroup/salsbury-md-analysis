@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Cross-validate automatic hydrogen-bond discovery on retained real frames.
+"""Maintainer-only cross-validation on retained real trajectory frames.
 
 This validation deliberately uses independent topology and geometry engines.
 It writes only bounded, path-redacted evidence; the private trajectories and
-their absolute storage locations remain outside the repository.
+their absolute storage locations remain outside the repository. It is not a
+user analysis command and is not invoked by the generic workflow.
 """
 
 from __future__ import annotations
