@@ -77,7 +77,7 @@
     "output_atom_count": 423,
     "unit_cell_records_retained": true
   },
-  "rights_note": "This Salsbury-group simulation subset is included in the private release candidate for teaching. Before public release, record an explicit data-license decision; LICENSE-DOCS.md does not automatically relicense scientific data.",
+  "rights_note": "The group-generated PSF and 1,000-frame trajectory subset are released under CC BY 4.0 as specified in the repository's LICENSE-DATA.md. The starting coordinates derive from PDB 2JVX and retain that source's provenance; the repository does not claim the underlying PDB record as original Salsbury-group data.",
   "limitations": [
     "The subset is intentionally short and begins at source frame zero.",
     "It is suitable for learning the software and checking execution, not for estimating converged populations, kinetics, free energies, or zinc-binding mechanisms.",
@@ -85,4 +85,3 @@
     "The cited publication itself explains why long simulations are needed to observe rare zinc-finger conformations."
   ]
 }
-

@@ -1,7 +1,7 @@
 # Release rights and provenance review
 
 Review date: 2026-08-20  
-Candidate: `0.1.0a1`
+Candidate: `0.1.0`
 
 ## Decision
 
@@ -18,9 +18,12 @@ the repository does not distribute.
 - The source, scripts, tests, and examples contain no vendored package trees or
   third-party source headers. References to algorithms and external programs do
   not copy their implementations into this repository.
-- The included molecular fixtures are small original synthetic software and
-  teaching fixtures. No private trajectory, collaborator structure, or
-  publication data file is distributed.
+- Most included molecular fixtures are small original synthetic software and
+  teaching fixtures. The NEMO tutorial additionally distributes a bounded,
+  hash-recorded subset of a published Salsbury-group simulation. The
+  group-generated PSF and trajectory subset are explicitly released under CC
+  BY 4.0 in `LICENSE-DATA.md`. The PDB-derived starting coordinates retain
+  their PDB 2JVX provenance and are not claimed as original group data.
 - NumPy, SciPy, scikit-learn, and HDBSCAN are installed dependencies rather
   than copied source. Their installed package metadata identifies permissive
   BSD-compatible licensing; their own license terms continue to apply.
@@ -28,7 +31,9 @@ the repository does not distribute.
   `mkdssp` and x3dna-dssr are separately installed external programs and are not
   included in this repository.
 - Validation records retain bounded metrics, hashes, and dataset descriptions,
-  but not private coordinates or private filesystem locations.
+  but no private coordinates or private filesystem locations. The only real
+  coordinates distributed by this repository are the explicitly reviewed NEMO
+  tutorial fixture described above.
 - The DEAC profile intentionally documents a group account, partitions, and
   storage roots. It contains no password, token, private key, or user credential.
 

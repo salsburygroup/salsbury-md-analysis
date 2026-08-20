@@ -11,6 +11,10 @@ subject to its own license.
   see [`LICENSE`](LICENSE).
 - Original documentation and teaching material: CC BY 4.0; see
   [`LICENSE-DOCS.md`](LICENSE-DOCS.md).
+- Group-generated scientific tutorial data identified in
+  [`LICENSE-DATA.md`](LICENSE-DATA.md): CC BY 4.0. The PDB-derived starting
+  structure retains its separate PDB provenance and is not claimed as original
+  Salsbury-group data.
 
 ## Required runtime
 

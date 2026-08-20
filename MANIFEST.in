@@ -3,8 +3,10 @@ include CHANGELOG.md
 include CITATION.cff
 include LICENSE
 include LICENSE-DOCS.md
+include LICENSE-DATA.md
 include DEPENDENCIES_AND_LICENSES.md
 include CONTRIBUTING.md
+include SECURITY.md
 include PRODUCTION_READINESS.md
 include PUBLICATION_REPOSITORY_POLICY.md
 include RELEASE_RIGHTS_REVIEW.md
@@ -31,6 +33,7 @@ include validation/v85_dependency_test.json
 include validation/v86_dependency_test.json
 include validation/v0.1.0a1_dependency_test.json
 include validation/v0.1.0a1_memory_planner_update_test.json
+include validation/v0.1.0_dependency_test.json
 include validation/nemo_zinc_finger_tutorial_acceptance.json
 include validation/water_mediated_hydrogen_bond_smoke_summary.json
 include validation/water_mediated_hydrogen_bond_trex1_published_miller_all_replicas_smoke_summary.json

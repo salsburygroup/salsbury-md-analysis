@@ -1,3 +1,35 @@
+Metadata-Version: 2.4
+Name: salsbury-md-analysis
+Version: 0.1.0
+Summary: Reproducible molecular-dynamics trajectory analysis tools from the Salsbury group
+Home-page: https://github.com/salsburygroup/salsbury-md-analysis
+Author: Freddie R. Salsbury Jr.
+Author-email: 112109925+salsburygroup@users.noreply.github.com
+License: BSD-3-Clause
+Project-URL: Documentation, https://github.com/salsburygroup/salsbury-md-analysis/tree/main/docs
+Project-URL: Source, https://github.com/salsburygroup/salsbury-md-analysis
+Project-URL: Issues, https://github.com/salsburygroup/salsbury-md-analysis/issues
+Keywords: molecular dynamics,trajectory analysis,molecular simulation,reproducibility
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Science/Research
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Scientific/Engineering :: Chemistry
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: numpy<3,>=2.0
+Requires-Dist: scipy<2,>=1.12
+Provides-Extra: clustering
+Requires-Dist: scikit-learn<2,>=1.6; extra == "clustering"
+Provides-Extra: hdbscan
+Requires-Dist: hdbscan<0.9,>=0.8.44; extra == "hdbscan"
+Provides-Extra: openmm-connectivity
+Requires-Dist: openmm<8.6,>=8.5; extra == "openmm-connectivity"
+Dynamic: license-file
+
 # Salsbury MD Analysis
 
 Reusable Python tools for molecular-dynamics trajectory analysis, teaching, and reproducible computational research.

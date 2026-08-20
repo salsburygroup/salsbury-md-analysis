@@ -1,0 +1,36 @@
+{
+  "validation_schema": "salsbury-release-dependency-test-v1",
+  "candidate_version": "0.1.0",
+  "recorded_at": "2026-08-20",
+  "execution_host": "Apple silicon workstation, macOS 15.0",
+  "python": "3.12.13",
+  "dependencies": {
+    "numpy": "2.5.2",
+    "scipy": "1.18.0",
+    "scikit-learn": "1.9.0",
+    "hdbscan": "not installed",
+    "openmm": "not installed; one expected optional test skip"
+  },
+  "command": "PYTHONPATH=.:src PYTHONPYCACHEPREFIX=<isolated> python3.12 -m unittest discover -s tests -p 'test_*.py' -q",
+  "tests_run": 457,
+  "expected_skips": 1,
+  "failures": 0,
+  "errors": 0,
+  "elapsed_seconds": 34.460,
+  "measured_wall_seconds_with_runner": 35.21,
+  "user_cpu_seconds": 28.89,
+  "system_cpu_seconds": 2.67,
+  "maximum_resident_memory_bytes": 221134848,
+  "generated_documentation_check": "pass via the dependency-equipped suite and explicit generator check",
+  "rights_and_provenance_review": "pass; see RELEASE_RIGHTS_REVIEW.md and LICENSE-DATA.md",
+  "artifact_build_check": {
+    "status": "local-pass; exact-head CI is a separate required gate",
+    "wheel_sha256": "86a2d521d5ecf1d475c97fdbb2259b2460cb3cfce51b510fd25411d8ae15a462",
+    "source_archive_sha256": "abcf9ef3901e52ae8af7a1c2570c7ee5a910d6cbb3289d856b08fc7c000c2b32"
+  },
+  "artifact_install_check": "local pass; the wheel installed into a fresh target, reported version 0.1.0, and listed the complete module registry",
+  "github_ci_status": "required external gate; verify the exact tagged commit in GitHub Actions and retain the release artifact hashes",
+  "technical_status": "local-pass; exact-head CI required",
+  "scientific_status": "not evaluated",
+  "interpretation": "Regression, documentation, provenance, and artifact-install evidence only. This does not promote experimental modules to supported status or establish scientific validity."
+}
