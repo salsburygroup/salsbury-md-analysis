@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.1.0a1
+
+- Prepare the first public alpha from the tested dev86 implementation without
+  changing its scientific algorithms or defaults.
+- Record the source, fixture, dependency, and external-tool provenance review
+  for public source distribution.
+- Extend continuous integration with a clean wheel and source-archive build,
+  isolated wheel installation, command smoke test, and artifact hashes.
+
+## 0.0.1.dev86
+
+- Preserve explicit atom-count, Cartesian-feature, and oligomer-member workload
+  scaling when hash-bound resource measurements are transferred between systems.
+  Small systems no longer inherit the full TREX cache or PCA rate unchanged.
+- Budget automatically inferred trajectory features and their scalar histogram
+  and threshold-state consumers in the complete campaign plan. Automatic ion
+  questions are represented once; distinct user-declared optional observables
+  remain available.
+- Run scalar distributions and threshold states only after trajectory features,
+  reuse the technically complete hash-validated upstream report, and record that
+  reuse in both downstream reports. Historical scalar timings that included a
+  second trajectory pass are excluded from the new postprocessing model.
+- Make an unaffordable campaign failure report the minimum critical path,
+  science wall and CPU allowances, configured ceiling, and a calculated
+  `--target-wall-hours` retry bound.
+
+## 0.0.1.dev85
+
+- Add fail-closed Slurm partition wall-time limits and automatic long-wall
+  routing; the DEAC profile now keeps jobs at or below 24 hours on `small` and
+  sends longer requests to `large`.
+
 ## 0.0.1.dev84
 
 - Included the current and immediately preceding dependency-test records in the

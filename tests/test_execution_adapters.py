@@ -19,6 +19,10 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertEqual(profile["account"], "salsburygrp")
         self.assertEqual(profile["unix_group"], "salsburyGrp")
         self.assertEqual(profile["partitions"]["analysis"], "small")
+        self.assertEqual(profile["partitions"]["long_wall"], "large")
+        self.assertEqual(
+            profile["partition_maximum_wall_minutes"]["small"], 1440.0,
+        )
         self.assertIn(
             "/software/salsbury-md-analysis/environments/v76/",
             profile["environment"]["python_executable"],
@@ -71,6 +75,83 @@ class ExecutionAdapterTests(unittest.TestCase):
             "small",
         )
         self.assertIn("/opt/scyld/slurm/bin/sbatch worker.slurm", submit)
+
+    def test_deac_profile_routes_requests_over_small_limit_to_long_wall(self):
+        repository = Path(__file__).resolve().parents[1]
+        profile = load_slurm_profile(repository / "profiles/slurm/deac.json")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "slurm-profile.json").write_text("{}\n", encoding="utf-8")
+            worker = root / "run_stage_0_array.slurm"
+            worker.write_text(
+                "#!/usr/bin/env bash\n"
+                "#SBATCH --time=1-00:01:00\n"
+                "#SBATCH --cpus-per-task=1\n"
+                "#SBATCH --mem=8G\n"
+                "set -euo pipefail\n",
+                encoding="utf-8",
+            )
+            scheduler = apply_slurm_profile(root, profile, {
+                "phases": [{"phase_id": "analysis", "tasks": [{
+                    "script": worker.name,
+                    "array_task_id": 0,
+                    "requested_wall_minutes": 1441,
+                    "requested_memory_gib": 8,
+                    "planner_task_ids": ["direct:test"],
+                    "cpu_slots": 1,
+                    "planned_wall_hours": 24.0,
+                    "planned_peak_memory_gib": 8,
+                    "resource_request_source": "unit_test",
+                    "wall_request_limited_by_campaign_cap": False,
+                    "memory_request_limited_by_campaign_cap": False,
+                }]}],
+            })
+            text = worker.read_text(encoding="utf-8")
+        request = scheduler["scripts"][worker.name]
+        self.assertIn("#SBATCH --partition=large", text)
+        self.assertEqual(request["selected_partition_role"], "long_wall")
+        self.assertTrue(request["long_wall_routed"])
+        self.assertEqual(request["selected_partition_maximum_wall_minutes"], 259200.0)
+
+    def test_profile_fails_closed_when_long_request_has_no_fallback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            profile_path = Path(temporary) / "profile.json"
+            profile_path.write_text(json.dumps({
+                "slurm_profile_schema": "salsbury-slurm-profile-v1",
+                "profile_id": "bounded",
+                "cluster_name": "bounded",
+                "partitions": {"analysis": "short"},
+                "partition_maximum_wall_minutes": {"short": 60},
+            }), encoding="utf-8")
+            profile = load_slurm_profile(profile_path)
+            root = Path(temporary) / "run"
+            root.mkdir()
+            (root / "slurm-profile.json").write_text("{}\n", encoding="utf-8")
+            worker = root / "run_stage_0_array.slurm"
+            worker.write_text(
+                "#!/usr/bin/env bash\n#SBATCH --time=02:00:00\n"
+                "#SBATCH --cpus-per-task=1\n#SBATCH --mem=2G\n"
+                "set -euo pipefail\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                ExecutionAdapterError, "partitions.long_wall is unset"
+            ):
+                apply_slurm_profile(root, profile, {
+                    "phases": [{"phase_id": "analysis", "tasks": [{
+                        "script": worker.name,
+                        "array_task_id": 0,
+                        "requested_wall_minutes": 120,
+                        "requested_memory_gib": 2,
+                        "planner_task_ids": ["direct:test"],
+                        "cpu_slots": 1,
+                        "planned_wall_hours": 2,
+                        "planned_peak_memory_gib": 2,
+                        "resource_request_source": "unit_test",
+                        "wall_request_limited_by_campaign_cap": False,
+                        "memory_request_limited_by_campaign_cap": False,
+                    }]}],
+                })
 
     def test_profile_rejects_shell_text_in_submit_command(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -13,6 +13,7 @@ from .trajectory_features import (
     TrajectoryFeatureError,
     trajectory_features_project,
 )
+from .upstream_cache import load_cached_project_report
 from .validation import positive_integer
 
 
@@ -258,7 +259,18 @@ def scalar_feature_distributions_project(
     source = Path(project_path).expanduser().resolve(strict=False)
     project = load_json(source)
     settings = _settings(project)
-    upstream = trajectory_features_project(source, hash_content=hash_content)
+    upstream = load_cached_project_report(
+        "trajectory_features",
+        source,
+        hash_content=hash_content,
+        error_type=ScalarDistributionError,
+    )
+    trajectory_feature_source_mode = (
+        "validated_upstream_report" if upstream is not None
+        else "computed_from_project"
+    )
+    if upstream is None:
+        upstream = trajectory_features_project(source, hash_content=hash_content)
     segments = upstream.get("segments")
     if not isinstance(segments, list):
         raise ScalarDistributionError("trajectory_features report has no segments")
@@ -328,6 +340,7 @@ def scalar_feature_distributions_project(
         "input_content_signature_sha256": upstream["input_content_signature_sha256"],
         "content_hashes_included": hash_content,
         "settings": settings,
+        "trajectory_feature_source_mode": trajectory_feature_source_mode,
         "observation_count": total,
         "distribution_reports": reports,
         "error_count": 0,

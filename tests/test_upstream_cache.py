@@ -100,6 +100,27 @@ class UpstreamCacheTests(unittest.TestCase):
                         error_type=ValueError,
                     )
 
+    def test_missing_preflight_rehashes_current_inputs_instead_of_trusting_cache(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            project, _, report, _ = self._fixture(Path(temporary))
+            with patch.dict(
+                os.environ,
+                {"SALSBURY_MD_ANALYSIS_COMMON_PCA_REPORT": str(report)},
+                clear=True,
+            ), patch(
+                "salsbury_md_analysis.upstream_cache.compile_project_context_file",
+                return_value={"input_content_signature_sha256": "a" * 64},
+            ) as compile_context:
+                observed = load_cached_project_report(
+                    "common_pca", project, hash_content=True,
+                    error_type=ValueError,
+                )
+            self.assertEqual(observed["module_id"], "common_pca")
+            compile_context.assert_called_once()
+            args, kwargs = compile_context.call_args
+            self.assertEqual(args[0], project.resolve())
+            self.assertEqual(kwargs, {"hash_content": True})
+
     def test_configured_cache_fails_closed_after_manifest_change(self):
         with tempfile.TemporaryDirectory() as temporary:
             project, system, report, preflight = self._fixture(Path(temporary))

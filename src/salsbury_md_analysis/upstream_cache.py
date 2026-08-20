@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 from typing import Dict, Optional, Type
 
+from .context import compile_project_context_file
 from .manifests import load_json, resolve_manifest_path, sha256_file
 
 
@@ -22,6 +23,7 @@ _ENVIRONMENT_VARIABLES = {
     "alternative_clustering": "SALSBURY_MD_ANALYSIS_ALTERNATIVE_CLUSTERING_REPORT",
     "pald_community_analysis": "SALSBURY_MD_ANALYSIS_PALD_COMMUNITY_REPORT",
     "pca_fes_basins": "SALSBURY_MD_ANALYSIS_FES_REPORT",
+    "trajectory_features": "SALSBURY_MD_ANALYSIS_TRAJECTORY_FEATURES_REPORT",
 }
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _PREFLIGHT_ENVIRONMENT_VARIABLE = "SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT"
@@ -160,10 +162,21 @@ def load_cached_project_report(
             )
         preflight_text = os.environ.get(_PREFLIGHT_ENVIRONMENT_VARIABLE)
         if not preflight_text:
-            raise error_type(
-                f"{_PREFLIGHT_ENVIRONMENT_VARIABLE} is required when reusing a "
-                "content-hashed upstream report"
-            )
+            try:
+                current_context = compile_project_context_file(
+                    project_source, hash_content=True
+                )
+            except (OSError, ValueError) as exc:
+                raise error_type(
+                    "current input content could not be revalidated for cached "
+                    f"{module_id}: {exc}"
+                ) from exc
+            if current_context.get("input_content_signature_sha256") != signature:
+                raise error_type(
+                    f"cached {module_id} input-content signature does not match "
+                    "the current input files"
+                )
+            return payload
         preflight_path = Path(preflight_text).expanduser().resolve(strict=False)
         if not preflight_path.is_file():
             raise error_type(

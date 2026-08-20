@@ -1,6 +1,13 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
-from salsbury_md_analysis.scalar_threshold_states import analyze_threshold_state
+from salsbury_md_analysis.scalar_threshold_states import (
+    analyze_threshold_state,
+    scalar_threshold_states_project,
+)
 
 
 def _records(values, start=0):
@@ -16,6 +23,55 @@ def _records(values, start=0):
 
 
 class ScalarThresholdStateTests(unittest.TestCase):
+    def test_project_reuses_validated_trajectory_feature_report(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary) / "project.json"
+            project.write_text(json.dumps({
+                "definitions": {"scalar_threshold_states": {
+                    "source": "trajectory_features",
+                    "maximum_observations": 2,
+                    "states": [{
+                        "state_analysis_id": "s", "question": "q",
+                        "feature_id": "f", "value_index": 0,
+                        "operator": "less_than_or_equal", "threshold": 3.0,
+                        "sensitivity_thresholds": [2.5, 3.0, 3.5],
+                        "meets_threshold_label": "bound",
+                        "does_not_meet_threshold_label": "unbound",
+                    }],
+                }},
+            }), encoding="utf-8")
+            upstream = {
+                "project_manifest_sha256": "a" * 64,
+                "system_manifest_path": "/system.json",
+                "system_manifest_sha256": "b" * 64,
+                "input_content_signature_sha256": "c" * 64,
+                "segments": [{
+                    "system_id": "x", "replica_id": "r", "segment_id": "g",
+                    "features": [{
+                        "feature_id": "f", "dimension": 1,
+                        "records": [
+                            {"source_frame_index": 0, "axis_kind": "physical_time", "axis_value": 0.0, "values": [2.0]},
+                            {"source_frame_index": 1, "axis_kind": "physical_time", "axis_value": 1.0, "values": [4.0]},
+                        ],
+                    }],
+                }],
+                "issues": [],
+            }
+            with patch(
+                "salsbury_md_analysis.scalar_threshold_states.load_cached_project_report",
+                return_value=upstream,
+            ), patch(
+                "salsbury_md_analysis.scalar_threshold_states.trajectory_features_project",
+                side_effect=AssertionError("trajectory must not be recomputed"),
+            ):
+                report = scalar_threshold_states_project(project)
+        self.assertEqual(report["technical_status"], "complete")
+        self.assertEqual(report["observation_count"], 2)
+        self.assertEqual(
+            report["trajectory_feature_source_mode"],
+            "validated_upstream_report",
+        )
+
     def test_ion_binding_threshold_has_segment_safe_runs_and_sensitivity(self):
         segments = [
             ({"system_id": "bound", "replica_id": "r1", "segment_id": "a"}, _records([2.8, 3.0, 4.2])),

@@ -1,18 +1,19 @@
 # Production-readiness assessment
 
 Assessment date: 2026-08-20  
-Candidate: `0.0.1.dev84`
+Candidate: `0.1.0a1`
 
 ## Decision boundary
 
-This candidate is ready for a **private group repository and continued
-acceptance testing**. It is not yet a public, supported scientific release.
+This candidate is being prepared as a **public experimental alpha**. It is not
+presented as a supported scientific release.
 Every registered module remains `experimental`; technical completion, scheduler
 success, and scientific validity are separate statuses.
 
 The source contains 45 of 45 MD/core/reporting modules in the registry and
 standard profile. The exact current software-test result, Python environment,
-duration, and skip count are recorded in `validation/v84_dependency_test.json`.
+duration, and skip count are recorded in
+`validation/v0.1.0a1_dependency_test.json`.
 Generated references must match the registry, profiles, schemas, and command
 parser before a candidate can be frozen.
 
@@ -46,7 +47,7 @@ states require the original simulation topology and explicit project review.
 | Gate | Current evidence | Interpretation |
 |---|---|---|
 | Registry/profile | 45 of 45 modules with exact-set tests | Coverage contract, not scientific approval |
-| Dependency-equipped suite | Machine-readable record in `validation/v84_dependency_test.json` | Software behavior in the recorded environment only |
+| Dependency-equipped suite | Machine-readable record in `validation/v0.1.0a1_dependency_test.json` | Software behavior in the recorded environment only |
 | Installed local workflow | One-CPU, 100-frame TBA result in `validation/v80_installed_local_execution_test.json` | Local-adapter portability check, not a performance or scientific claim |
 | Generated documentation | Deterministic `scripts/generate_docs.py --check` | Documentation agrees with code metadata |
 | Package artifacts | Rebuild and scan the wheel and source archive from the exact retained snapshot; keep their hashes with the candidate evidence | Installability, not method validity |
@@ -57,31 +58,34 @@ states require the original simulation topology and explicit project review.
 TREX trajectories with known scientific defects may be used only as codebase and
 resource-planning stress evidence and must remain labeled failed-science evidence.
 Withdrawn TOP1 T0/T1 systems are excluded; retained TOP1 intrinsic-DNA evidence
-uses D0/D1 only. The dev84 five-row acceptance gate exercises protein-only,
+uses D0/D1 only. The retained five-row acceptance gate exercises protein-only,
 DNA-only, protein-DNA oligomer, ligand/cofactor, and multi-ion paths. It is a
-bounded software test. Every dev84 module and final-summary JSON uses
+bounded software test. Every current module and final-summary JSON uses
 `scientific_status: not evaluated` unless a later, separate human review record
 says otherwise.
 
-## Before a public or supported release
+## Public-alpha release gates
 
-1. Protect the private repository's default branch and name a primary maintainer
-   plus backup reviewer in `CODEOWNERS`.
-2. Run CI across Python 3.10–3.12 on Linux and macOS, build/install the artifacts
-   in empty environments, and retain exact logs and hashes.
-3. Complete the five-row generic acceptance matrix and verify report hashes,
-   errors, measured CPU/memory, and source/selected frame coverage.
-4. Have independent scientific reviewers approve each method's definitions,
-   reference comparison, tolerances, convergence limits, and interpretation.
-5. Add a lawful distributable trajectory tutorial fixture or a documented
-   download procedure before general community release.
-6. Complete contribution-rights and dependency-license review for every retained
-   historical component.
+1. Merge the reviewed alpha candidate into `main` only after Linux/macOS CI for
+   Python 3.10--3.12 and the isolated artifact-install job pass.
+2. Retain the final source-archive and wheel hashes with the release evidence.
+3. Keep the source and dependency provenance decision in
+   `RELEASE_RIGHTS_REVIEW.md` and re-open it when third-party material is added.
+4. Protect the public default branch and add a backup reviewer when one is
+   available.
+5. Add a lawful realistic trajectory tutorial or documented public download
+   before describing the alpha as a self-contained teaching release. The
+   current synthetic fixtures are sufficient for software tests, not a full
+   scientific tutorial.
+
+Independent module-by-module scientific review remains the gate for changing a
+module from `experimental` to `supported`; it is not silently implied by making
+the experimental source visible.
 
 PyPI, conda-forge, containers, Zenodo DOIs, and formal community governance are
-not required for the first group-supported release. No public repository,
-release tag, package upload, DOI, or public announcement is authorized for this
-candidate.
+not required for the first group-supported release. Repository visibility,
+package upload, DOI creation, and public announcement remain separate explicit
+actions. Preparing or merging this alpha does not authorize any of them.
 
 ## Support gate
 

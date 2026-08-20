@@ -295,6 +295,9 @@ export PYTHONPATH="$PACKAGE_ROOT${{PYTHONPATH:+:$PYTHONPATH}}"
 export OMP_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
+if [[ "$COMMAND" == "scalar-distributions" || "$COMMAND" == "scalar-threshold-states" ]]; then
+  export SALSBURY_MD_ANALYSIS_TRAJECTORY_FEATURES_REPORT="${{OUTPUT%/*}}/trajectory-features/report.json"
+fi
 mkdir -p "$OUTPUT" "$ROOT/logs"
 FINAL="$OUTPUT/report.json"
 SUMMARY="$FINAL.summary.json"

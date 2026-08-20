@@ -111,6 +111,13 @@ and `sampling-plan.json`. Every trajectory selection is a deterministic integer
 stride balanced across replicas/member timelines and is reported with source and
 selected frame counts.
 
+When an ion site creates an automatic distance question, the trajectory is read
+once by `trajectory_features`. The Scott-rule distribution and threshold-state
+analyses run in the next dependency stage and consume that hash-validated report;
+their reports say `validated_upstream_report`. The same automatic distance is not
+also submitted as an optional observable. `optional_observables` remains available
+for a genuinely different question declared by the user.
+
 You do not need to read every generated file before a routine first run. The
 most useful sequence is:
 

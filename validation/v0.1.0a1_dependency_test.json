@@ -1,0 +1,32 @@
+{
+  "validation_schema": "salsbury-public-alpha-dependency-test-v1",
+  "candidate_version": "0.1.0a1",
+  "recorded_at": "2026-08-20",
+  "execution_host": "Apollo Linux login node using the dependency-equipped v76 environment",
+  "python": "3.12.13",
+  "dependencies": {
+    "numpy": "2.5.2",
+    "scipy": "1.18.0",
+    "scikit-learn": "1.9.0",
+    "hdbscan": "0.8.44",
+    "openmm": "not installed; one expected optional test skip"
+  },
+  "command": "PYTHONPATH=.:src PYTHONPYCACHEPREFIX=<isolated> python3.12 -m unittest discover -s tests",
+  "tests_run": 447,
+  "expected_skips": 1,
+  "failures": 0,
+  "errors": 0,
+  "elapsed_seconds": 34.785,
+  "measured_wall_seconds_with_runner": 39.84,
+  "user_cpu_seconds": 29.73,
+  "system_cpu_seconds": 1.37,
+  "maximum_resident_memory_kib": 180740,
+  "generated_documentation_check": "pass via the dependency-equipped suite",
+  "rights_and_provenance_review": "pass; see RELEASE_RIGHTS_REVIEW.md",
+  "artifact_build_check": "pass for wheel and source archive using the installed offline setuptools/wheel toolchain",
+  "artifact_install_check": "pass for wheel and source archive in separate fresh targets; both installed commands listed the module registry",
+  "github_ci_status": "pending at candidate creation; merge is gated on the Linux/macOS Python 3.10-3.12 matrix and isolated artifact job",
+  "technical_status": "pass",
+  "scientific_status": "not evaluated",
+  "interpretation": "Dependency-equipped regression, documentation, provenance, and isolated artifact-install evidence only. This does not promote experimental modules to supported status or establish scientific validity."
+}

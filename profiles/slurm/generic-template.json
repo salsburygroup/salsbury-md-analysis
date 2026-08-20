@@ -15,8 +15,10 @@
     "analysis": null,
     "conformational": null,
     "finalizer": null,
-    "large_memory": null
+    "large_memory": null,
+    "long_wall": null
   },
+  "partition_maximum_wall_minutes": {},
   "environment": {
     "python_executable": null,
     "package_root": null,

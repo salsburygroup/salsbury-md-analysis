@@ -1,0 +1,52 @@
+{
+  "validation_schema": "salsbury-v86-dependency-test-v1",
+  "candidate_version": "0.0.1.dev86",
+  "recorded_at": "2026-08-20",
+  "execution_host": "Apollo Linux login node using the dependency-equipped v76 environment",
+  "python": "3.12.13",
+  "dependencies": {
+    "numpy": "2.5.2",
+    "scipy": "1.18.0",
+    "scikit-learn": "1.9.0",
+    "hdbscan": "0.8.44",
+    "openmm": "not installed; one expected optional test skip"
+  },
+  "command": "PYTHONPATH=.:src PYTHONPYCACHEPREFIX=<isolated> python3.12 -m unittest discover -s tests",
+  "tests_run": 447,
+  "expected_skips": 1,
+  "failures": 0,
+  "errors": 0,
+  "elapsed_seconds": 31.097,
+  "measured_wall_seconds_with_runner": 33.16,
+  "user_cpu_seconds": 29.28,
+  "system_cpu_seconds": 1.24,
+  "maximum_resident_memory_kib": 181988,
+  "full_150000_frame_plan": {
+    "technical_status": "complete",
+    "campaign_parallel_cpus": 32,
+    "campaign_wall_hours": 24,
+    "estimated_selected_cpu_hours": 27.522902501053114,
+    "estimated_selected_wall_hours_lower_bound": 17.03560944330065,
+    "coordinate_cache_selected_frames": 150000,
+    "coordinate_cache_estimated_wall_hours": 0.20749107142857143,
+    "common_pca_selected_frames": 50000,
+    "common_pca_integer_stride": 3,
+    "trajectory_features_selected_frames": 150000,
+    "scalar_consumers_selected_frames": 150000
+  },
+  "bounded_upstream_reuse_test": {
+    "technical_status": "complete",
+    "source_frames": 200,
+    "trajectory_features_wall_seconds": 4.20471972040832,
+    "scalar_distributions_wall_seconds": 0.5988163743168116,
+    "scalar_threshold_states_wall_seconds": 0.5919333379715681,
+    "downstream_source_mode": "validated_upstream_report",
+    "report_hashes_verified": true
+  },
+  "generated_documentation_check": "pass via dependency-equipped suite",
+  "source_archive_manifest_check": "pass; dev86 record, DEAC profile, source, tests, and humanized documentation included",
+  "source_archive_install_check": "pass with no build isolation and no dependency download; installed version reported 0.0.1.dev86",
+  "technical_status": "pass",
+  "scientific_status": "not evaluated",
+  "interpretation": "Dependency-equipped regression, full-input planning, and bounded dependency-reuse evidence only; this does not establish scientific validity or authorize a public release."
+}

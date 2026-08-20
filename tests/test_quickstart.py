@@ -343,7 +343,8 @@ class QuickstartTests(unittest.TestCase):
             self.assertEqual(campaign["technical_status"], "complete")
             self.assertEqual(
                 campaign["planning_scope"],
-                "complete generated base plus conformational-view campaign",
+                "complete generated base including inferred chemistry plus "
+                "conformational-view campaign",
             )
             task_rows = {row["task_id"]: row for row in campaign["tasks"]}
             self.assertIn("preprocessing:coordinate_cache", task_rows)
@@ -665,11 +666,13 @@ class QuickstartTests(unittest.TestCase):
             )
             self.assertTrue(generated.is_file())
             project = json.loads((output / "project.json").read_text())
-            self.assertEqual(project["reference_connectivity"], str(generated))
+            self.assertEqual(
+                project["reference_connectivity"], str(generated.resolve())
+            )
             system = json.loads((output / "system.json").read_text())
             self.assertEqual(
                 system["systems"][0]["replicas"][0]["connectivity"],
-                str(generated),
+                str(generated.resolve()),
             )
             self.assertNotIn(str(generated), project["protected_locations"])
             export_connectivity.assert_called_once_with(
@@ -707,9 +710,29 @@ class QuickstartTests(unittest.TestCase):
             self.assertEqual(report["technical_status"], "complete")
             stages = json.loads((output / "workflow-stages.json").read_text())
             stage_zero = next(row for row in stages["stages"] if row["stage"] == 0)
+            stage_one = next(row for row in stages["stages"] if row["stage"] == 1)
             self.assertTrue(
                 set(stage_zero["commands"]).issubset(_GENERIC_STAGE_COMMANDS[0])
             )
+            self.assertIn("trajectory-features", stage_zero["commands"])
+            self.assertNotIn("observables", stage_zero["commands"])
+            self.assertIn("scalar-distributions", stage_one["commands"])
+            self.assertIn("scalar-threshold-states", stage_one["commands"])
+            stage_one_worker = (output / "run_stage_1_array.slurm").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn(
+                "SALSBURY_MD_ANALYSIS_TRAJECTORY_FEATURES_REPORT",
+                stage_one_worker,
+            )
+            campaign = json.loads(
+                (output / "campaign-resource-plan.json").read_text()
+            )
+            task_ids = {row["task_id"] for row in campaign["tasks"]}
+            self.assertIn("base:trajectory_features", task_ids)
+            self.assertIn("base:scalar_feature_distributions", task_ids)
+            self.assertIn("base:scalar_threshold_states", task_ids)
+            self.assertNotIn("base:optional_observables", task_ids)
             staged = set().union(*_GENERIC_STAGE_COMMANDS.values())
             self.assertTrue(
                 set(_GENERIC_CHEMISTRY_COMMANDS.values()).issubset(staged)

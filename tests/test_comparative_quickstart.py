@@ -23,16 +23,28 @@ class ComparativeQuickstartTests(unittest.TestCase):
                 "hard-wall-limit",
                 [{
                     "project_filename": "project-chemical_control.json",
-                    "commands": ["ion-geometry"],
+                    "commands": [
+                        "trajectory-features", "scalar-distributions",
+                        "scalar-threshold-states",
+                    ],
                 }],
                 target_wall_hours=24.0,
                 python_executable="/usr/bin/python3",
                 package_root="/tmp/package/src",
             )
-            self.assertEqual(counts, {0: 1})
-            worker = (root / generated[0]).read_text(encoding="utf-8")
-            self.assertIn("#SBATCH --time=24:00:00", worker)
-            self.assertNotIn("#SBATCH --time=24:30:00", worker)
+            self.assertEqual(counts, {0: 1, 1: 2})
+            workers = [
+                (root / filename).read_text(encoding="utf-8")
+                for filename in generated
+            ]
+            self.assertTrue(all("#SBATCH --time=24:00:00" in text for text in workers))
+            self.assertTrue(all("#SBATCH --time=24:30:00" not in text for text in workers))
+            stage_one = (root / "run_automatic_context_stage_1_array.slurm").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn(
+                "SALSBURY_MD_ANALYSIS_TRAJECTORY_FEATURES_REPORT", stage_one
+            )
 
     def test_per_system_conformational_branches_can_be_disabled(self):
         with tempfile.TemporaryDirectory() as temporary:
