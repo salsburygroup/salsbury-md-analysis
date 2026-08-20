@@ -51,7 +51,8 @@ states require the original simulation topology and explicit project review.
 |---|---|---|
 | Registry/profile | 45 of 45 modules with exact-set tests | Coverage contract, not scientific approval |
 | Dependency-equipped suite | Machine-readable record in `validation/v0.1.0a1_dependency_test.json` | Software behavior in the recorded environment only |
-| Memory-planner update | Source-hash-bound 457-test and low-memory preparation record in `validation/v0.1.0a1_memory_planner_update_test.json` | Current update behavior on one workstation only; absent GitHub Actions is not a pass |
+| Memory-planner update | Source-hash-bound 457-test, low-memory preparation, and GitHub Actions record in `validation/v0.1.0a1_memory_planner_update_test.json` | Current update behavior on the recorded workstation and CI matrix; scientific status remains unevaluated |
+| GitHub Actions | Six successful Linux/macOS jobs for Python 3.10--3.12 plus the successful isolated artifact-build/install job | Technical portability and packaging gate for the tested head; rerun after every later commit |
 | Installed local workflow | One-CPU, 100-frame TBA result in `validation/v80_installed_local_execution_test.json` | Local-adapter portability check, not a performance or scientific claim |
 | Teaching workflow | 1,000-frame NEMO protein-plus-zinc run in `validation/nemo_zinc_finger_tutorial_acceptance.json` | End-to-end tutorial acceptance, not converged sampling or a biological conclusion |
 | Generated documentation | Deterministic `scripts/generate_docs.py --check` | Documentation agrees with code metadata |

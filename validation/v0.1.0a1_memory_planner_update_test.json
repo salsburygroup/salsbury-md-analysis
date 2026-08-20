@@ -50,7 +50,32 @@
     "remote_file_count": 293,
     "content_hash_mismatches": 0
   },
-  "github_actions_status": "No workflow run was registered at post-push readback; this is not treated as a CI pass.",
+  "github_actions_verification": {
+    "workflow": "tests",
+    "run_number": 21,
+    "run_id": 32412180037,
+    "run_url": "https://github.com/salsburygroup/salsbury-md-analysis/actions/runs/32412180037",
+    "event": "push",
+    "head_sha": "b983968d486e1352ccd81fa896b7588c007b5615",
+    "conclusion": "success",
+    "duration_seconds": 90,
+    "successful_jobs": [
+      "test (ubuntu-latest, 3.10)",
+      "test (ubuntu-latest, 3.11)",
+      "test (ubuntu-latest, 3.12)",
+      "test (macos-latest, 3.10)",
+      "test (macos-latest, 3.11)",
+      "test (macos-latest, 3.12)",
+      "package-artifacts"
+    ],
+    "artifact": {
+      "name": "salsbury-md-analysis-0.1.0a1-artifacts",
+      "size_bytes": 6035893,
+      "sha256_digest": "3bff9b0178143fa6e9962cc1907dbb411e70c9849224e7f94c78fe176f95126c",
+      "expired": false
+    },
+    "scope": "Live CI evidence for the tested source plus the first retained evidence commit. Any later repository head must pass its own workflow before publication."
+  },
   "technical_status": "pass",
   "scientific_status": "not evaluated",
   "interpretation": "Regression, documentation, memory-feasibility, config-preservation, and private-remote integrity evidence only. It does not establish scientific validity, production convergence, or public-release readiness."
