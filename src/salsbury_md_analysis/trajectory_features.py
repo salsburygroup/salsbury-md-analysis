@@ -24,6 +24,7 @@ from .trajectory_contracts import (
     frame_axis_value,
     normalize_segment_axis,
 )
+from .upstream_cache import project_module_contract_sha256
 from .validation import positive_integer
 
 
@@ -495,6 +496,9 @@ def trajectory_features_project(
         "scientific_status": "not evaluated",
         "project_manifest_path": str(source),
         "project_manifest_sha256": context["project_manifest_sha256"],
+        "module_contract_sha256": project_module_contract_sha256(
+            "trajectory_features", source
+        ),
         "system_manifest_path": str(system_path),
         "system_manifest_sha256": context["system_manifest_sha256"],
         "input_content_signature_sha256": context["input_content_signature_sha256"],

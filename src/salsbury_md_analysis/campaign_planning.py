@@ -28,6 +28,45 @@ class CampaignPlanningError(ValueError):
     """Raised when a prepared workflow cannot form one bounded campaign DAG."""
 
 
+def _campaign_infeasibility_detail(plan: Mapping[str, object]) -> str:
+    """Explain a failed envelope with the measured shortfall and next bound."""
+
+    reasons = plan.get("infeasibility_reasons", [])
+    parts = [str(reason) for reason in reasons] if isinstance(reasons, list) else []
+    maximum_wall = float(plan["maximum_wall_hours_input"])
+    science_wall = float(plan["science_budget_wall_hours"])
+    minimum_wall = plan.get("minimum_wall_hours_lower_bound")
+    required_candidates: list[float] = []
+    if isinstance(minimum_wall, (int, float)) and not isinstance(minimum_wall, bool):
+        minimum_wall_value = float(minimum_wall)
+        parts.append(
+            "minimum calibrated critical path "
+            f"{minimum_wall_value:.3f} h; science wall allowance "
+            f"{science_wall:.3f} h within the {maximum_wall:.3f} h campaign ceiling"
+        )
+        if science_wall > 0.0:
+            required_candidates.append(
+                minimum_wall_value * maximum_wall / science_wall
+            )
+    minimum_cpu = float(plan["minimum_known_cpu_hours"])
+    science_cpu = float(plan["science_budget_cpu_hours"])
+    cpus = int(plan["maximum_parallel_cpus_input"])
+    parts.append(
+        f"minimum calibrated CPU {minimum_cpu:.3f} CPU-h; science CPU allowance "
+        f"{science_cpu:.3f} CPU-h across {cpus} CPUs"
+    )
+    if science_cpu > 0.0:
+        required_candidates.append(minimum_cpu * maximum_wall / science_cpu)
+    if required_candidates:
+        required = max(required_candidates)
+        parts.append(
+            "estimated minimum campaign ceiling with the current utilization and "
+            f"reserves is {required:.3f} h; retry with --target-wall-hours "
+            f"{max(1, math.ceil(required))} or revise the explicit resource policy"
+        )
+    return "; ".join(parts) or str(plan.get("feasibility_status", "infeasible"))
+
+
 def _apply_measured_resource_calibrations(
     tasks: Sequence[Dict[str, object]],
     measured: Mapping[str, Mapping[str, object]],
@@ -40,11 +79,27 @@ def _apply_measured_resource_calibrations(
     for task in tasks:
         module_id = str(task.get("module_id", ""))
         calibration = measured.get(module_id)
-        if calibration is None:
+        if calibration is None or task.get("measured_calibration_eligible", True) is False:
             continue
+        rate_multiplier = task.get("measured_cpu_rate_multiplier", 1.0)
+        memory_multiplier = task.get("measured_memory_multiplier", 1.0)
+        for value, label in (
+            (rate_multiplier, "measured_cpu_rate_multiplier"),
+            (memory_multiplier, "measured_memory_multiplier"),
+        ):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or float(value) <= 0.0
+            ):
+                raise CampaignPlanningError(
+                    f"task {task.get('task_id')} {label} must be finite and positive"
+                )
         measured_rate = (
             float(calibration["conservative_cpu_seconds_per_frame"])
             * time_safety_factor
+            * float(rate_multiplier)
         )
         current_rate = task.get("cpu_seconds_per_physical_frame")
         if (
@@ -57,7 +112,7 @@ def _apply_measured_resource_calibrations(
             )
         measured_memory = (
             float(calibration["maximum_resident_memory_mib"])
-            * memory_safety_factor / 1024.0
+            * memory_safety_factor * float(memory_multiplier) / 1024.0
         )
         current_memory = task.get("estimated_peak_memory_gib")
         if isinstance(current_memory, (int, float)) and not isinstance(current_memory, bool):
@@ -86,7 +141,12 @@ def _apply_measured_resource_calibrations(
             "maximum_measured_resident_memory_mib": calibration[
                 "maximum_resident_memory_mib"
             ],
-            "policy": "conservative maximum; measured coverage is not a scientific ceiling",
+            "cpu_rate_workload_multiplier": float(rate_multiplier),
+            "memory_workload_multiplier": float(memory_multiplier),
+            "policy": (
+                "conservative maximum after the task's declared workload scaling; "
+                "measured coverage is not a scientific ceiling"
+            ),
         }
 
 
@@ -237,17 +297,29 @@ def _automatic_context_tasks(
     source_counts: Sequence[int],
     *,
     time_safety_factor: float,
+    context_id: Optional[str] = None,
+    task_namespace: Optional[str] = None,
+    task_scope: str = "automatic_chemical_context",
 ) -> List[Dict[str, object]]:
     project = load_json(project_path)
     if not isinstance(project, dict):
         raise CampaignPlanningError(
             f"automatic-context project is not an object: {project_path}"
         )
-    context_id = project_path.name[len("project-") : -len(".json")]
+    resolved_context_id = (
+        context_id
+        if context_id is not None
+        else project_path.name[len("project-") : -len(".json")]
+    )
+    resolved_task_namespace = (
+        task_namespace
+        if task_namespace is not None
+        else f"context:{resolved_context_id}"
+    )
     requested = project.get("requested_modules")
     if not isinstance(requested, list):
         raise CampaignPlanningError(
-            f"automatic-context project {context_id} has no requested_modules"
+            f"automatic-context project {resolved_context_id} has no requested_modules"
         )
     tasks: List[Dict[str, object]] = []
     for module_id in requested:
@@ -261,16 +333,16 @@ def _automatic_context_tasks(
         balance_group = (
             "automatic_context:ion_scalar:shared_frames"
             if module in {
-                "trajectory_features", "optional_observables",
+                "trajectory_features",
                 "scalar_feature_distributions", "scalar_threshold_states",
             }
             else f"automatic_context:{module}:shared_frames"
         )
         tasks.append({
-            "task_id": f"context:{context_id}:{module}",
-            "workflow_id": context_id,
+            "task_id": f"{resolved_task_namespace}:{module}",
+            "workflow_id": resolved_context_id,
             "module_id": module,
-            "task_scope": "automatic_chemical_context",
+            "task_scope": task_scope,
             "dependency_stage": int(model["stage"]),
             "effective_cpu_cap": 1,
             "source_frames_per_replica": list(source_counts),
@@ -293,6 +365,17 @@ def _automatic_context_tasks(
                 else "provisional_complexity_model"
             ),
             "calibration_id": str(model["calibration"]),
+            "measured_calibration_eligible": module not in {
+                "scalar_feature_distributions", "scalar_threshold_states",
+            },
+            "measured_calibration_exclusion_reason": (
+                "historical measurements included trajectory-feature recomputation; "
+                "the staged implementation now consumes a validated upstream report"
+                if module in {
+                    "scalar_feature_distributions", "scalar_threshold_states",
+                }
+                else None
+            ),
         })
     return tasks
 
@@ -366,6 +449,15 @@ def _view_pca_task(
         "balance_group": balance_group,
         "calibration_status": "completed_30k_feature_scaled",
         "calibration_id": "apollo-oligomer-v20-common-pca-30k-feature-scaled",
+        "measured_cpu_rate_multiplier": feature_factor * (multiplier / 2.0),
+        "measured_memory_multiplier": feature_factor,
+        "measured_workload_scaling": {
+            "reference_cartesian_feature_count": 5_616,
+            "cartesian_feature_count": features,
+            "feature_exponent": 0.75,
+            "reference_member_observation_multiplier": 2,
+            "member_observation_multiplier": multiplier,
+        },
     }
 
 
@@ -854,24 +946,38 @@ def _apply_automatic_context_allocation(
     project_path: Path,
     task_rows: Mapping[str, Mapping[str, object]],
     source_counts: Sequence[int],
+    *,
+    context_id: Optional[str] = None,
+    task_namespace: Optional[str] = None,
 ) -> Dict[str, object]:
     project = load_json(project_path)
     if not isinstance(project, dict):
         raise CampaignPlanningError(
             f"automatic-context project is not an object: {project_path}"
         )
-    context_id = project_path.name[len("project-") : -len(".json")]
+    resolved_context_id = (
+        context_id
+        if context_id is not None
+        else project_path.name[len("project-") : -len(".json")]
+    )
+    resolved_task_namespace = (
+        task_namespace
+        if task_namespace is not None
+        else f"context:{resolved_context_id}"
+    )
     definitions = project.get("definitions")
     requested = project.get("requested_modules")
     if not isinstance(definitions, dict) or not isinstance(requested, list):
         raise CampaignPlanningError(
-            f"automatic-context project {context_id} is incomplete"
+            f"automatic-context project {resolved_context_id} is incomplete"
         )
     applied: list[Dict[str, object]] = []
     feature_family_budget: Optional[int] = None
     for raw_module in requested:
         module_id = str(raw_module)
-        allocation = task_rows.get(f"context:{context_id}:{module_id}")
+        if module_id not in _AUTOMATIC_CONTEXT_MODELS:
+            continue
+        allocation = task_rows.get(f"{resolved_task_namespace}:{module_id}")
         if allocation is None:
             continue
         selected = [
@@ -883,7 +989,7 @@ def _apply_automatic_context_allocation(
         selected_total = sum(selected)
         all_frames = selected == list(source_counts)
         if module_id in {
-            "trajectory_features", "optional_observables",
+            "trajectory_features",
             "scalar_feature_distributions", "scalar_threshold_states",
         }:
             feature_family_budget = max(selected)
@@ -949,7 +1055,7 @@ def _apply_automatic_context_allocation(
         json.dumps(project, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     validate_project(project, source_path=project_path, check_paths=True)
-    return {"context_id": context_id, "modules": applied}
+    return {"context_id": resolved_context_id, "modules": applied}
 
 
 def _apply_view_allocation(
@@ -1193,6 +1299,13 @@ def plan_and_apply_complete_campaign(
                 "calibration_source_atom_count": 85_206,
                 "calibration_cached_atom_count": 7_560,
                 "atom_runtime_multiplier": cache_atom_multiplier,
+                "measured_cpu_rate_multiplier": cache_atom_multiplier,
+                "measured_memory_multiplier": max(0.1, cache_atom_multiplier),
+                "measured_workload_scaling": {
+                    "reference_source_atom_count": 85_206,
+                    "source_atom_count": int(dimensions["maximum_atom_count"]),
+                    "atom_runtime_multiplier_floor": 0.01,
+                },
             })
         current_base = load_json(base_project_path)
         if not isinstance(current_base, dict):
@@ -1200,6 +1313,21 @@ def plan_and_apply_complete_campaign(
         built.extend(_base_derived_tasks(
             current_base, built, time_safety_factor=time_safety_factor
         ))
+        already_planned_modules = {
+            str(row.get("module_id", "")) for row in built
+        }
+        base_automatic_tasks = _automatic_context_tasks(
+            base_project_path,
+            source_counts,
+            time_safety_factor=time_safety_factor,
+            context_id="base",
+            task_namespace="base",
+            task_scope="base_automatic_chemistry",
+        )
+        built.extend(
+            row for row in base_automatic_tasks
+            if str(row["module_id"]) not in already_planned_modules
+        )
         for path in context_paths:
             context_id = path.name[len("project-") : -len(".json")]
             context_source_counts = (
@@ -1265,13 +1393,9 @@ def plan_and_apply_complete_campaign(
             plan["feasibility_status"] != "feasible"
             and bool(execution.get("fail_if_minimum_coverage_unaffordable", True))
         ):
-            reasons = plan.get("infeasibility_reasons", [])
-            detail = "; ".join(str(reason) for reason in reasons) or str(
-                plan["feasibility_status"]
-            )
             raise CampaignPlanningError(
                 "configured whole-campaign envelope cannot fund the declared "
-                f"technical minima: {detail}"
+                f"technical minima: {_campaign_infeasibility_detail(plan)}"
             )
         _apply_campaign_direct_allocations(
             sampling_plan["method_plans"],  # type: ignore[arg-type]
@@ -1290,6 +1414,16 @@ def plan_and_apply_complete_campaign(
             str(row["task_id"]): row
             for row in plan["tasks"] if isinstance(row, dict)
         }
+        base_automatic_allocation = _apply_automatic_context_allocation(
+            base_project_path,
+            task_rows,
+            source_counts,
+            context_id="base",
+            task_namespace="base",
+        )
+        plan["applied_base_automatic_chemistry_allocation"] = (
+            base_automatic_allocation
+        )
         applied_views = []
         for path in view_paths:
             view_id = path.name[len("project-") : -len(".json")]
@@ -1358,10 +1492,11 @@ def plan_and_apply_complete_campaign(
         )
     plan.update({
         "planning_scope": (
-            "complete generated base, topology-local automatic chemical context, "
-            "and conformational-view campaign"
+            "complete generated base including inferred chemistry, per-system "
+            "topology-local automatic chemical context, and conformational-view campaign"
             if context_paths
-            else "complete generated base plus conformational-view campaign"
+            else "complete generated base including inferred chemistry plus "
+            "conformational-view campaign"
         ),
         "planning_algorithm": "globally_coupled_integer_stride_iteration_v2",
         "planning_iterations": len(iteration_history),

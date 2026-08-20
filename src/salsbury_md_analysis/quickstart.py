@@ -789,14 +789,14 @@ _GENERIC_STAGE_COMMANDS = {
         "common-pca", "dihedrals", "hydrogen-bond-discovery", "sasa",
         "water-mediated-hydrogen-bonds", "secondary-structure",
         "trajectory-features", "observables", "rdf", "ion-atmosphere",
-        "ion-geometry", "scalar-distributions", "scalar-threshold-states",
-        "nucleic-acid-structure", "nucleic-acid-geometry",
+        "ion-geometry", "nucleic-acid-structure", "nucleic-acid-geometry",
     },
     1: {
         "information-correlation", "information-dynamics",
         "correlation-networks", "tica", "pca-fes-basins", "cluster-kmeans",
         "cluster-imwkmeans", "alternative-clustering", "convergence",
-        "cluster-hdbscan", "pald-community",
+        "cluster-hdbscan", "pald-community", "scalar-distributions",
+        "scalar-threshold-states",
     },
     2: {"representative-frames", "markov-models", "grouped-ml"},
 }
@@ -1627,6 +1627,7 @@ rm "$TMP" "$SUMMARY_TMP"
         1: f"""export SALSBURY_MD_ANALYSIS_COMMON_PCA_REPORT={json.dumps(str(root / 'results/common-pca/report.json'))}
 export SALSBURY_MD_ANALYSIS_DCCM_REPORT={json.dumps(str(root / 'results/dccm/report.json'))}
 export SALSBURY_MD_ANALYSIS_RMSD_RG_REPORT={json.dumps(str(root / 'results/rmsd-rg/report.json'))}
+export SALSBURY_MD_ANALYSIS_TRAJECTORY_FEATURES_REPORT={json.dumps(str(root / 'results/trajectory-features/report.json'))}
 export SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT={json.dumps(str(root / 'preflight.report.json'))}""",
         2: f"""export SALSBURY_MD_ANALYSIS_COMMON_PCA_REPORT={json.dumps(str(root / 'results/common-pca/report.json'))}
 export SALSBURY_MD_ANALYSIS_KMEANS_REPORT={json.dumps(str(root / 'results/cluster-kmeans/report.json'))}
@@ -1940,7 +1941,10 @@ printf 'Results will appear under %s/results.\\n' "$ROOT"
                     ),
                     "upstream_report_reuse": {
                         0: [],
-                        1: ["common_pca", "dccm", "replica_rmsd_rg"],
+                        1: [
+                            "common_pca", "dccm", "replica_rmsd_rg",
+                            "trajectory_features",
+                        ],
                         2: ["common_pca", "clustering_kmeans"],
                     }[stage],
                 }

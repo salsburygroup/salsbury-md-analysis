@@ -27,12 +27,12 @@ class ExecutionAdapterError(ValueError):
 _PROFILE_SCHEMA = "salsbury-slurm-profile-v1"
 _PARTITION_ROLES = {
     "default", "preflight", "coordinate_cache", "analysis",
-    "conformational", "finalizer", "large_memory",
+    "conformational", "finalizer", "large_memory", "long_wall",
 }
 _PROFILE_FIELDS = {
     "slurm_profile_schema", "profile_id", "cluster_name", "submit_command",
     "status_command", "cancel_command", "account", "unix_group", "qos",
-    "partitions", "environment", "paths", "resource_policy",
+    "partitions", "partition_maximum_wall_minutes", "environment", "paths", "resource_policy",
     "additional_sbatch_directives",
 }
 _RESOURCE_POLICY_DEFAULTS = {
@@ -101,6 +101,36 @@ def load_slurm_profile(path: Path) -> Dict[str, object]:
         role: _plain_string(partitions.get(role), f"partitions.{role}", nullable=True)
         for role in sorted(_PARTITION_ROLES)
     }
+
+    partition_limits = profile.get("partition_maximum_wall_minutes", {})
+    if not isinstance(partition_limits, dict):
+        raise ExecutionAdapterError(
+            "partition_maximum_wall_minutes must be an object"
+        )
+    configured_partitions = {
+        str(value) for value in normalized["partitions"].values() if value is not None
+    }
+    unknown_limit_partitions = sorted(
+        set(partition_limits).difference(configured_partitions)
+    )
+    if unknown_limit_partitions:
+        raise ExecutionAdapterError(
+            "partition_maximum_wall_minutes contains unconfigured partitions: "
+            + ", ".join(unknown_limit_partitions)
+        )
+    checked_partition_limits: Dict[str, float] = {}
+    for partition_name, value in partition_limits.items():
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) <= 0.0
+        ):
+            raise ExecutionAdapterError(
+                "partition_maximum_wall_minutes values must be finite and positive"
+            )
+        checked_partition_limits[str(partition_name)] = float(value)
+    normalized["partition_maximum_wall_minutes"] = checked_partition_limits
 
     environment = profile.get("environment", {})
     allowed_environment = {
@@ -544,6 +574,8 @@ def apply_slurm_profile(
     resource_policy = profile["resource_policy"]
     assert isinstance(resource_policy, Mapping)
     script_requests = _script_resource_requests(execution_plan)
+    partition_limits = profile["partition_maximum_wall_minutes"]
+    assert isinstance(partition_limits, Mapping)
 
     for path in sorted(root.glob("*.slurm")):
         text = path.read_text(encoding="utf-8")
@@ -562,6 +594,35 @@ def apply_slurm_profile(
         if is_large:
             role = "large_memory"
         partition = partitions.get(role) or partitions.get("default")
+        requested_wall_minutes = float(request["requested_wall_minutes"])
+        partition_limit = (
+            None if partition is None else partition_limits.get(str(partition))
+        )
+        long_wall_routed = False
+        if (
+            partition_limit is not None
+            and requested_wall_minutes > float(partition_limit)
+        ):
+            long_wall_partition = partitions.get("long_wall")
+            if not long_wall_partition:
+                raise ExecutionAdapterError(
+                    f"{path.name} requests {requested_wall_minutes:g} minutes, "
+                    f"exceeding partition {partition!r} limit "
+                    f"{float(partition_limit):g}, but partitions.long_wall is unset"
+                )
+            long_wall_limit = partition_limits.get(str(long_wall_partition))
+            if (
+                long_wall_limit is not None
+                and requested_wall_minutes > float(long_wall_limit)
+            ):
+                raise ExecutionAdapterError(
+                    f"{path.name} requests {requested_wall_minutes:g} minutes, "
+                    f"exceeding long-wall partition {long_wall_partition!r} limit "
+                    f"{float(long_wall_limit):g}"
+                )
+            role = "long_wall"
+            partition = long_wall_partition
+            long_wall_routed = True
         directives = []
         if account:
             directives.append(f"#SBATCH --account={account}")
@@ -596,6 +657,10 @@ def apply_slurm_profile(
         path.write_text(text, encoding="utf-8")
         request["selected_partition_role"] = role
         request["selected_partition"] = partition
+        request["long_wall_routed"] = long_wall_routed
+        request["selected_partition_maximum_wall_minutes"] = (
+            None if partition is None else partition_limits.get(str(partition))
+        )
         request["slurm_time"] = _format_slurm_time(
             float(request["requested_wall_minutes"])
         )
@@ -625,11 +690,16 @@ def apply_slurm_profile(
         "profile_id": profile["profile_id"],
         "cluster_name": profile["cluster_name"],
         "resource_policy": dict(resource_policy),
+        "partition_maximum_wall_minutes": dict(partition_limits),
         "tasks": _task_resource_requests(execution_plan),
         "scripts": script_requests,
         "large_memory_routing": (
             "a whole worker array uses the large-memory role when the largest "
             "element request reaches the configured threshold"
+        ),
+        "long_wall_routing": (
+            "a worker script is routed to the long-wall role when its requested "
+            "wall time exceeds the configured limit of its preferred partition"
         ),
     }
 

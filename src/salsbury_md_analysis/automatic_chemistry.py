@@ -252,18 +252,12 @@ def infer_standard_chemistry_definitions(
             })
 
     feature_rows: list[Dict[str, object]] = []
-    observable_rows: list[Dict[str, object]] = []
     threshold_rows: list[Dict[str, object]] = []
     distribution_rows: list[Dict[str, object]] = []
     for pair in ion_pairs:
         feature_id = str(pair["pair_id"])
         indices = [int(pair["first_ion_atom_index"]), int(pair["second_ion_atom_index"])]
         feature_rows.append({"feature_id": feature_id, "kind": "pair_distance", "atom_indices": indices})
-        observable_rows.append({
-            "feature_id": f"{feature_id}-explicit-distance", "kind": "distance",
-            "atom_indices": indices,
-            "question": f"How does the inferred ion-pair distance {feature_id} vary?",
-        })
         cutoff = 4.0
         threshold_rows.append({
             "state_analysis_id": f"{feature_id}-contact-state",
@@ -287,12 +281,6 @@ def infer_standard_chemistry_definitions(
                 "feature_id": feature_id, "kind": "group_minimum_distance",
                 "group_a_atom_indices": [int(site["ion_atom_index"])],
                 "group_b_atom_indices": list(site["candidate_ligand_atom_indices"]),
-            })
-            observable_rows.append({
-                "feature_id": f"{feature_id}-observable", "kind": "group_minimum_distance",
-                "group_a_atom_indices": [int(site["ion_atom_index"])],
-                "group_b_atom_indices": list(site["candidate_ligand_atom_indices"]),
-                "question": f"How close is {site['site_id']} to its inferred solute ligand set?",
             })
             cutoff = float(site["coordination_cutoff_angstrom"])
             threshold_rows.append({
@@ -381,10 +369,6 @@ def infer_standard_chemistry_definitions(
             "frame_stride": 1, "maximum_feature_values": maximum_values,
             "features": feature_rows,
         }
-        definitions["optional_observables"] = {
-            "frame_stride": 1, "maximum_observations": maximum_values,
-            "features": observable_rows,
-        }
         definitions["scalar_feature_distributions"] = {
             "source": "trajectory_features", "maximum_observations": maximum_values,
             "distributions": distribution_rows,
@@ -393,9 +377,14 @@ def infer_standard_chemistry_definitions(
             "source": "trajectory_features", "maximum_observations": maximum_values,
             "states": threshold_rows,
         }
+        not_applicable["optional_observables"] = (
+            "automatic ion-distance questions are represented once by "
+            "trajectory_features and its scalar distribution/state consumers; "
+            "optional_observables remains available for distinct user-declared questions"
+        )
         applicable.extend([
             "ion_coordination_geometry", "trajectory_features",
-            "optional_observables", "scalar_feature_distributions",
+            "scalar_feature_distributions",
             "scalar_threshold_states",
         ])
     else:

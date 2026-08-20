@@ -103,6 +103,12 @@ class AutomaticChemistryTests(unittest.TestCase):
                 {"MG", "NA"},
             )
             self.assertIn("ion_atmosphere", report["applicable_modules"])
+            self.assertIn("trajectory_features", report["applicable_modules"])
+            self.assertNotIn("optional_observables", report["definitions"])
+            self.assertIn(
+                "represented once by trajectory_features",
+                report["not_applicable_modules"]["optional_observables"],
+            )
 
 
 if __name__ == "__main__":

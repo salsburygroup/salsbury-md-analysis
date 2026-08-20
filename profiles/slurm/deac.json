@@ -15,7 +15,12 @@
     "analysis": "small",
     "conformational": "small",
     "finalizer": "small",
-    "large_memory": "large"
+    "large_memory": "large",
+    "long_wall": "large"
+  },
+  "partition_maximum_wall_minutes": {
+    "small": 1440,
+    "large": 259200
   },
   "environment": {
     "python_executable": "/deac/phy/salsburyGrp/software/salsbury-md-analysis/environments/v76/bin/python3.12",

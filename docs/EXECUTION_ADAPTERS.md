@@ -68,6 +68,13 @@ Set `submission_adapter` to `slurm` and provide `slurm_profile`:
 }
 ```
 
+Site profiles may declare `partition_maximum_wall_minutes` and a `long_wall`
+partition role. A generated request that exceeds its preferred partition's
+declared limit is then routed automatically to `long_wall`; if no acceptable
+fallback is configured, preparation fails before scheduler submission. The
+supplied DEAC profile records the 24-hour `small` limit and routes longer work
+to `large` while leaving ordinary short jobs on `small`.
+
 The profile schema is `salsbury-slurm-profile-v1`. It records scheduler submit,
 status, and cancel commands; account, Unix group, QoS, and role-specific partitions;
 Python and package paths; environment setup commands and variables; shared-write

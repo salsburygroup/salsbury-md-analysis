@@ -66,6 +66,14 @@ transition counts, and boundary-censored residence runs. A threshold-defined
 "bound" state is operational only; it is not a binding free energy, affinity,
 or electronic-structure determination.
 
+For inferred ion questions, `trajectory_features` is the sole coordinate-pass
+producer. Scalar distributions and threshold states are budgeted separately as
+postprocessing tasks, run after that producer, and accept only a technically
+complete report whose project, module contract, system manifest, and current
+input-content signature match. Each downstream report records whether it reused
+that validated upstream result or computed features directly in a standalone
+invocation.
+
 ## Hydrogen bonds: explicit evaluation versus discovery
 
 `hydrogen_bonds` remains the strict option when the scientific question names

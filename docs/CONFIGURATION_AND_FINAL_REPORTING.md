@@ -77,6 +77,19 @@ clustering, and state methods share the selected physical-frame identities of
 their view PCA; equivalent oligomer members add observations but do not add
 physical frames or replicas. A configured envelope that cannot fund the small
 technical minima fails closed by default.
+That failure includes the minimum calibrated critical path, the science wall
+and CPU allowances after reserves, the configured campaign ceiling, and the
+smallest calculated `--target-wall-hours` retry bound. The number is guidance,
+not an automatic change to the user's resource request.
+
+Measured catalogs describe the systems on which they were collected; they are
+not universal per-frame constants. Planner tasks may therefore carry an
+auditable workload multiplier before a catalog rate or memory maximum is
+applied. The coordinate cache uses source atom count. Common PCA uses Cartesian
+feature count and member-observation expansion. Methods driven by projected
+observations rather than raw atoms keep their observation-based model. The
+applied multiplier and reference workload remain in
+`campaign-resource-plan.json`.
 The generated local and Slurm adapters run base stages before conformational stages.
 `execution.submission_adapter` selects `local` or `slurm`; local is the default.
 Slurm mode requires a validated `execution.slurm_profile`, which keeps account,

@@ -204,6 +204,13 @@ selection. Measured 30,000-frame TREX view costs are used where available;
 explicitly labeled conservative proxies remain visible for methods without a
 retained portable calibration. Both files report selected frame counts,
 coverage, and any subsampling.
+Transferred measurements retain the task's declared workload scaling. The
+coordinate-cache estimate scales with source atom count; common PCA scales with
+Cartesian feature count and oligomer-member expansion. A small system therefore
+does not inherit the unchanged runtime of the larger calibration system. If the
+technical minima still do not fit, preparation prints the CPU and critical-path
+shortfall and a calculated wall-time retry bound; it never lengthens the
+campaign silently.
 Trajectory execution subsampling is never random: it is deterministic,
 replica-balanced, and spread over the full time range. Every production
 trajectory selector receives one exact integer stride over each concatenated
