@@ -1,0 +1,57 @@
+{
+  "validation_schema": "salsbury-memory-planner-update-test-v1",
+  "candidate_version": "0.1.0a1",
+  "recorded_at": "2026-08-20",
+  "tested_commit": "67887008ef3c593526c75fd66b5ad71d3c307062",
+  "execution_host": "Apple silicon workstation, macOS 15.0",
+  "python": "3.12.13",
+  "dependencies": {
+    "numpy": "2.5.2",
+    "scipy": "1.18.0",
+    "scikit-learn": "1.9.0",
+    "hdbscan": "not installed",
+    "openmm": "not installed"
+  },
+  "source_sha256": {
+    "src/salsbury_md_analysis/analysis_config.py": "dde7b60ab7b00eb4f84d5e55a62df86f17b48d3a85eea9e8b62bcb3220e6b868",
+    "src/salsbury_md_analysis/automatic_sampling.py": "af62a91bdce71045866f1f1db1c317fea13d652808940ed707371d861abfedec",
+    "src/salsbury_md_analysis/campaign_planning.py": "c38f43f034951674398905cb4e9ccf5b383225c3b57a7428d9d7e32fe4be776d",
+    "src/salsbury_md_analysis/cli.py": "e4c19f1f3aab44f611135d6d6ddb284a6276ffc81ac09ff95e72fd8459689e9b",
+    "src/salsbury_md_analysis/comparative_quickstart.py": "9a24c655ac1ebc8b10585563e6dd0c3a7fa3dc17c7a49b9d46248a4b24ce14f6",
+    "src/salsbury_md_analysis/execution_adapters.py": "88c6e2e6870f477dc8c30bd1907cb1ab2553a2010199a1381d39e4b454427cc1",
+    "src/salsbury_md_analysis/quickstart.py": "cf3262e99ef50072a8d579ba7a948e6dd7c4973a827f1fa45f0ca1491ac72397",
+    "src/salsbury_md_analysis/resource_planning.py": "a2d4aee3cd33dbd3e43e0535469bed663569474713a51263e222d97472adcedd"
+  },
+  "regression_suite": {
+    "command": "PYTHONPATH=<dependency-target>:.:src PYTHONPYCACHEPREFIX=<isolated> python3.12 -m unittest discover -s tests -p 'test_*.py' -q",
+    "tests_run": 457,
+    "expected_skips": 1,
+    "failures": 0,
+    "errors": 0,
+    "elapsed_seconds": 36.171
+  },
+  "generated_documentation_check": "pass",
+  "nemo_low_memory_preparation": {
+    "configured_memory_gib": 1.5,
+    "largest_requested_minimum_gib": 2.4,
+    "reported_shortfall_gib": 0.9,
+    "recommended_full_campaign_memory_gib": 3.0,
+    "explicitly_disabled_switch": "modules.solvent_accessible_surface_area.enabled",
+    "largest_replanned_minimum_gib": 1.2,
+    "requested_config_preserved": true,
+    "reduced_config_written": true,
+    "technical_status": "complete"
+  },
+  "private_remote_readback": {
+    "repository": "salsburygroup/salsbury-md-analysis",
+    "visibility": "private",
+    "tested_commit_tree": "8f949588b4de200bd70ef12eb1f3f65639665f48",
+    "local_file_count": 293,
+    "remote_file_count": 293,
+    "content_hash_mismatches": 0
+  },
+  "github_actions_status": "No workflow run was registered at post-push readback; this is not treated as a CI pass.",
+  "technical_status": "pass",
+  "scientific_status": "not evaluated",
+  "interpretation": "Regression, documentation, memory-feasibility, config-preservation, and private-remote integrity evidence only. It does not establish scientific validity, production convergence, or public-release readiness."
+}

@@ -5,15 +5,18 @@ Candidate: `0.1.0a1`
 
 ## Decision boundary
 
-This candidate is being prepared as a **public experimental alpha**. It is not
-presented as a supported scientific release.
+This private repository candidate is being prepared for a possible future
+**public experimental alpha**. It has not been made public and is not presented
+as a supported scientific release.
 Every registered module remains `experimental`; technical completion, scheduler
 success, and scientific validity are separate statuses.
 
 The source contains 45 of 45 MD/core/reporting modules in the registry and
-standard profile. The exact current software-test result, Python environment,
-duration, and skip count are recorded in
-`validation/v0.1.0a1_dependency_test.json`.
+standard profile. The original dependency-equipped candidate test is retained
+in `validation/v0.1.0a1_dependency_test.json`. The later memory-planning update,
+including its exact source hashes, 457-test result, generated-document check,
+low-memory NEMO preparation, and private-remote readback, is recorded separately
+in `validation/v0.1.0a1_memory_planner_update_test.json`.
 Generated references must match the registry, profiles, schemas, and command
 parser before a candidate can be frozen.
 
@@ -48,7 +51,9 @@ states require the original simulation topology and explicit project review.
 |---|---|---|
 | Registry/profile | 45 of 45 modules with exact-set tests | Coverage contract, not scientific approval |
 | Dependency-equipped suite | Machine-readable record in `validation/v0.1.0a1_dependency_test.json` | Software behavior in the recorded environment only |
+| Memory-planner update | Source-hash-bound 457-test and low-memory preparation record in `validation/v0.1.0a1_memory_planner_update_test.json` | Current update behavior on one workstation only; absent GitHub Actions is not a pass |
 | Installed local workflow | One-CPU, 100-frame TBA result in `validation/v80_installed_local_execution_test.json` | Local-adapter portability check, not a performance or scientific claim |
+| Teaching workflow | 1,000-frame NEMO protein-plus-zinc run in `validation/nemo_zinc_finger_tutorial_acceptance.json` | End-to-end tutorial acceptance, not converged sampling or a biological conclusion |
 | Generated documentation | Deterministic `scripts/generate_docs.py --check` | Documentation agrees with code metadata |
 | Package artifacts | Rebuild and scan the wheel and source archive from the exact retained snapshot; keep their hashes with the candidate evidence | Installability, not method validity |
 | Generic acceptance matrix | Protein-only, DNA-only, protein–DNA oligomer, ligand/cofactor, and multi-ion rows are required | Bounded technical generality check |
@@ -64,19 +69,20 @@ bounded software test. Every current module and final-summary JSON uses
 `scientific_status: not evaluated` unless a later, separate human review record
 says otherwise.
 
-## Public-alpha release gates
+## Before a future public alpha
 
-1. Merge the reviewed alpha candidate into `main` only after Linux/macOS CI for
-   Python 3.10--3.12 and the isolated artifact-install job pass.
+1. Do not change repository visibility or tag a public alpha until Linux/macOS
+   CI for Python 3.10--3.12 and the isolated artifact-install job pass for the
+   exact candidate commit.
 2. Retain the final source-archive and wheel hashes with the release evidence.
 3. Keep the source and dependency provenance decision in
    `RELEASE_RIGHTS_REVIEW.md` and re-open it when third-party material is added.
 4. Protect the public default branch and add a backup reviewer when one is
    available.
-5. Add a lawful realistic trajectory tutorial or documented public download
-   before describing the alpha as a self-contained teaching release. The
-   current synthetic fixtures are sufficient for software tests, not a full
-   scientific tutorial.
+5. Keep the NEMO tutorial's source hashes and provenance with the release, and
+   record an explicit data-license decision before making its scientific
+   trajectory fixture public. Its technical acceptance does not imply adequate
+   sampling or scientific validation.
 
 Independent module-by-module scientific review remains the gate for changing a
 module from `experimental` to `supported`; it is not silently implied by making
