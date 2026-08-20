@@ -86,6 +86,9 @@ micromamba create --prefix ./.venv --file environment.yml \
 
 Platform locks and their validation limits are documented in
 [`environments/README.md`](environments/README.md).
+Required, optional, external, build-only, and validation-only dependencies—and
+their license and redistribution boundaries—are consolidated in
+[`DEPENDENCIES_AND_LICENSES.md`](DEPENDENCIES_AND_LICENSES.md).
 The x3dna-dssr adapter requires a separately obtained executable; it is not
 redistributed by this repository.
 The quick-start initializer discovers `mkdssp`/`dssp` either on `PATH` or next
