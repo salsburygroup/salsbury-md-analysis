@@ -2,12 +2,27 @@
 
 ## 0.1.0a1
 
+- Replace fixed small-system legacy memory charges with conservative
+  atom-count or measured-observation transfer, while retaining explicit floors
+  and execution-adapter safety margins.
+- Fail closed with the exact memory shortfall, full-retention recommendation,
+  and smallest module/method disable set; add an explicit
+  `--auto-disable-to-fit-memory` path that preserves both requested and reduced
+  configs for single-system and comparison campaigns.
 - Prepare the first public alpha from the tested dev86 implementation without
   changing its scientific algorithms or defaults.
 - Record the source, fixture, dependency, and external-tool provenance review
   for public source distribution.
 - Extend continuous integration with a clean wheel and source-archive build,
   isolated wheel installation, command smoke test, and artifact hashes.
+- Add a complete NEMO zinc-finger workstation tutorial with a hash-recorded
+  1,000-frame published-simulation subset, provenance, a bounded configuration,
+  and an end-to-end acceptance test.
+- Preserve virtual-environment interpreter paths in generated local and Slurm
+  launchers so installed scientific dependencies remain available at runtime.
+- Make the default HDBSCAN-off policy apply consistently to the optional
+  correlation-profile subanalysis while retaining graph-based correlation
+  networks.
 
 ## 0.0.1.dev86
 

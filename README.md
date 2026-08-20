@@ -97,6 +97,12 @@ without requiring a separate executable argument.
 
 ## Use
 
+New users can begin with the
+[`NEMO zinc-finger tutorial`](tutorials/nemo_zinc_finger/README.md). It uses a
+small, hash-recorded piece of a published Salsbury-group protein–zinc
+simulation to demonstrate preparation, planning, local execution, and careful
+interpretation without requiring access to the cluster archive.
+
 The command line is `salsbury-md-analysis`. During development it can also be
 run directly from the source tree:
 
@@ -213,7 +219,26 @@ Cartesian feature count and oligomer-member expansion. A small system therefore
 does not inherit the unchanged runtime of the larger calibration system. If the
 technical minima still do not fit, preparation prints the CPU and critical-path
 shortfall and a calculated wall-time retry bound; it never lengthens the
-campaign silently.
+campaign silently. Coarse legacy memory tiers are transferred from the
+85,206-atom reference with a conservative square-root atom-count factor, a 10%
+fixed-allocation floor, and a 4x upper bound. Measured maxima instead scale from
+their measured observation coverage with a square-root relationship and the
+same 10% floor. This avoids charging a tiny solute or short run the unchanged
+allowance of a large, long calibration while retaining substantial headroom.
+
+For an insufficient memory cap, `campaign-resource-plan.json` and
+`memory-feasibility-report.json` state (1) the largest enabled technical-minimum
+memory estimate, (2) the rounded-up memory request that would retain all enabled
+work, and (3) every module or clustering-method switch that cannot fit.
+Preparation remains fail-closed by
+default. If the user explicitly accepts a reduced campaign, add
+`--auto-disable-to-fit-memory` to either `prepare-analysis` or
+`prepare-comparison`. The initializer preserves
+`analysis-config.requested.json`, turns off the narrowest oversized
+configuration switches and anything that depends on them, replans without
+lowering frame minima, and writes the
+fully explicit result to `analysis-config.memory-fit.json`. If the reduced
+campaign still violates CPU or wall-time limits, it still fails.
 Trajectory execution subsampling is never random: it is deterministic,
 replica-balanced, and spread over the full time range. Every production
 trajectory selector receives one exact integer stride over each concatenated

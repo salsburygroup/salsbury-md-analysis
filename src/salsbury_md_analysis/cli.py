@@ -70,8 +70,16 @@ from .manifests import (
 from .msm import markov_state_models_project_safe
 from .observables import optional_observables_project_safe
 from .preflight import preflight_system
-from .quickstart import QuickstartError, prepare_standard_analysis
-from .comparative_quickstart import prepare_comparative_analysis
+from .quickstart import (
+    QuickstartError,
+    QuickstartMemoryError,
+    prepare_standard_analysis,
+    prepare_standard_analysis_memory_fit,
+)
+from .comparative_quickstart import (
+    prepare_comparative_analysis,
+    prepare_comparative_analysis_memory_fit,
+)
 from .pca import common_pca_project_safe, individual_pca_project_safe
 from .pca_fes import pca_fes_basins_project_safe
 from .presentation import PresentationError, summarize_timeseries_presentations
@@ -564,9 +572,14 @@ def _prepare_analysis_command(
     config_path: Optional[Path],
     generate_connectivity_openmm: bool,
     openmm_bond_definitions: Sequence[Path],
+    auto_disable_to_fit_memory: bool,
 ) -> int:
     try:
-        report = prepare_standard_analysis(
+        prepare = (
+            prepare_standard_analysis_memory_fit
+            if auto_disable_to_fit_memory else prepare_standard_analysis
+        )
+        report = prepare(
             pdb_path=pdb,
             psf_path=psf,
             trajectories=trajectories,
@@ -591,6 +604,11 @@ def _prepare_analysis_command(
                 "message": str(exc),
             }],
         }
+        if isinstance(exc, QuickstartMemoryError):
+            report["memory_feasibility"] = exc.plan.get(
+                "memory_feasibility"
+            )
+            report["partial_output_directory"] = str(exc.output_directory)
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["technical_status"] == "complete" else 2
 
@@ -603,9 +621,14 @@ def _prepare_comparison_command(
     target_wall_hours: Optional[float],
     dssp_executable: Optional[str],
     config_path: Optional[Path],
+    auto_disable_to_fit_memory: bool,
 ) -> int:
     try:
-        report = prepare_comparative_analysis(
+        prepare = (
+            prepare_comparative_analysis_memory_fit
+            if auto_disable_to_fit_memory else prepare_comparative_analysis
+        )
+        report = prepare(
             request_path=request,
             output_directory=output_directory,
             project_id=project_id,
@@ -624,6 +647,11 @@ def _prepare_comparison_command(
                 "message": str(exc),
             }],
         }
+        if isinstance(exc, QuickstartMemoryError):
+            report["memory_feasibility"] = exc.plan.get(
+                "memory_feasibility"
+            )
+            report["partial_output_directory"] = str(exc.output_directory)
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["technical_status"] == "complete" else 2
 
@@ -1277,6 +1305,15 @@ def build_parser() -> argparse.ArgumentParser:
             "topology-applicable views remain enabled by default."
         ),
     )
+    prepare_parser.add_argument(
+        "--auto-disable-to-fit-memory", action="store_true",
+        help=(
+            "When enabled technical minima exceed execution.maximum_memory_gib, "
+            "preserve the requested config, explicitly disable the oversized "
+            "modules and their dependents, replan, and write the resolved on/off "
+            "config. Without this flag preparation fails closed."
+        ),
+    )
 
     comparison_parser = subparsers.add_parser(
         "prepare-comparison",
@@ -1334,6 +1371,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Optional salsbury-analysis-config-v1 JSON; all applicable modules and "
             "topology-derived views are enabled when omitted."
+        ),
+    )
+    comparison_parser.add_argument(
+        "--auto-disable-to-fit-memory", action="store_true",
+        help=(
+            "Preserve the requested comparison config, explicitly turn off "
+            "memory-incompatible switches and dependents, replan, and write "
+            "the resolved on/off config. Without this flag preparation fails closed."
         ),
     )
 
@@ -1581,6 +1626,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.config,
             args.generate_connectivity_openmm,
             args.openmm_bond_definitions,
+            args.auto_disable_to_fit_memory,
         )
     if args.command == "prepare-comparison":
         return _prepare_comparison_command(
@@ -1591,6 +1637,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.target_wall_hours,
             args.dssp_executable,
             args.config,
+            args.auto_disable_to_fit_memory,
         )
     if args.command == "run-local-workflow":
         try:

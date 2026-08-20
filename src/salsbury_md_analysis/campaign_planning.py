@@ -27,12 +27,38 @@ from .resource_calibrations import (
 class CampaignPlanningError(ValueError):
     """Raised when a prepared workflow cannot form one bounded campaign DAG."""
 
+    def __init__(
+        self, message: str, *, plan: Optional[Mapping[str, object]] = None
+    ) -> None:
+        super().__init__(message)
+        self.plan = deepcopy(dict(plan)) if plan is not None else None
+
 
 def _campaign_infeasibility_detail(plan: Mapping[str, object]) -> str:
     """Explain a failed envelope with the measured shortfall and next bound."""
 
     reasons = plan.get("infeasibility_reasons", [])
     parts = [str(reason) for reason in reasons] if isinstance(reasons, list) else []
+    memory = plan.get("memory_feasibility")
+    if isinstance(memory, Mapping) and not bool(
+        memory.get("fits_configured_memory", True)
+    ):
+        configured = float(memory["configured_memory_gib"])
+        required = float(memory["minimum_required_memory_gib"])
+        recommended = float(memory["recommended_memory_gib"])
+        modules = memory.get(
+            "configuration_switches_to_disable_to_fit_configured_memory",
+            memory.get("modules_to_disable_to_fit_configured_memory", []),
+        )
+        module_text = (
+            ", ".join(str(value) for value in modules)
+            if isinstance(modules, list) else "see memory feasibility report"
+        )
+        parts.append(
+            f"configured memory {configured:.3f} GiB; largest enabled technical "
+            f"minimum requires {required:.3f} GiB; request at least "
+            f"{recommended:.0f} GiB or disable: {module_text}"
+        )
     maximum_wall = float(plan["maximum_wall_hours_input"])
     science_wall = float(plan["science_budget_wall_hours"])
     minimum_wall = plan.get("minimum_wall_hours_lower_bound")
@@ -119,6 +145,29 @@ def _apply_measured_resource_calibrations(
             task["estimated_peak_memory_gib"] = max(
                 float(current_memory), measured_memory, 1.0
             )
+            if (
+                "power_law_cost_model" not in task
+                and "measured_memory_cost_model" not in task
+                and task.get(
+                    "measured_memory_observation_scaling_eligible", True
+                ) is not False
+                and int(calibration["maximum_measured_observation_count"]) > 0
+            ):
+                reference_memory = task.get(
+                    "reference_peak_memory_gib", current_memory
+                )
+                task["measured_memory_cost_model"] = {
+                    "calibration_observations": int(
+                        calibration["maximum_measured_observation_count"]
+                    ),
+                    "calibration_memory_gib": max(
+                        float(reference_memory),
+                        float(calibration["maximum_resident_memory_mib"])
+                        * memory_safety_factor / 1024.0,
+                    ),
+                    "memory_exponent": 0.5,
+                    "minimum_observation_scale": 0.1,
+                }
         task["measured_resource_calibration"] = {
             "catalog_sha256": calibration["catalog_sha256"],
             "measurement_count": calibration["measurement_count"],
@@ -148,6 +197,45 @@ def _apply_measured_resource_calibrations(
                 "measured coverage is not a scientific ceiling"
             ),
         }
+
+
+def _apply_system_memory_scaling(
+    tasks: Sequence[Dict[str, object]], atom_count: int
+) -> None:
+    """Scale large-system reference memory without claiming linear behavior.
+
+    Most retained legacy estimates describe an 85,206-atom solvated TREX
+    system.  The square-root relationship is deliberately more conservative
+    than linear atom scaling and has a 10% floor for fixed Python/library
+    allocations.  Tasks that already applied the same scaling are left alone.
+    """
+
+    reference_atom_count = 85_206
+    scale = min(4.0, max(0.1, math.sqrt(atom_count / reference_atom_count)))
+    for task in tasks:
+        if task.get("memory_size_scaling_applied") is True:
+            continue
+        current = task.get("estimated_peak_memory_gib")
+        if isinstance(current, (int, float)) and not isinstance(current, bool):
+            task["reference_peak_memory_gib"] = float(current)
+            task["estimated_peak_memory_gib"] = max(1.0, float(current) * scale)
+        power_model = task.get("power_law_cost_model")
+        if isinstance(power_model, dict):
+            calibration_memory = power_model.get("calibration_memory_gib")
+            if (
+                isinstance(calibration_memory, (int, float))
+                and not isinstance(calibration_memory, bool)
+            ):
+                power_model["reference_calibration_memory_gib"] = float(
+                    calibration_memory
+                )
+                power_model["calibration_memory_gib"] = max(
+                    1.0, float(calibration_memory) * scale
+                )
+        task.setdefault("measured_memory_multiplier", scale)
+        task["memory_atom_scale"] = scale
+        task["memory_reference_atom_count"] = reference_atom_count
+        task["memory_size_scaling_applied"] = True
 
 
 # CPU seconds per physical source frame. The primary entries are retained
@@ -1286,6 +1374,8 @@ def plan_and_apply_complete_campaign(
                 ),
                 "fixed_cpu_hours": 0.0,
                 "estimated_peak_memory_gib": max(1.0, 0.25 * cache_workers),
+                "memory_size_scaling_applied": True,
+                "measured_memory_observation_scaling_eligible": False,
                 "priority_weight": 100.0,
                 "member_observation_multiplier": 1,
                 "balance_group": "preprocessing:coordinate_cache:all_frames",
@@ -1355,6 +1445,9 @@ def plan_and_apply_complete_campaign(
                 int(dimensions["maximum_atom_count"]),
                 time_safety_factor=time_safety_factor,
             ))
+        _apply_system_memory_scaling(
+            built, int(dimensions["maximum_atom_count"])
+        )
         _apply_measured_resource_calibrations(
             built, measured_calibrations,
             time_safety_factor=time_safety_factor,
@@ -1395,7 +1488,8 @@ def plan_and_apply_complete_campaign(
         ):
             raise CampaignPlanningError(
                 "configured whole-campaign envelope cannot fund the declared "
-                f"technical minima: {_campaign_infeasibility_detail(plan)}"
+                f"technical minima: {_campaign_infeasibility_detail(plan)}",
+                plan=plan,
             )
         _apply_campaign_direct_allocations(
             sampling_plan["method_plans"],  # type: ignore[arg-type]

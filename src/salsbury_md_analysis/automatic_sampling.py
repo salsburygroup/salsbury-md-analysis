@@ -411,6 +411,14 @@ def _campaign_direct_resource_plan(
     """Allocate one configured campaign envelope across direct estimators."""
 
     atom_count = int(dimensions["maximum_atom_count"])
+    # The legacy tier values were calibrated on an approximately 85k-atom
+    # solvated protein-DNA system.  Applying them unchanged to a few-hundred
+    # atom tutorial system produced two-order-of-magnitude overestimates.  A
+    # square-root size term keeps substantial headroom for fixed allocations
+    # while allowing the estimate to decrease for genuinely smaller systems.
+    memory_atom_scale = min(
+        4.0, max(0.1, math.sqrt(atom_count / REFERENCE_ATOM_COUNT))
+    )
     replica_counts = [
         int(row["source_frame_count"])
         for row in dimensions["replicas"]  # type: ignore[union-attr]
@@ -438,18 +446,19 @@ def _campaign_direct_resource_plan(
         workload_multiplier, workload_basis = _runtime_workload_multiplier(
             profile, dimensions
         )
-        memory_gib = {
+        reference_memory_gib = {
             "streaming": 4.0,
             "validated_30k": 12.0,
             "moderate": 12.0,
             "expensive": 24.0,
         }.get(profile.tier, 12.0)
         if measured is not None:
-            memory_gib = max(
-                1.0,
+            reference_memory_gib = max(
+                reference_memory_gib,
                 float(measured["maximum_resident_memory_mib"])
                 * float(execution.get("memory_safety_factor", 1.25)) / 1024.0,
             )
+        memory_gib = max(1.0, reference_memory_gib * memory_atom_scale)
         seconds_per_frame = (
             float(measured["conservative_cpu_seconds_per_frame"])
             if measured is not None else calibration.seconds_per_frame
@@ -486,6 +495,22 @@ def _campaign_direct_resource_plan(
                 * time_safety_factor / 3600.0
             ),
             "estimated_peak_memory_gib": memory_gib,
+            "reference_peak_memory_gib": reference_memory_gib,
+            "memory_atom_scale": memory_atom_scale,
+            "memory_reference_atom_count": REFERENCE_ATOM_COUNT,
+            "memory_size_scaling_applied": True,
+            "measured_memory_multiplier": memory_atom_scale,
+            **({
+                "measured_memory_cost_model": {
+                    "calibration_observations": max(
+                        1,
+                        int(measured["maximum_measured_observation_count"]),
+                    ),
+                    "calibration_memory_gib": reference_memory_gib,
+                    "memory_exponent": 0.5,
+                    "minimum_observation_scale": 0.1,
+                },
+            } if measured is not None else {}),
             "priority_weight": _CAMPAIGN_PRIORITY.get(module_id, 4.0),
             "calibration_status": calibration_status,
             "calibration_id": calibration_id,

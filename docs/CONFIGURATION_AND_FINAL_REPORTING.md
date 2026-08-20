@@ -82,6 +82,46 @@ and CPU allowances after reserves, the configured campaign ceiling, and the
 smallest calculated `--target-wall-hours` retry bound. The number is guidance,
 not an automatic change to the user's resource request.
 
+Memory is planned per task at its technical minimum. Legacy tier values are
+referenced to the retained 85,206-atom solvated benchmark system, then adjusted
+by a conservative square-root atom-count factor. The factor cannot fall below
+0.1 or rise above 4.0, so fixed library allocations retain headroom and very
+large systems do not extrapolate without bound. Measured maxima are transferred
+by the measured observation coverage instead: the square-root observation
+factor also has a 0.1 floor. A power-law method keeps its declared
+observation-based exponent. Every task records the reference value, applicable
+scaling model, and final selected-observation estimate.
+
+When one or more technical minima exceed `maximum_memory_gib`, the plan's
+`memory_feasibility` section reports the exact largest estimate, its shortfall,
+a whole-GiB rounded recommendation, the oversized task rows, and the minimal
+set of module or individual clustering-method switches that must be disabled
+at that cap. The default behavior does not alter the user's analysis. It writes
+the failed planning evidence and
+stops before any analysis is launched.
+
+An explicit reduced-campaign workflow is available with:
+
+```bash
+salsbury-md-analysis prepare-analysis ... --config analysis.json \
+  --auto-disable-to-fit-memory
+```
+
+The same flag is available on `prepare-comparison`; it applies one explicit
+resolved configuration to the complete shared-basis and per-system comparison
+campaign.
+
+This performs a disposable planning pass, turns off each narrowest
+configuration switch whose minimum cannot fit, materializes dependency-driven
+disables, and replans. The final
+directory contains `analysis-config.requested.json`,
+`analysis-config.memory-fit.json`, and `memory-feasibility-report.json`, so all
+on/off decisions are reviewable. `coordinate_cache` is represented by
+`execution.coordinate_cache: off` when it is the incompatible feature.
+Technical frame minima and scientific gates are never relaxed. The fallback
+addresses memory only; a remaining CPU-hour, critical-path, calibration, or
+scratch-space failure remains fail-closed.
+
 Measured catalogs describe the systems on which they were collected; they are
 not universal per-frame constants. Planner tasks may therefore carry an
 auditable workload multiplier before a catalog rate or memory maximum is

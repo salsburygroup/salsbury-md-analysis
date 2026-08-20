@@ -311,6 +311,81 @@ class ResourcePlanningTests(unittest.TestCase):
         self.assertFalse(plan["execution_authorized"])
         self.assertTrue(plan["infeasibility_reasons"])
 
+    def test_memory_shortfall_reports_required_cap_and_modules(self):
+        tasks = []
+        for task_id, module_id, memory in (
+            ("base:small", "small_module", 2.0),
+            ("view:global:large", "large_module", 7.25),
+        ):
+            tasks.append({
+                "task_id": task_id,
+                "module_id": module_id,
+                "workflow_id": "base",
+                "task_scope": "test",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [100],
+                "minimum_frames_per_replica": 10,
+                "maximum_frames_per_replica": 100,
+                "cpu_seconds_per_physical_frame": 0.01,
+                "estimated_peak_memory_gib": memory,
+            })
+        plan = plan_campaign_resource_budget(
+            tasks,
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=1.0,
+            maximum_memory_gib=4.0,
+        )
+        memory = plan["memory_feasibility"]
+        self.assertFalse(memory["fits_configured_memory"])
+        self.assertEqual(memory["minimum_required_memory_gib"], 7.25)
+        self.assertEqual(memory["recommended_memory_gib"], 8.0)
+        self.assertEqual(memory["memory_shortfall_gib"], 3.25)
+        self.assertEqual(
+            memory["modules_to_disable_to_fit_configured_memory"],
+            ["large_module"],
+        )
+        self.assertEqual(
+            memory[
+                "configuration_switches_to_disable_to_fit_configured_memory"
+            ],
+            ["modules.large_module.enabled"],
+        )
+        self.assertEqual(
+            memory["oversized_tasks"][0]["task_id"], "view:global:large"
+        )
+
+    def test_measured_memory_scales_from_observation_coverage(self):
+        plan = plan_campaign_resource_budget(
+            [{
+                "task_id": "base:measured",
+                "module_id": "measured_module",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [120_000],
+                "minimum_frames_per_replica": 1_000,
+                "maximum_frames_per_replica": 120_000,
+                "cpu_seconds_per_physical_frame": 0.0001,
+                "estimated_peak_memory_gib": 20.0,
+                "measured_memory_cost_model": {
+                    "calibration_observations": 120_000,
+                    "calibration_memory_gib": 20.0,
+                    "memory_exponent": 0.5,
+                    "minimum_observation_scale": 0.1,
+                },
+            }],
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=1.0,
+            maximum_memory_gib=2.1,
+        )
+        self.assertEqual(plan["feasibility_status"], "feasible")
+        row = plan["tasks"][0]
+        self.assertLessEqual(
+            row["estimated_peak_memory_gib_at_selected_observations"], 2.1
+        )
+        self.assertGreaterEqual(row["selected_physical_frame_count"], 1_000)
+        self.assertLess(row["selected_physical_frame_count"], 120_000)
+
     def test_campaign_requires_pilot_for_unknown_cost(self):
         plan = plan_campaign_resource_budget(
             [{

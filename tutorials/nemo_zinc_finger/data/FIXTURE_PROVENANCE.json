@@ -1,0 +1,88 @@
+{
+  "fixture_schema": "salsbury-tutorial-fixture-v1",
+  "fixture_id": "nemo-zinc-finger-published-simulation-prefix",
+  "technical_status": "complete",
+  "scientific_status": "not evaluated",
+  "system": {
+    "description": "Human NEMO zinc-finger domain with deprotonated coordinating cysteines and one zinc ion",
+    "starting_structure": "PDB 2JVX",
+    "protein_residue_count": 28,
+    "atom_count": 423,
+    "explicit_bond_count": 426,
+    "zinc_atom_count": 1
+  },
+  "publication": {
+    "citation": "Godwin R, Gmeiner W, Salsbury FR Jr. Importance of long-time simulations for rare event sampling in zinc finger proteins. J Biomol Struct Dyn. 2016;34(1):125-134.",
+    "doi": "10.1080/07391102.2015.1015168",
+    "pmid": "25734227",
+    "pmcid": "PMC4600012"
+  },
+  "starting_structure_reference": {
+    "pdb_id": "2JVX",
+    "pdb_doi": "10.2210/pdb2JVX/pdb",
+    "description": "Solution structure of human NEMO zinc finger"
+  },
+  "source_records": [
+    {
+      "role": "topology_coordinates",
+      "name": "2JVX_1fr_auto.pdb",
+      "sha256": "fca08ab6ff7f2b43fe3e02d3da8fe94aaff3db5cab52fcfbbc02bb5e7cdc8ac4"
+    },
+    {
+      "role": "explicit_connectivity",
+      "name": "2JVX_1fr_auto.psf",
+      "sha256": "85a5bf380f42f1c607d85e40ac91c6cbfcf60614e418ad667ea63a1e137a3aa0"
+    },
+    {
+      "role": "source_trajectory",
+      "name": "nemo_WZN_CYN_isotropic_All.dcd",
+      "size_bytes": 38670276,
+      "declared_frame_count": 7500,
+      "sha256": "d759af0144751f1613d32f659dafbc8647eaf2777a2df707a7e59e4a56458239"
+    }
+  ],
+  "derived_records": [
+    {
+      "role": "topology_coordinates",
+      "path": "nemo_zinc_finger.pdb",
+      "sha256": "fca08ab6ff7f2b43fe3e02d3da8fe94aaff3db5cab52fcfbbc02bb5e7cdc8ac4"
+    },
+    {
+      "role": "explicit_connectivity",
+      "path": "nemo_zinc_finger.psf",
+      "sha256": "85a5bf380f42f1c607d85e40ac91c6cbfcf60614e418ad667ea63a1e137a3aa0"
+    },
+    {
+      "role": "tutorial_trajectory",
+      "path": "nemo_zinc_finger_1000_frames.dcd",
+      "source_frame_indices": {
+        "first": 0,
+        "last": 999,
+        "stride": 1,
+        "count": 1000
+      },
+      "size_bytes": 5156276,
+      "sha256": "bf7ad649bbb0d7a4bc37d3c2ce5a64140cf7de7b863cc9c6cebb789b80725524"
+    }
+  ],
+  "time_axis": {
+    "tutorial_frame_interval_ps": 0.2,
+    "basis": "Matching archived NAMD inputs declare timestep 2.0 fs and dcdfreq 100. The DCD was rewritten by a DCD plugin and does not retain an independently interpretable physical interval.",
+    "caveat": "The publication reports separately selected analysis save rates. This tutorial value describes the archived raw sample, not every trajectory analyzed in the paper."
+  },
+  "derivation": {
+    "tool": "scripts/extract_dcd_prefix.py",
+    "policy": "contiguous prefix; source read without modification",
+    "source_atom_count": 423,
+    "output_atom_count": 423,
+    "unit_cell_records_retained": true
+  },
+  "rights_note": "This Salsbury-group simulation subset is included in the private release candidate for teaching. Before public release, record an explicit data-license decision; LICENSE-DOCS.md does not automatically relicense scientific data.",
+  "limitations": [
+    "The subset is intentionally short and begins at source frame zero.",
+    "It is suitable for learning the software and checking execution, not for estimating converged populations, kinetics, free energies, or zinc-binding mechanisms.",
+    "A technically complete workflow does not make the tutorial subset scientifically adequate.",
+    "The cited publication itself explains why long simulations are needed to observe rare zinc-finger conformations."
+  ]
+}
+

@@ -15,6 +15,7 @@ recursive-include environments *.md *.txt
 recursive-include examples *.json *.md *.pdb *.xyz *.txt
 recursive-include profiles *.json
 recursive-include schemas *.json
+recursive-include tutorials *.md *.json *.pdb *.psf *.dcd
 recursive-include validation/maintainer *.md *.py
 recursive-include validation/public *.md *.py
 include validation/hydrogen_bond_discovery_cross_validation.json
@@ -29,6 +30,7 @@ include validation/v84_dependency_test.json
 include validation/v85_dependency_test.json
 include validation/v86_dependency_test.json
 include validation/v0.1.0a1_dependency_test.json
+include validation/nemo_zinc_finger_tutorial_acceptance.json
 include validation/water_mediated_hydrogen_bond_smoke_summary.json
 include validation/water_mediated_hydrogen_bond_trex1_published_miller_all_replicas_smoke_summary.json
 recursive-include scripts *.py

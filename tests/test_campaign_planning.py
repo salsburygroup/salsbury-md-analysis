@@ -7,11 +7,28 @@ from salsbury_md_analysis.campaign_planning import (
     _apply_measured_resource_calibrations,
     _automatic_context_tasks,
     _campaign_infeasibility_detail,
+    _apply_system_memory_scaling,
     _view_tasks,
 )
 
 
 class CampaignPlanningTests(unittest.TestCase):
+    def test_small_system_memory_scaling_retains_floor_and_headroom(self):
+        tasks = [{
+            "task_id": "small:sasa",
+            "estimated_peak_memory_gib": 24.0,
+            "power_law_cost_model": {
+                "calibration_memory_gib": 10.0,
+            },
+        }]
+        _apply_system_memory_scaling(tasks, 423)
+        self.assertEqual(tasks[0]["memory_atom_scale"], 0.1)
+        self.assertAlmostEqual(tasks[0]["estimated_peak_memory_gib"], 2.4)
+        self.assertEqual(
+            tasks[0]["power_law_cost_model"]["calibration_memory_gib"], 1.0
+        )
+        self.assertEqual(tasks[0]["reference_peak_memory_gib"], 24.0)
+
     def test_measured_overlay_preserves_declared_workload_scaling(self):
         calibration = {
             "coordinate_cache": {

@@ -14,6 +14,8 @@ need scientific review.
 
 ## Where to begin
 
+- Follow the [NEMO zinc-finger tutorial](../tutorials/nemo_zinc_finger/README.md)
+  for a complete workstation example using a real published-simulation subset.
 - Start with [general biomolecular systems](GENERAL_BIOMOLECULAR_SYSTEMS.md) to
   see which inputs and chemical compositions the automatic workflow handles.
 - Read [local and Slurm execution](EXECUTION_ADAPTERS.md) before choosing a

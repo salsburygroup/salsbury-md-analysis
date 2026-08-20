@@ -38,6 +38,10 @@ Prepare with that config and run `./run-local.sh`. The dependency-aware executor
 runs phases in order and atomically reserves both CPU slots and planner-derived
 memory for independent tasks within a phase. Their combined reservations cannot
 exceed `maximum_parallel_cpus` or `maximum_memory_gib`.
+The memory value is a campaign ceiling rather than a prediction or an amount
+preallocated at startup. Each task keeps its own estimate in
+`campaign-resource-plan.json`, and completed reports record measured peak
+resident memory for later calibration.
 `maximum_hours_per_cpu` is the complete local campaign wall-time deadline, and each
 task also receives its planner-derived deadline. Each attempt receives unique logs
 and a retained JSON record under `local-execution-status/`; a failed attempt never
@@ -50,6 +54,29 @@ on one Apollo CPU in about four minutes, with roughly 162 MiB peak resident
 memory. That bounded run establishes that the installed local adapter and its
 dependency order work without Slurm; it is not a runtime promise for larger
 systems and carries `scientific_status: not evaluated`.
+
+## When the requested memory is too small
+
+Preparation checks every enabled task at its technical minimum. If even one
+cannot fit, it stops before generating a runnable campaign and writes a
+`memory-feasibility-report.json` with the largest estimate, exact shortfall,
+rounded-up memory recommendation, oversized tasks, and the narrowest config
+switches that would remove them. It does not silently disable an analysis or
+reduce its technical frame minimum.
+
+Users who explicitly prefer a reduced campaign can add
+`--auto-disable-to-fit-memory` to `prepare-analysis` or `prepare-comparison`.
+The initializer then preserves the requested config, disables only the listed
+module or clustering-method switches and their dependents, and replans. Review
+`analysis-config.requested.json`, `analysis-config.memory-fit.json`, and
+`memory-feasibility-report.json` before launching. The fallback addresses
+memory only; CPU-hour, critical-path, calibration, and scratch limits still
+fail closed.
+
+Slurm requests can be larger than the raw planner estimate because the site
+profile and execution adapter add explicit safety margins and may aggregate
+several array elements under one array-wide request. Those mappings remain
+visible in `scheduler-resource-requests.json`.
 
 ## Slurm cluster
 

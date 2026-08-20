@@ -534,7 +534,7 @@ def load_analysis_config(
         "censored_timeout_safety_factor",
         "fail_if_minimum_coverage_unaffordable",
         "submission_adapter", "slurm_profile", "coordinate_cache",
-        "resource_calibration_catalog",
+        "resource_calibration_catalog", "maximum_total_cpu_hours",
     }
     if not isinstance(raw_execution, dict) or set(raw_execution).difference(allowed_execution):
         raise AnalysisConfigError("execution configuration is invalid")
@@ -682,6 +682,113 @@ def enabled_modules(config: Mapping[str, object]) -> set[str]:
     return enabled
 
 
+def make_memory_fit_config(
+    config: Mapping[str, object], module_ids: Sequence[str]
+) -> tuple[Dict[str, object], list[str], list[str]]:
+    """Return an explicit reduced config for a user-approved memory fallback.
+
+    The caller supplies modules whose technical minima exceed the requested
+    per-campaign memory cap.  Dependency pruning is then materialized into the
+    config so a user can see every resulting on/off decision; the original
+    config is never mutated.
+    """
+
+    output = deepcopy(dict(config))
+    modules = output.get("modules")
+    if not isinstance(modules, dict):
+        raise AnalysisConfigError("analysis config has no module mapping")
+    requested = sorted(set(str(value) for value in module_ids))
+    direct = []
+    for module_id in requested:
+        if module_id in {"coordinate_cache", "execution.coordinate_cache"}:
+            execution = output.get("execution")
+            if not isinstance(execution, dict):
+                raise AnalysisConfigError("analysis config has no execution mapping")
+            execution["coordinate_cache"] = "off"
+            direct.append(module_id)
+        elif module_id.startswith("clustering.methods.") and module_id.endswith(
+            ".enabled"
+        ):
+            method = module_id[len("clustering.methods.") : -len(".enabled")]
+            clustering = output.get("clustering")
+            methods = (
+                clustering.get("methods") if isinstance(clustering, dict) else None
+            )
+            row = methods.get(method) if isinstance(methods, dict) else None
+            if not isinstance(row, dict):
+                raise AnalysisConfigError(
+                    f"memory fallback clustering switch is invalid: {module_id}"
+                )
+            row["enabled"] = False
+            direct.append(module_id)
+        elif module_id == "community_analysis.pald.enabled":
+            community = output.get("community_analysis")
+            pald = community.get("pald") if isinstance(community, dict) else None
+            if not isinstance(pald, dict):
+                raise AnalysisConfigError(
+                    "memory fallback PaLD configuration is invalid"
+                )
+            pald["enabled"] = False
+            pald["community_msm_enabled"] = False
+            direct.append(module_id)
+        elif module_id.startswith("modules.") and module_id.endswith(".enabled"):
+            resolved_module_id = module_id[len("modules.") : -len(".enabled")]
+            row = modules.get(resolved_module_id)
+            if not isinstance(row, dict):
+                raise AnalysisConfigError(
+                    f"memory fallback module switch is invalid: {module_id}"
+                )
+            row["enabled"] = False
+            direct.append(module_id)
+        elif module_id in modules:
+            row = modules[module_id]
+            if not isinstance(row, dict):
+                raise AnalysisConfigError(f"module {module_id} config is invalid")
+            row["enabled"] = False
+            direct.append(module_id)
+
+    effective = enabled_modules(output)
+    originally_enabled = {
+        module_id for module_id, row in modules.items()
+        if isinstance(row, dict) and row.get("enabled") is True
+    }
+    for module_id, row in modules.items():
+        if isinstance(row, dict):
+            row["enabled"] = module_id in effective
+    if "common_pca" not in effective:
+        views = output.get("views")
+        if isinstance(views, dict):
+            for row in views.values():
+                if isinstance(row, dict):
+                    row["enabled"] = False
+                    row["state_trajectory_exports_enabled"] = False
+
+    clustering = output.get("clustering")
+    methods = clustering.get("methods") if isinstance(clustering, dict) else None
+    if isinstance(methods, dict):
+        for method, contract in CLUSTERING_METHODS.items():
+            row = methods.get(method)
+            if isinstance(row, dict) and str(contract["module_id"]) not in effective:
+                row["enabled"] = False
+    community = output.get("community_analysis")
+    pald = community.get("pald") if isinstance(community, dict) else None
+    if isinstance(pald, dict) and "pald_community_analysis" not in effective:
+        pald["enabled"] = False
+        pald["community_msm_enabled"] = False
+
+    directly_disabled_module_ids = {
+        value[len("modules.") : -len(".enabled")]
+        for value in direct
+        if value.startswith("modules.") and value.endswith(".enabled")
+    } | {value for value in direct if value in modules}
+    transitive = sorted(
+        originally_enabled.difference(effective).difference(
+            directly_disabled_module_ids
+        )
+    )
+    return output, sorted(direct), transitive
+
+
 def apply_module_configuration(
     definitions: Mapping[str, object], commands: Sequence[str],
     requested: Sequence[str], config: Mapping[str, object],
@@ -730,6 +837,13 @@ def apply_module_configuration(
         method for method, row in method_rows.items()
         if isinstance(row, dict) and row.get("enabled") is True
     }
+    # Correlation-profile clustering uses the same optional HDBSCAN package as
+    # conformational HDBSCAN. Keep the package-level default coherent: when
+    # HDBSCAN is off, retain correlation networks but omit that one subanalysis.
+    if "hdbscan" not in enabled_methods:
+        correlation_networks = output.get("correlation_networks")
+        if isinstance(correlation_networks, dict):
+            correlation_networks.pop("profile_clustering", None)
     dedicated = {
         method: str(contract["module_id"])
         for method, contract in CLUSTERING_METHODS.items()

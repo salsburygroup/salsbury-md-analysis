@@ -7,11 +7,59 @@ from pathlib import Path
 from salsbury_md_analysis.comparative_quickstart import (
     _automatic_context_slurm_files,
     prepare_comparative_analysis,
+    prepare_comparative_analysis_memory_fit,
 )
 from tests.test_quickstart import _write_dcd, _write_oligomer_inputs
 
 
 class ComparativeQuickstartTests(unittest.TestCase):
+    def test_comparison_memory_fallback_writes_explicit_reduced_config(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pdb, psf, trajectories = _write_oligomer_inputs(root)
+            request_path = root / "comparison.json"
+            request_path.write_text(json.dumps({
+                "request_schema": "salsbury-comparative-analysis-input-v1",
+                "systems": [
+                    {
+                        "system_id": system_id,
+                        "pdb": str(pdb),
+                        "psf": str(psf),
+                        "trajectories": [str(path) for path in trajectories],
+                        "frame_interval_ps": 10.0,
+                    }
+                    for system_id in ("control", "variant")
+                ],
+            }), encoding="utf-8")
+            config_path = root / "low-memory.json"
+            config_path.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "execution": {"maximum_memory_gib": 1.5},
+            }), encoding="utf-8")
+            output = root / "comparison-memory-fit"
+            report = prepare_comparative_analysis_memory_fit(
+                request_path=request_path,
+                output_directory=output,
+                project_id="comparison-memory-fit",
+                config_path=config_path,
+            )
+            self.assertEqual(report["technical_status"], "complete")
+            memory = json.loads(
+                (output / "memory-feasibility-report.json").read_text()
+            )
+            self.assertTrue(memory["automatic_changes_applied"])
+            self.assertTrue(memory["final_memory"]["fits_configured_memory"])
+            self.assertIn(
+                "modules.solvent_accessible_surface_area.enabled",
+                memory["directly_disabled_configuration_switches"],
+            )
+            reduced = json.loads(
+                (output / "analysis-config.memory-fit.json").read_text()
+            )
+            self.assertFalse(
+                reduced["modules"]["solvent_accessible_surface_area"]["enabled"]
+            )
+
     def test_automatic_context_jobs_respect_hard_campaign_wall_limit(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

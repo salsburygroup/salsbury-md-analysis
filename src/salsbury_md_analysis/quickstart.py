@@ -25,6 +25,7 @@ from .analysis_config import (
     apply_module_configuration,
     enabled_modules,
     load_analysis_config,
+    make_memory_fit_config,
 )
 from .automatic_sampling import automatic_sampling_plan, plan_cartesian_pca_basis
 from .automatic_chemistry import (
@@ -37,7 +38,7 @@ from .campaign_planning import (
 from .chemical_identity import ION_RESIDUES, WATER_RESIDUES
 from .coordinates import CoordinateReadError, iter_coordinate_frames
 from .execution_adapters import (
-    ExecutionAdapterError, prepare_execution_artifacts,
+    ExecutionAdapterError, _active_python_executable, prepare_execution_artifacts,
 )
 from .conformational_views import plan_conformational_views
 from .coordinate_cache import (
@@ -70,6 +71,19 @@ from .selections import select_atoms
 
 class QuickstartError(ValueError):
     """Raised when a safe runnable project cannot be prepared."""
+
+
+class QuickstartMemoryError(QuickstartError):
+    """Raised with a complete plan when enabled minima exceed the memory cap."""
+
+    def __init__(
+        self, message: str, *, plan: Mapping[str, object],
+        analysis_config: Mapping[str, object], output_directory: Path,
+    ) -> None:
+        super().__init__(message)
+        self.plan = deepcopy(dict(plan))
+        self.analysis_config = deepcopy(dict(analysis_config))
+        self.output_directory = output_directory
 
 
 _GENERIC_DIRECT_ESTIMATORS = (
@@ -163,7 +177,10 @@ def _discover_dssp_executable(explicit: Optional[str]) -> Optional[str]:
         found = shutil.which(name)
         if found:
             return str(Path(found).resolve(strict=True))
-    interpreter_directory = Path(sys.executable).resolve(strict=True).parent
+    # Preserve a virtual environment's interpreter path. Resolving this
+    # symlink can escape the environment and make generated launchers lose the
+    # dependencies that were installed there.
+    interpreter_directory = Path(_active_python_executable()).parent
     for name in ("mkdssp", "dssp"):
         candidate = interpreter_directory / name
         if candidate.is_file() and os.access(candidate, os.X_OK):
@@ -2274,6 +2291,30 @@ def prepare_standard_analysis(
             ),
         )
     except CampaignPlanningError as exc:
+        if exc.plan is not None:
+            _json_write(root / "campaign-resource-plan.json", exc.plan)
+            memory = exc.plan.get("memory_feasibility")
+            if isinstance(memory, Mapping) and not bool(
+                memory.get("fits_configured_memory", True)
+            ):
+                memory_report = {
+                    "report_schema": "salsbury-memory-feasibility-report-v1",
+                    "technical_status": "complete",
+                    "planning_status": "insufficient_memory",
+                    "automatic_changes_applied": False,
+                    **deepcopy(dict(memory)),
+                    "requested_config_path": str(root / "analysis-config.json"),
+                    "proposed_action": (
+                        "Increase execution.maximum_memory_gib or rerun preparation "
+                        "with --auto-disable-to-fit-memory to create and replan an "
+                        "explicit reduced configuration in a new output directory."
+                    ),
+                }
+                _json_write(root / "memory-feasibility-report.json", memory_report)
+                raise QuickstartMemoryError(
+                    str(exc), plan=exc.plan, analysis_config=analysis_config,
+                    output_directory=root,
+                ) from exc
         raise QuickstartError(str(exc)) from exc
     _json_write(root / "sampling-plan.json", sampling_plan)
     _json_write(root / "campaign-resource-plan.json", campaign_resource_plan)
@@ -2349,7 +2390,7 @@ def prepare_standard_analysis(
         target_wall_hours=float(
             analysis_config["execution"]["maximum_hours_per_cpu"]  # type: ignore[index]
         ),
-        python_executable=str(Path(sys.executable).resolve(strict=True)),
+        python_executable=_active_python_executable(),
         package_root=str(Path(__file__).resolve(strict=True).parents[1]),
         maximum_parallel_cpus=int(
             analysis_config["execution"]["maximum_parallel_cpus"]  # type: ignore[index]
@@ -2360,7 +2401,7 @@ def prepare_standard_analysis(
         target_wall_hours=float(
             analysis_config["execution"]["maximum_hours_per_cpu"]  # type: ignore[index]
         ),
-        python_executable=str(Path(sys.executable).resolve(strict=True)),
+        python_executable=_active_python_executable(),
         package_root=str(Path(__file__).resolve(strict=True).parents[1]),
         conformational_view_ids=view_ids,
         resource_table_enabled=bool(analysis_config["reporting"]["resource_table_enabled"]),  # type: ignore[index]
@@ -2457,3 +2498,170 @@ override them with `SALSBURY_MD_ANALYSIS_PYTHON` and
         "slurm_profile_id": execution_artifacts["slurm_profile_id"],
         "next_command": execution_artifacts["next_command"],
     }
+
+
+def prepare_standard_analysis_memory_fit(
+    *,
+    pdb_path: Path,
+    psf_path: Optional[Path],
+    trajectories: Sequence[Path],
+    output_directory: Path,
+    project_id: str,
+    frame_interval_ps: float,
+    first_frame_time_ps: float = 0.0,
+    temperature_kelvin: float = 300.0,
+    target_wall_hours: Optional[float] = None,
+    dssp_executable: Optional[str] = None,
+    config_path: Optional[Path] = None,
+    generate_connectivity_openmm: bool = False,
+    openmm_bond_definitions: Sequence[Path] = (),
+) -> Dict[str, object]:
+    """Prepare, explicitly reduce memory-incompatible modules, and replan.
+
+    This is intentionally separate from the default fail-closed entry point.
+    It performs a disposable planning pass, preserves the fully resolved user
+    request, and only then writes a final runnable directory from an explicit
+    reduced config.
+    """
+
+    destination = output_directory.expanduser().resolve(strict=False)
+    if destination.exists() and (
+        not destination.is_dir() or any(destination.iterdir())
+    ):
+        raise QuickstartError(
+            f"output directory is not empty: {destination}; choose a new "
+            "versioned directory"
+        )
+    common = {
+        "pdb_path": pdb_path,
+        "psf_path": psf_path,
+        "trajectories": trajectories,
+        "project_id": project_id,
+        "frame_interval_ps": frame_interval_ps,
+        "first_frame_time_ps": first_frame_time_ps,
+        "temperature_kelvin": temperature_kelvin,
+        "dssp_executable": dssp_executable,
+        "generate_connectivity_openmm": generate_connectivity_openmm,
+        "openmm_bond_definitions": openmm_bond_definitions,
+    }
+    with tempfile.TemporaryDirectory(
+        prefix="salsbury-memory-fit-planning-"
+    ) as temporary:
+        temporary_root = Path(temporary)
+        probe_output = temporary_root / "requested-plan"
+        try:
+            probe = prepare_standard_analysis(
+                **common,
+                output_directory=probe_output,
+                target_wall_hours=target_wall_hours,
+                config_path=config_path,
+            )
+            requested_config = load_json(probe_output / "analysis-config.json")
+            active_config = deepcopy(requested_config)
+            initial_plan = load_json(
+                probe_output / "campaign-resource-plan.json"
+            )
+            requested_plan = deepcopy(initial_plan)
+            direct_disabled: list[str] = []
+            transitive_disabled: list[str] = []
+        except QuickstartMemoryError as exc:
+            requested_config = deepcopy(exc.analysis_config)
+            active_config = deepcopy(exc.analysis_config)
+            initial_plan = deepcopy(exc.plan)
+            requested_plan = deepcopy(exc.plan)
+            direct_disabled = []
+            transitive_disabled = []
+            for iteration in range(1, len(requested_config["modules"]) + 3):
+                memory = initial_plan.get("memory_feasibility")
+                if not isinstance(memory, Mapping):
+                    raise QuickstartError(
+                        "memory fallback received no memory feasibility report"
+                    )
+                modules_to_disable = memory.get(
+                    "configuration_switches_to_disable_to_fit_configured_memory",
+                    memory.get("modules_to_disable_to_fit_configured_memory", []),
+                )
+                if not isinstance(modules_to_disable, list) or not modules_to_disable:
+                    raise QuickstartError(
+                        "memory fallback could not identify a configurable module"
+                    )
+                active_config, direct, transitive = make_memory_fit_config(
+                    active_config,
+                    [str(value) for value in modules_to_disable],
+                )
+                direct_disabled.extend(
+                    value for value in direct if value not in direct_disabled
+                )
+                transitive_disabled.extend(
+                    value for value in transitive
+                    if value not in transitive_disabled
+                    and value not in direct_disabled
+                )
+                reduced_path = temporary_root / f"memory-fit-{iteration}.json"
+                _json_write(reduced_path, active_config)
+                retry_output = temporary_root / f"replanned-{iteration}"
+                try:
+                    retry = prepare_standard_analysis(
+                        **common,
+                        output_directory=retry_output,
+                        target_wall_hours=None,
+                        config_path=reduced_path,
+                    )
+                    probe = retry
+                    probe_output = retry_output
+                    break
+                except QuickstartMemoryError as retry_exc:
+                    initial_plan = deepcopy(retry_exc.plan)
+            else:
+                raise QuickstartError(
+                    "memory fallback did not converge after disabling every "
+                    "reported oversized module"
+                )
+
+        final_config_path = temporary_root / "resolved-memory-fit-config.json"
+        _json_write(final_config_path, active_config)
+        report = prepare_standard_analysis(
+            **common,
+            output_directory=destination,
+            target_wall_hours=None,
+            config_path=final_config_path,
+        )
+        final_plan = load_json(destination / "campaign-resource-plan.json")
+        final_memory = final_plan.get("memory_feasibility", {})
+        initial_memory = requested_plan.get("memory_feasibility", {})
+        fallback_report = {
+            "report_schema": "salsbury-memory-feasibility-report-v1",
+            "technical_status": "complete",
+            "planning_status": "replanned_with_explicit_reduced_config",
+            "automatic_changes_applied": bool(
+                direct_disabled or transitive_disabled
+            ),
+            "requested_memory": deepcopy(initial_memory),
+            "final_memory": deepcopy(final_memory),
+            "directly_disabled_modules_or_features": sorted(direct_disabled),
+            "directly_disabled_configuration_switches": sorted(
+                direct_disabled
+            ),
+            "transitively_disabled_modules": sorted(transitive_disabled),
+            "requested_config": "analysis-config.requested.json",
+            "resolved_config": "analysis-config.memory-fit.json",
+            "original_request_preserved": True,
+        }
+        _json_write(
+            destination / "analysis-config.requested.json", requested_config
+        )
+        _json_write(
+            destination / "analysis-config.memory-fit.json", active_config
+        )
+        _json_write(
+            destination / "memory-feasibility-report.json", fallback_report
+        )
+        generated = report.get("generated_files")
+        if isinstance(generated, list):
+            generated.extend([
+                "analysis-config.requested.json",
+                "analysis-config.memory-fit.json",
+                "memory-feasibility-report.json",
+            ])
+        report["memory_fit"] = fallback_report
+        return report

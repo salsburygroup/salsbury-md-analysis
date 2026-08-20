@@ -2,9 +2,11 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from salsbury_md_analysis.execution_adapters import (
     ExecutionAdapterError,
+    _active_python_executable,
     apply_slurm_profile,
     build_local_execution_plan,
     load_slurm_profile,
@@ -13,6 +15,27 @@ from salsbury_md_analysis.execution_adapters import (
 
 
 class ExecutionAdapterTests(unittest.TestCase):
+    def test_active_python_path_preserves_virtual_environment_symlink(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            base = root / "base-python"
+            base.write_text("", encoding="utf-8")
+            virtual_environment_python = root / "venv" / "bin" / "python"
+            virtual_environment_python.parent.mkdir(parents=True)
+            virtual_environment_python.symlink_to(base)
+            with patch(
+                "salsbury_md_analysis.execution_adapters.os.sys.executable",
+                str(virtual_environment_python),
+            ):
+                self.assertEqual(
+                    _active_python_executable(),
+                    str(virtual_environment_python.absolute()),
+                )
+                self.assertNotEqual(
+                    _active_python_executable(),
+                    str(virtual_environment_python.resolve()),
+                )
+
     def test_deac_profile_is_valid_and_injects_scheduler_contract(self):
         repository = Path(__file__).resolve().parents[1]
         profile = load_slurm_profile(repository / "profiles/slurm/deac.json")

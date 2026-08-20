@@ -46,6 +46,12 @@ _RESOURCE_POLICY_DEFAULTS = {
 }
 
 
+def _active_python_executable() -> str:
+    """Return the active interpreter path without escaping a virtual environment."""
+
+    return str(Path(os.sys.executable).absolute())
+
+
 def _plain_string(value: object, label: str, *, nullable: bool = False) -> Optional[str]:
     if value is None and nullable:
         return None
@@ -840,7 +846,9 @@ def prepare_execution_artifacts(
         json.dumps(plan, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     package_root = str(Path(__file__).resolve(strict=True).parents[1])
-    python = str(Path(os.sys.executable).resolve(strict=True))
+    # Keep the virtual-environment entry point rather than resolving its
+    # symlink to a base interpreter that may not have the package dependencies.
+    python = _active_python_executable()
     launcher = f"""#!/usr/bin/env bash
 set -euo pipefail
 ROOT={shlex.quote(str(root))}

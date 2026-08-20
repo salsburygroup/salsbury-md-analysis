@@ -1,0 +1,62 @@
+{
+  "validation_schema": "salsbury-nemo-zinc-finger-tutorial-acceptance-v1",
+  "candidate_version": "0.1.0a1",
+  "recorded_at": "2026-08-20",
+  "execution_host_class": "Apple silicon workstation",
+  "installation_kind": "fresh Python 3.12 virtual environment; editable install with clustering extra",
+  "dependencies": {
+    "python": "3.12.13",
+    "numpy": "2.5.2",
+    "scipy": "1.18.0",
+    "scikit-learn": "1.9.0"
+  },
+  "fixture": {
+    "system": "human NEMO zinc-finger domain with one zinc ion",
+    "source_physical_frames": 1000,
+    "atom_count": 423,
+    "explicit_bond_count": 426,
+    "trajectory_sha256": "bf7ad649bbb0d7a4bc37d3c2ce5a64140cf7de7b863cc9c6cebb789b80725524"
+  },
+  "configuration": {
+    "maximum_parallel_cpus": 2,
+    "maximum_campaign_hours": 1.0,
+    "maximum_parallel_memory_gib": 32.0,
+    "state_trajectory_exports_enabled": false,
+    "configuration_sha256": "af7354f2606df21e540f8fb40d15c11a0d5b005693ae86b30eeb357f78a5804f"
+  },
+  "execution": {
+    "phase_count": 9,
+    "module_report_count": 28,
+    "remaining_phase_count": 0,
+    "elapsed_wall_seconds": 475.0,
+    "total_measured_cpu_hours": 0.15511489722222221,
+    "maximum_resident_memory_mib": 299.703125,
+    "nonempty_error_log_count": 0,
+    "temporary_report_count": 0,
+    "shared_pca_basis_frames": 500,
+    "shared_pca_projection_frames": 1000,
+    "representative_structure_count": 3,
+    "state_trajectory_frame_count": 0
+  },
+  "evidence_hashes": {
+    "local_execution_status_sha256": "a9c8e9c89ac4cdaca5f1e9b8ac306aca910339be7ab1f370659e5ebf20ea7f04",
+    "resource_and_frame_table_sha256": "bf6248e6f60c4796f5da041bfceae834999f23adc7917b7e406afb8ef0d21532",
+    "final_findings_summary_sha256": "b020d333a2225b80f04a6a6bc0f2b1b8c13236d150c6b02232b94f14b7ccf5b0",
+    "prioritized_findings_sha256": "8175582635cf7757950faa7b6332b64248f5e6731e0a45ceb8965b213b66a998"
+  },
+  "regression_suite": {
+    "tests_discovered": 451,
+    "expected_skips": 1,
+    "failures": 0,
+    "errors": 0,
+    "note": "One macOS process-pool test was denied semaphore inspection by the restricted sandbox and passed when rerun with normal operating-system permissions."
+  },
+  "source_archive_check": {
+    "tutorial_files_included": true,
+    "fixture_hashes_match_source_tree": true,
+    "source_archive_size_mib": 5.2
+  },
+  "technical_status": "complete",
+  "scientific_status": "not evaluated",
+  "interpretation": "This record verifies the tutorial installation, planning, execution, report hashes, resource accounting, representative export, and packaging contract. The short trajectory prefix is not evidence of converged populations, kinetics, zinc affinity, mechanism, or biological importance."
+}

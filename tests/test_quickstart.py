@@ -15,6 +15,7 @@ from salsbury_md_analysis.quickstart import (
     _hydrogen_bond_feature_observation_gate,
     _secondary_structure_applicable,
     prepare_standard_analysis,
+    prepare_standard_analysis_memory_fit,
 )
 
 
@@ -628,6 +629,52 @@ class QuickstartTests(unittest.TestCase):
             project = json.loads((output / "project.json").read_text())
             self.assertEqual(
                 project["reference_connectivity"], str(connectivity.resolve())
+            )
+
+    def test_memory_fallback_writes_requested_and_reduced_configs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "inputs"
+            source.mkdir()
+            pdb, psf, trajectories = _write_inputs(source)
+            config_path = root / "low-memory.json"
+            config_path.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "execution": {"maximum_memory_gib": 1.5},
+            }), encoding="utf-8")
+            output = root / "analysis-memory-fit"
+            report = prepare_standard_analysis_memory_fit(
+                pdb_path=pdb,
+                psf_path=psf,
+                trajectories=trajectories,
+                output_directory=output,
+                project_id="low-memory-system",
+                frame_interval_ps=10.0,
+                config_path=config_path,
+            )
+            self.assertEqual(report["technical_status"], "complete")
+            memory = json.loads(
+                (output / "memory-feasibility-report.json").read_text()
+            )
+            self.assertTrue(memory["automatic_changes_applied"])
+            self.assertTrue(memory["requested_memory"]["memory_shortfall_gib"] > 0)
+            self.assertTrue(memory["final_memory"]["fits_configured_memory"])
+            requested = json.loads(
+                (output / "analysis-config.requested.json").read_text()
+            )
+            reduced = json.loads(
+                (output / "analysis-config.memory-fit.json").read_text()
+            )
+            disabled = memory["directly_disabled_configuration_switches"]
+            self.assertEqual(
+                disabled,
+                ["modules.solvent_accessible_surface_area.enabled"],
+            )
+            self.assertTrue(
+                requested["modules"]["solvent_accessible_surface_area"]["enabled"]
+            )
+            self.assertFalse(
+                reduced["modules"]["solvent_accessible_surface_area"]["enabled"]
             )
 
     @patch("salsbury_md_analysis.quickstart.export_pdb_connectivity")

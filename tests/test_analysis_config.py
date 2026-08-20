@@ -7,6 +7,7 @@ from salsbury_md_analysis.analysis_config import (
     apply_module_configuration,
     default_analysis_config,
     load_analysis_config,
+    make_memory_fit_config,
 )
 
 
@@ -115,6 +116,29 @@ class AnalysisConfigTests(unittest.TestCase):
             self.assertEqual(definitions["replica_rmsd_rg"]["frame_stride"], 7)
             self.assertIn("pca_fes_basins", reasons)
 
+    def test_memory_fit_config_materializes_dependency_disables(self):
+        config = default_analysis_config(
+            [
+                "common_pca", "pca_fes_basins", "representative_frames",
+                "solvent_accessible_surface_area",
+            ],
+            ["global_common_heavy"],
+        )
+        reduced, direct, transitive = make_memory_fit_config(
+            config, ["common_pca", "coordinate_cache"]
+        )
+        self.assertEqual(direct, ["common_pca", "coordinate_cache"])
+        self.assertEqual(
+            transitive, ["pca_fes_basins", "representative_frames"]
+        )
+        self.assertEqual(reduced["execution"]["coordinate_cache"], "off")
+        self.assertFalse(reduced["modules"]["common_pca"]["enabled"])
+        self.assertFalse(reduced["modules"]["pca_fes_basins"]["enabled"])
+        self.assertFalse(reduced["modules"]["representative_frames"]["enabled"])
+        self.assertFalse(reduced["views"]["global_common_heavy"]["enabled"])
+        self.assertTrue(
+            reduced["modules"]["solvent_accessible_surface_area"]["enabled"]
+        )
     def test_clustering_method_switches_filter_dedicated_and_alternative_methods(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "config.json"

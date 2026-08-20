@@ -7,12 +7,14 @@ import math
 from pathlib import Path
 import shutil
 import sys
+import tempfile
 from typing import Dict, Mapping, Optional, Sequence
 
 from .analysis_config import (
     AnalysisConfigError,
     apply_module_configuration,
     load_analysis_config,
+    make_memory_fit_config,
 )
 from .atom_mapping import AtomMappingError, read_pdb_atoms
 from .automatic_sampling import automatic_sampling_plan
@@ -27,7 +29,7 @@ from .campaign_planning import (
 from .conformational_views import plan_comparative_conformational_views
 from .coordinates import CoordinateReadError, iter_coordinate_frames
 from .execution_adapters import (
-    ExecutionAdapterError, prepare_execution_artifacts,
+    ExecutionAdapterError, _active_python_executable, prepare_execution_artifacts,
 )
 from .manifests import load_json, validate_project, validate_system
 from .preflight import (
@@ -38,6 +40,7 @@ from .preflight import (
 )
 from .quickstart import (
     QuickstartError,
+    QuickstartMemoryError,
     _composition,
     _applicable_sampling_modules,
     _configure_coordinate_cache_views,
@@ -142,7 +145,7 @@ def _discover_dssr_executable() -> Optional[str]:
         found = shutil.which(name)
         if found:
             return str(Path(found).resolve(strict=True))
-        candidate = Path(sys.executable).resolve(strict=True).parent / name
+        candidate = Path(_active_python_executable()).parent / name
         if candidate.is_file() and candidate.stat().st_mode & 0o111:
             return str(candidate.resolve(strict=True))
     return None
@@ -903,6 +906,28 @@ def prepare_comparative_analysis(
             ),
         )
     except CampaignPlanningError as exc:
+        if exc.plan is not None:
+            _json_write(root / "campaign-resource-plan.json", exc.plan)
+            memory = exc.plan.get("memory_feasibility")
+            if isinstance(memory, Mapping) and not bool(
+                memory.get("fits_configured_memory", True)
+            ):
+                _json_write(root / "memory-feasibility-report.json", {
+                    "report_schema": "salsbury-memory-feasibility-report-v1",
+                    "technical_status": "complete",
+                    "planning_status": "insufficient_memory",
+                    "automatic_changes_applied": False,
+                    **deepcopy(dict(memory)),
+                    "requested_config_path": str(root / "analysis-config.json"),
+                    "proposed_action": (
+                        "Increase execution.maximum_memory_gib or rerun preparation "
+                        "with --auto-disable-to-fit-memory and a new output directory."
+                    ),
+                })
+                raise QuickstartMemoryError(
+                    str(exc), plan=exc.plan, analysis_config=analysis_config,
+                    output_directory=root,
+                ) from exc
         raise QuickstartError(str(exc)) from exc
     _json_write(root / "sampling-plan.json", sampling_plan)
     _json_write(root / "campaign-resource-plan.json", campaign_resource_plan)
@@ -972,7 +997,7 @@ def prepare_comparative_analysis(
         target_wall_hours=float(
             analysis_config["execution"]["maximum_hours_per_cpu"]  # type: ignore[index]
         ),
-        python_executable=str(Path(sys.executable).resolve(strict=True)),
+        python_executable=_active_python_executable(),
         package_root=str(Path(__file__).resolve(strict=True).parents[1]),
     )
     view_slurm_files = _conformational_view_slurm_files(
@@ -982,7 +1007,7 @@ def prepare_comparative_analysis(
         target_wall_hours=float(
             analysis_config["execution"]["maximum_hours_per_cpu"]  # type: ignore[index]
         ),
-        python_executable=str(Path(sys.executable).resolve(strict=True)),
+        python_executable=_active_python_executable(),
         package_root=str(Path(__file__).resolve(strict=True).parents[1]),
         maximum_parallel_cpus=int(
             analysis_config["execution"]["maximum_parallel_cpus"]  # type: ignore[index]
@@ -995,7 +1020,7 @@ def prepare_comparative_analysis(
         target_wall_hours=float(
             analysis_config["execution"]["maximum_hours_per_cpu"]  # type: ignore[index]
         ),
-        python_executable=str(Path(sys.executable).resolve(strict=True)),
+        python_executable=_active_python_executable(),
         package_root=str(Path(__file__).resolve(strict=True).parents[1]),
         conformational_view_ids=view_ids,
         resource_table_enabled=bool(analysis_config["reporting"]["resource_table_enabled"]),  # type: ignore[index]
@@ -1081,3 +1106,142 @@ remain visible in `module-coverage.json`.
         "slurm_profile_id": execution_artifacts["slurm_profile_id"],
         "next_command": execution_artifacts["next_command"],
     }
+
+
+def prepare_comparative_analysis_memory_fit(
+    *,
+    request_path: Path,
+    output_directory: Path,
+    project_id: str,
+    temperature_kelvin: float = 300.0,
+    target_wall_hours: Optional[float] = None,
+    dssp_executable: Optional[str] = None,
+    config_path: Optional[Path] = None,
+) -> Dict[str, object]:
+    """Prepare a comparison with an explicit, opt-in memory-fit reduction."""
+
+    destination = output_directory.expanduser().resolve(strict=False)
+    if destination.exists() and (
+        not destination.is_dir() or any(destination.iterdir())
+    ):
+        raise QuickstartError(
+            f"output directory is not empty: {destination}; choose a new "
+            "versioned directory"
+        )
+    common = {
+        "request_path": request_path,
+        "project_id": project_id,
+        "temperature_kelvin": temperature_kelvin,
+        "dssp_executable": dssp_executable,
+    }
+    with tempfile.TemporaryDirectory(
+        prefix="salsbury-comparison-memory-fit-planning-"
+    ) as temporary:
+        temporary_root = Path(temporary)
+        probe_output = temporary_root / "requested-plan"
+        try:
+            prepare_comparative_analysis(
+                **common, output_directory=probe_output,
+                target_wall_hours=target_wall_hours, config_path=config_path,
+            )
+            requested_config = load_json(probe_output / "analysis-config.json")
+            active_config = deepcopy(requested_config)
+            requested_plan = load_json(
+                probe_output / "campaign-resource-plan.json"
+            )
+            current_plan = deepcopy(requested_plan)
+            direct_disabled: list[str] = []
+            transitive_disabled: list[str] = []
+        except QuickstartMemoryError as exc:
+            requested_config = deepcopy(exc.analysis_config)
+            active_config = deepcopy(exc.analysis_config)
+            requested_plan = deepcopy(exc.plan)
+            current_plan = deepcopy(exc.plan)
+            direct_disabled = []
+            transitive_disabled = []
+            for iteration in range(1, len(requested_config["modules"]) + 3):
+                memory = current_plan.get("memory_feasibility")
+                if not isinstance(memory, Mapping):
+                    raise QuickstartError(
+                        "comparison memory fallback received no feasibility report"
+                    )
+                switches = memory.get(
+                    "configuration_switches_to_disable_to_fit_configured_memory",
+                    memory.get("modules_to_disable_to_fit_configured_memory", []),
+                )
+                if not isinstance(switches, list) or not switches:
+                    raise QuickstartError(
+                        "comparison memory fallback found no configurable switch"
+                    )
+                active_config, direct, transitive = make_memory_fit_config(
+                    active_config, [str(value) for value in switches]
+                )
+                direct_disabled.extend(
+                    value for value in direct if value not in direct_disabled
+                )
+                transitive_disabled.extend(
+                    value for value in transitive
+                    if value not in transitive_disabled
+                    and value not in direct_disabled
+                )
+                reduced_path = temporary_root / f"memory-fit-{iteration}.json"
+                _json_write(reduced_path, active_config)
+                retry_output = temporary_root / f"replanned-{iteration}"
+                try:
+                    prepare_comparative_analysis(
+                        **common, output_directory=retry_output,
+                        target_wall_hours=None, config_path=reduced_path,
+                    )
+                    break
+                except QuickstartMemoryError as retry_exc:
+                    current_plan = deepcopy(retry_exc.plan)
+            else:
+                raise QuickstartError(
+                    "comparison memory fallback did not converge after disabling "
+                    "every reported oversized switch"
+                )
+
+        resolved_path = temporary_root / "resolved-memory-fit-config.json"
+        _json_write(resolved_path, active_config)
+        report = prepare_comparative_analysis(
+            **common, output_directory=destination,
+            target_wall_hours=None, config_path=resolved_path,
+        )
+        final_plan = load_json(destination / "campaign-resource-plan.json")
+        fallback_report = {
+            "report_schema": "salsbury-memory-feasibility-report-v1",
+            "technical_status": "complete",
+            "planning_status": "replanned_with_explicit_reduced_config",
+            "automatic_changes_applied": bool(
+                direct_disabled or transitive_disabled
+            ),
+            "requested_memory": deepcopy(
+                requested_plan.get("memory_feasibility", {})
+            ),
+            "final_memory": deepcopy(
+                final_plan.get("memory_feasibility", {})
+            ),
+            "directly_disabled_configuration_switches": sorted(direct_disabled),
+            "transitively_disabled_modules": sorted(transitive_disabled),
+            "requested_config": "analysis-config.requested.json",
+            "resolved_config": "analysis-config.memory-fit.json",
+            "original_request_preserved": True,
+        }
+        _json_write(
+            destination / "analysis-config.requested.json", requested_config
+        )
+        _json_write(
+            destination / "analysis-config.memory-fit.json", active_config
+        )
+        _json_write(
+            destination / "memory-feasibility-report.json", fallback_report
+        )
+        generated = report.get("generated_files")
+        if isinstance(generated, list):
+            generated.extend([
+                "analysis-config.requested.json",
+                "analysis-config.memory-fit.json",
+                "memory-feasibility-report.json",
+            ])
+        report["memory_fit"] = fallback_report
+        return report

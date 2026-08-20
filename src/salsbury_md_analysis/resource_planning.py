@@ -440,6 +440,39 @@ def plan_campaign_resource_budget(
                     f"task {task_id} power_law_cost_model.memory_exponent",
                 ),
             }
+        raw_measured_memory_model = raw.get("measured_memory_cost_model")
+        measured_memory_model: Optional[Dict[str, float]] = None
+        if raw_measured_memory_model is not None:
+            if not isinstance(raw_measured_memory_model, Mapping):
+                raise ResourcePlanningError(
+                    f"task {task_id} measured_memory_cost_model must be an object"
+                )
+            measured_memory_model = {
+                "calibration_observations": _positive_number(
+                    raw_measured_memory_model.get("calibration_observations"),
+                    f"task {task_id} measured_memory_cost_model."
+                    "calibration_observations",
+                ),
+                "calibration_memory_gib": _positive_number(
+                    raw_measured_memory_model.get("calibration_memory_gib"),
+                    f"task {task_id} measured_memory_cost_model."
+                    "calibration_memory_gib",
+                ),
+                "memory_exponent": _positive_number(
+                    raw_measured_memory_model.get("memory_exponent"),
+                    f"task {task_id} measured_memory_cost_model.memory_exponent",
+                ),
+                "minimum_observation_scale": _positive_number(
+                    raw_measured_memory_model.get("minimum_observation_scale"),
+                    f"task {task_id} measured_memory_cost_model."
+                    "minimum_observation_scale",
+                ),
+            }
+            if measured_memory_model["minimum_observation_scale"] > 1.0:
+                raise ResourcePlanningError(
+                    f"task {task_id} measured_memory_cost_model."
+                    "minimum_observation_scale must not exceed one"
+                )
         fixed = _nonnegative_number(
             raw.get("fixed_cpu_hours", 0.0),
             f"task {task_id} fixed_cpu_hours",
@@ -502,6 +535,7 @@ def plan_campaign_resource_budget(
             "cpu_seconds_per_physical_frame": rate,
             "fixed_cpu_hours": fixed,
             "power_law_cost_model": power_model,
+            "measured_memory_cost_model": measured_memory_model,
             "estimated_peak_memory_gib": task_memory,
             "priority_weight": weight,
             "member_observation_multiplier": int(multiplier),
@@ -611,15 +645,28 @@ def plan_campaign_resource_budget(
 
     def task_memory(row: Mapping[str, object], counts: Sequence[int]) -> float:
         power_model = row.get("power_law_cost_model")
-        if not isinstance(power_model, Mapping):
-            return float(row["estimated_peak_memory_gib"])
         observations = sum(counts) * int(row["member_observation_multiplier"])
-        return float(power_model["calibration_memory_gib"]) * max(
-            1.0,
-            (
-                observations / float(power_model["calibration_observations"])
-            ) ** float(power_model["memory_exponent"]),
-        )
+        if isinstance(power_model, Mapping):
+            return float(power_model["calibration_memory_gib"]) * max(
+                1.0,
+                (
+                    observations / float(power_model["calibration_observations"])
+                ) ** float(power_model["memory_exponent"]),
+            )
+        measured_model = row.get("measured_memory_cost_model")
+        if isinstance(measured_model, Mapping):
+            observation_scale = (
+                observations / float(measured_model["calibration_observations"])
+            ) ** float(measured_model["memory_exponent"])
+            return max(
+                1.0,
+                float(measured_model["calibration_memory_gib"])
+                * max(
+                    float(measured_model["minimum_observation_scale"]),
+                    observation_scale,
+                ),
+            )
+        return float(row["estimated_peak_memory_gib"])
 
     def known_costs(selection: Mapping[str, Sequence[int]]) -> Dict[str, float]:
         costs = {}
@@ -685,12 +732,75 @@ def plan_campaign_resource_budget(
     minimum_known_cpu_hours = sum(minimum_costs.values())
     minimum_wall, minimum_stages = schedule_summary(selected)
     infeasibility_reasons = []
-    oversized_memory_tasks = sorted(
-        str(row["task_id"])
-        for row in normalized
-        if task_memory(row, selected[str(row["task_id"])]) > memory_gib
+    alternative_method_config_names = {
+        "pam": "pam",
+        "mwpam": "minkowski_weighted_pam",
+        "ward": "ward",
+        "gaussian_mixture": "gaussian_mixture",
+        "variational_gaussian_mixture": "variational_gaussian_mixture",
+        "affinity_propagation": "affinity_propagation",
+        "mean_shift": "mean_shift",
+        "quality_threshold": "quality_threshold",
+    }
+
+    def memory_configuration_switch(row: Mapping[str, object]) -> str:
+        module_id = str(row.get("module_id", row["task_id"]))
+        if module_id == "coordinate_cache":
+            return "execution.coordinate_cache"
+        if module_id == "alternative_clustering" and row.get("algorithm_id"):
+            method = alternative_method_config_names.get(
+                str(row["algorithm_id"]), str(row["algorithm_id"])
+            )
+            return f"clustering.methods.{method}.enabled"
+        dedicated = {
+            "clustering_kmeans": "kmeans",
+            "clustering_hdbscan": "hdbscan",
+            "clustering_imwkmeans": "intelligent_minkowski_weighted_kmeans",
+        }
+        if module_id in dedicated:
+            return f"clustering.methods.{dedicated[module_id]}.enabled"
+        if module_id == "pald_community_analysis":
+            return "community_analysis.pald.enabled"
+        return f"modules.{module_id}.enabled"
+
+    minimum_memory_rows = sorted(
+        (
+            {
+                "task_id": str(row["task_id"]),
+                "module_id": str(row.get("module_id", row["task_id"])),
+                "workflow_id": str(row.get("workflow_id", "base")),
+                "task_scope": str(row.get("task_scope", "unspecified")),
+                "configuration_switch": memory_configuration_switch(row),
+                "required_memory_gib": task_memory(
+                    row, selected[str(row["task_id"])]
+                ),
+            }
+            for row in normalized
+        ),
+        key=lambda row: (-float(row["required_memory_gib"]), str(row["task_id"])),
     )
-    if oversized_memory_tasks:
+    minimum_required_memory_gib = max(
+        float(row["required_memory_gib"]) for row in minimum_memory_rows
+    )
+    oversized_memory_rows = [
+        {
+            **row,
+            "configured_memory_gib": memory_gib,
+            "shortfall_gib": float(row["required_memory_gib"]) - memory_gib,
+        }
+        for row in minimum_memory_rows
+        if float(row["required_memory_gib"]) > memory_gib + 1.0e-12
+    ]
+    oversized_memory_tasks = [
+        str(row["task_id"]) for row in oversized_memory_rows
+    ]
+    memory_modules_to_disable = sorted({
+        str(row["module_id"]) for row in oversized_memory_rows
+    })
+    memory_switches_to_disable = sorted({
+        str(row["configuration_switch"]) for row in oversized_memory_rows
+    })
+    if oversized_memory_rows:
         infeasibility_reasons.append(
             "minimum task memory exceeds the configured maximum for: "
             + ", ".join(oversized_memory_tasks)
@@ -901,6 +1011,31 @@ def plan_campaign_resource_budget(
         ),
         "tasks_requiring_project_pilots": calibration_required,
         "infeasibility_reasons": infeasibility_reasons,
+        "memory_feasibility": {
+            "configured_memory_gib": memory_gib,
+            "minimum_required_memory_gib": minimum_required_memory_gib,
+            "recommended_memory_gib": float(
+                math.ceil(minimum_required_memory_gib)
+            ),
+            "memory_shortfall_gib": max(
+                0.0, minimum_required_memory_gib - memory_gib
+            ),
+            "fits_configured_memory": not oversized_memory_rows,
+            "oversized_tasks": oversized_memory_rows,
+            "modules_to_disable_to_fit_configured_memory": (
+                memory_modules_to_disable
+            ),
+            "configuration_switches_to_disable_to_fit_configured_memory": (
+                memory_switches_to_disable
+            ),
+            "recommendation": (
+                "Increase execution.maximum_memory_gib to at least the reported "
+                "recommended_memory_gib, or explicitly turn off every listed "
+                "configuration switch and its dependent modules before replanning."
+                if oversized_memory_rows else
+                "All enabled task minima fit the configured memory ceiling."
+            ),
+        },
         "minimum_stages": minimum_stages,
         "stages": final_stages,
         "allocation_order": allocation_order,
