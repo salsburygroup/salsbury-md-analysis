@@ -374,4 +374,6 @@ The remaining release gates are tracked in
 
 Original source code is BSD-3-Clause. Original documentation and teaching
 material are CC BY 4.0 under [`LICENSE-DOCS.md`](LICENSE-DOCS.md). Historical or
-third-party material must pass a separate rights review before inclusion.
+third-party material must pass a separate rights review before inclusion. The
+review retained for this alpha is documented in
+[`RELEASE_RIGHTS_REVIEW.md`](RELEASE_RIGHTS_REVIEW.md).

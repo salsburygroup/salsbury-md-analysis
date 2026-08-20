@@ -6,6 +6,7 @@ include LICENSE-DOCS.md
 include CONTRIBUTING.md
 include PRODUCTION_READINESS.md
 include PUBLICATION_REPOSITORY_POLICY.md
+include RELEASE_RIGHTS_REVIEW.md
 include legacy_review_summary.json
 include environment.yml
 recursive-include docs *.md
@@ -24,6 +25,7 @@ include validation/v83_dependency_test.json
 include validation/v84_dependency_test.json
 include validation/v85_dependency_test.json
 include validation/v86_dependency_test.json
+include validation/v0.1.0a1_dependency_test.json
 include validation/water_mediated_hydrogen_bond_smoke_summary.json
 include validation/water_mediated_hydrogen_bond_trex1_published_miller_all_replicas_smoke_summary.json
 recursive-include scripts *.py

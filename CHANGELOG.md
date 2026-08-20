@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0a1
+
+- Prepare the first public alpha from the tested dev86 implementation without
+  changing its scientific algorithms or defaults.
+- Record the source, fixture, dependency, and external-tool provenance review
+  for public source distribution.
+- Extend continuous integration with a clean wheel and source-archive build,
+  isolated wheel installation, command smoke test, and artifact hashes.
+
 ## 0.0.1.dev86
 
 - Preserve explicit atom-count, Cartesian-feature, and oligomer-member workload

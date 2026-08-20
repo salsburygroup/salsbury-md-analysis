@@ -67,13 +67,16 @@ class GeneratedDocumentationTests(unittest.TestCase):
 
     def test_current_dependency_record_is_in_source_archive_manifest(self):
         setup = (ROOT / "setup.cfg").read_text(encoding="utf-8")
-        match = re.search(r"^version\s*=\s*0\.0\.1\.dev(\d+)\s*$", setup, re.MULTILINE)
+        match = re.search(r"^version\s*=\s*([^\s]+)\s*$", setup, re.MULTILINE)
         self.assertIsNotNone(match)
-        record_name = f"v{match.group(1)}_dependency_test.json"
+        version = match.group(1)
+        development = re.fullmatch(r"0\.0\.1\.dev(\d+)", version)
+        record_suffix = development.group(1) if development else version
+        record_name = f"v{record_suffix}_dependency_test.json"
         record_path = ROOT / "validation" / record_name
         self.assertTrue(record_path.is_file())
         record = json.loads(record_path.read_text(encoding="utf-8"))
-        self.assertEqual(record["candidate_version"], f"0.0.1.dev{match.group(1)}")
+        self.assertEqual(record["candidate_version"], version)
         manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
         self.assertIn(f"include validation/{record_name}", manifest.splitlines())
 
