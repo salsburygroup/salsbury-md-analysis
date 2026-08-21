@@ -17,8 +17,8 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -36,8 +36,8 @@ jobs:
   package-artifacts:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -52,7 +52,7 @@ jobs:
           artifact-venv/bin/salsbury-md-analysis list-modules --json
       - name: Record artifact hashes
         run: sha256sum dist/*
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: salsbury-md-analysis-0.1.0-artifacts
           path: dist/*
