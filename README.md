@@ -15,11 +15,6 @@ implementation and automated tests, but none is yet marked `supported` for
 unreviewed production or publication use. Technical completion and scientific
 validity are reported separately.
 
-This is the maintained, reusable toolkit. Docking analysis belongs in
-`salsbury-docking`. A paper's exact scripts, parameters, plots, and accepted
-results belong in a separate, version-locked publication repository so that a
-paper remains reproducible while this toolkit continues to improve.
-
 ## Included analysis
 
 The versioned `standard_md_v1` profile provides one comprehensive,
@@ -142,7 +137,7 @@ and the behavior for RNA, oligomers, ligands/cofactors, ions, water, membranes,
 and unknown polymers are summarized in
 [`docs/GENERAL_BIOMOLECULAR_SYSTEMS.md`](docs/GENERAL_BIOMOLECULAR_SYSTEMS.md).
 
-For Freddie Salsbury's DEAC work, add
+For work on WFU's DEAC cluster, add
 `--config profiles/analysis/deac-default.json` during preparation and run
 `./submit.sh`. That analysis config selects the validated
 `profiles/slurm/deac.json` cluster profile. Other groups can copy
@@ -213,11 +208,11 @@ timing safety factor. The generated `campaign-resource-plan.json` applies that
 one limit across base trajectory estimators, inherited base analyses, and every
 enabled PCA/FES/clustering/state view. `sampling-plan.json` records the applied
 direct-method selections, while each view project records its shared upstream
-selection. Measured 30,000-frame TREX view costs are used where available;
-explicitly labeled conservative proxies remain visible for methods without a
-retained portable calibration. Both files report selected frame counts,
-coverage, and any subsampling.
-Transferred measurements retain the task's declared workload scaling. The
+selection. Both files report selected frame counts, coverage, and any
+subsampling.
+Methods without a retained portable calibration use explicitly labeled
+conservative proxies. Transferred measurements retain the task's declared
+workload scaling. The
 coordinate-cache estimate scales with source atom count; common PCA scales with
 Cartesian feature count and oligomer-member expansion. A small system therefore
 does not inherit the unchanged runtime of the larger calibration system. If the
@@ -277,11 +272,16 @@ explicit observation/state/grid limits. Retained Apollo measurements calibrate
 the demonstrated TREX view methods; unmeasured derived methods are labeled as
 provisional complexity models rather than as portable benchmarks.
 
-This zero-configuration path deliberately stops short of guessing a scientific
-question about particular residues, ligand atoms, ion shells, or modified-base
-ring definitions. Those analyses remain available through explicit project
-definitions and are listed, with the reason for deferral, in
-`module-coverage.json`.
+The automatic workflow can infer the broad molecular composition and schedule
+analyses that do not require a project-specific scientific selection. It cannot
+know, for example, which residues define the biological site of interest, which
+ligand atoms define a reaction coordinate, which ions belong to a particular
+binding shell, or how the ring atoms of a new modified base should be grouped.
+When an analysis needs that information, the workflow defers it instead of
+guessing. Supply the relevant selection in an explicit project definition to
+enable that analysis. The generated `module-coverage.json` records which
+modules were scheduled, disabled, or deferred and gives the reason for every
+deferral.
 
 `submit.sh` performs the quick path checks immediately, then schedules the
 full content-hashing preflight as a small cluster job. Three dependent method
@@ -302,19 +302,69 @@ source checkout remains reproducible on compute nodes. If that installation is
 intentionally moved, set `SALSBURY_MD_ANALYSIS_PYTHON` and
 `SALSBURY_MD_ANALYSIS_PYTHONPATH` when submitting.
 
-`prepare-analysis --config CONFIG.json` and `prepare-comparison ... --config
-CONFIG.json` apply the versioned configuration
-described in
+### Turn analyses on or off
+
+Pass a partial JSON configuration to `prepare-analysis` or
+`prepare-comparison` with `--config CONFIG.json`. Anything not listed in the
+partial file keeps its default. Each scientific module uses
+`modules.<module_id>.enabled`; conformational views and their optional state
+trajectory exports have separate switches; and each clustering method can be
+controlled independently. For example:
+
+```json
+{
+  "config_schema": "salsbury-analysis-config-v1",
+  "modules": {
+    "solvent_accessible_surface_area": {"enabled": true},
+    "water_mediated_hydrogen_bond_networks": {"enabled": false}
+  },
+  "views": {
+    "macromolecular_trace": {
+      "enabled": false,
+      "state_trajectory_exports_enabled": false
+    }
+  },
+  "clustering": {
+    "methods": {
+      "hdbscan": {"enabled": false},
+      "ward": {"enabled": true}
+    }
+  },
+  "community_analysis": {
+    "pald": {
+      "enabled": false,
+      "community_msm_enabled": false
+    }
+  },
+  "inference": {
+    "ion_site_classification_enabled": true
+  }
+}
+```
+
+Use the file during preparation:
+
+```bash
+salsbury-md-analysis prepare-analysis ... --config my-analysis-config.json
+```
+
+Run `salsbury-md-analysis list-modules` to see the module identifiers. The
+prepared campaign writes the complete resolved configuration to
+`analysis-config.json` and records every enabled, disabled, or deferred module
+in `module-coverage.json`. Disabling an upstream module also disables analyses
+that depend on it; required preflight, provenance, and atom-mapping checks
+cannot be turned off. The full set of module, view, comparison, export,
+inference, execution, and reporting controls is described in
 [`docs/CONFIGURATION_AND_FINAL_REPORTING.md`](docs/CONFIGURATION_AND_FINAL_REPORTING.md).
-The default remains all automatically applicable modules and conformational
-views. Per-module and per-view options can be changed without editing generated
-source, and upstream disabling propagates to dependent analyses. Each instrumented
-result includes measured CPU, wall-time, memory, host, job, physical-frame, and
-symmetry-expanded observation evidence. A final dependent job writes the
-consolidated resource/frame table and transparent prioritized-finding report.
-The picker can compare completed per-system reports as well as combined
-multi-system reports, keeps the selected evidence paths visible, and never
-labels descriptive extrema as statistically significant.
+
+The default remains all automatically applicable modules and high-detail
+conformational views. Each instrumented result includes measured CPU,
+wall-time, memory, host, job, physical-frame, and symmetry-expanded observation
+evidence. A final dependent job writes the consolidated resource/frame table
+and transparent prioritized-finding report. The picker can compare completed
+per-system reports as well as combined multi-system reports, keeps the selected
+evidence paths visible, and never labels descriptive extrema as statistically
+significant.
 
 The generated workflow is safely resumable. A technically complete method
 report is validated and reused on resubmission only after the freshly rehashed
@@ -372,24 +422,6 @@ covalent bond. Include a reviewed category only with its separately named
 If a reviewed serialized OpenMM `State` contains the accepted coordinates,
 `scripts/export_openmm_state_pdb.py` can write an atom-order-matched PDB without
 changing the original topology or checkpoint.
-
-## Extend the toolkit
-
-A generally reusable analysis belongs here when it has:
-
-1. a distinct scientific contract and documented interpretation limits;
-2. explicit inputs, units, parameters, outputs, and failure states;
-3. an implementation that does not embed project names or storage paths;
-4. unit tests, a lawful small fixture, and a scientific regression plan;
-5. registry and standard-profile placement without duplicating an existing
-   estimator; and
-6. generated documentation and environment requirements.
-
-New methods start as `experimental` and are promoted individually after
-independent scientific and software review. A paper can lock an older accepted
-version without preventing this toolkit from continuing to improve. See
-[`CONTRIBUTING.md`](CONTRIBUTING.md) and
-[`PUBLICATION_REPOSITORY_POLICY.md`](PUBLICATION_REPOSITORY_POLICY.md).
 
 ## Validate the repository
 
