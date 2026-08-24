@@ -5,8 +5,8 @@ analysis config chooses an adapter, while a Slurm profile describes one cluster.
 Neither adapter changes module selection, frame strides, definitions, dependencies,
 or report/hash contracts.
 
-In other words, choose `local` when you want the package to manage work on the
-current computer, and choose `slurm` when a cluster scheduler should manage it.
+Choose `local` when you want the package to manage work on the current computer,
+and choose `slurm` when a cluster scheduler should manage it.
 The scientific plan is the same either way; only the way resources are requested
 and jobs are launched changes.
 
