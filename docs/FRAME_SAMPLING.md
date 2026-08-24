@@ -11,7 +11,7 @@ evaluated when it fits the method envelope.
 For the current three-replica TREX lesion data, manifests that point to the raw
 10-ps trajectories expose 10,000 frames per replica and 30,000 total.  Manifests
 that point to the 100-ps aggregate trajectories expose 1,000 frames per replica
-and 3,000 total.  The code reports what the supplied files actually contain; it
+and 3,000 total.  The code reports what the supplied files contain; it
 does not silently treat an aggregate trajectory as the raw trajectory.
 
 ## Supported policies
