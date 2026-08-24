@@ -74,6 +74,6 @@ A clustering result is not discarded because its labels are strongly
 associated with replica, system, starting conformer, or preparation lineage.
 The suite retains the partition, population tables, representatives, and state
 trajectories and reports that association as part of the scientific result.
-What changes is the allowed interpretation: absent independent kinetic and
-sampling evidence, the labels describe ensemble/preparation separation rather
-than validated metastable or kinetic states.
+Without independent kinetic and sampling evidence, the labels describe
+ensemble/preparation separation rather than validated metastable or kinetic
+states.
