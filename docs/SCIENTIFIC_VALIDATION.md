@@ -2,10 +2,9 @@
 
 Validation snapshot: **2026-08-12**
 
-The current validation substantially strengthens confidence in the numerical
-kernels, file readers, periodic reconstruction, and reporting contracts. It
-does not make the toolkit a supported scientific release and does not validate
-a biological conclusion.
+The current validation exercises the numerical kernels, file readers, periodic
+reconstruction, and reporting contracts. Every module remains experimental,
+and no biological conclusion follows from these tests.
 
 ## What was exercised
 
@@ -195,9 +194,8 @@ implementation error. Clustering and MSM estimators agreed with their scoped
 references, but their states and kinetics remain sampling-, feature-, lag-,
 and parameter-sensitive.
 
-These are important successes of fail-closed reporting, not reasons to infer a
-scientific result. No test here approves a project-specific selection,
-threshold, state model, comparison, mechanism, or publication claim.
+No test here approves a project-specific selection, threshold, state model,
+comparison, mechanism, or publication claim.
 
 ## Promotion boundary
 
