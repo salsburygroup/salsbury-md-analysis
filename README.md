@@ -17,8 +17,7 @@ validity are reported separately.
 
 ## Included analysis
 
-The versioned `standard_md_v1` profile provides one comprehensive,
-nonredundant analysis path. In practical terms, it covers:
+The comprehensive, nonredundant `standard_md_v1` profile includes:
 
 - manifests, input inventories, atom mapping, preflight, structural QC, and
   connectivity-aware make-whole or continuous unwrapping;
