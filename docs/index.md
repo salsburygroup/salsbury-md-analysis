@@ -42,6 +42,7 @@ they still agree with the source.
 - [Manifest and provenance workflow](MANIFESTS.md)
 - [FES, clustering, and state-coordinate exports](FES_CLUSTERING_EXPORTS.md)
 - [Scientific reporting standard](REPORTING_STANDARD.md)
+- [Prioritized findings and complete module accounting](FINDING_PICKER.md)
 - [Automatic and pooled frame sampling](FRAME_SAMPLING.md)
 - [Comparative states, ions, and hydrogen bonds](COMPARATIVE_STATES_INTERACTIONS.md)
 - [RDF and native-contact observables](RDF_NATIVE_CONTACTS.md)

@@ -13,6 +13,65 @@ from salsbury_md_analysis.finding_picker import FindingPickerError, prioritize_f
 
 
 class FinalReportingTests(unittest.TestCase):
+    def test_picker_accounts_for_every_complete_report_without_promoting_qc(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def write(name, payload):
+                path = root / "results" / name / "report.json"
+                path.parent.mkdir(parents=True)
+                path.write_text(json.dumps({
+                    "technical_status": "complete", **payload,
+                }), encoding="utf-8")
+
+            write("alternative", {
+                "module_id": "alternative_clustering",
+                "algorithm_results": [{
+                    "algorithm": "partition_around_medoids",
+                    "silhouette": 0.51,
+                    "cluster_sizes": [7, 5],
+                }],
+            })
+            write("structural-qc", {
+                "module_id": "structural_integrity_qc",
+                "qc_status": "findings_require_review",
+                "qc_finding_count": 2,
+            })
+            write("cache", {"module_id": "coordinate_cache"})
+            write("dihedrals", {
+                "module_id": "dihedral_distributions",
+                "circular_summaries": [],
+            })
+
+            report = prioritize_findings(root, maximum_findings=1)
+            accounting = {
+                row["module_id"]: row for row in report["module_accounting"]
+            }
+            self.assertEqual(report["reviewed_report_count"], 4)
+            self.assertEqual(report["reviewed_module_count"], 4)
+            self.assertEqual(report["silent_omission_count"], 0)
+            self.assertEqual(
+                accounting["alternative_clustering"]["disposition"],
+                "ranked_candidates",
+            )
+            self.assertEqual(
+                accounting["structural_integrity_qc"]["disposition"],
+                "quality_control",
+            )
+            self.assertEqual(
+                accounting["coordinate_cache"]["disposition"],
+                "technical_support",
+            )
+            self.assertEqual(
+                accounting["dihedral_distributions"]["disposition"],
+                "reviewed_no_automatic_highlight",
+            )
+            self.assertEqual(report["quality_control_record_count"], 1)
+            self.assertFalse(any(
+                row["module_id"] == "structural_integrity_qc"
+                for row in report["findings"]
+            ))
+
     def test_picker_scales_to_twenty_system_all_pair_comparison(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

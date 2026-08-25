@@ -1,0 +1,30 @@
+{
+  "validation_schema": "salsbury-nemo-finding-picker-acceptance-v1",
+  "candidate_version": "0.1.1",
+  "recorded_at": "2026-08-25",
+  "fixture": "tutorials/nemo_zinc_finger/data/nemo_zinc_finger_1000_frames.dcd",
+  "execution_adapter": "local",
+  "maximum_parallel_cpus": 2,
+  "technical_status": "complete",
+  "scientific_status": "not evaluated",
+  "module_report_count": 28,
+  "validated_sidecar_count": 28,
+  "nonempty_error_log_count": 0,
+  "temporary_report_count": 0,
+  "finding_picker": {
+    "candidate_count": 29,
+    "reported_count": 20,
+    "unreported_candidate_count": 9,
+    "reviewed_report_count": 28,
+    "reviewed_module_count": 28,
+    "silent_omission_count": 0,
+    "quality_control_record_count": 14,
+    "candidate_source_module_count": 22,
+    "statistically_significant_finding_count": 0,
+    "prioritized_findings_json_sha256": "8853292bb01bff7f4373cccab7e143fcc3f992f9421e3841a8bd798b0f2cf917",
+    "prioritized_findings_csv_sha256": "dd291bcd2291368b1b9e51844bf6cc1060e528478132df0b654f1242201f750c",
+    "prioritized_findings_markdown_sha256": "86c49c9612cfe91559e6305587cd9872a9633102447f9f0a94b883489b03fc35"
+  },
+  "resource_table_json_sha256": "3f78a6eb56547999e7a5ef239eb4b3244d4b4412b43c54bdeb5324deb425a8c9",
+  "interpretation": "This validates complete picker accounting and deterministic technical output on the bounded NEMO fixture. All highlighted NEMO results remain descriptive, exploratory, or interpretive; the run does not establish convergence, a valid kinetic model, biological importance, or scientific significance."
+}
