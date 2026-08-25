@@ -1,18 +1,17 @@
 # Production-readiness assessment
 
-Assessment date: 2026-08-20  
-Candidate: `0.1.0`
+Assessment date: 2026-08-25
+Candidate: `0.1.1`
 
 ## Decision boundary
 
-This private repository contains the proposed `v0.1.0` experimental release. It
-has not been made public and is not presented
-as a supported scientific release.
+This branch contains the proposed `v0.1.1` experimental patch release. It is not
+presented as a supported scientific release.
 Every registered module remains `experimental`; technical completion, scheduler
 success, and scientific validity are separate statuses.
 
 The source contains 45 of 45 MD/core/reporting modules in the registry and
-standard profile. The exact release dependency test is retained in
+standard profile. The prior `v0.1.0` dependency test is retained in
 `validation/v0.1.0_dependency_test.json`. Earlier candidate evidence remains in
 `validation/v0.1.0a1_dependency_test.json`. The later memory-planning update,
 including its exact source hashes, 457-test result, generated-document check,

@@ -9,7 +9,7 @@ write local and Slurm launchers. It will not modify the simulation inputs.
 
 ## Status
 
-Version 0.1.0 is the first cleaned **experimental toolkit release**. It contains
+Version 0.1.1 is an **experimental toolkit release**. It contains
 45 registered MD, core, and reporting modules. Every registered module has an
 implementation and automated tests, but none is yet marked `supported` for
 unreviewed production or publication use. Technical completion and scientific
@@ -360,10 +360,20 @@ The default remains all automatically applicable modules and high-detail
 conformational views. Each instrumented result includes measured CPU,
 wall-time, memory, host, job, physical-frame, and symmetry-expanded observation
 evidence. A final dependent job writes the consolidated resource/frame table
-and transparent prioritized-finding report. The picker can compare completed
+and transparent prioritized-finding report. The picker accounts for every
+completed report as a ranked scientific-candidate source, QC evidence,
+interpretive context, technical support, or a reviewed report with an explicit
+reason that no automatic highlight was produced. It can compare completed
 per-system reports as well as combined multi-system reports, keeps the selected
 evidence paths visible, and never labels descriptive extrema as statistically
-significant.
+significant. See [`docs/FINDING_PICKER.md`](docs/FINDING_PICKER.md).
+
+Interactive browsing is provided separately by
+[`salsbury-md-analysis-interactive`](https://github.com/salsburygroup/salsbury-md-analysis-interactive).
+The core package does not install or invoke the viewer. Install the companion
+only when you want to turn a completed campaign into a self-contained offline
+HTML report; the JSON, CSV, Markdown, structures, and method reports produced
+here remain the scientific record.
 
 The generated workflow is safely resumable. A technically complete method
 report is validated and reused on resubmission only after the freshly rehashed

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.1 - 2026-08-25
+
+- Account for every completed module report in the prioritized-finding output,
+  including reports that produce QC evidence, interpretive context, technical
+  support, or no automatic highlight.
+- Add transparent highlights for alternative clustering, PCA/TICA context,
+  nonlinear dependence, information dynamics, correlation networks, grouped
+  prediction, ion atmosphere, RMSD/Rg, and scalar distribution/state results.
+- Keep QC and convergence records out of the scientific ranking and report
+  candidate-list truncation explicitly.
+- Keep the core installation non-interactive and document the independently
+  installable `salsbury-md-analysis-interactive` companion.
+
 ## 0.1.0 - 2026-08-20
 
 - Replace fixed small-system legacy memory charges with conservative

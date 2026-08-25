@@ -1,7 +1,7 @@
 # Release rights and provenance review
 
-Review date: 2026-08-20  
-Candidate: `0.1.0`
+Review date: 2026-08-25
+Candidate: `0.1.1`
 
 ## Decision
 
