@@ -631,7 +631,13 @@ class QuickstartTests(unittest.TestCase):
                 project["reference_connectivity"], str(connectivity.resolve())
             )
 
-    def test_memory_fallback_writes_requested_and_reduced_configs(self):
+    @patch(
+        "salsbury_md_analysis.quickstart._discover_dssp_executable",
+        return_value=None,
+    )
+    def test_memory_fallback_writes_requested_and_reduced_configs(
+        self, _discover_dssp,
+    ):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "inputs"

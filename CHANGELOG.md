@@ -12,6 +12,8 @@
   candidate-list truncation explicitly.
 - Keep the core installation non-interactive and document the independently
   installable `salsbury-md-analysis-interactive` companion.
+- Make the low-memory fallback regression independent of whether `mkdssp` is
+  installed beside the active Python interpreter.
 
 ## 0.1.0 - 2026-08-20
 
