@@ -5,14 +5,13 @@ analysis. The example is a real 1,000-frame subset of a published
 Salsbury-group simulation of the 28-residue zinc-finger domain of human NEMO.
 It contains the protein, its hydrogens, and one zinc ion.
 
-The exercise is deliberately small enough for a modest workstation. Its config
-sets 32 GiB as a hard campaign ceiling, not as an expected allocation: the
-accepted run peaked near 300 MiB, and the current conservative plan estimates a
-2.4 GiB task maximum before execution-adapter overhead. It teaches the workflow;
-it does **not** reproduce the paper or provide enough sampling for a scientific
-conclusion. That distinction is
-especially important here: the source publication showed that short
-zinc-finger trajectories miss rare conformations found by longer simulations.
+The source publication showed that short zinc-finger trajectories miss rare
+conformations found by longer simulations. This exercise is deliberately small
+enough for a modest workstation. Its config sets 32 GiB as a hard campaign
+ceiling, not as an expected allocation: the accepted run peaked near 300 MiB,
+and the current conservative plan estimates a 2.4 GiB task maximum before
+execution-adapter overhead. It teaches the workflow but does **not** reproduce
+the paper or provide enough sampling for a scientific conclusion.
 
 ## What you will learn
 

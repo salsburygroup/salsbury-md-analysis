@@ -85,10 +85,9 @@ system/replica/segment/frame identity and report system-by-state populations.
 Strong association between cluster labels and system, replica, starting
 conformer, or preparation lineage is itself a scientific property of the
 fitted partition. It must be shown with the population evidence and carried
-into representatives and state trajectories. It is not a technical failure
-and does not discard the analysis. It instead constrains the claim: the
-partition describes ensemble or preparation separation unless independent
-sampling and kinetic evidence support a metastable-state interpretation.
+into representatives and state trajectories. Without independent sampling and
+kinetic evidence, the partition describes ensemble or preparation separation
+rather than metastable states.
 
 ## Markov-model selection and validation
 

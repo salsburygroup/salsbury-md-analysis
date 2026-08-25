@@ -78,7 +78,7 @@ every streamed frame.
   covalent-link checks;
 - explicit reporting of evaluated frames, normalized units, examples, and
   technical failures and nonblocking human-review findings.
-- declared segment timing and the physical-time range actually evaluated.
+- declared segment timing and the physical-time range evaluated.
 
 ## Scientific limits
 
