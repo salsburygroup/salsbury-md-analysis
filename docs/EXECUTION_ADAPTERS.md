@@ -148,7 +148,11 @@ and account/QoS ceilings it can discover, and the smaller recommended CPU count.
 It then reruns the saved resource allocation in memory using that CPU count and
 the supplied duration. The result includes each method's integer stride, selected
 frames, estimated CPU-hours, observation-scaled memory, largest scheduler request,
-and the largest exact resource-wave memory total.
+and the largest exact resource-wave memory total. The saved plan also separates
+CPU-hour utilization from wall-time utilization and reports why allocation
+stopped. Repeating the calculation with a longer duration cannot reduce any
+task's frame coverage when the tasks, CPU cap, memory cap, and reserve fractions
+are unchanged.
 
 Live inspection uses only `scontrol`, `sacctmgr`, and `squeue`. It does not call
 `sbatch` or `scancel`. `--offline` skips those queries and replans from saved

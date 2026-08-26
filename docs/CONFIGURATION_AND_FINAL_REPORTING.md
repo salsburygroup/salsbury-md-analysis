@@ -85,6 +85,23 @@ clustering, and state methods share the selected physical-frame identities of
 their view PCA; equivalent oligomer members add observations but do not add
 physical frames or replicas. A configured envelope that cannot fund the small
 technical minima fails closed by default.
+
+Stride upgrades follow a progressive absolute resource frontier. For an
+otherwise identical plan, increasing the wall limit extends the shorter
+allocation instead of replacing its inexpensive upgrades with newly affordable
+expensive work. Per-task frame coverage is therefore nondecreasing across a
+duration series such as 8, 24, 48, and 168 hours. Priority weights decide among
+upgrades that become affordable at the same frontier; they do not retract an
+earlier task's frames.
+
+CPU-hours and wall time are reported separately in
+`resource_budget_utilization`. A low CPU-hour fraction is not automatically
+unused scientific work: serial estimators, dependency barriers, and per-task CPU
+caps can saturate wall time while many requested cores are idle.
+`allocation_saturation` identifies the stop reason, the groups at their frame
+ceilings, memory-blocked groups, and the wall allowance required by the next
+stride upgrade. No duplicate calculation is added merely to consume the raw
+CPU-hour envelope.
 That failure includes the minimum calibrated critical path, the science wall
 and CPU allowances after reserves, the configured campaign ceiling, and the
 smallest calculated `--target-wall-hours` retry bound. The number is guidance,

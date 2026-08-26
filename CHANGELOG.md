@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Make campaign stride allocation monotonic across longer wall-time envelopes
+  and report whether residual CPU-hours come from frame ceilings, memory, the
+  next discrete stride step, or limited dependency/task parallelism.
+
 - Split mixed-resource Slurm arrays into resource-matched submissions so only
   the tasks that need large memory reserve it, while preserving the original
   CPU cap, dependency graph, planner requests, and scientific sampling.

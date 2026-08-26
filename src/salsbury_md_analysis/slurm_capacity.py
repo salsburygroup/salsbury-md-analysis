@@ -753,6 +753,10 @@ def advise_slurm_capacity(
                 "estimated_selected_wall_hours_lower_bound"
             ],
             "unused_science_cpu_hours": replanned["unused_science_cpu_hours"],
+            "resource_budget_utilization": replanned[
+                "resource_budget_utilization"
+            ],
+            "allocation_saturation": replanned["allocation_saturation"],
             "maximum_memory_gib": memory,
             "memory_feasibility": replanned["memory_feasibility"],
             "tasks": tasks,
@@ -799,6 +803,10 @@ def render_capacity_markdown(report: Mapping[str, object]) -> str:
     assert isinstance(memory, Mapping)
     assert isinstance(campaign, Mapping)
     assert isinstance(queue, Mapping)
+    utilization = campaign["resource_budget_utilization"]
+    saturation = campaign["allocation_saturation"]
+    assert isinstance(utilization, Mapping)
+    assert isinstance(saturation, Mapping)
     placement = queue.get("largest_task_placement")
     placement_status = (
         "offline"
@@ -818,6 +826,11 @@ def render_capacity_markdown(report: Mapping[str, object]) -> str:
         f"{campaign['estimated_selected_cpu_hours']:.2f}",
         f"- Unallocated science CPU-hours: "
         f"{campaign['unused_science_cpu_hours']:.2f}",
+        f"- Science CPU-hour utilization: "
+        f"{100.0 * float(utilization['science_cpu_hour_fraction']):.1f}%",
+        f"- Science wall-time utilization: "
+        f"{100.0 * float(utilization['science_wall_time_fraction']):.1f}%",
+        f"- Allocation stop reason: {saturation['stop_reason']}",
         f"- Largest planned task working set: {memory['planned_working_set_gib']:.2f} GiB",
         f"- Scheduler memory needed with safety margin: "
         f"{memory['unbounded_scheduler_request_gib']:.2f} GiB",
@@ -826,6 +839,8 @@ def render_capacity_markdown(report: Mapping[str, object]) -> str:
         f"- Largest planned concurrent scheduler-memory wave: "
         f"{memory['maximum_concurrent_scheduler_request_gib']:.2f} GiB",
         f"- Largest-task placement: {placement_status}",
+        "",
+        str(saturation["unused_cpu_hour_interpretation"]),
         "",
         "No job was submitted. Queue timing before submission is an estimate, not a reservation.",
     ]

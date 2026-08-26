@@ -966,77 +966,161 @@ def plan_campaign_resource_budget(
             "and maximum frame constraints for: "
             + ", ".join(stride_maximum_overflows)
         )
-    allocation_order = []
-    if not infeasibility_reasons and not calibration_required:
-        while True:
-            current_costs = known_costs(selected)
-            current_total = sum(current_costs.values())
-            candidates = []
-            for group_id, rows in groups.items():
-                current_budget = group_budgets[group_id]
-                maximum_budget = min(
-                    int(row["maximum_frames_per_replica"]) for row in rows
-                )
-                maximum_budget = min(
-                    maximum_budget,
-                    max(
+    def maximum_group_budget(rows: Sequence[Mapping[str, object]]) -> int:
+        return min(
+            min(int(row["maximum_frames_per_replica"]) for row in rows),
+            max(
+                int(value)
+                for row in rows
+                for value in row["source_frames_per_replica"]  # type: ignore[union-attr]
+            ),
+        )
+
+    def upgrade_candidates() -> tuple[
+        list[Dict[str, object]], list[str], list[str]
+    ]:
+        """Return the next deterministic stride upgrade for every open group.
+
+        ``required_science_wall_hours`` expresses both CPU-hour and packed-wall
+        feasibility on the same absolute wall-time axis.  Ordering upgrades by
+        the earliest resource frontier at which they become possible makes the
+        allocation path independent of the final requested wall limit.  A
+        longer envelope therefore extends the shorter plan instead of replacing
+        inexpensive earlier upgrades with a newly affordable expensive one.
+        """
+
+        current_total = sum(known_costs(selected).values())
+        candidates: list[Dict[str, object]] = []
+        memory_blocked: list[str] = []
+        at_ceiling: list[str] = []
+        for group_id, rows in groups.items():
+            current_budget = group_budgets[group_id]
+            maximum_budget = maximum_group_budget(rows)
+            if current_budget >= maximum_budget:
+                at_ceiling.append(group_id)
+                continue
+            next_budget = min(
+                maximum_budget,
+                max(current_budget + 1, current_budget * 2),
+            )
+            proposed = {key: list(values) for key, values in selected.items()}
+            next_stride, next_group_counts = group_selection(rows, next_budget)
+            gain = 0.0
+            for row in rows:
+                task_id = str(row["task_id"])
+                next_counts = next_group_counts[task_id]
+                gain += float(row["priority_weight"]) * (
+                    sum(next_counts) - sum(selected[task_id])
+                ) / max(
+                    1,
+                    sum(
                         int(value)
-                        for row in rows
                         for value in row["source_frames_per_replica"]  # type: ignore[union-attr]
                     ),
                 )
-                if current_budget >= maximum_budget:
-                    continue
-                next_budget = min(
-                    maximum_budget,
-                    max(current_budget + 1, current_budget * 2),
-                )
-                proposed = {key: list(values) for key, values in selected.items()}
-                next_stride, next_group_counts = group_selection(rows, next_budget)
-                gain = 0.0
-                for row in rows:
-                    task_id = str(row["task_id"])
-                    next_counts = next_group_counts[task_id]
-                    gain += float(row["priority_weight"]) * (
-                        sum(next_counts) - sum(selected[task_id])
-                    ) / max(1, sum(int(value) for value in row["source_frames_per_replica"]))  # type: ignore[union-attr]
-                    proposed[task_id] = next_counts
-                proposed_costs = known_costs(proposed)
-                proposed_total = sum(proposed_costs.values())
-                delta = proposed_total - current_total
-                proposed_wall, _ = schedule_summary(proposed)
-                proposed_memory_fits = all(
-                    task_scheduler_memory(row, proposed[str(row["task_id"])])
-                    <= memory_gib + 1.0e-12
-                    for row in normalized
-                )
-                if (
-                    delta >= 0.0
-                    and proposed_total <= science_cpu_hours + 1.0e-12
-                    and proposed_wall is not None
-                    and proposed_wall <= science_wall_hours + 1.0e-12
-                    and proposed_memory_fits
-                ):
-                    score = math.inf if delta == 0.0 else gain / delta
-                    candidates.append((
-                        score, gain, group_id, next_budget, next_stride, proposed
-                    ))
-            if not candidates:
-                break
-            _, _, group_id, next_budget, next_stride, proposed = max(
-                candidates, key=lambda row: (row[0], row[1], row[2])
+                proposed[task_id] = next_counts
+            proposed_costs = known_costs(proposed)
+            proposed_total = sum(proposed_costs.values())
+            delta = proposed_total - current_total
+            proposed_wall, _ = schedule_summary(proposed)
+            proposed_memory_fits = all(
+                task_scheduler_memory(row, proposed[str(row["task_id"])])
+                <= memory_gib + 1.0e-12
+                for row in normalized
             )
+            if proposed_wall is None or not proposed_memory_fits:
+                memory_blocked.append(group_id)
+                continue
+            if delta < -1.0e-12:
+                raise ResourcePlanningError(
+                    f"allocation upgrade for {group_id} reduces modeled cost"
+                )
+            score = math.inf if delta <= 1.0e-12 else gain / delta
+            candidates.append({
+                "score": score,
+                "gain": gain,
+                "balance_group": group_id,
+                "next_budget": next_budget,
+                "next_stride": next_stride,
+                "proposed": proposed,
+                "proposed_cpu_hours": proposed_total,
+                "proposed_wall_hours": proposed_wall,
+                "required_science_wall_hours": max(
+                    proposed_total / maximum_parallel_cpus,
+                    proposed_wall,
+                ),
+            })
+        return candidates, memory_blocked, at_ceiling
+
+    allocation_order = []
+    allocation_frontier_wall_hours = max(
+        minimum_known_cpu_hours / maximum_parallel_cpus,
+        0.0 if minimum_wall is None else minimum_wall,
+    )
+    allocation_stop_reason = "allocation_not_attempted"
+    final_upgrade_candidates: list[Dict[str, object]] = []
+    final_memory_blocked_groups: list[str] = []
+    final_groups_at_ceiling: list[str] = []
+    if not infeasibility_reasons and not calibration_required:
+        while True:
+            (
+                candidates,
+                memory_blocked_groups,
+                groups_at_ceiling,
+            ) = upgrade_candidates()
+            final_upgrade_candidates = candidates
+            final_memory_blocked_groups = memory_blocked_groups
+            final_groups_at_ceiling = groups_at_ceiling
+            if not candidates:
+                allocation_stop_reason = (
+                    "memory_ceiling_blocks_remaining_upgrades"
+                    if memory_blocked_groups else
+                    "all_eligible_frame_ceilings_reached"
+                )
+                break
+            next_frontier = min(
+                float(row["required_science_wall_hours"])
+                for row in candidates
+            )
+            allocation_frontier_wall_hours = max(
+                allocation_frontier_wall_hours, next_frontier
+            )
+            if (
+                allocation_frontier_wall_hours
+                > science_wall_hours + 1.0e-12
+            ):
+                allocation_stop_reason = (
+                    "next_stride_upgrade_exceeds_campaign_envelope"
+                )
+                break
+            active = [
+                row for row in candidates
+                if float(row["required_science_wall_hours"])
+                <= allocation_frontier_wall_hours + 1.0e-12
+            ]
+            chosen = max(
+                active,
+                key=lambda row: (
+                    float(row["score"]),
+                    float(row["gain"]),
+                    str(row["balance_group"]),
+                ),
+            )
+            group_id = str(chosen["balance_group"])
             previous_budget = group_budgets[group_id]
             previous_stride = group_strides[group_id]
-            group_budgets[group_id] = next_budget
-            group_strides[group_id] = next_stride
-            selected = proposed
+            group_budgets[group_id] = int(chosen["next_budget"])
+            group_strides[group_id] = int(chosen["next_stride"])
+            selected = chosen["proposed"]  # type: ignore[assignment]
             allocation_order.append({
                 "balance_group": group_id,
                 "previous_maximum_frames_per_replica": previous_budget,
-                "new_maximum_frames_per_replica": next_budget,
+                "new_maximum_frames_per_replica": group_budgets[group_id],
                 "previous_integer_stride": previous_stride,
-                "new_integer_stride": next_stride,
+                "new_integer_stride": group_strides[group_id],
+                "activation_science_wall_hours": float(
+                    chosen["required_science_wall_hours"]
+                ),
             })
 
     final_costs = known_costs(selected)
@@ -1127,6 +1211,57 @@ def plan_campaign_resource_budget(
         feasibility = "infeasible"
     else:
         feasibility = "feasible"
+    unused_science_cpu_hours = max(
+        0.0, science_cpu_hours - final_known_cpu_hours
+    )
+    science_cpu_hour_fraction = (
+        final_known_cpu_hours / science_cpu_hours
+        if science_cpu_hours > 0.0 else 0.0
+    )
+    science_wall_time_fraction = (
+        final_wall / science_wall_hours
+        if final_wall is not None and science_wall_hours > 0.0 else None
+    )
+    average_parallel_cpus = (
+        final_known_cpu_hours / final_wall
+        if final_wall is not None and final_wall > 0.0 else None
+    )
+    next_upgrade = (
+        min(
+            final_upgrade_candidates,
+            key=lambda row: float(row["required_science_wall_hours"]),
+        )
+        if final_upgrade_candidates else None
+    )
+    if unused_science_cpu_hours <= 1.0e-12:
+        unused_interpretation = "The science CPU-hour budget is fully allocated."
+    elif (
+        science_wall_time_fraction is not None
+        and science_wall_time_fraction >= 0.9
+    ):
+        unused_interpretation = (
+            "The campaign nearly saturates its science wall-time envelope. "
+            "Unused CPU-hours reflect limited task parallelism, dependency stages, "
+            "and per-task CPU caps; they are not omitted required analysis."
+        )
+    elif allocation_stop_reason == "all_eligible_frame_ceilings_reached":
+        unused_interpretation = (
+            "Every eligible task reached its configured frame ceiling. Unused "
+            "CPU-hours reflect finite work and limited parallelism; the planner "
+            "does not manufacture duplicate analysis to occupy idle cores."
+        )
+    elif allocation_stop_reason == "memory_ceiling_blocks_remaining_upgrades":
+        unused_interpretation = (
+            "The remaining stride upgrades exceed the aggregate memory policy. "
+            "Unused CPU-hours cannot be spent without increasing memory or changing "
+            "the enabled-method configuration."
+        )
+    else:
+        unused_interpretation = (
+            "The next deterministic stride upgrade exceeds the remaining campaign "
+            "wall/CPU envelope. Unused CPU-hours are stranded by discrete stride "
+            "steps and available parallelism, not silently discarded work."
+        )
     return {
         "planning_schema": "salsbury-campaign-resource-plan-v1",
         "technical_status": "complete",
@@ -1153,9 +1288,41 @@ def plan_campaign_resource_budget(
         "minimum_wall_hours_lower_bound": minimum_wall,
         "estimated_selected_cpu_hours": final_known_cpu_hours,
         "estimated_selected_wall_hours_lower_bound": final_wall,
-        "unused_science_cpu_hours": max(
-            0.0, science_cpu_hours - final_known_cpu_hours
-        ),
+        "unused_science_cpu_hours": unused_science_cpu_hours,
+        "resource_budget_utilization": {
+            "science_cpu_hour_fraction": science_cpu_hour_fraction,
+            "science_wall_time_fraction": science_wall_time_fraction,
+            "average_parallel_cpus_during_selected_schedule": (
+                average_parallel_cpus
+            ),
+            "maximum_parallel_cpus": maximum_parallel_cpus,
+        },
+        "allocation_saturation": {
+            "allocation_strategy": (
+                "progressive_absolute_resource_frontier_v1"
+            ),
+            "stop_reason": allocation_stop_reason,
+            "groups_total": len(groups),
+            "groups_at_frame_ceiling": len(final_groups_at_ceiling),
+            "groups_below_frame_ceiling": (
+                len(groups) - len(final_groups_at_ceiling)
+            ),
+            "memory_blocked_groups": sorted(final_memory_blocked_groups),
+            "next_upgrade_balance_group": (
+                str(next_upgrade["balance_group"])
+                if next_upgrade is not None else None
+            ),
+            "next_upgrade_required_science_wall_hours": (
+                float(next_upgrade["required_science_wall_hours"])
+                if next_upgrade is not None else None
+            ),
+            "unused_cpu_hour_interpretation": unused_interpretation,
+            "monotonicity_contract": (
+                "For identical tasks, CPU ceiling, memory ceiling, and planning "
+                "fractions, increasing maximum wall time extends the deterministic "
+                "allocation path and cannot reduce an earlier task's frame coverage."
+            ),
+        },
         "tasks_requiring_project_pilots": calibration_required,
         "infeasibility_reasons": infeasibility_reasons,
         "memory_feasibility": {

@@ -191,13 +191,101 @@ class ResourcePlanningTests(unittest.TestCase):
         constrained_tasks = {
             row["task_id"]: row for row in constrained["tasks"]
         }
-        self.assertGreater(
+        self.assertGreaterEqual(
             constrained_tasks["fes"]["selected_physical_frame_count"],
             constrained_tasks["sasa"]["selected_physical_frame_count"],
         )
         self.assertTrue(all(
             not row["subsampling_triggered"] for row in extended["tasks"]
         ))
+
+    def test_larger_wall_envelope_never_reduces_task_coverage(self):
+        tasks = [
+            {
+                "task_id": "high-priority-quadratic",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [100],
+                "minimum_frames_per_replica": 10,
+                "maximum_frames_per_replica": 100,
+                "cpu_seconds_per_physical_frame": 0.0,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 10.0,
+                "power_law_cost_model": {
+                    "calibration_observations": 10,
+                    "calibration_cpu_hours": 0.5,
+                    "time_exponent": 2.0,
+                    "calibration_memory_gib": 1.0,
+                    "memory_exponent": 1.0,
+                },
+            },
+            {
+                "task_id": "lower-priority-linear",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [100],
+                "minimum_frames_per_replica": 10,
+                "maximum_frames_per_replica": 100,
+                "cpu_seconds_per_physical_frame": 180.0,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 1.0,
+            },
+        ]
+        shorter = plan_campaign_resource_budget(
+            tasks,
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=2.0,
+            maximum_memory_gib=8.0,
+        )
+        longer = plan_campaign_resource_budget(
+            tasks,
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=3.25,
+            maximum_memory_gib=8.0,
+        )
+        shorter_rows = {
+            row["task_id"]: row for row in shorter["tasks"]
+        }
+        longer_rows = {
+            row["task_id"]: row for row in longer["tasks"]
+        }
+        self.assertEqual(shorter["feasibility_status"], "feasible")
+        self.assertEqual(longer["feasibility_status"], "feasible")
+        for task_id in shorter_rows:
+            self.assertGreaterEqual(
+                longer_rows[task_id]["selected_physical_frame_count"],
+                shorter_rows[task_id]["selected_physical_frame_count"],
+                task_id,
+            )
+
+    def test_unused_cpu_budget_reports_wall_or_parallelism_limit(self):
+        plan = plan_campaign_resource_budget(
+            [{
+                "task_id": "serial-analysis",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [10_000],
+                "minimum_frames_per_replica": 100,
+                "maximum_frames_per_replica": 2_500,
+                "cpu_seconds_per_physical_frame": 1.1,
+                "estimated_peak_memory_gib": 1.0,
+            }],
+            maximum_parallel_cpus=42,
+            maximum_wall_hours=1.0,
+            maximum_memory_gib=8.0,
+        )
+        self.assertGreater(plan["unused_science_cpu_hours"], 0.0)
+        utilization = plan["resource_budget_utilization"]
+        self.assertLess(utilization["science_cpu_hour_fraction"], 0.1)
+        self.assertGreater(utilization["science_wall_time_fraction"], 0.9)
+        self.assertEqual(
+            plan["allocation_saturation"]["stop_reason"],
+            "all_eligible_frame_ceilings_reached",
+        )
+        self.assertIn(
+            "parallelism",
+            plan["allocation_saturation"]["unused_cpu_hour_interpretation"],
+        )
 
     def test_power_law_methods_are_allocated_separately_but_scheduled_as_bundle(self):
         tasks = []

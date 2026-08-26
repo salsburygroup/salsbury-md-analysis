@@ -188,10 +188,14 @@ class SlurmCapacityTests(unittest.TestCase):
             long = advise_slurm_capacity(prepared, wall_hours=8.0, live=False)
         short_tasks = short["replanned_campaign"]["tasks"]
         long_tasks = long["replanned_campaign"]["tasks"]
-        self.assertGreaterEqual(
-            sum(row["selected_physical_frame_count"] for row in long_tasks),
-            sum(row["selected_physical_frame_count"] for row in short_tasks),
-        )
+        short_by_id = {row["task_id"]: row for row in short_tasks}
+        long_by_id = {row["task_id"]: row for row in long_tasks}
+        for task_id, short_row in short_by_id.items():
+            self.assertGreaterEqual(
+                long_by_id[task_id]["selected_physical_frame_count"],
+                short_row["selected_physical_frame_count"],
+                task_id,
+            )
         self.assertGreaterEqual(
             long["memory_capacity"]["planned_working_set_gib"],
             short["memory_capacity"]["planned_working_set_gib"],
@@ -307,6 +311,8 @@ class SlurmCapacityTests(unittest.TestCase):
         text = render_capacity_markdown(report)
         self.assertIn("Useful workflow maximum: 3 CPUs", text)
         self.assertIn("Estimated selected CPU-hours:", text)
+        self.assertIn("Science wall-time utilization:", text)
+        self.assertIn("Allocation stop reason:", text)
         self.assertIn("Scheduler memory needed with safety margin:", text)
         self.assertIn("No job was submitted", text)
 

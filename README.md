@@ -260,9 +260,12 @@ Trajectory execution subsampling is never random: it is deterministic,
 replica-balanced, and spread over the full time range. Every production
 trajectory selector receives one exact integer stride over each concatenated
 replica timeline; frame zero is retained and segment boundaries do not restart
-the stride. The campaign planner iterates those integer strides until the exact
-retained counts satisfy both the total CPU-hour and dependency-stage wall-time
-limits. Each alternative-clustering family receives its own explicit integer
+the stride. The campaign planner advances stride upgrades through an absolute
+CPU-and-wall resource frontier. Replanning the same tasks with a longer wall
+limit extends that allocation path, so no task loses frames merely because a
+previously unaffordable method becomes affordable. The exact retained counts
+must satisfy both the total CPU-hour and dependency-stage wall-time limits.
+Each alternative-clustering family receives its own explicit integer
 fit stride according to its scaling profile; PCA projection and fit allocations
 are reapplied until the complete task plan stops changing. Families performed
 serially by one view command are accounted as one execution bundle for wall
@@ -270,6 +273,14 @@ time while remaining separate logical allocations. All strides operate over
 each replica-member timeline. Seeded random focal-observation
 sampling is reserved for bounded silhouette estimates against the full fitted
 partition.
+
+`resource_budget_utilization` reports CPU-hour and wall-time use separately.
+A campaign can nearly exhaust its wall-time allowance while leaving many raw
+CPU-hours unused when dependency stages or serial methods cannot use all cores.
+`allocation_saturation` records whether every frame ceiling was reached, memory
+blocked the remaining work, or the next deterministic stride step would exceed
+the campaign envelope. The planner does not duplicate analyses just to occupy
+idle cores.
 
 Preparation also classifies the reference chemistry and creates complementary
 conformational projects automatically. Protein–nucleic-acid complexes declare
