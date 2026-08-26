@@ -442,7 +442,8 @@ default. Three parameter sources are supported without adding a Python
 dependency:
 
 - atom-order-matched Amber `.prmtop` or `.parm7` connectivity;
-- CHARMM PSF connectivity plus matching `.prm`, `.par`, or `.str` files, with
+- CHARMM PSF connectivity plus matching `.prm`, `.par`, `.str`, or historical
+  `.inp` files, with
   native NONBONDED mixing and NBFIX handling; or
 - serialized OpenMM `System` XML containing exactly one standard
   `NonbondedForce`, paired with any supported explicit connectivity source.

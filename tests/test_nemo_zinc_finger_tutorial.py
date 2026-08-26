@@ -27,7 +27,7 @@ def sha256(path):
 
 
 class NemoZincFingerTutorialTests(unittest.TestCase):
-    def test_energetic_network_module_is_explicitly_unavailable_for_psf_fixture(self):
+    def test_energetic_acceptance_and_offline_psf_boundary_are_explicit(self):
         acceptance = json.loads(
             (ROOT / "validation" /
              "nemo_energetic_network_embeddings_acceptance.json")
@@ -36,10 +36,20 @@ class NemoZincFingerTutorialTests(unittest.TestCase):
         module = acceptance["module_acceptance"]
         planner = acceptance["planner_acceptance"]
         self.assertTrue(module["configuration_enabled"])
-        self.assertEqual(module["availability_status"], "not_available")
-        self.assertFalse(module["analysis_performed"])
-        self.assertFalse(planner["planner_task_created"])
-        self.assertEqual(planner["energetic_network_task_count"], 0)
+        self.assertEqual(module["availability_status"], "available")
+        self.assertTrue(module["analysis_performed"])
+        self.assertEqual(module["evaluated_frame_count"], 1000)
+        self.assertEqual(module["vdw_negligibility_status"], "passed")
+        self.assertTrue(planner["planner_task_created"])
+        self.assertEqual(planner["energetic_network_task_count"], 1)
+        provenance = acceptance["force_field_provenance"]
+        self.assertEqual(provenance["covered_psf_atom_type_count"], 30)
+        self.assertTrue(provenance["zinc_atom_type_covered"])
+        self.assertFalse(provenance["redistributed_in_repository"])
+        self.assertFalse(provenance["exact_production_release_known"])
+        sensitivity = provenance["historical_release_sensitivity"]
+        self.assertTrue(sensitivity["lennard_jones_a_table_exactly_equal"])
+        self.assertTrue(sensitivity["lennard_jones_b_table_exactly_equal"])
         self.assertFalse(
             acceptance["scope_boundary"]["solvent_inclusive_extension_implemented"]
         )

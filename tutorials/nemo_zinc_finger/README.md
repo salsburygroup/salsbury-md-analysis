@@ -267,23 +267,50 @@ spatial differences or independent-replica reproducibility. The planner,
 lineage, gate counts, and scientific boundaries are recorded in
 [`validation/nemo_spatial_interaction_ensembles_acceptance.json`](../../validation/nemo_spatial_interaction_ensembles_acceptance.json).
 
-The optional `energetic_network_embeddings` module is also exercised at its
-availability boundary with
-[`energetic-network-analysis-config.json`](energetic-network-analysis-config.json).
-NEMO supplies a PSF with charges and connectivity, but this tutorial fixture
-does not include the matching CHARMM parameter/stream files needed for
-Lennard-Jones terms. It also has no Amber PRMTOP or serialized OpenMM System.
-Preparation therefore records the module as `not_available`, retains its
-definition for review, and creates no planner task. It does not infer missing
-parameters. This acceptance result is recorded in
+The source publication declares CHARMM22 with deprotonated coordinating
+cysteines and a nonbonded monatomic zinc ion, but it does not identify the
+exact CHARMM release. The validated energetic rerun therefore used the
+MacKerell lab's historical CHARMM c31b1 distribution rather than substituting
+CHARMM36/36m. The external archive is not redistributed in this repository.
+Download and verify it from the
+[official CHARMM force-field site](https://mackerell.umaryland.edu/charmm_ff.shtml):
+
+```bash
+curl -L \
+  'https://mackerell.umaryland.edu/download.php?filename=CHARMM_ff_params_files%2Ftoppar_c31b1.tar.gz' \
+  -o toppar_c31b1.tar.gz
+openssl dgst -sha256 toppar_c31b1.tar.gz
+mkdir -p charmm-c31b1
+tar -xzf toppar_c31b1.tar.gz -C charmm-c31b1
+```
+
+The expected archive SHA-256 is
+`0ac3cc4c88cdfa27bdb14cdbd9dc306e585fc348e395fee66b8efe60e4a96ba4`.
+Add this option to the preparation command while using the all-experimental
+configuration:
+
+```bash
+--config tutorials/nemo_zinc_finger/interaction-fingerprint-analysis-config.json \
+--energetic-charmm-parameter charmm-c31b1/toppar/par_all22_prot.inp
+```
+
+The PSF already carries the CYN-patched charges, atom types, and explicit bond
+graph. The downloaded parameter file supplies the matching Lennard-Jones
+entries and covers all 30 PSF atom types, including `ZN`. The acceptance run
+evaluated all 1,000 frames, passed the VDW/electrostatic compatibility gate,
+and created one energetic planner task. As a release-sensitivity check, the
+c31b1 and c32b1 files generated exactly identical Lennard-Jones pair tables for
+all NEMO atom types. This establishes historical CHARMM22 nonbonded
+compatibility, not exact identity with an unarchived production parameter file.
+This result is recorded in
 [`validation/nemo_energetic_network_embeddings_acceptance.json`](../../validation/nemo_energetic_network_embeddings_acceptance.json).
 
-The combined current acceptance run planned 11 of the 13 methods. Helical
-mechanics and energetic-network embeddings were retained as explicit
-`not_available` records with no planner allocation. All 13 appear in the
-finding-picker evidence audit and interactive dashboard; unavailable methods
-produce no false finding or significance claim. The complete coverage and
-hash record is retained in
+The combined current acceptance run planned 12 of the 13 methods. Helical
+mechanics alone was retained as an explicit `not_available` record because
+NEMO contains no duplex DNA or RNA. All 13 appear in the finding-picker
+evidence audit and interactive dashboard. The one-system energetic report has
+no comparative finding candidate, which prevents a false significance claim.
+The complete coverage and hash record is retained in
 [`validation/nemo_all_experimental_methods_acceptance.json`](../../validation/nemo_all_experimental_methods_acceptance.json).
 
 The uniform reweighting control is generated from the completed common-PCA

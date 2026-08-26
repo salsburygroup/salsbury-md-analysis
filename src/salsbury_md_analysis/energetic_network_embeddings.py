@@ -389,10 +389,10 @@ def _read_charmm_lj_tables(
                     rmin_half = _as_float(fields[3], "CHARMM NONBONDED Rmin/2")
                 except EnergeticNetworkError:
                     continue
-                if epsilon_raw > 0.0 or rmin_half <= 0.0:
+                if epsilon_raw > 0.0 or rmin_half < 0.0:
                     raise EnergeticNetworkError(
                         f"{source}:{line_number}: CHARMM epsilon must be nonpositive "
-                        "and Rmin/2 must be positive"
+                        "and Rmin/2 must be nonnegative"
                     )
                 definitions[fields[0].upper()] = (abs(epsilon_raw), rmin_half)
             elif section == "NBFIX":
@@ -413,6 +413,14 @@ def _read_charmm_lj_tables(
         raise EnergeticNetworkError(
             "CHARMM parameter files lack NONBONDED entries for atom types: "
             + ", ".join(missing)
+        )
+    zero_radius = sorted(
+        name for name in unique_types if definitions[name][1] <= 0.0
+    )
+    if zero_radius:
+        raise EnergeticNetworkError(
+            "CHARMM NONBONDED Rmin/2 must be positive for used atom types: "
+            + ", ".join(zero_radius)
         )
     type_lookup = {name: index for index, name in enumerate(unique_types)}
     type_indices = np.asarray([type_lookup[name] for name in atom_types], dtype=np.int64)
@@ -1421,7 +1429,7 @@ def energetic_network_embeddings_project(
             "electrostatic_equation": "332.0522173*q_i*q_j/r (kcal/mol; charges in e, r in angstrom)",
             "vdw_equation": "A/r^12-B/r^6 (kcal/mol)",
             "periodic_treatment": "none after declared made-whole coordinate processing",
-            "exclusions": "derived from the Amber bond graph at topological distances 1, 2, and 3, matching cpptraj SetupExcluded(..., TgtDist=4)",
+            "exclusions": "derived from the supplied explicit bond graph at topological distances 1, 2, and 3, matching cpptraj SetupExcluded(..., TgtDist=4)",
             "one_four_scaling": "excluded, matching cpptraj pairwise SetupExcluded behavior; no separate scaled 1-4 term",
             "energy_aggregation": "sum absolute atom-pair energies into symmetric residue-pair weights",
             "solvent_ions_nucleic_acids_ligands": "excluded",

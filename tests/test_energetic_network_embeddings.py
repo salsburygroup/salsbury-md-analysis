@@ -9,6 +9,7 @@ import numpy as np
 from salsbury_md_analysis.energetic_network_embeddings import (
     AMBER_CHARGE_SCALE,
     CPPTRAJ_COULOMB_FACTOR_KCAL_ANGSTROM_PER_MOL_E2,
+    EnergeticNetworkError,
     compare_embedding_ensembles,
     cpptraj_style_residue_energy_matrices,
     heat_kernel,
@@ -120,12 +121,13 @@ class EnergeticNetworkEmbeddingTests(unittest.TestCase):
             )
             psf = root / "protein.psf"
             _write_psf(psf)
-            parameter_file = root / "protein.prm"
+            parameter_file = root / "protein.inp"
             parameter_file.write_text(
                 "* synthetic CHARMM parameters\n*\n"
                 "NONBONDED NBXMOD 5 ATOM CDIEL\n"
                 "N  0.0 -0.200000 1.850000\n"
                 "C  0.0 -0.100000 2.000000\n"
+                "DUM 0.0  0.000000 0.000000\n"
                 "NBFIX\n"
                 "N C -0.150000 3.700000\n"
                 "END\n",
@@ -151,6 +153,18 @@ class EnergeticNetworkEmbeddingTests(unittest.TestCase):
             self.assertEqual(charmm.parameter_source, "charmm_psf_parameter_files_v1")
             self.assertEqual(charmm.bond_count, 3)
             self.assertEqual(charmm.nbfix_pair_type_count, 1)
+            used_dummy_psf = root / "used-dummy.psf"
+            used_dummy_psf.write_text(
+                psf.read_text(encoding="utf-8").replace(
+                    "ALA N  N  0.200000", "ALA N  DUM  0.200000", 1
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                EnergeticNetworkError,
+                "Rmin/2 must be positive for used atom types: DUM",
+            ):
+                read_charmm_pairwise_parameters(used_dummy_psf, [parameter_file])
             n_type, c_type = charmm.atom_type_indices[:2]
             nbfix_index = charmm.nonbonded_parameter_indices[
                 n_type * charmm.atom_type_count + c_type

@@ -173,11 +173,11 @@ def _force_field_parameter_spec(
         files = [Path(path).expanduser().resolve(strict=True) for path in charmm_parameter_files]
         unsupported = [
             str(path) for path in files
-            if path.suffix.lower() not in {".prm", ".par", ".str"}
+            if path.suffix.lower() not in {".prm", ".par", ".str", ".inp"}
         ]
         if unsupported:
             raise QuickstartError(
-                "CHARMM energetic parameter files must use .prm, .par, or .str: "
+                "CHARMM energetic parameter files must use .prm, .par, .str, or .inp: "
                 + ", ".join(unsupported)
             )
         return {

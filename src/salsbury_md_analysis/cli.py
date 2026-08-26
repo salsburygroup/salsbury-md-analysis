@@ -1348,7 +1348,7 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument(
         "--energetic-charmm-parameter", type=Path, action="append", default=[],
         help=(
-            "CHARMM .prm/.par/.str nonbonded parameter file for the optional "
+            "CHARMM .prm/.par/.str/.inp nonbonded parameter file for the optional "
             "energetic-network module; repeat in load order. Requires PSF connectivity."
         ),
     )
