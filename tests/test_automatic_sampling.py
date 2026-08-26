@@ -153,9 +153,9 @@ class AutomaticSamplingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = _write_system(Path(temporary), frames_per_replica=2)
             report = automatic_sampling_plan(path, simulation_kind="unbiased_md")
-        self.assertEqual(len(report["method_plans"]), 45)
+            self.assertEqual(len(report["method_plans"]), 58)
         self.assertEqual(
-            len({row["module_id"] for row in report["method_plans"]}), 45
+            len({row["module_id"] for row in report["method_plans"]}), 58
         )
 
     def test_assigns_method_ceiling_and_balanced_sampling(self):

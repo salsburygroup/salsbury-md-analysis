@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 
 from salsbury_md_analysis.analysis_config import (
+    DEFAULT_DISABLED_MODULES,
+    AnalysisConfigError,
     apply_module_configuration,
     default_analysis_config,
     load_analysis_config,
@@ -12,6 +14,77 @@ from salsbury_md_analysis.analysis_config import (
 
 
 class AnalysisConfigTests(unittest.TestCase):
+    def test_new_experimental_methods_are_visible_but_default_off(self):
+        config = default_analysis_config(
+            [
+                "common_pca", "perturbation_response_dynamics",
+                "trajectory_reweighting",
+                "allosteric_pathways",
+                "energetic_network_embeddings",
+                "multivalent_molecular_bridges",
+                "hydration_density_channels", "ensemble_pocket_dynamics",
+                "reactive_path_ensembles",
+                "interaction_fingerprints", "spatial_interaction_ensembles",
+                "interaction_persistence",
+                "random_feature_koopman", "helical_mechanics",
+            ],
+            ["global"],
+        )
+        self.assertTrue(config["modules"]["common_pca"]["enabled"])
+        self.assertFalse(
+            config["modules"]["perturbation_response_dynamics"]["enabled"]
+        )
+        self.assertFalse(config["modules"]["trajectory_reweighting"]["enabled"])
+        self.assertFalse(config["modules"]["allosteric_pathways"]["enabled"])
+        self.assertFalse(
+            config["modules"]["energetic_network_embeddings"]["enabled"]
+        )
+        self.assertFalse(
+            config["modules"]["multivalent_molecular_bridges"]["enabled"]
+        )
+        self.assertFalse(config["modules"]["hydration_density_channels"]["enabled"])
+        self.assertFalse(config["modules"]["ensemble_pocket_dynamics"]["enabled"])
+        self.assertFalse(config["modules"]["reactive_path_ensembles"]["enabled"])
+        self.assertFalse(config["modules"]["interaction_fingerprints"]["enabled"])
+        self.assertFalse(
+            config["modules"]["spatial_interaction_ensembles"]["enabled"]
+        )
+        self.assertFalse(config["modules"]["interaction_persistence"]["enabled"])
+        self.assertFalse(config["modules"]["random_feature_koopman"]["enabled"])
+        self.assertFalse(config["modules"]["helical_mechanics"]["enabled"])
+        self.assertFalse(config["enable_all_experimental_modules"])
+
+    def test_master_experimental_switch_enables_all_with_explicit_off_override(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "config.json"
+            path.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "enable_all_experimental_modules": True,
+                "modules": {
+                    "helical_mechanics": {"enabled": False},
+                },
+            }), encoding="utf-8")
+            config = load_analysis_config(
+                path, sorted(DEFAULT_DISABLED_MODULES), ["global"]
+            )
+        self.assertTrue(config["enable_all_experimental_modules"])
+        for module_id in DEFAULT_DISABLED_MODULES - {"helical_mechanics"}:
+            self.assertTrue(config["modules"][module_id]["enabled"])
+        self.assertFalse(config["modules"]["helical_mechanics"]["enabled"])
+
+    def test_master_experimental_switch_must_be_boolean(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "config.json"
+            path.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "enable_all_experimental_modules": "yes",
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(
+                AnalysisConfigError,
+                "enable_all_experimental_modules must be boolean",
+            ):
+                load_analysis_config(path, ["common_pca"], ["global"])
+
     def test_default_enables_every_module_view_and_final_report(self):
         config = default_analysis_config(
             ["common_pca", "pca_fes_basins", "solvent_accessible_surface_area"],
@@ -22,6 +95,7 @@ class AnalysisConfigTests(unittest.TestCase):
         self.assertTrue(all(row["enabled"] for row in config["views"].values()))
         self.assertTrue(config["reporting"]["resource_table_enabled"])
         self.assertTrue(config["reporting"]["finding_picker_enabled"])
+        self.assertTrue(config["reporting"]["interactive_report_enabled"])
         self.assertEqual(config["comparisons"]["mode"], "all_pairs")
         self.assertTrue(config["inference"]["automatic_chemical_context"])
         self.assertTrue(config["inference"]["ion_site_classification_enabled"])

@@ -8,6 +8,11 @@
   "properties": {
     "config_schema": {"const": "salsbury-analysis-config-v1"},
     "default_module_policy": {"const": "all_applicable"},
+    "enable_all_experimental_modules": {
+      "type": "boolean",
+      "default": false,
+      "description": "Enable every default-off experimental module before applying explicit modules.<module_id>.enabled overrides. Applicability and prerequisite gates remain enforced."
+    },
     "modules": {
       "type": "object",
       "additionalProperties": {
@@ -49,6 +54,7 @@
       "properties": {
         "resource_table_enabled": {"type": "boolean", "default": true},
         "finding_picker_enabled": {"type": "boolean", "default": true},
+        "interactive_report_enabled": {"type": "boolean", "default": true},
         "maximum_findings": {"type": "integer", "minimum": 1, "default": 50}
       }
     },

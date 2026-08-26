@@ -26,6 +26,12 @@ from .validation import positive_integer
 
 Vector = Tuple[float, ...]
 
+_KMEANS_INITIALIZATION_METHODS = {
+    "kmeans_pp",
+    "nani_strat_all",
+    "nani_strat_reduced",
+}
+
 
 class ClusteringAnalysisError(ValueError):
     """Raised when clustering configuration or numerical execution is unsafe."""
@@ -45,7 +51,6 @@ def _kmeans_settings(project: Mapping[str, object]) -> Dict[str, object]:
         "feature_source",
         "standardize_features",
         "k_values",
-        "random_seeds",
         "maximum_iterations",
         "center_tolerance",
         "minimum_cluster_size",
@@ -53,7 +58,14 @@ def _kmeans_settings(project: Mapping[str, object]) -> Dict[str, object]:
     }
     missing = sorted(required.difference(raw))
     unknown = sorted(set(raw).difference(
-        required | {"component_indices", "trajectory_feature_columns"}
+        required | {
+            "component_indices",
+            "trajectory_feature_columns",
+            "initialization_methods",
+            "nani_percentage",
+            "random_seeds",
+            "silhouette_random_seeds",
+        }
     ))
     if missing:
         raise ClusteringAnalysisError(
@@ -74,15 +86,58 @@ def _kmeans_settings(project: Mapping[str, object]) -> Dict[str, object]:
         or len(set(k_values)) != len(k_values)
     ):
         raise ClusteringAnalysisError("k_values must contain unique integers of at least 2")
-    seeds = raw["random_seeds"]
+    initialization_methods = raw.get("initialization_methods", ["kmeans_pp"])
     if (
-        not isinstance(seeds, list)
-        or len(seeds) < 2
-        or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in seeds)
-        or len(set(seeds)) != len(seeds)
+        not isinstance(initialization_methods, list)
+        or not initialization_methods
+        or any(
+            not isinstance(value, str) or value not in _KMEANS_INITIALIZATION_METHODS
+            for value in initialization_methods
+        )
+        or len(set(initialization_methods)) != len(initialization_methods)
+    ):
+        raise ClusteringAnalysisError(
+            "initialization_methods must contain unique values from "
+            "kmeans_pp, nani_strat_all, and nani_strat_reduced"
+        )
+    seeds = raw.get("random_seeds", [])
+    if not isinstance(seeds, list) or (
+        seeds
+        and (
+            len(seeds) < 2
+            or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in seeds)
+            or len(set(seeds)) != len(seeds)
+        )
     ):
         raise ClusteringAnalysisError(
             "random_seeds must contain at least two unique nonnegative integers"
+        )
+    if "kmeans_pp" in initialization_methods and not seeds:
+        raise ClusteringAnalysisError(
+            "random_seeds must be supplied when initialization_methods includes kmeans_pp"
+        )
+    nani_percentage = raw.get("nani_percentage", 10)
+    if (
+        isinstance(nani_percentage, bool)
+        or not isinstance(nani_percentage, int)
+        or not 1 <= nani_percentage <= 100
+    ):
+        raise ClusteringAnalysisError("nani_percentage must be an integer from 1 to 100")
+    silhouette_random_seeds = raw.get(
+        "silhouette_random_seeds", [0, 7, 19, 41]
+    )
+    if (
+        not isinstance(silhouette_random_seeds, list)
+        or len(silhouette_random_seeds) < 3
+        or any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in silhouette_random_seeds
+        )
+        or len(set(silhouette_random_seeds)) != len(silhouette_random_seeds)
+    ):
+        raise ClusteringAnalysisError(
+            "silhouette_random_seeds must contain at least three unique "
+            "nonnegative integers"
         )
     if not isinstance(raw["standardize_features"], bool):
         raise ClusteringAnalysisError("standardize_features must be boolean")
@@ -98,7 +153,10 @@ def _kmeans_settings(project: Mapping[str, object]) -> Dict[str, object]:
         **feature_selection,
         "standardize_features": raw["standardize_features"],
         "k_values": sorted(k_values),
+        "initialization_methods": list(initialization_methods),
+        "nani_percentage": nani_percentage,
         "random_seeds": list(seeds),
+        "silhouette_random_seeds": list(silhouette_random_seeds),
         "maximum_iterations": _positive_integer(raw["maximum_iterations"], "maximum_iterations"),
         "center_tolerance": float(tolerance),
         "minimum_cluster_size": _positive_integer(raw["minimum_cluster_size"], "minimum_cluster_size"),
@@ -234,6 +292,118 @@ def _initialize_kmeans_pp(vectors: Sequence[Vector], k: int, seed: int) -> List[
     return [tuple(center) for center in centers]
 
 
+def nani_complementary_msd(vectors: Sequence[Vector]) -> List[float]:
+    """Return the NANI complementary-MSD score for every observation in O(Nd)."""
+
+    matrix = np.asarray(vectors, dtype=float)
+    if matrix.ndim != 2 or matrix.shape[0] < 2 or matrix.shape[1] < 1:
+        raise ClusteringAnalysisError(
+            "NANI complementary similarity requires at least two finite vectors"
+        )
+    if not np.isfinite(matrix).all():
+        raise ClusteringAnalysisError("NANI vectors must be finite")
+    remaining_count = matrix.shape[0] - 1
+    coordinate_sum = matrix.sum(axis=0)
+    squared_sum = np.square(matrix).sum(axis=0)
+    complement_sum = coordinate_sum - matrix
+    complement_squared_sum = squared_sum - np.square(matrix)
+    values = (
+        2.0
+        * (
+            remaining_count * complement_squared_sum
+            - np.square(complement_sum)
+        ).sum(axis=1)
+        / float(remaining_count * remaining_count)
+    )
+    # Roundoff can only create tiny negative values for an exact nonnegative MSD.
+    values = np.maximum(values, 0.0)
+    return [float(value) for value in values]
+
+
+def _stable_descending_score_order(scores: Sequence[float]) -> List[int]:
+    return sorted(range(len(scores)), key=lambda index: (-scores[index], index))
+
+
+def _stratified_rank_positions(total_count: int, selected_count: int) -> List[int]:
+    if selected_count < 2 or selected_count > total_count:
+        raise ClusteringAnalysisError(
+            "NANI stratification requires between 2 and the observation count candidates"
+        )
+    return [
+        int(np.rint(index * (total_count - 1) / (selected_count - 1)))
+        for index in range(selected_count)
+    ]
+
+
+def _initialize_stratified_nani(
+    vectors: Sequence[Vector],
+    k: int,
+    method: str,
+    percentage: int,
+) -> Tuple[List[Vector], List[int], Dict[str, object]]:
+    """Select deterministic strat_all or strat_reduced NANI centers.
+
+    This is an independent NumPy implementation of the complementary-MSD and
+    rank-stratification procedure described by Santos, Chen, and
+    Miranda-Quintana.  It deliberately avoids the MDANCE dependency chain.
+    """
+
+    if method not in {"nani_strat_all", "nani_strat_reduced"}:
+        raise ClusteringAnalysisError(f"unsupported NANI initialization method: {method}")
+    candidate_count = int(math.floor(len(vectors) * percentage / 100.0))
+    if candidate_count < k:
+        raise ClusteringAnalysisError(
+            f"{method} at {percentage}% yields {candidate_count} candidates, fewer than k={k}; "
+            "increase nani_percentage"
+        )
+    scores = nani_complementary_msd(vectors)
+    global_order = _stable_descending_score_order(scores)
+    if method == "nani_strat_all":
+        rank_positions = _stratified_rank_positions(len(vectors), candidate_count)
+        candidate_indices = [global_order[position] for position in rank_positions]
+        reduced_count: Optional[int] = None
+    else:
+        reduced_indices = global_order[:candidate_count]
+        reduced_vectors = [vectors[index] for index in reduced_indices]
+        reduced_scores = nani_complementary_msd(reduced_vectors)
+        reduced_order = _stable_descending_score_order(reduced_scores)
+        candidate_indices = [reduced_indices[index] for index in reduced_order]
+        rank_positions = list(range(candidate_count))
+        reduced_count = candidate_count
+
+    initial_indices: List[int] = []
+    seen_vectors = set()
+    for index in candidate_indices:
+        vector = tuple(vectors[index])
+        if vector in seen_vectors:
+            continue
+        initial_indices.append(index)
+        seen_vectors.add(vector)
+        if len(initial_indices) == k:
+            break
+    if len(initial_indices) < k:
+        raise ClusteringAnalysisError(
+            f"{method} candidates contain fewer than {k} distinct feature vectors"
+        )
+    return (
+        [tuple(vectors[index]) for index in initial_indices],
+        initial_indices,
+        {
+            "method": method,
+            "percentage": percentage,
+            "candidate_count": candidate_count,
+            "reduced_dense_candidate_count": reduced_count,
+            "initial_center_indices": initial_indices,
+            "initial_center_complementary_msd": [scores[index] for index in initial_indices],
+            "duplicate_candidate_count_skipped": (
+                candidate_indices.index(initial_indices[-1]) + 1 - len(initial_indices)
+            ),
+            "rank_position_count": len(rank_positions),
+            "random_seed_used": False,
+        },
+    )
+
+
 def _canonicalize(
     assignments: Sequence[int], centers: Sequence[Vector]
 ) -> Tuple[List[int], List[Vector]]:
@@ -245,15 +415,34 @@ def _canonicalize(
 def run_kmeans(
     vectors: Sequence[Vector],
     k: int,
-    seed: int,
+    seed: Optional[int],
     maximum_iterations: int,
     center_tolerance: float,
+    initialization_method: str = "kmeans_pp",
+    nani_percentage: int = 10,
 ) -> Dict[str, object]:
-    """Run one seeded KMeans++/Lloyd partition with deterministic ties."""
+    """Run one KMeans/Lloyd partition with explicit initialization provenance."""
 
     if k > len(vectors):
         raise ClusteringAnalysisError("k cannot exceed observation count")
-    centers = _initialize_kmeans_pp(vectors, k, seed)
+    if initialization_method == "kmeans_pp":
+        if seed is None:
+            raise ClusteringAnalysisError("kmeans_pp requires an integer random seed")
+        centers = _initialize_kmeans_pp(vectors, k, seed)
+        initialization = {
+            "method": initialization_method,
+            "random_seed_used": True,
+            "random_seed": seed,
+        }
+    elif initialization_method in {"nani_strat_all", "nani_strat_reduced"}:
+        centers, _, initialization = _initialize_stratified_nani(
+            vectors, k, initialization_method, nani_percentage
+        )
+        seed = None
+    else:
+        raise ClusteringAnalysisError(
+            f"unsupported KMeans initialization method: {initialization_method}"
+        )
     assignments = [-1] * len(vectors)
     converged = False
     iteration = 0
@@ -268,6 +457,8 @@ def run_kmeans(
                 "valid": False,
                 "failure": "empty_cluster",
                 "seed": seed,
+                "initialization_method": initialization_method,
+                "initialization": initialization,
                 "k": k,
                 "iteration_count": iteration,
             }
@@ -291,6 +482,8 @@ def run_kmeans(
         "valid": converged,
         "failure": None if converged else "maximum_iterations",
         "seed": seed,
+        "initialization_method": initialization_method,
+        "initialization": initialization,
         "k": k,
         "iteration_count": iteration,
         "converged": converged,
@@ -381,6 +574,58 @@ def silhouette_score_report(
     }
 
 
+def silhouette_sampling_stability_report(
+    vectors: Sequence[Vector],
+    assignments: Sequence[int],
+    maximum_exact_observations: int,
+    random_seeds: Sequence[int],
+) -> Dict[str, object]:
+    """Return one exact silhouette or a multi-seed sampled-score summary."""
+
+    if len(random_seeds) < 3 or len(set(random_seeds)) != len(random_seeds):
+        raise ClusteringAnalysisError(
+            "silhouette stability requires at least three unique random seeds"
+        )
+    first = silhouette_score_report(
+        vectors, assignments, maximum_exact_observations, int(random_seeds[0])
+    )
+    if not first["estimated"]:
+        return {
+            **first,
+            "configured_random_seeds": [int(value) for value in random_seeds],
+            "evaluated_random_seeds": [],
+            "sampling_replicate_count": 0,
+            "score_mean": first["score"],
+            "score_minimum": first["score"],
+            "score_maximum": first["score"],
+            "score_population_standard_deviation": 0.0,
+            "replicates": [first],
+        }
+    replicates = [first] + [
+        silhouette_score_report(
+            vectors, assignments, maximum_exact_observations, int(seed)
+        )
+        for seed in random_seeds[1:]
+    ]
+    scores = np.asarray([float(row["score"]) for row in replicates], dtype=float)
+    return {
+        "score": float(scores.mean()),
+        "method": "mean_of_prespecified_seeded_focal_subsamples_against_full_partition",
+        "estimated": True,
+        "total_observation_count": len(vectors),
+        "evaluated_observation_count": int(maximum_exact_observations),
+        "random_seed": None,
+        "configured_random_seeds": [int(value) for value in random_seeds],
+        "evaluated_random_seeds": [int(value) for value in random_seeds],
+        "sampling_replicate_count": len(replicates),
+        "score_mean": float(scores.mean()),
+        "score_minimum": float(scores.min()),
+        "score_maximum": float(scores.max()),
+        "score_population_standard_deviation": float(scores.std(ddof=0)),
+        "replicates": replicates,
+    }
+
+
 def adjusted_rand_index(first: Sequence[int], second: Sequence[int]) -> float:
     """Return the adjusted Rand index for two partitions of the same records."""
 
@@ -440,28 +685,47 @@ def clustering_kmeans_project(
     diagnostics = []
     candidates = []
     for k in settings["k_values"]:  # type: ignore[union-attr]
-        runs = [
-            run_kmeans(
-                vectors,
-                int(k),
-                int(seed),
-                int(settings["maximum_iterations"]),
-                float(settings["center_tolerance"]),
+        runs = []
+        for initialization_method in settings["initialization_methods"]:  # type: ignore[union-attr]
+            seeds: Sequence[Optional[int]] = (
+                [int(value) for value in settings["random_seeds"]]  # type: ignore[union-attr]
+                if initialization_method == "kmeans_pp"
+                else [None]
             )
-            for seed in settings["random_seeds"]  # type: ignore[union-attr]
-        ]
+            for seed in seeds:
+                runs.append(
+                    run_kmeans(
+                        vectors,
+                        int(k),
+                        seed,
+                        int(settings["maximum_iterations"]),
+                        float(settings["center_tolerance"]),
+                        initialization_method=str(initialization_method),
+                        nani_percentage=int(settings["nani_percentage"]),
+                    )
+                )
         valid_runs = [
             run for run in runs
             if run["valid"]
             and min(run["cluster_sizes"]) >= int(settings["minimum_cluster_size"])  # type: ignore[arg-type]
         ]
-        best = min(valid_runs, key=lambda run: (run["inertia"], run["seed"])) if valid_runs else None
+        best = min(
+            valid_runs,
+            key=lambda run: (
+                run["inertia"],
+                str(run["initialization_method"]),
+                int(run["seed"]) if run["seed"] is not None else -1,
+            ),
+        ) if valid_runs else None
         if best is not None:
-            silhouette_evaluation = silhouette_score_report(
+            silhouette_evaluation = silhouette_sampling_stability_report(
                 vectors,
                 best["assignments"],  # type: ignore[arg-type]
                 int(settings["maximum_silhouette_observations"]),
-                min(settings["random_seeds"]),  # type: ignore[arg-type]
+                [
+                    int(value)
+                    for value in settings["silhouette_random_seeds"]  # type: ignore[union-attr]
+                ],
             )
             silhouette = float(silhouette_evaluation["score"])
             stability_values = [
@@ -478,20 +742,36 @@ def clustering_kmeans_project(
                 "silhouette": silhouette,
                 "silhouette_evaluation": silhouette_evaluation,
                 "mean_adjusted_rand_to_best": stability,
-                "valid_seed_count": len(valid_runs),
+                "valid_initialization_count": len(valid_runs),
+                "valid_seed_count": sum(
+                    run["initialization_method"] == "kmeans_pp"
+                    for run in valid_runs
+                ),
             }
             candidates.append(candidate)
             diagnostics.append({
                 "k": int(k),
                 "eligible": True,
+                "selected_initialization_method": best["initialization_method"],
                 "selected_seed": best["seed"],
                 "selected_inertia": best["inertia"],
                 "selected_cluster_sizes": best["cluster_sizes"],
                 "silhouette": silhouette,
+                "silhouette_evaluation": silhouette_evaluation,
                 "mean_adjusted_rand_to_best": stability,
-                "valid_seed_count": len(valid_runs),
+                "valid_initialization_count": len(valid_runs),
+                "valid_seed_count": sum(
+                    run["initialization_method"] == "kmeans_pp"
+                    for run in valid_runs
+                ),
                 "runs": [
-                    {key: run.get(key) for key in ("seed", "valid", "failure", "iteration_count", "inertia", "cluster_sizes")}
+                    {
+                        key: run.get(key)
+                        for key in (
+                            "initialization_method", "initialization", "seed", "valid",
+                            "failure", "iteration_count", "inertia", "cluster_sizes",
+                        )
+                    }
                     for run in runs
                 ],
             })
@@ -499,10 +779,17 @@ def clustering_kmeans_project(
             diagnostics.append({
                 "k": int(k),
                 "eligible": False,
-                "reason": "no converged seed passed minimum_cluster_size",
+                "reason": "no converged initialization passed minimum_cluster_size",
+                "valid_initialization_count": 0,
                 "valid_seed_count": 0,
                 "runs": [
-                    {key: run.get(key) for key in ("seed", "valid", "failure", "iteration_count", "inertia", "cluster_sizes")}
+                    {
+                        key: run.get(key)
+                        for key in (
+                            "initialization_method", "initialization", "seed", "valid",
+                            "failure", "iteration_count", "inertia", "cluster_sizes",
+                        )
+                    }
                     for run in runs
                 ],
             })
@@ -518,6 +805,66 @@ def clustering_kmeans_project(
             -candidate["k"],
         ),
     )
+    if bool(selected["silhouette_evaluation"]["estimated"]):
+        winner_by_seed = []
+        random_seeds = [
+            int(value)
+            for value in settings["silhouette_random_seeds"]  # type: ignore[union-attr]
+        ]
+        for replicate_index, seed in enumerate(random_seeds):
+            winner = max(
+                candidates,
+                key=lambda candidate: (
+                    candidate["silhouette_evaluation"]["replicates"][replicate_index]["score"],
+                    candidate["mean_adjusted_rand_to_best"],
+                    -candidate["k"],
+                ),
+            )
+            winner_by_seed.append({
+                "random_seed": seed,
+                "winning_k": winner["k"],
+                "winning_silhouette": winner["silhouette_evaluation"]["replicates"][replicate_index]["score"],
+            })
+        winning_k_values = sorted({int(row["winning_k"]) for row in winner_by_seed})
+        winner_counts = {
+            str(k): sum(int(row["winning_k"]) == k for row in winner_by_seed)
+            for k in winning_k_values
+        }
+        if len(winning_k_values) != 1 or winning_k_values[0] != int(selected["k"]):
+            mapping = ", ".join(
+                f"seed {row['random_seed']} -> k={row['winning_k']}"
+                for row in winner_by_seed
+            )
+            raise ClusteringAnalysisError(
+                "sampled silhouette winner stability gate failed: " + mapping
+            )
+        silhouette_selection_stability = {
+            "gate_applied": True,
+            "status": "passed_unanimous_sampled_winner",
+            "required_winner_agreement_fraction": 1.0,
+            "observed_winner_agreement_fraction": 1.0,
+            "configured_random_seeds": random_seeds,
+            "evaluated_random_seeds": random_seeds,
+            "winner_by_seed": winner_by_seed,
+            "winning_k_counts": winner_counts,
+            "selected_k": selected["k"],
+        }
+    else:
+        silhouette_selection_stability = {
+            "gate_applied": False,
+            "status": "not_applicable_exact_silhouette",
+            "reason": (
+                "all observations were evaluated, so no random silhouette "
+                "sample could alter model selection"
+            ),
+            "required_winner_agreement_fraction": 1.0,
+            "observed_winner_agreement_fraction": 1.0,
+            "configured_random_seeds": list(settings["silhouette_random_seeds"]),  # type: ignore[arg-type]
+            "evaluated_random_seeds": [],
+            "winner_by_seed": [],
+            "winning_k_counts": {str(selected["k"]): 1},
+            "selected_k": selected["k"],
+        }
     best_run = selected["best_run"]
     assignments = best_run["assignments"]
     centers = best_run["centers"]
@@ -560,12 +907,18 @@ def clustering_kmeans_project(
             "standardization_scales": list(scales),
         },
         "selection_rule": (
-            "maximum exact or prespecified seeded-estimate silhouette, then maximum mean ARI to selected-seed partition, "
-            "then smaller k; only converged complete partitions meeting minimum_cluster_size are eligible"
+            "maximum exact silhouette or mean silhouette across prespecified "
+            "random samples, then maximum mean ARI to the selected-initialization "
+            "partition, then smaller k; sampled selection additionally requires "
+            "unanimous winning-k agreement across seeds; only converged complete "
+            "partitions meeting minimum_cluster_size are eligible"
         ),
+        "silhouette_selection_stability": silhouette_selection_stability,
         "grid_diagnostics": diagnostics,
         "selected_model": {
             "k": selected["k"],
+            "initialization_method": best_run["initialization_method"],
+            "initialization": best_run["initialization"],
             "seed": best_run["seed"],
             "iteration_count": best_run["iteration_count"],
             "inertia": best_run["inertia"],
@@ -589,9 +942,9 @@ def clustering_kmeans_project(
         "issues": issues,
         "limitations": [
             "KMeans assumes complete convex Voronoi partitions and Euclidean geometry in the declared feature space.",
-            "Silhouette and seed stability do not establish physical metastability, kinetics, or convergence.",
+            "Silhouette and initialization stability do not establish physical metastability, kinetics, or convergence.",
             "Association of cluster labels with system, replica, or preparation identity is a reported scientific characteristic of the fitted partition, not a technical failure or a rule for discarding assignments, populations, representatives, or trajectories.",
-            "The k grid, feature definitions, standardization, seeds, and occupancy gate require sensitivity analysis.",
+            "The k grid, feature definitions, standardization, initialization method, NANI percentage or legacy seeds, and occupancy gate require sensitivity analysis.",
             "Frame assignments are not independent observations for uncertainty estimation.",
             "Technical completion does not establish scientific validity.",
         ],

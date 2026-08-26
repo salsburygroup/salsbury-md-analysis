@@ -1,0 +1,26 @@
+{
+  "acceptance_schema": "salsbury-nemo-energetic-network-embeddings-acceptance-v1",
+  "fixture": "tutorials/nemo_zinc_finger/data/nemo_zinc_finger_1000_frames.dcd",
+  "config": "tutorials/nemo_zinc_finger/energetic-network-analysis-config.json",
+  "module_acceptance": {
+    "module_id": "energetic_network_embeddings",
+    "configuration_enabled": true,
+    "availability_status": "not_available",
+    "availability_reason": "the NEMO fixture supplies PSF charges and bond topology but not the matching CHARMM parameter/stream files, an Amber PRMTOP/PARM7, or a serialized OpenMM System XML",
+    "analysis_performed": false,
+    "definition_retained_for_review": true,
+    "requested_for_execution": false,
+    "scientific_status": "not evaluated"
+  },
+  "planner_acceptance": {
+    "planner_task_created": false,
+    "energetic_network_task_count": 0,
+    "contract": "an unavailable optional module is recorded explicitly and consumes no campaign allocation"
+  },
+  "scope_boundary": {
+    "protein_only": true,
+    "solvent_inclusive_extension_implemented": false,
+    "signed_energy_extension_implemented": false,
+    "complete_pme_energy_claimed": false
+  }
+}

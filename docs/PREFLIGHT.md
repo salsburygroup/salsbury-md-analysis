@@ -44,6 +44,12 @@ Units are normalized before comparison. This contract assumes no duplicated
 boundary frame. DCD step continuity is checked independently when both adjacent
 segments are DCD.
 
+Replica `force_field_parameters` inputs—CHARMM parameter/stream files,
+serialized OpenMM System XML, or a declared GROMACS TPR—are included in the
+deterministic inventory and content hash. General preflight records their
+format, paths, sizes, and hashes; the energetic-network preparation probe then
+performs the source-specific semantic parsing and availability decision.
+
 ## Deliberate limits
 
 - This preflight command does not scan DCD coordinate records. Its frame count

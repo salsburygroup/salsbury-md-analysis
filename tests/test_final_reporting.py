@@ -13,6 +13,140 @@ from salsbury_md_analysis.finding_picker import FindingPickerError, prioritize_f
 
 
 class FinalReportingTests(unittest.TestCase):
+    def test_default_off_experimental_methods_feed_finding_picker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def write(command, payload):
+                path = root / "results" / command / "report.json"
+                path.parent.mkdir(parents=True)
+                path.write_text(json.dumps({
+                    "technical_status": "complete",
+                    "scientific_status": "not evaluated",
+                    **payload,
+                }), encoding="utf-8")
+
+            write("dfi", {"module_id": "perturbation_response_dynamics", "systems": [
+                {"system_id": "control", "dci": [0.2, 0.8], "dfi": [0.4, 0.6]},
+            ]})
+            write("weights", {"module_id": "trajectory_reweighting", "systems": [
+                {"system_id": "control", "diagnostics": {
+                    "kish_ratio": 0.7, "reweighting_validity_status": "passed",
+                }},
+            ]})
+            write("paths", {"module_id": "allosteric_pathways",
+                "nodes": [{"node_id": "A:1:ALA"}, {"node_id": "A:2:GLY"}],
+                "systems": [{"system_id": "control", "network": {
+                    "weighted_betweenness_centrality": [0.1, 0.9],
+                }}],
+            })
+            write("energetic", {
+                "module_id": "energetic_network_embeddings",
+                "availability_status": "available",
+                "pairwise_system_comparisons": [{
+                    "system_i": "control", "system_j": "variant",
+                    "residue_distances": [{
+                        "node_id": "A:10:ALA",
+                        "summed_wasserstein_distance": 1.25,
+                    }],
+                }],
+            })
+            write("bridges", {"module_id": "multivalent_molecular_bridges",
+                "mediator_type_summaries": [{
+                    "system_id": "control", "mediator_type": "ZN",
+                    "bridge_occupancy": 0.6,
+                }],
+            })
+            write("reactive", {"module_id": "reactive_path_ensembles",
+                "complete_path_count": 12, "transition_sufficiency_status": "insufficient",
+            })
+            write("fingerprints", {"module_id": "interaction_fingerprints",
+                "feature_occupancies": [{
+                    "feature_id": "feature-1", "occupancy_fraction": 0.75,
+                }],
+            })
+            write("spatial", {"module_id": "spatial_interaction_ensembles",
+                "pairwise_system_spatial_differences": [{
+                    "superfeature_id": "feature-1", "system_i": "control",
+                    "system_j": "variant",
+                    "centroid_displacement_angstrom": 2.0,
+                }],
+            })
+            write("persistence", {"module_id": "interaction_persistence",
+                "persistence_readiness_status": "available_with_complete_events",
+                "feature_persistence_summaries": [{
+                    "feature_id": "feature-1", "system_id": "control",
+                    "gap_tolerance_observations": 0,
+                    "persistence_summary_gate": "passed",
+                    "time_unit": "ps", "complete_event_count": 3,
+                    "complete_event_duration_summary": {"median": 12.0},
+                }],
+            })
+            write("rff", {"module_id": "random_feature_koopman",
+                "selection_status": "selected_stable_candidate",
+                "selected_hyperparameters": {
+                    "random_feature_count": 32, "bandwidth_scale": 1.0,
+                    "selection_score": 0.8,
+                },
+            })
+            write("helical", {"module_id": "helical_mechanics",
+                "availability_status": "available", "neighbor_step_couplings": [{
+                    "system_id": "control", "step_i": 0, "step_j": 1,
+                    "mutual_information_bits": 0.3,
+                }],
+            })
+            for command, module_id in (
+                ("hydration", "hydration_density_channels"),
+                ("pockets", "ensemble_pocket_dynamics"),
+            ):
+                write(command, {"module_id": module_id, "finding_candidates": [{
+                    "statement": f"Synthetic {module_id} descriptive finding.",
+                    "effect_value": 0.5, "system_ids": ["control"],
+                }]})
+            report = prioritize_findings(root, maximum_findings=100)
+        modules = {row["module_id"] for row in report["findings"]}
+        self.assertTrue({
+            "perturbation_response_dynamics", "trajectory_reweighting",
+            "allosteric_pathways", "multivalent_molecular_bridges",
+            "energetic_network_embeddings",
+            "reactive_path_ensembles", "interaction_fingerprints",
+            "spatial_interaction_ensembles", "interaction_persistence",
+            "random_feature_koopman",
+            "helical_mechanics", "hydration_density_channels",
+            "ensemble_pocket_dynamics",
+        }.issubset(modules))
+        covered_modules = {
+            row["module_id"] for row in report["method_evidence_coverage"]
+        }
+        self.assertTrue(modules.issubset(covered_modules))
+
+    def test_unavailable_experimental_method_is_audited_without_false_finding(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "results").mkdir()
+            (root / "energetic-network-embeddings-availability.json").write_text(
+                json.dumps({
+                    "module_id": "energetic_network_embeddings",
+                    "technical_status": "complete",
+                    "scientific_status": "not evaluated",
+                    "availability_status": "not_available",
+                    "availability_reason": "no compatible interaction parameters",
+                }),
+                encoding="utf-8",
+            )
+            report = prioritize_findings(root, maximum_findings=100)
+        self.assertEqual(report["findings"], [])
+        self.assertEqual(report["method_evidence_coverage"], [{
+            "module_id": "energetic_network_embeddings",
+            "technical_status": "complete",
+            "availability_status": "not_available",
+            "candidate_count": 0,
+            "report_path": str(
+                root.resolve()
+                / "energetic-network-embeddings-availability.json"
+            ),
+        }])
+
     def test_picker_scales_to_twenty_system_all_pair_comparison(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

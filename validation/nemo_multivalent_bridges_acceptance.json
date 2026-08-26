@@ -1,0 +1,68 @@
+{
+  "validation_schema": "salsbury-nemo-multivalent-bridges-acceptance-v1",
+  "branch": "experimental",
+  "recorded_at": "2026-08-25",
+  "execution_host_class": "Apple silicon workstation",
+  "dependencies": {
+    "python": "3.12.13",
+    "numpy": "2.5.2"
+  },
+  "fixture": {
+    "system": "human NEMO zinc-finger domain with one zinc ion and no water molecules",
+    "source_physical_frames": 1000,
+    "frame_interval_ps": 0.2,
+    "atom_count": 423,
+    "selected_solute_residue_count": 28,
+    "pdb_sha256": "fca08ab6ff7f2b43fe3e02d3da8fe94aaff3db5cab52fcfbbc02bb5e7cdc8ac4",
+    "psf_sha256": "85a5bf380f42f1c607d85e40ac91c6cbfcf60614e418ad667ea63a1e137a3aa0",
+    "trajectory_sha256": "bf7ad649bbb0d7a4bc37d3c2ce5a64140cf7de7b863cc9c6cebb789b80725524"
+  },
+  "configuration": {
+    "source_config": "tutorials/nemo_zinc_finger/multivalent-bridge-analysis-config.json",
+    "source_config_sha256": "a75776ccfef56779b0ef2a431b25fb3100bb533352315357e4460a726f5cafdc",
+    "include_supported_ions": true,
+    "include_recognized_waters": true,
+    "contact_cutoff_angstrom": 4.0,
+    "water_contact_cutoff_angstrom": 3.5,
+    "minimum_distinct_residues": 2
+  },
+  "method": {
+    "module_id": "multivalent_molecular_bridges",
+    "technical_status": "complete",
+    "scientific_status": "not evaluated",
+    "selected_physical_frame_count": 1000,
+    "mediator_type": "ZN2",
+    "mediator_count": 1,
+    "bridge_hyperedge_record_count": 1000,
+    "projected_residue_edge_count": 6,
+    "bridge_occupancy": 1.0,
+    "bridge_multiplicity": 4,
+    "contacted_residue_ids": [
+      "A:6:CYS",
+      "A:9:CYS",
+      "A:22:HSD",
+      "A:26:CYS"
+    ],
+    "residence_event_count": 1,
+    "complete_residence_event_count": 0,
+    "boundary_censored_selected_observations": 1000,
+    "boundary_censored_axis_span_ps": 199.8,
+    "total_cpu_seconds": 19.204448,
+    "wall_seconds": 20.899986333970446,
+    "maximum_resident_memory_mib": 76.109375,
+    "report_sha256": "763850becc407a3ae69128e20ae7870a61c483bc8f4c9197bf30f682e9a5f89e"
+  },
+  "planner_calibration": {
+    "task_id": "direct:multivalent_molecular_bridges",
+    "calibration_id": "nemo-zinc-finger-1000f-423a-1zn-20260825",
+    "calibration_status": "completed_single_fixture_provisional_scaling",
+    "selected_physical_frame_count": 1000,
+    "time_safety_factor": 1.5,
+    "estimated_cpu_seconds": 28.806672,
+    "estimated_peak_memory_gib": 2.4000000000000004,
+    "boundary": "The NEMO rate is normalized through the generic minimum atom-workload multiplier. Solvent-rich, multi-mediator, and large-system scaling remain unvalidated."
+  },
+  "technical_status": "complete",
+  "scientific_status": "not evaluated",
+  "interpretation": "The trial verifies trajectory execution, exact frame accounting, supported-ion detection, retained four-residue hyperedges, pairwise projection, boundary-censored residence labeling, and planner integration. Zinc remains a four-residue bridge throughout this short fixture. This is a positive-control software result, not evidence for zinc affinity, conformational convergence, solvent bridging, allostery, or biological mechanism."
+}

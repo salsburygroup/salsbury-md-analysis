@@ -1,6 +1,8 @@
 import json
+import os
 import subprocess
 import struct
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -147,6 +149,340 @@ def _write_oligomer_inputs(root: Path):
 
 
 class QuickstartTests(unittest.TestCase):
+    def test_available_dssr_duplex_receives_helical_planner_task(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            atoms = []
+            names = (
+                ("C1'", "C"), ("N9", "N"), ("C8", "C"), ("N7", "N"),
+                ("C5", "C"), ("C6", "C"), ("N1", "N"), ("C2", "C"),
+                ("N3", "N"), ("C4", "C"),
+            )
+            for chain_index, chain in enumerate(("A", "B")):
+                for atom_index, (name, element) in enumerate(names):
+                    atoms.append((
+                        name, chain, atom_index * 0.3,
+                        chain_index * 5.0, 0.1 * (atom_index % 2), element,
+                    ))
+            pdb = root / "duplex.pdb"
+            pdb.write_text("".join(
+                f"ATOM  {serial:5d} {name:^4s}  DA {chain}   1    "
+                f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00          {element:>2s}\n"
+                for serial, (name, chain, x, y, z, element) in enumerate(atoms, 1)
+            ) + "END\n", encoding="utf-8")
+            bonds = [(index, index + 1) for index in range(1, 10)] + [
+                (index, index + 1) for index in range(11, 20)
+            ]
+            psf = root / "duplex.psf"
+            psf.write_text(
+                "PSF\n\n      20 !NATOM\n"
+                + "".join(
+                    f"{index:8d} SEG {index:4d} DA C1 C 0.0 12.0\n"
+                    for index in range(1, 21)
+                )
+                + f"{len(bonds):8d} !NBOND: bonds\n"
+                + "".join(f"{left:8d}{right:8d}" for left, right in bonds)
+                + "\n", encoding="utf-8",
+            )
+            trajectories = []
+            for replica in range(3):
+                path = root / f"duplex-{replica}.dcd"
+                _write_dcd(path, 20, 30)
+                trajectories.append(path)
+            dssr = root / "x3dna-dssr"
+            dssr.write_text(
+                f"#!{sys.executable}\n"
+                "import json, pathlib, sys\n"
+                "if '--version' in sys.argv:\n"
+                " print('DSSR 2.9-test'); raise SystemExit(0)\n"
+                "output = next(value.split('=', 1)[1] for value in sys.argv if value.startswith('--output='))\n"
+                "step = {'shift':0.1,'slide':0.2,'rise':3.4,'tilt':1.0,'roll':2.0,'twist':34.0}\n"
+                "pathlib.Path(output).write_text(json.dumps({'pairs':[{} , {}], 'helices':[{}], 'stems':[{'steps':[step]}]}))\n",
+                encoding="utf-8",
+            )
+            os.chmod(dssr, 0o755)
+            config = root / "config.json"
+            config.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "modules": {"helical_mechanics": {"enabled": True}},
+            }), encoding="utf-8")
+            output = root / "analysis"
+            prepare_standard_analysis(
+                pdb_path=pdb, psf_path=psf, trajectories=trajectories,
+                output_directory=output, project_id="duplex-test",
+                frame_interval_ps=10.0, config_path=config,
+                dssr_executable=str(dssr),
+            )
+            project = json.loads((output / "project.json").read_text())
+            campaign = json.loads((output / "campaign-resource-plan.json").read_text())
+            worker = (output / "run_stage_1_array.slurm").read_text()
+        self.assertIn("nucleic_acid_structure", project["requested_modules"])
+        self.assertIn("helical_mechanics", project["requested_modules"])
+        self.assertEqual(
+            len(project["definitions"]["nucleic_acid_structure"]["numeric_queries"]),
+            6,
+        )
+        tasks = {row["task_id"]: row for row in campaign["tasks"]}
+        self.assertIn("base:nucleic_acid_structure", tasks)
+        self.assertIn("base:helical_mechanics", tasks)
+        self.assertEqual(
+            tasks["base:helical_mechanics"]["balance_group"],
+            tasks["base:nucleic_acid_structure"]["balance_group"],
+        )
+        self.assertEqual(
+            tasks["base:helical_mechanics"]["selected_physical_frames_per_replica"],
+            tasks["base:nucleic_acid_structure"]["selected_physical_frames_per_replica"],
+        )
+        self.assertIn('"helical-mechanics"', worker)
+        self.assertIn("SALSBURY_MD_ANALYSIS_NUCLEIC_ACID_STRUCTURE_REPORT", worker)
+
+    def test_experimental_opt_ins_are_wired_to_expected_workflows(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "inputs"
+            source.mkdir()
+            output = root / "analysis"
+            pdb, psf, trajectories = _write_inputs(source)
+            config = root / "experimental.json"
+            config.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "enable_all_experimental_modules": True,
+                "modules": {
+                    "perturbation_response_dynamics": {
+                        "options": {
+                            "functional_site_node_indices": [0],
+                            "minimum_cumulative_explained_variance": 0.0,
+                        },
+                    },
+                    "trajectory_reweighting": {
+                        "options": {"weights_path": "frame-log-weights.json"},
+                    },
+                    "allosteric_pathways": {
+                        "options": {
+                            "network_source": "external_json",
+                            "network_path": "residue-contact-network.json",
+                            "source_node_indices": [0],
+                            "sink_node_indices": [1],
+                        },
+                    },
+                    "multivalent_molecular_bridges": {
+                        "options": {
+                            "mediator_residue_names": ["NEO"],
+                        },
+                    },
+                    "reactive_path_ensembles": {
+                        "options": {
+                            "endpoint_mode": "automatic_recurrent_pair",
+                            "source_state_ids": [],
+                            "sink_state_ids": [],
+                        },
+                    },
+                },
+                "views": {
+                    "macromolecular_trace": {
+                        "enabled": True,
+                        "state_trajectory_exports_enabled": False,
+                    }
+                },
+            }), encoding="utf-8")
+            prepare_standard_analysis(
+                pdb_path=pdb,
+                psf_path=psf,
+                trajectories=trajectories,
+                output_directory=output,
+                project_id="dfi-opt-in",
+                frame_interval_ps=10.0,
+                config_path=config,
+            )
+            resolved = json.loads(
+                (output / "analysis-config.json").read_text(encoding="utf-8")
+            )
+            trace = json.loads(
+                (output / "project-macromolecular_trace.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            global_view = json.loads(
+                (output / "project-global_common_heavy.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            base = json.loads(
+                (output / "project.json").read_text(encoding="utf-8")
+            )
+            sampling = json.loads(
+                (output / "sampling-plan.json").read_text(encoding="utf-8")
+            )
+            campaign = json.loads(
+                (output / "campaign-resource-plan.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            trace_worker = (
+                output / "run_view_macromolecular_trace_stage_1.slurm"
+            ).read_text(encoding="utf-8")
+            reactive_worker = (
+                output / "run_view_macromolecular_trace_stage_3.slurm"
+            ).read_text(encoding="utf-8")
+            nonlinear_worker = (
+                output / "run_view_macromolecular_trace_stage_2.slurm"
+            ).read_text(encoding="utf-8")
+            base_worker = (output / "run_stage_1_array.slurm").read_text(
+                encoding="utf-8"
+            )
+            persistence_worker = (
+                output / "run_stage_2_array.slurm"
+            ).read_text(encoding="utf-8")
+            base_stage_zero_worker = (
+                output / "run_stage_0_array.slurm"
+            ).read_text(encoding="utf-8")
+            helical_availability = json.loads(
+                (output / "helical-mechanics-availability.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+        self.assertTrue(
+            resolved["modules"]["perturbation_response_dynamics"]["enabled"]
+        )
+        self.assertTrue(resolved["enable_all_experimental_modules"])
+        self.assertTrue(resolved["modules"]["trajectory_reweighting"]["enabled"])
+        self.assertTrue(resolved["modules"]["allosteric_pathways"]["enabled"])
+        self.assertTrue(
+            resolved["modules"]["multivalent_molecular_bridges"]["enabled"]
+        )
+        self.assertTrue(resolved["modules"]["hydration_density_channels"]["enabled"])
+        self.assertTrue(resolved["modules"]["ensemble_pocket_dynamics"]["enabled"])
+        self.assertTrue(
+            resolved["modules"]["reactive_path_ensembles"]["enabled"]
+        )
+        self.assertTrue(resolved["modules"]["interaction_fingerprints"]["enabled"])
+        self.assertTrue(
+            resolved["modules"]["spatial_interaction_ensembles"]["enabled"]
+        )
+        self.assertTrue(resolved["modules"]["interaction_persistence"]["enabled"])
+        self.assertTrue(resolved["modules"]["random_feature_koopman"]["enabled"])
+        self.assertTrue(resolved["modules"]["helical_mechanics"]["enabled"])
+        self.assertEqual(
+            trace["definitions"]["perturbation_response_dynamics"]
+            ["functional_site_node_indices"],
+            [0],
+        )
+        self.assertNotIn(
+            "perturbation_response_dynamics", global_view["definitions"]
+        )
+        self.assertEqual(
+            trace["definitions"]["trajectory_reweighting"]["weights_path"],
+            "frame-log-weights.json",
+        )
+        self.assertIn("trajectory_reweighting", global_view["definitions"])
+        self.assertIn("allosteric_pathways", base["requested_modules"])
+        self.assertIn(
+            "multivalent_molecular_bridges", base["requested_modules"]
+        )
+        self.assertIn("hydration_density_channels", base["requested_modules"])
+        self.assertIn("ensemble_pocket_dynamics", base["requested_modules"])
+        self.assertIn("interaction_fingerprints", base["requested_modules"])
+        self.assertIn("spatial_interaction_ensembles", base["requested_modules"])
+        self.assertIn("interaction_persistence", base["requested_modules"])
+        self.assertIn("random_feature_koopman", trace["requested_modules"])
+        self.assertNotIn("random_feature_koopman", base["requested_modules"])
+        self.assertNotIn("helical_mechanics", base["requested_modules"])
+        self.assertEqual(helical_availability["availability_status"], "not_available")
+        self.assertFalse(helical_availability["planner_task_created"])
+        self.assertEqual(
+            base["definitions"]["multivalent_molecular_bridges"]
+            ["mediator_residue_names"],
+            ["NEO"],
+        )
+        allosteric_sampling = next(
+            row for row in sampling["method_plans"]
+            if row["module_id"] == "allosteric_pathways"
+        )
+        self.assertEqual(
+            allosteric_sampling["inherited_from"], "dccm"
+        )
+        self.assertEqual(
+            allosteric_sampling["frame_contract"],
+            "inherit_upstream_frame_identities",
+        )
+        self.assertEqual(
+            base["definitions"]["allosteric_pathways"]["network_path"],
+            "residue-contact-network.json",
+        )
+        self.assertEqual(
+            base["definitions"]["allosteric_pathways"]["network_source"],
+            "external_json",
+        )
+        self.assertIn('"perturbation-response"', trace_worker)
+        self.assertIn('"trajectory-reweighting"', trace_worker)
+        self.assertIn('"reactive-path-ensembles"', reactive_worker)
+        self.assertIn('"random-feature-koopman"', nonlinear_worker)
+        self.assertIn("SALSBURY_MD_ANALYSIS_TICA_REPORT", nonlinear_worker)
+        self.assertIn("SALSBURY_MD_ANALYSIS_KMEANS_REPORT", reactive_worker)
+        self.assertIn("SALSBURY_MD_ANALYSIS_MSM_REPORT", reactive_worker)
+        self.assertIn('"allosteric-pathways"', base_worker)
+        self.assertIn('"interaction-fingerprints"', base_worker)
+        self.assertNotIn('"interaction-persistence"', base_worker)
+        self.assertIn('"spatial-interaction-ensembles"', persistence_worker)
+        self.assertIn('"interaction-persistence"', persistence_worker)
+        self.assertIn(
+            "SALSBURY_MD_ANALYSIS_INTERACTION_FINGERPRINTS_REPORT",
+            persistence_worker,
+        )
+        self.assertNotIn('"helical-mechanics"', base_worker)
+        self.assertIn('"multivalent-bridges"', base_stage_zero_worker)
+        self.assertIn('"hydration-density-channels"', base_stage_zero_worker)
+        self.assertIn('"ensemble-pocket-dynamics"', base_stage_zero_worker)
+        campaign_tasks = {row["task_id"]: row for row in campaign["tasks"]}
+        bridge_task = campaign_tasks["direct:multivalent_molecular_bridges"]
+        hydration_task = campaign_tasks["direct:hydration_density_channels"]
+        pocket_task = campaign_tasks["direct:ensemble_pocket_dynamics"]
+        self.assertIn("base:interaction_fingerprints", campaign_tasks)
+        self.assertIn("base:spatial_interaction_ensembles", campaign_tasks)
+        self.assertIn("base:interaction_persistence", campaign_tasks)
+        self.assertIn(
+            "view:macromolecular_trace:random_feature_koopman",
+            campaign_tasks,
+        )
+        self.assertNotIn("base:helical_mechanics", campaign_tasks)
+        self.assertEqual(bridge_task["module_id"], "multivalent_molecular_bridges")
+        self.assertEqual(
+            bridge_task["calibration_status"],
+            "completed_single_fixture_provisional_scaling",
+        )
+        self.assertEqual(
+            bridge_task["calibration_id"],
+            "nemo-zinc-finger-1000f-423a-1zn-20260825",
+        )
+        self.assertEqual(
+            hydration_task["calibration_id"],
+            "nemo-zinc-finger-1000f-423a-1zn-density-20260825",
+        )
+        self.assertEqual(
+            pocket_task["calibration_id"],
+            "nemo-zinc-finger-1000f-423a-pocket-grid-20260825",
+        )
+        self.assertEqual(
+            hydration_task["calibration_status"],
+            "completed_single_fixture_provisional_scaling",
+        )
+        self.assertEqual(
+            pocket_task["calibration_status"],
+            "completed_single_fixture_provisional_scaling",
+        )
+        reactive_task = campaign_tasks[
+            "view:macromolecular_trace:reactive_path_ensembles"
+        ]
+        msm_task = campaign_tasks[
+            "view:macromolecular_trace:markov_state_models"
+        ]
+        self.assertGreater(
+            reactive_task["dependency_stage"], msm_task["dependency_stage"]
+        )
+        self.assertEqual(
+            reactive_task["maximum_pairwise_dtw_cells"], 20_000_000
+        )
+
     def test_deac_config_activates_profiled_slurm_launcher(self):
         repository = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as temporary:

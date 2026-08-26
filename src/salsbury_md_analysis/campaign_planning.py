@@ -242,6 +242,20 @@ def _apply_system_memory_scaling(
 # 30,000-frame/60,000-member Apollo measurements from the authoritative TREX
 # oligomer validation. Rates are normalized below for member multiplicity.
 _VIEW_MODELS: Mapping[str, Mapping[str, object]] = {
+    "perturbation_response_dynamics": {
+        "seconds_per_frame_member2": 2.0 * 0.310658 / 1_000,
+        "fixed_cpu_hours": 0.0, "memory_gib": 1.0, "stage": 2,
+        "priority": 6.0,
+        "calibration": "nemo-zinc-finger-1000f-28node-2026-08-24",
+        "calibration_status": "completed_single_fixture_provisional_scaling",
+    },
+    "trajectory_reweighting": {
+        "seconds_per_frame_member2": 2.0 * 0.293936 / 1_000,
+        "fixed_cpu_hours": 0.0, "memory_gib": 1.0, "stage": 2,
+        "priority": 5.0,
+        "calibration": "nemo-zinc-finger-1000f-10pc-2026-08-24",
+        "calibration_status": "completed_single_fixture_provisional_scaling",
+    },
     "generalized_correlation_and_information": {
         "seconds_per_frame_member2": 1.671336 / 30_000,
         "fixed_cpu_hours": 0.0, "memory_gib": 1.0, "stage": 2,
@@ -256,6 +270,13 @@ _VIEW_MODELS: Mapping[str, Mapping[str, object]] = {
         "seconds_per_frame_member2": 2.214 / 30_000,
         "fixed_cpu_hours": 0.0, "memory_gib": 1.0, "stage": 2,
         "priority": 7.0, "calibration": "apollo-oligomer-v20-30k",
+    },
+    "random_feature_koopman": {
+        "seconds_per_frame_member2": 0.02,
+        "fixed_cpu_hours": 0.0, "memory_gib": 4.0, "stage": 3,
+        "priority": 6.0,
+        "calibration": "provisional-rff-koopman-grid-v1",
+        "calibration_status": "provisional_complexity_model",
     },
     "pca_fes_basins": {
         "seconds_per_frame_member2": 25.866511 / 30_000,
@@ -303,6 +324,11 @@ _VIEW_MODELS: Mapping[str, Mapping[str, object]] = {
         "fixed_cpu_hours": 0.01, "memory_gib": 2.0, "stage": 3,
         "priority": 5.0, "calibration": "provisional-transition-count-v1",
     },
+    "reactive_path_ensembles": {
+        "seconds_per_frame_member2": 0.002,
+        "fixed_cpu_hours": 0.01, "memory_gib": 2.0, "stage": 4,
+        "priority": 5.0, "calibration": "provisional-bounded-dtw-v1",
+    },
     "grouped_ml": {
         "seconds_per_frame_member2": 0.01,
         "fixed_cpu_hours": 0.02, "memory_gib": 4.0, "stage": 3,
@@ -317,6 +343,13 @@ _MEASURED_VIEW_MODULES = {
 }
 
 _BASE_DERIVED_MODELS: Mapping[str, Mapping[str, object]] = {
+    "allosteric_pathways": {
+        "upstream": "dccm", "seconds_per_frame": 18.698369 / 1_000,
+        "fixed_cpu_hours": 0.0, "memory_gib": 1.0, "stage": 2,
+        "priority": 6.0,
+        "calibration": "nemo-zinc-finger-1000f-28node-2026-08-24",
+        "calibration_status": "completed_single_fixture_provisional_scaling",
+    },
     "correlation_networks": {
         "upstream": "dccm", "seconds_per_frame": 0.0002,
         "fixed_cpu_hours": 0.01, "memory_gib": 2.0, "stage": 2,
@@ -367,6 +400,26 @@ _AUTOMATIC_CONTEXT_MODELS: Mapping[str, Mapping[str, object]] = {
         "stage": 1, "priority": 7.0,
         "calibration": "conservative-external-dssr-proxy-v1",
     },
+    "interaction_fingerprints": {
+        "seconds_per_frame": 0.002, "memory_gib": 2.0,
+        "stage": 2, "priority": 6.0,
+        "calibration": "provisional-sparse-interaction-join-v1",
+    },
+    "spatial_interaction_ensembles": {
+        "seconds_per_frame": 0.02, "memory_gib": 4.0,
+        "stage": 3, "priority": 6.0,
+        "calibration": "provisional-aligned-interaction-cloud-v1",
+    },
+    "interaction_persistence": {
+        "seconds_per_frame": 0.004, "memory_gib": 2.0,
+        "stage": 3, "priority": 6.0,
+        "calibration": "provisional-fingerprint-persistence-v1",
+    },
+    "helical_mechanics": {
+        "seconds_per_frame": 0.01, "memory_gib": 2.0,
+        "stage": 2, "priority": 6.0,
+        "calibration": "provisional-dssr-helical-covariance-v1",
+    },
     "scalar_feature_distributions": {
         "seconds_per_frame": 0.002, "memory_gib": 2.0,
         "stage": 2, "priority": 7.0,
@@ -416,7 +469,7 @@ def _automatic_context_tasks(
         if model is None:
             continue
         maximum = max(source_counts)
-        if module == "nucleic_acid_structure":
+        if module in {"nucleic_acid_structure", "helical_mechanics"}:
             maximum = min(maximum, max(1, math.ceil(1_000 / len(source_counts))))
         balance_group = (
             "automatic_context:ion_scalar:shared_frames"
@@ -424,8 +477,113 @@ def _automatic_context_tasks(
                 "trajectory_features",
                 "scalar_feature_distributions", "scalar_threshold_states",
             }
-            else f"automatic_context:{module}:shared_frames"
+            else (
+                "automatic_context:nucleic_acid_structure:shared_frames"
+                if module in {"nucleic_acid_structure", "helical_mechanics"}
+                else f"automatic_context:{module}:shared_frames"
+            )
         )
+        method_specific: Dict[str, object] = {}
+        if module == "spatial_interaction_ensembles":
+            definitions = project.get("definitions")
+            definition = (
+                definitions.get(module)
+                if isinstance(definitions, dict) else None
+            )
+            if not isinstance(definition, dict):
+                raise CampaignPlanningError(
+                    f"automatic-context project {resolved_context_id} has no "
+                    "spatial-interaction-ensembles definition"
+                )
+            mode_k_values = definition.get("mode_k_values")
+            maximum_points = definition.get("maximum_point_observations")
+            maximum_exact = definition.get("maximum_exact_mode_points")
+            minimum_frames = definition.get("minimum_distinct_frames")
+            if (
+                not isinstance(mode_k_values, list) or not mode_k_values
+                or any(
+                    isinstance(value, bool) or not isinstance(value, int)
+                    or value < 2 for value in mode_k_values
+                )
+                or isinstance(maximum_points, bool)
+                or not isinstance(maximum_points, int) or maximum_points <= 0
+                or isinstance(maximum_exact, bool)
+                or not isinstance(maximum_exact, int) or maximum_exact <= 0
+                or isinstance(minimum_frames, bool)
+                or not isinstance(minimum_frames, int) or minimum_frames <= 0
+            ):
+                raise CampaignPlanningError(
+                    f"automatic-context project {resolved_context_id} has "
+                    "invalid spatial-interaction ensemble gates"
+                )
+            method_specific = {
+                "upstream_module_id": "interaction_fingerprints",
+                "point_construction_policy": definition.get(
+                    "point_construction_policy"
+                ),
+                "alignment_selection": definition.get("alignment_selection"),
+                "mode_k_values": list(mode_k_values),
+                "minimum_distinct_frames": minimum_frames,
+                "minimum_mode_time_blocks": definition.get(
+                    "minimum_mode_time_blocks"
+                ),
+                "minimum_mode_replicas": definition.get(
+                    "minimum_mode_replicas"
+                ),
+                "maximum_point_observations": maximum_points,
+                "maximum_exact_mode_points": maximum_exact,
+                "exact_mode_resource_policy": (
+                    "withhold mode inference rather than sample points"
+                ),
+            }
+        if module == "interaction_persistence":
+            definitions = project.get("definitions")
+            definition = (
+                definitions.get(module)
+                if isinstance(definitions, dict) else None
+            )
+            if not isinstance(definition, dict):
+                raise CampaignPlanningError(
+                    f"automatic-context project {resolved_context_id} has no "
+                    "interaction-persistence definition"
+                )
+            tolerances = definition.get("gap_tolerance_observations")
+            minimum_complete = definition.get("minimum_complete_events")
+            maximum_records = definition.get("maximum_event_records")
+            if (
+                not isinstance(tolerances, list) or 0 not in tolerances
+                or any(
+                    isinstance(value, bool) or not isinstance(value, int)
+                    or value < 0
+                    for value in tolerances
+                )
+                or isinstance(minimum_complete, bool)
+                or not isinstance(minimum_complete, int)
+                or minimum_complete <= 0
+                or isinstance(maximum_records, bool)
+                or not isinstance(maximum_records, int)
+                or maximum_records <= 0
+            ):
+                raise CampaignPlanningError(
+                    f"automatic-context project {resolved_context_id} has "
+                    "invalid interaction-persistence gates"
+                )
+            method_specific = {
+                "upstream_module_id": "interaction_fingerprints",
+                "gap_tolerance_observations": list(tolerances),
+                "primary_gap_tolerance_observations": 0,
+                "minimum_complete_events": minimum_complete,
+                "maximum_event_records": maximum_records,
+                "maximum_interval_relative_deviation": definition.get(
+                    "maximum_interval_relative_deviation"
+                ),
+                "event_boundary_policy": (
+                    "segment_safe_with_left_and_right_censoring"
+                ),
+                "missingness_policy": (
+                    "source-unobserved frames are never interaction-negative"
+                ),
+            }
         tasks.append({
             "task_id": f"{resolved_task_namespace}:{module}",
             "workflow_id": resolved_context_id,
@@ -464,6 +622,7 @@ def _automatic_context_tasks(
                 }
                 else None
             ),
+            **method_specific,
         })
     return tasks
 
@@ -610,16 +769,260 @@ def _view_tasks(
         measured_rate = float(model["seconds_per_frame_member2"])
         fixed_cpu_hours = float(model["fixed_cpu_hours"])
         estimated_memory_gib = float(model["memory_gib"])
-        calibration_status = (
-            "completed_30k_member_scaled"
-            if module_id in _MEASURED_VIEW_MODULES
-            else "provisional_complexity_model"
-        )
+        calibration_status = str(model.get(
+            "calibration_status",
+            (
+                "completed_30k_member_scaled"
+                if module_id in _MEASURED_VIEW_MODULES
+                else "provisional_complexity_model"
+            ),
+        ))
         method_specific: Dict[str, object] = {}
         minimum_frames_per_replica = int(
             pca_task["minimum_frames_per_replica"]
         )
-        if module_id == "information_dynamics":
+        if module_id == "perturbation_response_dynamics":
+            definitions = project.get("definitions")
+            definition = (
+                definitions.get(module_id)
+                if isinstance(definitions, dict) else None
+            )
+            common_pca = (
+                definitions.get("common_pca")
+                if isinstance(definitions, dict) else None
+            )
+            if not isinstance(definition, dict) or not isinstance(common_pca, dict):
+                raise CampaignPlanningError(
+                    f"view {view_id} lacks perturbation-response planning inputs"
+                )
+            maximum_nodes = int(definition.get("maximum_nodes", 0))
+            directions = int(definition.get("random_force_directions", 0))
+            if maximum_nodes <= 0 or directions <= 0:
+                raise CampaignPlanningError(
+                    f"view {view_id} perturbation-response size settings are invalid"
+                )
+            workload_scale = max(
+                1.0,
+                (maximum_nodes / 28.0) ** 2 * (directions / 250.0),
+            )
+            measured_rate *= workload_scale
+            method_specific = {
+                "nemo_reference_node_count": 28,
+                "configured_maximum_nodes": maximum_nodes,
+                "nemo_reference_random_force_directions": 250,
+                "configured_random_force_directions": directions,
+                "provisional_workload_scale": workload_scale,
+                "cost_scaling_model": (
+                    "NEMO measured frame rate with a conservative N_nodes^2 "
+                    "times force-direction extrapolation; scaling is not yet "
+                    "validated on a second system"
+                ),
+            }
+        elif module_id == "trajectory_reweighting":
+            definitions = project.get("definitions")
+            common_pca = (
+                definitions.get("common_pca")
+                if isinstance(definitions, dict) else None
+            )
+            if not isinstance(common_pca, dict):
+                raise CampaignPlanningError(
+                    f"view {view_id} lacks common-PCA reweighting inputs"
+                )
+            components = int(common_pca.get("component_count", 0))
+            if components <= 0:
+                raise CampaignPlanningError(
+                    f"view {view_id} common-PCA component_count is invalid"
+                )
+            workload_scale = max(1.0, (components / 10.0) ** 2)
+            measured_rate *= workload_scale
+            method_specific = {
+                "nemo_reference_component_count": 10,
+                "configured_component_count": components,
+                "provisional_workload_scale": workload_scale,
+                "cost_scaling_model": (
+                    "NEMO measured frame rate with conservative quadratic "
+                    "common-PCA-component extrapolation; scaling is not yet "
+                    "validated on a second system"
+                ),
+            }
+        elif module_id == "random_feature_koopman":
+            definitions = project.get("definitions")
+            definition = (
+                definitions.get(module_id)
+                if isinstance(definitions, dict) else None
+            )
+            if not isinstance(definition, dict):
+                raise CampaignPlanningError(
+                    f"view {view_id} has no random-feature Koopman definition"
+                )
+            feature_counts = definition.get("random_feature_counts")
+            bandwidth_scales = definition.get("bandwidth_scales")
+            seeds = definition.get("random_seeds")
+            lag_frames = definition.get("lag_frames")
+            minimum_pairs = definition.get("minimum_pairs_per_segment")
+            if (
+                not isinstance(feature_counts, list) or not feature_counts
+                or any(
+                    isinstance(value, bool) or not isinstance(value, int)
+                    or value < 4
+                    for value in feature_counts
+                )
+                or not isinstance(bandwidth_scales, list)
+                or not bandwidth_scales
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))
+                    or float(value) <= 0.0
+                    for value in bandwidth_scales
+                )
+                or not isinstance(seeds, list) or len(seeds) < 3
+                or any(
+                    isinstance(value, bool) or not isinstance(value, int)
+                    or value < 0
+                    for value in seeds
+                )
+                or isinstance(lag_frames, bool)
+                or not isinstance(lag_frames, int) or lag_frames <= 0
+                or isinstance(minimum_pairs, bool)
+                or not isinstance(minimum_pairs, int) or minimum_pairs <= 0
+            ):
+                raise CampaignPlanningError(
+                    f"view {view_id} random-feature Koopman grid is invalid"
+                )
+            required_per_replica = lag_frames + minimum_pairs
+            if any(count < required_per_replica for count in projected_counts):
+                raise CampaignPlanningError(
+                    f"view {view_id} random_feature_koopman requires at least "
+                    f"{required_per_replica} projected frames per physical "
+                    "replica for the configured lag and per-segment pair gate"
+                )
+            minimum_frames_per_replica = max(
+                minimum_frames_per_replica, required_per_replica
+            )
+            candidate_count = len(feature_counts) * len(bandwidth_scales)
+            evaluation_count = candidate_count * len(seeds)
+            maximum_feature_count = max(feature_counts)
+            workload_scale = max(
+                1.0,
+                evaluation_count / 24.0,
+                (evaluation_count / 24.0) * (maximum_feature_count / 64.0),
+            )
+            measured_rate *= workload_scale
+            method_specific = {
+                "upstream_module_id": (
+                    "time_lagged_independent_component_analysis"
+                ),
+                "random_feature_counts": list(feature_counts),
+                "bandwidth_scales": [
+                    float(value) for value in bandwidth_scales
+                ],
+                "random_feature_seeds": list(seeds),
+                "hyperparameter_candidate_count": candidate_count,
+                "random_feature_fit_evaluation_count": evaluation_count,
+                "maximum_random_feature_count": maximum_feature_count,
+                "lag_frames": lag_frames,
+                "minimum_pairs_per_segment": minimum_pairs,
+                "minimum_frames_per_replica_for_lag_pairs": (
+                    required_per_replica
+                ),
+                "cross_validation_folds": definition.get(
+                    "cross_validation_folds"
+                ),
+                "maximum_seed_vamp_e_relative_range": definition.get(
+                    "maximum_seed_vamp_e_relative_range"
+                ),
+                "minimum_seed_subspace_similarity": definition.get(
+                    "minimum_seed_subspace_similarity"
+                ),
+                "provisional_workload_scale": workload_scale,
+                "cost_scaling_model": (
+                    "provisional default-grid floor scaled upward by the full "
+                    "feature-count x bandwidth x prespecified-seed evaluation "
+                    "count and maximum random-feature dimension"
+                ),
+            }
+        elif module_id == "clustering_kmeans":
+            definitions = project.get("definitions")
+            definition = (
+                definitions.get(module_id)
+                if isinstance(definitions, dict) else None
+            )
+            if not isinstance(definition, dict):
+                raise CampaignPlanningError(
+                    f"view {view_id} has no KMeans definition"
+                )
+            k_values = definition.get("k_values")
+            methods = definition.get("initialization_methods", ["kmeans_pp"])
+            seeds = definition.get("random_seeds", [])
+            silhouette_seeds = definition.get(
+                "silhouette_random_seeds", [0, 7, 19, 41]
+            )
+            maximum_silhouette = definition.get(
+                "maximum_silhouette_observations", 1_000
+            )
+            if (
+                not isinstance(k_values, list) or not k_values
+                or not isinstance(methods, list) or not methods
+                or not isinstance(seeds, list)
+                or not isinstance(silhouette_seeds, list)
+                or len(silhouette_seeds) < 3
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or value < 0
+                    for value in silhouette_seeds
+                )
+                or len(set(silhouette_seeds)) != len(silhouette_seeds)
+                or isinstance(maximum_silhouette, bool)
+                or not isinstance(maximum_silhouette, int)
+                or maximum_silhouette <= 0
+            ):
+                raise CampaignPlanningError(
+                    f"view {view_id} KMeans grid settings are invalid"
+                )
+            fits_per_k = sum(
+                len(seeds) if str(method) == "kmeans_pp" else 1
+                for method in methods
+            )
+            if fits_per_k <= 0:
+                raise CampaignPlanningError(
+                    f"view {view_id} KMeans grid has no initialization runs"
+                )
+            # The retained Apollo calibration used eleven k values and four
+            # seeded fits per k. Do not claim a speedup for the smaller NANI
+            # grid until it has multi-system calibration, but scale upward for
+            # custom grids that exceed either reference dimension.
+            fit_grid_scale = max(
+                1.0,
+                len(k_values) / 11.0,
+                (len(k_values) * fits_per_k) / 44.0,
+            )
+            observation_count = multiplier * sum(projected_counts)
+            silhouette_sampling_required = observation_count > maximum_silhouette
+            silhouette_evaluations_per_k = (
+                len(silhouette_seeds) if silhouette_sampling_required else 1
+            )
+            grid_scale = fit_grid_scale * silhouette_evaluations_per_k
+            measured_rate *= grid_scale
+            method_specific = {
+                "k_value_count": len(k_values),
+                "initialization_methods": [str(method) for method in methods],
+                "initialization_runs_per_k": fits_per_k,
+                "nani_percentage": definition.get("nani_percentage"),
+                "silhouette_random_seeds": list(silhouette_seeds),
+                "silhouette_sampling_required": silhouette_sampling_required,
+                "silhouette_evaluations_per_k": silhouette_evaluations_per_k,
+                "maximum_silhouette_observations": maximum_silhouette,
+                "provisional_workload_scale": grid_scale,
+                "cost_scaling_model": (
+                    "retained measured eleven-k/four-initialization floor; "
+                    "scale upward with declared k count, total fit count, and "
+                    "every required sampled-silhouette replicate; no NANI "
+                    "speed credit pending multi-system calibration"
+                ),
+            }
+        elif module_id == "information_dynamics":
             definitions = project.get("definitions")
             definition = (
                 definitions.get(module_id)
@@ -685,6 +1088,43 @@ def _view_tasks(
                         "replica-and-member-segment-safe projected sequences"
                     ),
                 }
+        elif module_id == "reactive_path_ensembles":
+            definitions = project.get("definitions")
+            definition = (
+                definitions.get(module_id)
+                if isinstance(definitions, dict) else None
+            )
+            if not isinstance(definition, dict):
+                raise CampaignPlanningError(
+                    f"view {view_id} has no reactive-path definition"
+                )
+            maximum_paths = definition.get("maximum_paths_per_direction")
+            maximum_path_frames = definition.get("maximum_path_frames")
+            maximum_dtw_cells = definition.get("maximum_pairwise_dtw_cells")
+            if any(
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value <= 0
+                for value in (
+                    maximum_paths, maximum_path_frames, maximum_dtw_cells
+                )
+            ):
+                raise CampaignPlanningError(
+                    f"view {view_id} reactive-path size gates are invalid"
+                )
+            workload_scale = max(1.0, maximum_dtw_cells / 20_000_000.0)
+            fixed_cpu_hours *= workload_scale
+            method_specific = {
+                "maximum_paths_per_direction": maximum_paths,
+                "maximum_retained_paths": 2 * maximum_paths,
+                "maximum_path_frames": maximum_path_frames,
+                "maximum_pairwise_dtw_cells": maximum_dtw_cells,
+                "provisional_workload_scale": workload_scale,
+                "cost_scaling_model": (
+                    "bounded pairwise multidimensional DTW work, capped by "
+                    "maximum_pairwise_dtw_cells; scaling remains provisional"
+                ),
+            }
         elif module_id == "grouped_ml":
             definitions = project.get("definitions")
             definition = (
@@ -943,6 +1383,35 @@ def _base_derived_tasks(
             raise CampaignPlanningError(
                 f"base module {module_id} has no planned upstream task"
             )
+        method_specific: Dict[str, object] = {}
+        seconds_per_frame = float(model["seconds_per_frame"])
+        if module_id == "allosteric_pathways":
+            definitions = base_project.get("definitions")
+            definition = (
+                definitions.get(module_id)
+                if isinstance(definitions, dict) else None
+            )
+            if not isinstance(definition, dict):
+                raise CampaignPlanningError(
+                    "base allosteric_pathways definition is unavailable"
+                )
+            maximum_nodes = int(definition.get("maximum_nodes", 0))
+            if maximum_nodes <= 0:
+                raise CampaignPlanningError(
+                    "base allosteric_pathways maximum_nodes is invalid"
+                )
+            workload_scale = max(1.0, (maximum_nodes / 28.0) ** 2)
+            seconds_per_frame *= workload_scale
+            method_specific = {
+                "nemo_reference_node_count": 28,
+                "configured_maximum_nodes": maximum_nodes,
+                "provisional_workload_scale": workload_scale,
+                "cost_scaling_model": (
+                    "NEMO measured trajectory rate with conservative N_nodes^2 "
+                    "extrapolation; full-topology I/O and scaling are not yet "
+                    "validated on a second system"
+                ),
+            }
         tasks.append({
             "task_id": f"base:{module_id}",
             "workflow_id": "base",
@@ -961,7 +1430,7 @@ def _base_derived_tasks(
                 upstream["maximum_frames_per_replica"]
             ),
             "cpu_seconds_per_physical_frame": (
-                float(model["seconds_per_frame"]) * time_safety_factor
+                seconds_per_frame * time_safety_factor
             ),
             "fixed_cpu_hours": float(model["fixed_cpu_hours"]),
             "estimated_peak_memory_gib": float(model["memory_gib"]),
@@ -971,8 +1440,13 @@ def _base_derived_tasks(
             "replica_sampling_mode": str(
                 upstream.get("replica_sampling_mode", "balanced_pooled")
             ),
-            "calibration_status": "provisional_complexity_model",
-            "calibration_id": "bounded-derived-postprocess-proxy-v1",
+            "calibration_status": str(model.get(
+                "calibration_status", "provisional_complexity_model"
+            )),
+            "calibration_id": str(model.get(
+                "calibration", "bounded-derived-postprocess-proxy-v1"
+            )),
+            **method_specific,
         })
     return tasks
 
@@ -1014,6 +1488,7 @@ def _apply_direct_project_sampling(
         "hydrogen_bond_discovery": "hydrogen_bond_discovery",
         "solvent_accessible_surface_area": "solvent_accessible_surface_area",
         "water_mediated_hydrogen_bond_networks": "water_mediated_hydrogen_bond_networks",
+        "energetic_network_embeddings": "energetic_network_embeddings",
         "secondary_structure": "secondary_structure",
     }
     for module_id, definition_id in selection_definitions.items():
@@ -1028,6 +1503,16 @@ def _apply_direct_project_sampling(
                 definition["projection_frame_selection"] = deepcopy(selection)
             if module_id == "secondary_structure":
                 definition["maximum_frames"] = int(row["selected_frame_count"])
+    dccm_row = rows.get("dccm")
+    allosteric = definitions.get("allosteric_pathways")
+    if isinstance(dccm_row, dict) and isinstance(allosteric, dict):
+        # The pathway module reads coordinates itself but inherits the exact
+        # DCCM physical-frame set. Keep that identity contract intact after
+        # whole-campaign allocation changes the direct-estimator budget.
+        allosteric["frame_stride"] = 1
+        allosteric["frame_selection"] = deepcopy(
+            dccm_row.get("frame_selection", {"mode": "fixed_stride_v1"})
+        )
 
 
 def _apply_automatic_context_allocation(

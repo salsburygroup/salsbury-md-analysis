@@ -15,6 +15,7 @@ from .manifests import load_json, resolve_manifest_path, sha256_file
 
 _ENVIRONMENT_VARIABLES = {
     "common_pca": "SALSBURY_MD_ANALYSIS_COMMON_PCA_REPORT",
+    "time_lagged_independent_component_analysis": "SALSBURY_MD_ANALYSIS_TICA_REPORT",
     "dccm": "SALSBURY_MD_ANALYSIS_DCCM_REPORT",
     "replica_rmsd_rg": "SALSBURY_MD_ANALYSIS_RMSD_RG_REPORT",
     "clustering_kmeans": "SALSBURY_MD_ANALYSIS_KMEANS_REPORT",
@@ -24,6 +25,17 @@ _ENVIRONMENT_VARIABLES = {
     "pald_community_analysis": "SALSBURY_MD_ANALYSIS_PALD_COMMUNITY_REPORT",
     "pca_fes_basins": "SALSBURY_MD_ANALYSIS_FES_REPORT",
     "trajectory_features": "SALSBURY_MD_ANALYSIS_TRAJECTORY_FEATURES_REPORT",
+    "markov_state_models": "SALSBURY_MD_ANALYSIS_MSM_REPORT",
+    "hydrogen_bond_discovery": "SALSBURY_MD_ANALYSIS_HYDROGEN_BOND_DISCOVERY_REPORT",
+    "water_mediated_hydrogen_bond_networks": "SALSBURY_MD_ANALYSIS_WATER_HYDROGEN_BOND_REPORT",
+    "ion_coordination_geometry": "SALSBURY_MD_ANALYSIS_ION_GEOMETRY_REPORT",
+    "ion_atmosphere": "SALSBURY_MD_ANALYSIS_ION_ATMOSPHERE_REPORT",
+    "multivalent_molecular_bridges": "SALSBURY_MD_ANALYSIS_MULTIVALENT_BRIDGES_REPORT",
+    "hydration_density_channels": "SALSBURY_MD_ANALYSIS_HYDRATION_DENSITY_REPORT",
+    "interaction_fingerprints": "SALSBURY_MD_ANALYSIS_INTERACTION_FINGERPRINTS_REPORT",
+    "spatial_interaction_ensembles": "SALSBURY_MD_ANALYSIS_SPATIAL_INTERACTION_ENSEMBLES_REPORT",
+    "energetic_network_embeddings": "SALSBURY_MD_ANALYSIS_ENERGETIC_NETWORK_EMBEDDINGS_REPORT",
+    "nucleic_acid_structure": "SALSBURY_MD_ANALYSIS_NUCLEIC_ACID_STRUCTURE_REPORT",
 }
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _PREFLIGHT_ENVIRONMENT_VARIABLE = "SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT"

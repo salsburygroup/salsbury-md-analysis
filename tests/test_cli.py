@@ -102,5 +102,59 @@ class CliTests(unittest.TestCase):
         self.assertEqual(report["module_id"], "radial_distribution_functions")
         self.assertEqual(report["technical_status"], "failed")
 
+    def test_multivalent_bridge_command_is_exposed_by_top_level_parser(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            missing = Path(temporary) / "missing-project.json"
+            output = io.StringIO()
+            with redirect_stdout(output):
+                status = main(["multivalent-bridges", str(missing)])
+            report = json.loads(output.getvalue())
+        self.assertEqual(status, 2)
+        self.assertEqual(report["module_id"], "multivalent_molecular_bridges")
+        self.assertEqual(report["technical_status"], "failed")
+
+    def test_spatial_optional_commands_are_exposed_by_top_level_parser(self):
+        for command, module_id in (
+            ("hydration-density-channels", "hydration_density_channels"),
+            ("ensemble-pocket-dynamics", "ensemble_pocket_dynamics"),
+        ):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as temporary:
+                missing = Path(temporary) / "missing-project.json"
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    status = main([command, str(missing)])
+                report = json.loads(output.getvalue())
+            self.assertEqual(status, 2)
+            self.assertEqual(report["module_id"], module_id)
+            self.assertEqual(report["technical_status"], "failed")
+
+    def test_new_paper_method_commands_are_exposed_by_top_level_parser(self):
+        for command, module_id in (
+            ("energetic-network-embeddings", "energetic_network_embeddings"),
+            ("spatial-interaction-ensembles", "spatial_interaction_ensembles"),
+            ("interaction-persistence", "interaction_persistence"),
+            ("random-feature-koopman", "random_feature_koopman"),
+        ):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as temporary:
+                missing = Path(temporary) / "missing-project.json"
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    status = main([command, str(missing)])
+                report = json.loads(output.getvalue())
+            self.assertEqual(status, 2)
+            self.assertEqual(report["module_id"], module_id)
+            self.assertEqual(report["technical_status"], "failed")
+
+    def test_reactive_path_command_is_exposed_by_top_level_parser(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            missing = Path(temporary) / "missing-project.json"
+            output = io.StringIO()
+            with redirect_stdout(output):
+                status = main(["reactive-path-ensembles", str(missing)])
+            report = json.loads(output.getvalue())
+        self.assertEqual(status, 2)
+        self.assertEqual(report["module_id"], "reactive_path_ensembles")
+        self.assertEqual(report["technical_status"], "failed")
+
 if __name__ == "__main__":
     unittest.main()

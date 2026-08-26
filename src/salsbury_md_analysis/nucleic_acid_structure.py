@@ -103,6 +103,132 @@ def extract_numeric_json_path(
     return result
 
 
+def discover_helical_step_parameter_path(
+    payload: Mapping[str, object]
+) -> Dict[str, object] | None:
+    """Find one DSSR object path containing the six standard step parameters.
+
+    DSSR JSON has evolved across releases.  Preparation probes the installed
+    executable and freezes the actually observed object path instead of
+    guessing a version-specific alias at analysis time.
+    """
+
+    required = ("shift", "slide", "rise", "tilt", "roll", "twist")
+    candidates: list[tuple[tuple[str, ...], Dict[str, str]]] = []
+
+    def visit(value: object, path: tuple[str, ...]) -> None:
+        if isinstance(value, dict):
+            normalized = {str(key).lower(): str(key) for key in value}
+            if set(required).issubset(normalized):
+                fields = {name: normalized[name] for name in required}
+                if all(
+                    isinstance(value[fields[name]], (int, float))
+                    and not isinstance(value[fields[name]], bool)
+                    for name in required
+                ):
+                    candidates.append((path, fields))
+            for key, child in value.items():
+                visit(child, (*path, str(key)))
+        elif isinstance(value, list):
+            for child in value:
+                visit(child, (*path, "*"))
+
+    visit(payload, ())
+    if not candidates:
+        return None
+    unique = {(path, tuple(sorted(fields.items()))): fields for path, fields in candidates}
+    ranked = sorted(
+        unique,
+        key=lambda item: (
+            0 if any("step" in token.lower() for token in item[0]) else 1,
+            0 if any(token.lower() in {"stems", "helices"} for token in item[0]) else 1,
+            len(item[0]), item[0],
+        ),
+    )
+    path, field_rows = ranked[0]
+    return {"object_path": list(path), "fields": dict(field_rows)}
+
+
+def probe_dssr_reference_duplex(
+    executable: str, reference_path: Path, *, timeout_seconds: float = 120.0
+) -> Dict[str, object]:
+    """Probe one reference structure for DSSR, a duplex stem, and step fields."""
+
+    resolved = shutil.which(executable)
+    if resolved is None:
+        candidate = Path(executable).expanduser()
+        if candidate.is_file():
+            resolved = str(candidate.resolve(strict=True))
+    if resolved is None:
+        return {
+            "status": "not_available", "reason": "dssr_not_installed",
+            "executable": executable,
+        }
+    reference = Path(reference_path).expanduser().resolve(strict=True)
+    try:
+        version = subprocess.run(
+            [resolved, "--version"], capture_output=True, text=True,
+            check=False, timeout=timeout_seconds,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {
+            "status": "not_available", "reason": "dssr_version_probe_failed",
+            "executable": resolved, "detail": str(exc),
+        }
+    version_text = (version.stdout or version.stderr).strip()
+    if version.returncode != 0 or not version_text:
+        return {
+            "status": "not_available", "reason": "dssr_version_probe_failed",
+            "executable": resolved,
+        }
+    with tempfile.TemporaryDirectory(prefix="salsbury-dssr-probe-") as temporary:
+        output = Path(temporary) / "reference.json"
+        try:
+            run = subprocess.run(
+                build_dssr_json_command(resolved, reference, output),
+                capture_output=True, text=True, check=False, timeout=timeout_seconds,
+            )
+            if run.returncode != 0 or not output.is_file():
+                return {
+                    "status": "not_available", "reason": "dssr_reference_probe_failed",
+                    "executable": resolved, "version_output": version_text,
+                    "detail": (run.stderr or run.stdout).strip(),
+                }
+            payload = json.loads(output.read_text(encoding="utf-8", errors="strict"))
+        except (OSError, UnicodeError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+            return {
+                "status": "not_available", "reason": "dssr_reference_probe_failed",
+                "executable": resolved, "version_output": version_text,
+                "detail": str(exc),
+            }
+    if not isinstance(payload, dict):
+        return {
+            "status": "not_available", "reason": "dssr_reference_json_invalid",
+            "executable": resolved, "version_output": version_text,
+        }
+    counts = parse_dssr_collection_counts(payload, ("pairs", "helices", "stems"))
+    if counts["stems"] < 1:
+        return {
+            "status": "not_available", "reason": "no_duplex_dna_or_rna",
+            "executable": resolved, "version_output": version_text,
+            "collection_counts": counts,
+        }
+    parameters = discover_helical_step_parameter_path(payload)
+    if parameters is None:
+        return {
+            "status": "not_available",
+            "reason": "dssr_helical_step_descriptors_unavailable",
+            "executable": resolved, "version_output": version_text,
+            "collection_counts": counts,
+        }
+    return {
+        "status": "available", "reason": None,
+        "executable": str(Path(resolved).resolve(strict=True)),
+        "version_output": version_text, "collection_counts": counts,
+        "helical_step_parameters": parameters,
+    }
+
+
 def _settings(project: Mapping[str, object]) -> Dict[str, object]:
     definitions = project.get("definitions")
     raw = definitions.get("nucleic_acid_structure") if isinstance(definitions, dict) else None

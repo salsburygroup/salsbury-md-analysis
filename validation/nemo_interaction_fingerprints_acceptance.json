@@ -1,0 +1,60 @@
+{
+  "validation_schema": "salsbury-nemo-interaction-fingerprints-acceptance-v1",
+  "branch": "experimental",
+  "recorded_at": "2026-08-25",
+  "fixture": {
+    "system": "human NEMO zinc-finger domain with one zinc ion",
+    "source_physical_frames": 1000,
+    "atom_count": 423,
+    "pdb_sha256": "fca08ab6ff7f2b43fe3e02d3da8fe94aaff3db5cab52fcfbbc02bb5e7cdc8ac4",
+    "psf_sha256": "85a5bf380f42f1c607d85e40ac91c6cbfcf60614e418ad667ea63a1e137a3aa0",
+    "trajectory_sha256": "bf7ad649bbb0d7a4bc37d3c2ce5a64140cf7de7b863cc9c6cebb789b80725524"
+  },
+  "configuration": {
+    "source_config": "tutorials/nemo_zinc_finger/interaction-fingerprint-analysis-config.json",
+    "source_config_sha256": "713a11e047c318906cd1e6e602bc37ed5e4b4a97a7afc75bfaf16d389605d358",
+    "frame_join_policy": "pairwise_complete_observations_v1",
+    "minimum_feature_occupancy": 0.0,
+    "minimum_pair_observations": 10,
+    "minimum_cooccurrence_count": 2
+  },
+  "source_reports": {
+    "hydrogen_bond_discovery": {
+      "technical_status": "complete",
+      "evaluated_frame_count": 1000,
+      "feature_count": 2113,
+      "report_sha256": "59c13f02eac52753e675cad9778c90ecc4412c3b294fc851d78dc9aa926da77c"
+    },
+    "ion_coordination_geometry": {
+      "technical_status": "complete",
+      "evaluated_frame_count": 1000,
+      "feature_count": 4,
+      "report_sha256": "3f04768503ee4980fb544384b4481f93239e165e2527246464bea19f00ec492a"
+    },
+    "ion_atmosphere": {
+      "technical_status": "complete",
+      "evaluated_frame_count": 1000,
+      "feature_count": 6,
+      "report_sha256": "b06d6516fc49bb23b164070c5a8f96a6609a00d9fd4ca362cee15d462544712c"
+    }
+  },
+  "interaction_fingerprints": {
+    "technical_status": "complete",
+    "availability_status": "available",
+    "evaluated_frame_count": 1000,
+    "feature_count": 2123,
+    "cooccurrence_edge_count": 1159,
+    "report_sha256": "b1a03ff2160fda15f9fcf02affbd73b4c66618056da0a6903ab8c305806b0400",
+    "planner_task_id": "base:interaction_fingerprints",
+    "planner_calibration_status": "provisional_complexity_model"
+  },
+  "helical_mechanics_negative_control": {
+    "technical_status": "complete",
+    "availability_status": "not_available",
+    "availability_reason": "no_duplex_dna_or_rna",
+    "planner_task_created": false,
+    "availability_report_sha256": "99ecc95b67609c1389cdf92abaa449048082ec064b2be6ef9c4df062e0db8119"
+  },
+  "scientific_status": "not evaluated",
+  "interpretation": "This bounded trial validates exact frame joining, sparse chemical typing, cross-type co-occurrence output, planner inclusion for the enabled available fingerprint module, and planner exclusion for enabled but unavailable helical mechanics. NEMO's one trajectory and constitutively present zinc shell do not establish interaction convergence, zinc allostery, energetic coupling, or biological mechanism."
+}

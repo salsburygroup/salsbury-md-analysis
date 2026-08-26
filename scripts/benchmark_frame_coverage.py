@@ -24,15 +24,23 @@ from typing import Callable, Mapping
 import numpy as np
 
 from salsbury_md_analysis.dccm import dccm_project_safe
+from salsbury_md_analysis.energetic_network_embeddings import (
+    energetic_network_embeddings_project_safe,
+)
 from salsbury_md_analysis.dihedrals import dihedral_distributions_project_safe
 from salsbury_md_analysis.hydrogen_bond_discovery import hydrogen_bond_discovery_project_safe
 from salsbury_md_analysis.hydrogen_bonds import hydrogen_bonds_project_safe
+from salsbury_md_analysis.hydration_density import hydration_density_channels_project_safe
 from salsbury_md_analysis.ion_geometry import ion_coordination_geometry_project_safe
 from salsbury_md_analysis.ion_atmosphere import ion_atmosphere_project_safe
 from salsbury_md_analysis.nucleic_acid_geometry import nucleic_acid_geometry_project_safe
 from salsbury_md_analysis.nucleic_acid_structure import nucleic_acid_structure_project_safe
+from salsbury_md_analysis.multivalent_bridges import (
+    multivalent_molecular_bridges_project_safe,
+)
 from salsbury_md_analysis.observables import optional_observables_project_safe
 from salsbury_md_analysis.pca import common_pca_project_safe, individual_pca_project_safe
+from salsbury_md_analysis.pocket_dynamics import ensemble_pocket_dynamics_project_safe
 from salsbury_md_analysis.rdf import radial_distribution_functions_project_safe
 from salsbury_md_analysis.rmsd_rg import replica_rmsd_rg_project_safe
 from salsbury_md_analysis.rmsf import pooled_rmsf_project_safe
@@ -61,6 +69,10 @@ RUNNERS: Mapping[str, Runner] = {
     "water_mediated_hydrogen_bond_networks": (
         water_mediated_hydrogen_bond_networks_project_safe
     ),
+    "multivalent_molecular_bridges": multivalent_molecular_bridges_project_safe,
+    "hydration_density_channels": hydration_density_channels_project_safe,
+    "ensemble_pocket_dynamics": ensemble_pocket_dynamics_project_safe,
+    "energetic_network_embeddings": energetic_network_embeddings_project_safe,
     "secondary_structure": secondary_structure_project_safe,
     "nucleic_acid_structure": nucleic_acid_structure_project_safe,
     "nucleic_acid_geometry": nucleic_acid_geometry_project_safe,

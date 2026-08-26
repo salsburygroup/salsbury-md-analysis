@@ -33,6 +33,9 @@ SELECTION_PRESETS = (
 _SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
 _GIT_COMMIT = re.compile(r"^[0-9a-fA-F]{40}$")
 _SELECTION_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+FORCE_FIELD_PARAMETER_FORMATS = (
+    "charmm_parameter_files_v1", "openmm_system_xml_v1", "gromacs_tpr_v1",
+)
 
 
 class DuplicateKeyError(ValueError):
@@ -107,6 +110,39 @@ def _unknown_fields(
     unknown = sorted(set(data).difference(allowed))
     if unknown:
         issues.append(f"{label} contains unknown fields: {', '.join(unknown)}")
+
+
+def _validate_force_field_parameters(
+    value: object, label: str, issues: List[str],
+    source_path: Optional[Path], check_paths: bool,
+) -> None:
+    parameters = _require_object(value, label, issues)
+    if parameters is None:
+        return
+    _unknown_fields(parameters, {"format", "files"}, label, issues)
+    _required(parameters, {"format", "files"}, issues)
+    format_name = _require_string(parameters.get("format"), f"{label}.format", issues)
+    if format_name is not None and format_name not in FORCE_FIELD_PARAMETER_FORMATS:
+        issues.append(
+            f"{label}.format must be one of: "
+            + ", ".join(FORCE_FIELD_PARAMETER_FORMATS)
+        )
+    files = _require_list(parameters.get("files"), f"{label}.files", issues)
+    if files is None:
+        return
+    if not files:
+        issues.append(f"{label}.files must contain at least one file")
+    normalized: List[str] = []
+    for index, path in enumerate(files):
+        _validate_file_path(
+            path, f"{label}.files[{index}]", issues, source_path, check_paths,
+        )
+        if isinstance(path, str):
+            normalized.append(path)
+    if len(normalized) != len(set(normalized)):
+        issues.append(f"{label}.files must not contain duplicates")
+    if format_name in {"openmm_system_xml_v1", "gromacs_tpr_v1"} and len(files) != 1:
+        issues.append(f"{label}.format={format_name} requires exactly one file")
 
 
 def _duplicates(values: Iterable[str]) -> List[str]:
@@ -534,7 +570,10 @@ def validate_system(
                 if replica is None:
                     continue
                 _unknown_fields(
-                    replica, {"replica_id", "topology", "connectivity", "segments"}, replica_prefix, issues
+                    replica, {
+                        "replica_id", "topology", "connectivity",
+                        "force_field_parameters", "segments",
+                    }, replica_prefix, issues
                 )
                 _required(replica, {"replica_id", "topology", "segments"}, issues)
                 replica_id = _require_string(
@@ -553,6 +592,12 @@ def validate_system(
                         issues,
                         source_path,
                         check_paths,
+                    )
+                if replica.get("force_field_parameters") is not None:
+                    _validate_force_field_parameters(
+                        replica.get("force_field_parameters"),
+                        f"{replica_prefix}.force_field_parameters",
+                        issues, source_path, check_paths,
                     )
                 segments = _require_list(
                     replica.get("segments"), f"{replica_prefix}.segments", issues
@@ -1155,6 +1200,20 @@ def inventory_system_inputs(
                         system_id, replica_id, None, hash_content,
                     )
                 )
+            force_field_parameters = replica.get("force_field_parameters")
+            if isinstance(force_field_parameters, dict):
+                format_name = str(force_field_parameters.get("format", "unknown"))
+                files = force_field_parameters.get("files", [])
+                if isinstance(files, list):
+                    for file_text_raw in files:
+                        file_text = str(file_text_raw)
+                        records.append(
+                            _file_record(
+                                f"force_field_parameter:{format_name}", file_text,
+                                resolve_manifest_path(file_text, manifest_path),
+                                system_id, replica_id, None, hash_content,
+                            )
+                        )
             segments = replica["segments"]
             assert isinstance(segments, list)
             for segment in segments:

@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.2.0a1 - unreleased
+
+- Add default-off temporal interaction-fingerprint persistence with exact
+  source-observation missingness, physical-time regularity checks, zero-gap and
+  gap-tolerant event definitions, segment-boundary censoring, and complete-event
+  gates.
+- Add a default-off random-Fourier-feature nonlinear Koopman/TICA sensitivity
+  using only NumPy and the existing TICA solver; scan feature-count and
+  bandwidth grids across several prespecified seeds and withhold selection
+  unless held-out VAMP-E and slow-subspace stability gates both pass.
+- Integrate both new experimental modules into generated configuration, the
+  master experimental switch, campaign planning, finding triage, the offline
+  interactive dashboard, schema validation, and the NEMO acceptance workflow.
+- Make deterministic `strat_all` and `strat_reduced` Stratified NANI the
+  default KMeans initializers for newly prepared projects, without adding the
+  MDANCE or PyTorch dependency chain; preserve seeded KMeans++ compatibility
+  and full initializer provenance and sensitivity reporting.
+- Estimate otherwise intractable KMeans silhouette scores over several
+  prespecified random samples and fail closed unless every sample selects the
+  same winning state count; record the unused seeds even for exact silhouettes.
+- Add a self-contained, offline interactive result browser to normal local and
+  Slurm finalization, enabled by default and independently configurable.
+- Present QC and transparent ranked findings first while retaining a searchable
+  complete module explorer, raw evidence links, resource/frame accounting,
+  resolved configuration, chemical context, and provenance.
+- Render retained FES smoothing levels and per-system surfaces, clustering
+  populations and silhouettes, residue RMSF, affordable DCCM matrices, and
+  pre-rendered figures without an external JavaScript or network dependency.
+- Add an interactive representative-PDB viewer with element/chain/B-factor
+  coloring and explicit visual-trace limitations; multi-frame trajectories are
+  not embedded.
+- Hash-bind the generated HTML and every indexed report, fail closed on altered
+  existing output, and use compact sidecars rather than loading JSON reports
+  larger than 128 MB into finalization memory.
+
 ## 0.1.0 - 2026-08-20
 
 - Replace fixed small-system legacy memory charges with conservative

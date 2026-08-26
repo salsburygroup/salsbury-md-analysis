@@ -786,6 +786,11 @@ def build_local_execution_plan(
         completion_reports.append("final-resource-summary.json")
     if bool(reporting.get("finding_picker_enabled")):
         completion_reports.append("final-findings-summary.json")
+    if bool(reporting.get("interactive_report_enabled")):
+        completion_reports.extend([
+            "final-interactive-report-summary.json",
+            "interactive-report/manifest.json",
+        ])
     if not completion_reports:
         completion_reports.append("final-reporting-disabled.json")
     final_task = _task(finalizer)

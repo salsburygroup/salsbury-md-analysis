@@ -1,0 +1,31 @@
+{
+  "config_schema": "salsbury-analysis-config-v1",
+  "default_module_policy": "all_applicable",
+  "modules": {
+    "multivalent_molecular_bridges": {
+      "enabled": true,
+      "options": {
+        "include_supported_ions": true,
+        "include_recognized_waters": true,
+        "contact_cutoff_angstrom": 4.0,
+        "water_contact_cutoff_angstrom": 3.5,
+        "minimum_distinct_residues": 2
+      }
+    }
+  },
+  "execution": {
+    "submission_adapter": "local",
+    "maximum_parallel_cpus": 2,
+    "maximum_hours_per_cpu": 1.0,
+    "maximum_memory_gib": 32.0,
+    "maximum_scratch_gib": 8.0,
+    "planning_utilization": 0.85,
+    "pilot_budget_fraction": 0.05,
+    "finalization_headroom_fraction": 0.05,
+    "time_safety_factor": 1.5,
+    "memory_safety_factor": 1.25,
+    "censored_timeout_safety_factor": 1.5,
+    "fail_if_minimum_coverage_unaffordable": true,
+    "coordinate_cache": "auto"
+  }
+}

@@ -52,6 +52,11 @@ class ProfileAndSchemaTests(unittest.TestCase):
             ],
             "tica",
         )
+        experimental_switch = schema["properties"][
+            "enable_all_experimental_modules"
+        ]
+        self.assertEqual(experimental_switch["type"], "boolean")
+        self.assertFalse(experimental_switch["default"])
 
     def test_project_schema_accepts_tica_clustering_and_dual_msm_sources(self):
         schema = json.loads(

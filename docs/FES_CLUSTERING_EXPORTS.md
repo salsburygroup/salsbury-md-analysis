@@ -55,7 +55,34 @@ variance alone. PCA coordinates remain available as a configured geometric
 sensitivity analysis. tICA itself does not require clusters or discrete states;
 it is fitted before clustering from segment-safe time-lagged feature pairs.
 
-KMeans scans declared `k_values` and random seeds. iMWK-Means scans `k`,
+The default-off `random_feature_koopman` module is a separate nonlinear
+sensitivity over selected TICA coordinates. It approximates a declared
+Gaussian kernel with random Fourier dictionaries, repeats the complete grid
+over several prespecified feature-map seeds, and withholds a model unless both
+contiguous-block held-out VAMP-E and recovered slow-subspace stability gates
+pass. It does not replace the linear TICA coordinates used by clustering, does
+not select a discrete partition, and does not bypass the MSM validation below.
+
+KMeans scans declared `k_values`. New quick starts use the dependency-free,
+deterministic Stratified NANI initializers `nani_strat_all` and
+`nani_strat_reduced`; legacy manifests without `initialization_methods` retain
+the seeded KMeans++ behavior. NANI ranks frames by the complementary MSD of the
+remaining ensemble and selects initial centers by stable rank stratification.
+`strat_all` covers the full complementary-MSD ordering, while
+`strat_reduced` first restricts selection to the configured high-density
+fraction. Neither NANI path uses a clustering random seed. The report preserves
+the initial frame indices, complementary-MSD values, effective candidate count,
+duplicate skips, and adjusted-Rand agreement between enabled initialization
+strategies. `nani_percentage` must supply at least `k` candidate frames for
+every requested `k`; the analysis fails closed rather than silently increasing
+the percentage. When exact silhouette is too large, the separately recorded
+`silhouette_random_seeds` generate several reproducible focal-frame samples.
+The report preserves every sample, summarizes the score distribution, and
+requires unanimous agreement on the winning `k`; disagreement fails closed.
+Sampling never changes any already-fitted candidate partition, although it can
+affect which candidate would be selected.
+
+iMWK-Means scans `k`,
 Minkowski `p`, and initialization ranks. HDBSCAN scans minimum cluster size and
 minimum samples while retaining noise coverage. The alternative family can scan
 the relevant grids for PAM, weighted PAM, Ward, Gaussian and variational
@@ -71,11 +98,12 @@ clustering MSM state definition.
 Every selected partition with at least two retained clusters reports silhouette,
 Calinski-Harabasz, and Davies-Bouldin evidence where applicable. Silhouette is
 exact when the observation count is within the declared limit. Above that limit,
-the suite evaluates a seeded subset of focal observations against all members of
-the complete fitted partition and labels the result as estimated; the seed and
-evaluated indices are retained. Selection maximizes silhouette only among valid
-algorithm-specific candidates and never treats geometric separation as evidence
-of metastability or kinetics.
+the KMeans suite evaluates several prespecified seeded subsets of focal
+observations against all members of the complete fitted partition and labels
+the result as estimated; every seed and evaluated index is retained. The
+winning `k` must be identical across samples. Selection maximizes silhouette
+only among valid algorithm-specific candidates and never treats geometric
+separation as evidence of metastability or kinetics.
 
 All clustering runners can instead use exact columns from
 `trajectory_features`, including ion-site or ion-pair distances. The manifest

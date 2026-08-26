@@ -1,0 +1,68 @@
+{
+  "acceptance_schema": "salsbury-nemo-all-experimental-methods-acceptance-v1",
+  "recorded_date": "2026-08-26",
+  "branch": "experimental",
+  "fixture": {
+    "tutorial": "tutorials/nemo_zinc_finger",
+    "atom_count": 423,
+    "source_frame_count": 1000,
+    "saved_frame_interval_ps": 0.2,
+    "independent_replica_count": 1
+  },
+  "configuration": "tutorials/nemo_zinc_finger/interaction-fingerprint-analysis-config.json",
+  "configuration_contract": {
+    "enable_all_experimental_modules": true,
+    "default_off_experimental_module_count": 13
+  },
+  "planner_acceptance": {
+    "technical_status": "complete",
+    "campaign_resource_plan_sha256": "08039d005b0267f2120f6b80a904ca0fa4926ac32462c1306b87f3e6096edd08",
+    "enabled_experimental_module_count": 13,
+    "planned_experimental_module_count": 11,
+    "not_available_experimental_module_count": 2,
+    "not_available_modules": {
+      "energetic_network_embeddings": "PSF and bond-only connectivity require matching CHARMM parameter files or a serialized OpenMM System XML",
+      "helical_mechanics": "no duplex DNA or RNA"
+    },
+    "coverage_contract": "Every enabled and available default-off method has at least one planner task; enabled unavailable methods have an explicit reason and no task."
+  },
+  "execution_acceptance": {
+    "technical_status": "complete",
+    "completed_result_report_count": 39,
+    "nonempty_stderr_count": 0,
+    "uniform_reweighting_control_row_count": 1000,
+    "uniform_reweighting_control_sha256": "3fa9bd79fa4a9ac1adc6719fedd5feb55f05464caf09d9773cab88f1b8b1a28f",
+    "final_execution_status_sha256": "ce4319e545179d7d08e0f9c447515b060edceae1066e89b9cecb3fe29bdb6b91",
+    "resume_contract": "The first pass generated common-PCA identities; the documented uniform-weight control was then generated and the hash-verified workflow resumed to completion."
+  },
+  "finding_picker_acceptance": {
+    "technical_status": "complete",
+    "candidate_count": 24,
+    "reported_count": 24,
+    "method_evidence_record_count": 41,
+    "experimental_module_coverage_count": 13,
+    "missing_experimental_modules": [],
+    "prioritized_findings_sha256": "710a26c227b5b54bc8abf9f608524a285a1d53d75258f08fb9ce2055c97ab301",
+    "contract": "Unavailable methods are audited with zero candidates and are not converted into findings or significance claims."
+  },
+  "interactive_dashboard_acceptance": {
+    "technical_status": "complete",
+    "module_record_count": 41,
+    "experimental_module_coverage_count": 13,
+    "missing_experimental_modules": [],
+    "availability_records_included": [
+      "energetic_network_embeddings",
+      "helical_mechanics"
+    ],
+    "network_dependency": "none",
+    "interactive_dashboard_index_sha256": "d8498446456748bfa4e1b3002b990409b2342171b9c192f938ab42d78979a7d1"
+  },
+  "software_verification": {
+    "test_command": "python -m unittest discover -s tests -q",
+    "test_count": 544,
+    "passed_count": 543,
+    "skipped_count": 1
+  },
+  "scientific_status": "not evaluated",
+  "interpretation": "This is a bounded single-fixture software and reporting acceptance test. It validates planner coverage, availability gates, report ingestion, descriptive finding selection, and dashboard visibility; it does not establish convergence, biological mechanism, affinity, or transferability to other systems."
+}

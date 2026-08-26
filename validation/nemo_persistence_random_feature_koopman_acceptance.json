@@ -1,0 +1,104 @@
+{
+  "acceptance_schema": "salsbury-nemo-persistence-rff-koopman-acceptance-v1",
+  "recorded_date": "2026-08-25",
+  "branch": "experimental",
+  "fixture": {
+    "tutorial": "tutorials/nemo_zinc_finger",
+    "atom_count": 423,
+    "source_frame_count": 1000,
+    "saved_frame_interval_ps": 0.2,
+    "independent_replica_count": 1
+  },
+  "configuration": "tutorials/nemo_zinc_finger/interaction-fingerprint-analysis-config.json",
+  "planner_acceptance": {
+    "technical_status": "complete",
+    "campaign_resource_plan_sha256": "92d27a86d64908da553a9e073c92134a72b253ecb44b4b43dacdb411588b49bc",
+    "interaction_persistence": {
+      "task_id": "base:interaction_persistence",
+      "dependency_stage": 3,
+      "upstream_module_id": "interaction_fingerprints",
+      "selected_physical_frame_count": 1000,
+      "gap_tolerance_observations": [0, 1],
+      "minimum_complete_events": 2,
+      "event_boundary_policy": "segment_safe_with_left_and_right_censoring"
+    },
+    "random_feature_koopman": {
+      "task_id": "view:macromolecular_trace:random_feature_koopman",
+      "dependency_stage": 5,
+      "upstream_module_id": "time_lagged_independent_component_analysis",
+      "selected_physical_frame_count": 1000,
+      "hyperparameter_candidate_count": 6,
+      "random_feature_fit_evaluation_count": 24,
+      "random_feature_seeds": [0, 7, 19, 41],
+      "maximum_seed_vamp_e_relative_range": 0.25,
+      "minimum_seed_subspace_similarity": 0.7
+    }
+  },
+  "interaction_persistence_acceptance": {
+    "technical_status": "complete",
+    "availability_status": "available",
+    "persistence_readiness_status": "available_with_complete_events",
+    "evaluated_frame_count": 1000,
+    "feature_count": 2125,
+    "primary_zero_gap_pass_count": 58,
+    "event_record_count_across_zero_and_one_gap_policies": 4151,
+    "unavailable_series_count": 0,
+    "top_primary_zero_gap_summary": {
+      "feature_id": "hydration_density_channels|aligned_ion_density_component|nemo-paper-methods|ion:ZN2|density-component-1",
+      "occupancy_fraction": 0.852,
+      "event_count": 106,
+      "complete_event_count": 104,
+      "boundary_censored_event_count": 2,
+      "median_complete_event_duration_ps": 0.70000000000001
+    },
+    "wall_seconds": 1.5371911670081317,
+    "total_cpu_seconds": 1.489759,
+    "maximum_resident_memory_mib": 129.21875,
+    "report_sha256": "b18d752c28f0754085f86f5235df57c4ad1cd0b96ec9866379bfeddbb9252192"
+  },
+  "random_feature_koopman_acceptance": {
+    "technical_status": "complete",
+    "availability_status": "not_available",
+    "selection_status": "no_stable_candidate",
+    "source_physical_frame_count": 1000,
+    "segment_safe_lag_pair_count": 990,
+    "base_bandwidth": 2.2638216495159234,
+    "candidate_count": 6,
+    "seed_evaluation_count": 24,
+    "eligible_candidate_count": 0,
+    "observed_minimum_seed_subspace_similarity_range": [
+      0.9261823047199992,
+      0.9898962822144531
+    ],
+    "observed_seed_vamp_e_relative_range": [
+      1.2550641669984304,
+      61.19609449055752
+    ],
+    "gate_interpretation": "Slow subspaces were similar across seeds, but held-out VAMP-E was unstable across feature-map seeds and contiguous time blocks. No nonlinear coordinate set was promoted.",
+    "wall_seconds": 0.577337707974948,
+    "total_cpu_seconds": 0.5579369999999999,
+    "maximum_resident_memory_mib": 88.234375,
+    "report_sha256": "2ecd555e6e9c291e5d9cf7bc1e222bd75a7568342cae851d0e62f41b05de0d6a"
+  },
+  "reporting_acceptance": {
+    "finding_picker_technical_status": "complete",
+    "finding_picker_scientific_status": "not evaluated",
+    "interaction_persistence_finding_present": true,
+    "random_feature_seed_gate_finding_present": true,
+    "prioritized_findings_sha256": "5e186017bbacf14d845f7388f81e3d2b440fa14f27d1da2d1a962510fffebaad",
+    "interactive_dashboard_technical_status": "complete",
+    "interactive_dashboard_network_dependency": "none",
+    "interaction_persistence_metric_visual_present": true,
+    "random_feature_candidate_metric_visual_present": true,
+    "interactive_dashboard_index_sha256": "cc251a6aa65c29edbdcd419aa1833699919d48ec534dcf1aff2e69628774423e"
+  },
+  "software_verification": {
+    "test_command": "python -m unittest discover -s tests -q",
+    "test_count": 529,
+    "passed_count": 528,
+    "skipped_count": 1,
+    "generated_documentation_check": "passed"
+  },
+  "scientific_status": "not evaluated",
+  "interpretation": "This is bounded single-fixture software acceptance. Persistence durations describe saved source-observed snapshots with censoring, not continuous-time lifetimes. The nonlinear seed gate correctly withholding a model is an accepted negative result, not evidence that nonlinear slow coordinates are absent in other systems or settings."
+}

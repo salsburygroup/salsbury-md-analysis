@@ -191,6 +191,112 @@ are acceptance evidence for this fixture and machine, not general performance
 guarantees. The hash-bound summary is retained in
 [`validation/nemo_zinc_finger_tutorial_acceptance.json`](../../validation/nemo_zinc_finger_tutorial_acceptance.json).
 
+### Experimental-method trial
+
+The `experimental` branch also provides
+[`experimental-analysis-config.json`](experimental-analysis-config.json). It
+turns on DFI/DCI, a uniform-weight no-op reweighting control, a
+trajectory-derived residue-contact pathway calculation, and automatic
+reactive-path ensembles from the existing KMeans assignment table, while
+leaving the normal tutorial config unchanged. The four zero-based site indices select
+fixture-specific cysteine nodes for a bounded technical pathway test. The
+reactive-path module chooses its endpoint state pair from bidirectional
+transition recurrence and reports that those labels have no inferred biological
+meaning. Retained acceptance evidence for the original three modules and their
+single-fixture planner-calibration boundary is in
+[`validation/nemo_experimental_methods_acceptance.json`](../../validation/nemo_experimental_methods_acceptance.json).
+Reactive-path acceptance evidence is retained separately in
+[`validation/nemo_reactive_path_ensembles_acceptance.json`](../../validation/nemo_reactive_path_ensembles_acceptance.json).
+
+Newly prepared projects on this branch also use both deterministic Stratified
+NANI KMeans initializers. On this fixture every `k=2..12` candidate passed its
+technical gates; the selected four-state `strat_reduced` partition had an exact
+silhouette of 0.402 and adjusted-Rand agreement of 0.998 with `strat_all`.
+Those are clustering diagnostics, not evidence of four metastable NEMO states.
+The four configured silhouette seeds are retained in the report but marked
+unused because all 1,000 observations received an exact silhouette evaluation.
+The repeat-run and planner record is retained in
+[`validation/nemo_stratified_nani_acceptance.json`](../../validation/nemo_stratified_nani_acceptance.json).
+
+The separate
+[`interaction-fingerprint-analysis-config.json`](interaction-fingerprint-analysis-config.json)
+uses the master experimental switch, retains the fixture-specific pathway and
+reweighting options, and turns on all 13 current default-off methods, including
+multivalent
+molecular bridges, aligned hydration/ion-density mapping, ensemble pocket
+dynamics, the chemically typed interaction-fingerprint postprocessor, and
+helical mechanics. Every enabled and available module receives a planner task.
+The hydration-density result is also admitted as an exact-frame fingerprint
+source, so it supplements the RDF, bridge, and chemical interaction views
+rather than replacing them.
+NEMO contains no DNA or RNA, so preparation records helical mechanics as
+`not_available`, creates no helical planner task, and does not launch the
+command. This is the expected negative control. The fingerprint result and the
+helical availability gate are retained in
+[`validation/nemo_interaction_fingerprints_acceptance.json`](../../validation/nemo_interaction_fingerprints_acceptance.json).
+The bounded hydration-density and pocket-dynamics run, including planner,
+finding-picker, and interactive-report evidence, is retained in
+[`validation/nemo_spatial_optional_methods_acceptance.json`](../../validation/nemo_spatial_optional_methods_acceptance.json).
+That same extended config now also enables temporal interaction persistence and
+the random-feature nonlinear Koopman sensitivity. On all 1,000 NEMO frames,
+the persistence module formed 4,151 zero- and one-gap event records across
+2,125 fingerprint features; 58 primary zero-gap feature summaries passed the
+two-complete-event gate. The longest median complete-event duration was the
+aligned Zn-density component at 0.7 ps across 104 complete events. These are
+saved-observation durations, not continuous-time lifetimes.
+
+The nonlinear module evaluated six feature-count/bandwidth candidates across
+four prespecified feature-map seeds (24 fits) using 990 segment-safe lag pairs.
+No candidate passed the held-out VAMP-E seed-stability gate, although minimum
+slow-subspace similarities ranged from 0.926 to 0.990. The module therefore
+completed technically but reported `not_available` and promoted no nonlinear
+coordinates. The planner, both module reports, finding-picker entries, and both
+interactive dashboard visuals are retained in
+[`validation/nemo_persistence_random_feature_koopman_acceptance.json`](../../validation/nemo_persistence_random_feature_koopman_acceptance.json).
+
+The extended config also enables `spatial_interaction_ensembles`. On all 1,000
+frames, the dependency-free endpoint construction joined 16,064 exact aligned
+partner points into 88 superfeatures and 64 system-level spatial summaries.
+Forty-four summaries passed coverage. Nine hydrogen-bond partner clouds passed
+the configured deterministic NANI separation and time-block recurrence gates;
+34 had no gated split, 20 lacked coverage, and the 4,000-point zinc-site cloud
+was deliberately left unclustered because it exceeded the exact-mode cap.
+These are spatial mode candidates, not binding states or free-energy basins.
+NEMO has one system and one replica, so it cannot validate K-retained/K-absent
+spatial differences or independent-replica reproducibility. The planner,
+lineage, gate counts, and scientific boundaries are recorded in
+[`validation/nemo_spatial_interaction_ensembles_acceptance.json`](../../validation/nemo_spatial_interaction_ensembles_acceptance.json).
+
+The optional `energetic_network_embeddings` module is also exercised at its
+availability boundary with
+[`energetic-network-analysis-config.json`](energetic-network-analysis-config.json).
+NEMO supplies a PSF with charges and connectivity, but this tutorial fixture
+does not include the matching CHARMM parameter/stream files needed for
+Lennard-Jones terms. It also has no Amber PRMTOP or serialized OpenMM System.
+Preparation therefore records the module as `not_available`, retains its
+definition for review, and creates no planner task. It does not infer missing
+parameters. This acceptance result is recorded in
+[`validation/nemo_energetic_network_embeddings_acceptance.json`](../../validation/nemo_energetic_network_embeddings_acceptance.json).
+
+The combined current acceptance run planned 11 of the 13 methods. Helical
+mechanics and energetic-network embeddings were retained as explicit
+`not_available` records with no planner allocation. All 13 appear in the
+finding-picker evidence audit and interactive dashboard; unavailable methods
+produce no false finding or significance claim. The complete coverage and
+hash record is retained in
+[`validation/nemo_all_experimental_methods_acceptance.json`](../../validation/nemo_all_experimental_methods_acceptance.json).
+
+The uniform reweighting control is generated from the completed common-PCA
+projection identities with `validation/nemo_experimental_trial.py`; after that
+file exists, rerunning `run-local.sh` verifies and reuses completed stages.
+
+The separate
+[`multivalent-bridge-analysis-config.json`](multivalent-bridge-analysis-config.json)
+enables the molecular-bridge module. NEMO's single zinc ion is its positive
+control; this fixture contains no water molecules, so it cannot validate
+solvent bridges. Its acceptance evidence is retained separately in
+[`validation/nemo_multivalent_bridges_acceptance.json`](../../validation/nemo_multivalent_bridges_acceptance.json).
+
 ## 6. Use your own trajectory
 
 Replace the PDB, PSF/connectivity file, DCD paths, and frame interval in the

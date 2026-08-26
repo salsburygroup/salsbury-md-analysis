@@ -1,5 +1,7 @@
 import json
+import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +15,117 @@ from tests.test_quickstart import _write_dcd, _write_oligomer_inputs
 
 
 class ComparativeQuickstartTests(unittest.TestCase):
+    def test_enabled_available_duplex_mechanics_gets_per_system_planner_tasks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            atoms = []
+            names = (
+                ("C1'", "C"), ("N9", "N"), ("C8", "C"), ("N7", "N"),
+                ("C5", "C"), ("C6", "C"), ("N1", "N"), ("C2", "C"),
+                ("N3", "N"), ("C4", "C"),
+            )
+            for chain_index, chain in enumerate(("A", "B")):
+                for atom_index, (name, element) in enumerate(names):
+                    atoms.append((
+                        name, chain, atom_index * 0.3,
+                        chain_index * 5.0, 0.1 * (atom_index % 2), element,
+                    ))
+            pdb = root / "duplex.pdb"
+            pdb.write_text("".join(
+                f"ATOM  {serial:5d} {name:^4s}  DA {chain}   1    "
+                f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00          {element:>2s}\n"
+                for serial, (name, chain, x, y, z, element) in enumerate(atoms, 1)
+            ) + "END\n", encoding="utf-8")
+            bonds = [(index, index + 1) for index in range(1, 10)] + [
+                (index, index + 1) for index in range(11, 20)
+            ]
+            psf = root / "duplex.psf"
+            psf.write_text(
+                "PSF\n\n      20 !NATOM\n"
+                + "".join(
+                    f"{index:8d} SEG {index:4d} DA C1 C 0.0 12.0\n"
+                    for index in range(1, 21)
+                )
+                + f"{len(bonds):8d} !NBOND: bonds\n"
+                + "".join(f"{left:8d}{right:8d}" for left, right in bonds)
+                + "\n", encoding="utf-8",
+            )
+            trajectory = root / "duplex.dcd"
+            _write_dcd(trajectory, 20, 40)
+            request = root / "comparison.json"
+            request.write_text(json.dumps({
+                "request_schema": "salsbury-comparative-analysis-input-v1",
+                "systems": [{
+                    "system_id": system_id,
+                    "pdb": str(pdb), "psf": str(psf),
+                    "trajectories": [str(trajectory)],
+                    "frame_interval_ps": 10.0,
+                } for system_id in ("control", "variant")],
+            }), encoding="utf-8")
+            dssr = root / "x3dna-dssr"
+            dssr.write_text(
+                f"#!{sys.executable}\n"
+                "import json, pathlib, sys\n"
+                "if '--version' in sys.argv:\n"
+                " print('DSSR 2.9-test'); raise SystemExit(0)\n"
+                "output = next(value.split('=', 1)[1] for value in sys.argv if value.startswith('--output='))\n"
+                "step = {'shift':0.1,'slide':0.2,'rise':3.4,'tilt':1.0,'roll':2.0,'twist':34.0}\n"
+                "pathlib.Path(output).write_text(json.dumps({'pairs':[{},{}], 'helices':[{}], 'stems':[{'steps':[step]}]}))\n",
+                encoding="utf-8",
+            )
+            os.chmod(dssr, 0o755)
+            config = root / "config.json"
+            config.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "modules": {"helical_mechanics": {"enabled": True}},
+            }), encoding="utf-8")
+            output = root / "analysis"
+            prepare_comparative_analysis(
+                request_path=request, output_directory=output,
+                project_id="duplex-comparison", config_path=config,
+                dssr_executable=str(dssr),
+            )
+            campaign = json.loads(
+                (output / "campaign-resource-plan.json").read_text()
+            )
+            projects = {
+                system_id: json.loads(
+                    (output / f"project-chemical_{system_id}.json").read_text()
+                )
+                for system_id in ("control", "variant")
+            }
+            worker = (
+                output / "run_automatic_context_stage_1_array.slurm"
+            ).read_text()
+        tasks = {row["task_id"]: row for row in campaign["tasks"]}
+        for system_id in ("control", "variant"):
+            structure_id = (
+                f"context:chemical_{system_id}:nucleic_acid_structure"
+            )
+            mechanics_id = f"context:chemical_{system_id}:helical_mechanics"
+            self.assertIn(structure_id, tasks)
+            self.assertIn(mechanics_id, tasks)
+            self.assertEqual(
+                tasks[structure_id]["balance_group"],
+                tasks[mechanics_id]["balance_group"],
+            )
+            self.assertEqual(
+                tasks[structure_id]["selected_physical_frames_per_replica"],
+                tasks[mechanics_id]["selected_physical_frames_per_replica"],
+            )
+            self.assertIn(
+                "helical_mechanics", projects[system_id]["requested_modules"]
+            )
+            self.assertEqual(
+                len(projects[system_id]["definitions"]
+                    ["nucleic_acid_structure"]["numeric_queries"]),
+                6,
+            )
+        self.assertIn("'helical-mechanics'", worker)
+        self.assertIn(
+            "SALSBURY_MD_ANALYSIS_NUCLEIC_ACID_STRUCTURE_REPORT", worker
+        )
+
     def test_comparison_memory_fallback_writes_explicit_reduced_config(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -156,6 +269,16 @@ class ComparativeQuickstartTests(unittest.TestCase):
                 "index_base": 0,
                 "bonds": bonds,
             }), encoding="utf-8")
+            system_xml = root / "system.xml"
+            system_xml.write_text(
+                "<System><Forces><Force type=\"NonbondedForce\"><Particles>"
+                + "".join(
+                    '<Particle q="0.0" sig="0.35" eps="0.4184"/>'
+                    for _ in range(16)
+                )
+                + "</Particles><Exceptions/></Force></Forces></System>",
+                encoding="utf-8",
+            )
             request = {
                 "request_schema": "salsbury-comparative-analysis-input-v1",
                 "systems": [
@@ -163,6 +286,10 @@ class ComparativeQuickstartTests(unittest.TestCase):
                         "system_id": system_id,
                         "pdb": str(pdb),
                         "connectivity": str(connectivity),
+                        "force_field_parameters": {
+                            "format": "openmm_system_xml_v1",
+                            "files": [str(system_xml)],
+                        },
                         "trajectories": [str(path) for path in trajectories],
                         "frame_interval_ps": 10.0,
                     }
@@ -180,6 +307,16 @@ class ComparativeQuickstartTests(unittest.TestCase):
             project = json.loads((root / "analysis" / "project.json").read_text())
             self.assertEqual(
                 project["reference_connectivity"], str(connectivity.resolve())
+            )
+            system = json.loads(
+                (root / "analysis" / "system.json").read_text()
+            )
+            self.assertEqual(
+                system["systems"][0]["replicas"][0]["force_field_parameters"],
+                {
+                    "format": "openmm_system_xml_v1",
+                    "files": [str(system_xml.resolve())],
+                },
             )
 
     def test_preparation_accepts_twenty_system_variant_panel(self):

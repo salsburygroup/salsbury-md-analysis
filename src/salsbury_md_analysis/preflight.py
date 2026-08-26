@@ -556,6 +556,29 @@ def preflight_system(
                         )
                     )
 
+            force_field_parameter_probe = None
+            raw_force_field_parameters = raw_replica.get("force_field_parameters")
+            if isinstance(raw_force_field_parameters, dict):
+                raw_files = raw_force_field_parameters.get("files", [])
+                if isinstance(raw_files, list):
+                    file_rows = []
+                    for value in raw_files:
+                        parameter_path = resolve_manifest_path(
+                            str(value), manifest_path
+                        )
+                        inventory_row = inventory_by_path.get(str(parameter_path), {})
+                        file_rows.append({
+                            "declared_path": str(value),
+                            "path": str(parameter_path),
+                            "size_bytes": inventory_row.get("size_bytes"),
+                            "sha256": inventory_row.get("sha256"),
+                        })
+                    force_field_parameter_probe = {
+                        "format": raw_force_field_parameters.get("format"),
+                        "files": file_rows,
+                        "metadata_scope": "inventory_only",
+                    }
+
             segment_reports: List[Dict[str, object]] = []
             previous_probe: Optional[Dict[str, object]] = None
             previous_axis: Optional[Dict[str, object]] = None
@@ -714,6 +737,7 @@ def preflight_system(
                     "replica_id": replica_id,
                     "topology": topology_probe,
                     "connectivity": connectivity_probe,
+                    "force_field_parameters": force_field_parameter_probe,
                     "segments": segment_reports,
                 }
             )

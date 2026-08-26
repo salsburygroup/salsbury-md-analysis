@@ -10,14 +10,46 @@ from salsbury_md_analysis.clustering import (
     clustering_hdbscan_project_safe,
     clustering_imwkmeans_project,
     clustering_kmeans_project,
+    nani_complementary_msd,
     run_imwkmeans,
     run_kmeans,
     silhouette_score,
     silhouette_score_report,
+    silhouette_sampling_stability_report,
 )
 
 
 class ClusteringTests(unittest.TestCase):
+    def test_nani_complementary_msd_matches_published_reference_example(self):
+        vectors = [(1.0, 2.0), (2.0, 2.0), (2.0, 3.0), (8.0, 7.0), (8.0, 8.0)]
+        self.assertEqual(
+            nani_complementary_msd(vectors),
+            [31.0, 34.375, 36.75, 27.75, 23.875],
+        )
+
+    def test_stratified_nani_kmeans_is_deterministic_without_random_seed(self):
+        vectors = [
+            (-2.0 + index * 0.01, -2.0 - index * 0.01)
+            for index in range(20)
+        ] + [
+            (2.0 + index * 0.01, 2.0 - index * 0.01)
+            for index in range(20)
+        ]
+        for method in ("nani_strat_all", "nani_strat_reduced"):
+            first = run_kmeans(
+                vectors, 2, None, 100, 1.0e-10,
+                initialization_method=method, nani_percentage=25,
+            )
+            second = run_kmeans(
+                vectors, 2, None, 100, 1.0e-10,
+                initialization_method=method, nani_percentage=25,
+            )
+            self.assertTrue(first["valid"])
+            self.assertEqual(first, second)
+            self.assertIsNone(first["seed"])
+            self.assertFalse(first["initialization"]["random_seed_used"])
+            self.assertEqual(len(first["initialization"]["initial_center_indices"]), 2)
+
     def test_hdbscan_dependency_absence_fails_closed(self):
         project = {"definitions": {"clustering_hdbscan": {
             "feature_source": "common_pca", "component_indices": [1, 2],
@@ -71,6 +103,22 @@ class ClusteringTests(unittest.TestCase):
         self.assertEqual(first["evaluated_observation_count"], 9)
         self.assertEqual(first["total_observation_count"], 40)
         self.assertIn("against_full_partition", first["method"])
+
+    def test_sampled_silhouette_records_several_prespecified_seeds(self):
+        vectors = [
+            (float(index), 0.0) for index in range(20)
+        ] + [
+            (float(index), 20.0) for index in range(20)
+        ]
+        labels = [0] * 20 + [1] * 20
+        report = silhouette_sampling_stability_report(
+            vectors, labels, 9, [0, 7, 19, 41]
+        )
+        self.assertTrue(report["estimated"])
+        self.assertEqual(report["evaluated_random_seeds"], [0, 7, 19, 41])
+        self.assertEqual(report["sampling_replicate_count"], 4)
+        self.assertEqual(len(report["replicates"]), 4)
+        self.assertAlmostEqual(report["score"], report["score_mean"])
 
     def test_project_grid_selects_complete_two_cluster_partition(self):
         points = [(-2.0, -2.0), (-2.1, -1.9), (-1.9, -2.1), (2.0, 2.0), (2.1, 1.9), (1.9, 2.1)]
@@ -131,6 +179,145 @@ class ClusteringTests(unittest.TestCase):
                 for limitation in report["limitations"]
             )
         )
+
+    def test_project_grid_scans_both_stratified_nani_initializers(self):
+        points = [
+            (-2.0 + index * 0.01, -2.0 - index * 0.01)
+            for index in range(20)
+        ] + [
+            (2.0 + index * 0.01, 2.0 - index * 0.01)
+            for index in range(20)
+        ]
+        projections = [
+            {
+                "source_frame_index": index,
+                "sample_index": index,
+                "scores_angstrom": [x, y],
+            }
+            for index, (x, y) in enumerate(points)
+        ]
+        fake_pca = {
+            "project_manifest_sha256": "a" * 64,
+            "system_manifest_path": "/tmp/system.json",
+            "system_manifest_sha256": "b" * 64,
+            "input_content_signature_sha256": "c" * 64,
+            "issues": [],
+            "systems": [{
+                "system_id": "nani",
+                "replicas": [{
+                    "replica_id": "r1",
+                    "segments": [{"segment_id": "samples", "projections": projections}],
+                }],
+            }],
+        }
+        project = {"definitions": {"clustering_kmeans": {
+            "feature_source": "common_pca",
+            "component_indices": [1, 2],
+            "standardize_features": True,
+            "k_values": [2],
+            "initialization_methods": ["nani_strat_all", "nani_strat_reduced"],
+            "nani_percentage": 25,
+            "silhouette_random_seeds": [0, 7, 19, 41],
+            "maximum_iterations": 100,
+            "center_tolerance": 1.0e-10,
+            "minimum_cluster_size": 2,
+            "maximum_silhouette_observations": 10,
+        }}}
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "project.json"
+            path.write_text(json.dumps(project), encoding="utf-8")
+            with patch(
+                "salsbury_md_analysis.feature_matrix.common_pca_project",
+                return_value=fake_pca,
+            ):
+                first = clustering_kmeans_project(path)
+                second = clustering_kmeans_project(path)
+        self.assertEqual(first, second)
+        self.assertIsNone(first["selected_model"]["seed"])
+        self.assertIn(
+            first["selected_model"]["initialization_method"],
+            {"nani_strat_all", "nani_strat_reduced"},
+        )
+        diagnostic = first["grid_diagnostics"][0]
+        self.assertEqual(diagnostic["valid_initialization_count"], 2)
+        self.assertEqual(diagnostic["valid_seed_count"], 0)
+        self.assertEqual(
+            {row["initialization_method"] for row in diagnostic["runs"]},
+            {"nani_strat_all", "nani_strat_reduced"},
+        )
+        gate = first["silhouette_selection_stability"]
+        self.assertTrue(gate["gate_applied"])
+        self.assertEqual(gate["status"], "passed_unanimous_sampled_winner")
+        self.assertEqual(gate["configured_random_seeds"], [0, 7, 19, 41])
+
+    def test_sampled_silhouette_gate_fails_when_seeds_select_different_k(self):
+        points = [
+            (-3.0 + index * 0.01, -3.0) for index in range(20)
+        ] + [
+            (0.0 + index * 0.01, 0.0) for index in range(20)
+        ] + [
+            (3.0 + index * 0.01, 3.0) for index in range(20)
+        ]
+        fake_pca = {
+            "project_manifest_sha256": "a" * 64,
+            "system_manifest_path": "/tmp/system.json",
+            "system_manifest_sha256": "b" * 64,
+            "input_content_signature_sha256": "c" * 64,
+            "issues": [],
+            "systems": [{"system_id": "nani", "replicas": [{
+                "replica_id": "r1",
+                "segments": [{"segment_id": "samples", "projections": [
+                    {
+                        "source_frame_index": index,
+                        "sample_index": index,
+                        "scores_angstrom": [x, y],
+                    }
+                    for index, (x, y) in enumerate(points)
+                ]}],
+            }]}],
+        }
+        project = {"definitions": {"clustering_kmeans": {
+            "feature_source": "common_pca",
+            "component_indices": [1, 2],
+            "standardize_features": True,
+            "k_values": [2, 3],
+            "initialization_methods": ["nani_strat_all"],
+            "nani_percentage": 50,
+            "silhouette_random_seeds": [0, 7, 19],
+            "maximum_iterations": 100,
+            "center_tolerance": 1.0e-10,
+            "minimum_cluster_size": 2,
+            "maximum_silhouette_observations": 10,
+        }}}
+
+        def unstable_report(_vectors, assignments, _maximum, seeds):
+            scores = (
+                [0.9, 0.1, 0.9]
+                if len(set(assignments)) == 2 else [0.1, 0.9, 0.1]
+            )
+            return {
+                "score": sum(scores) / len(scores),
+                "estimated": True,
+                "replicates": [
+                    {"score": score, "random_seed": seed}
+                    for score, seed in zip(scores, seeds)
+                ],
+            }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "project.json"
+            path.write_text(json.dumps(project), encoding="utf-8")
+            with patch(
+                "salsbury_md_analysis.feature_matrix.common_pca_project",
+                return_value=fake_pca,
+            ), patch(
+                "salsbury_md_analysis.clustering.silhouette_sampling_stability_report",
+                side_effect=unstable_report,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "sampled silhouette winner stability gate failed"
+                ):
+                    clustering_kmeans_project(path)
 
     def test_imwkmeans_project_grid_reports_algorithm_contract(self):
         points = [(-2.0, -2.0), (-2.1, -1.9), (-1.9, -2.1), (2.0, 2.0), (2.1, 1.9), (1.9, 2.1)]
