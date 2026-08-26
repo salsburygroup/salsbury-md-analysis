@@ -535,6 +535,281 @@ def _script_resource_requests(plan: Mapping[str, object]) -> Dict[str, Dict[str,
     return requests
 
 
+def _partition_for_request(
+    script: str,
+    requested_wall_minutes: float,
+    requested_memory_gib: float,
+    partitions: Mapping[str, object],
+    partition_limits: Mapping[str, object],
+    resource_policy: Mapping[str, object],
+) -> Dict[str, object]:
+    """Select a scheduler role for one task or resource-compatible task tier."""
+
+    role = _script_role(script)
+    if (
+        requested_memory_gib
+        >= float(resource_policy["large_memory_threshold_gib"])
+        and bool(partitions.get("large_memory"))
+    ):
+        role = "large_memory"
+    partition = partitions.get(role) or partitions.get("default")
+    partition_limit = (
+        None if partition is None else partition_limits.get(str(partition))
+    )
+    long_wall_routed = False
+    if partition_limit is not None and requested_wall_minutes > float(partition_limit):
+        long_wall_partition = partitions.get("long_wall")
+        if not long_wall_partition:
+            raise ExecutionAdapterError(
+                f"{script} requests {requested_wall_minutes:g} minutes, "
+                f"exceeding partition {partition!r} limit "
+                f"{float(partition_limit):g}, but partitions.long_wall is unset"
+            )
+        long_wall_limit = partition_limits.get(str(long_wall_partition))
+        if (
+            long_wall_limit is not None
+            and requested_wall_minutes > float(long_wall_limit)
+        ):
+            raise ExecutionAdapterError(
+                f"{script} requests {requested_wall_minutes:g} minutes, "
+                f"exceeding long-wall partition {long_wall_partition!r} limit "
+                f"{float(long_wall_limit):g}"
+            )
+        role = "long_wall"
+        partition = long_wall_partition
+        long_wall_routed = True
+    return {
+        "selected_partition_role": role,
+        "selected_partition": partition,
+        "long_wall_routed": long_wall_routed,
+        "selected_partition_maximum_wall_minutes": (
+            None if partition is None else partition_limits.get(str(partition))
+        ),
+    }
+
+
+def _slurm_array_expression(indices: Sequence[int]) -> str:
+    """Return a compact Slurm array expression for sorted task indices."""
+
+    ordered = sorted(set(indices))
+    if not ordered:
+        raise ExecutionAdapterError("a Slurm submission tier has no array tasks")
+    ranges: List[str] = []
+    start = previous = ordered[0]
+    for value in ordered[1:]:
+        if value == previous + 1:
+            previous = value
+            continue
+        ranges.append(str(start) if start == previous else f"{start}-{previous}")
+        start = previous = value
+    ranges.append(str(start) if start == previous else f"{start}-{previous}")
+    return ",".join(ranges)
+
+
+def _submission_resource_tiers(
+    plan: Mapping[str, object],
+    partitions: Mapping[str, object],
+    partition_limits: Mapping[str, object],
+    resource_policy: Mapping[str, object],
+) -> Dict[str, List[Dict[str, object]]]:
+    """Group each array's elements by their effective scheduler request."""
+
+    tasks_by_script: Dict[str, List[Mapping[str, object]]] = {}
+    for phase in plan.get("phases", []):
+        for task in phase.get("tasks", []):
+            if task.get("array_task_id") is None:
+                continue
+            tasks_by_script.setdefault(str(task["script"]), []).append(task)
+
+    result: Dict[str, List[Dict[str, object]]] = {}
+    for script, tasks in sorted(tasks_by_script.items()):
+        task_ids = [int(task["array_task_id"]) for task in tasks]
+        if len(task_ids) != len(set(task_ids)):
+            raise ExecutionAdapterError(f"duplicate array task ids for {script}")
+        grouped: Dict[tuple[int, str, Optional[str]], List[Mapping[str, object]]] = {}
+        for task in tasks:
+            wall_minutes = float(task["requested_wall_minutes"])
+            memory_gib = float(task["requested_memory_gib"])
+            route = _partition_for_request(
+                script,
+                wall_minutes,
+                memory_gib,
+                partitions,
+                partition_limits,
+                resource_policy,
+            )
+            key = (
+                int(math.ceil(memory_gib)),
+                _format_slurm_time(wall_minutes),
+                None if route["selected_partition"] is None
+                else str(route["selected_partition"]),
+            )
+            grouped.setdefault(key, []).append(task)
+        tiers: List[Dict[str, object]] = []
+        for tier_index, (_, tier_tasks) in enumerate(
+            sorted(
+                grouped.items(),
+                key=lambda item: min(int(task["array_task_id"]) for task in item[1]),
+            )
+        ):
+            indices = sorted(int(task["array_task_id"]) for task in tier_tasks)
+            requested_wall_minutes = max(
+                float(task["requested_wall_minutes"]) for task in tier_tasks
+            )
+            requested_memory_gib = max(
+                float(task["requested_memory_gib"]) for task in tier_tasks
+            )
+            route = _partition_for_request(
+                script,
+                requested_wall_minutes,
+                requested_memory_gib,
+                partitions,
+                partition_limits,
+                resource_policy,
+            )
+            tiers.append({
+                "tier_id": tier_index,
+                "array_task_ids": indices,
+                "array_expression": _slurm_array_expression(indices),
+                "requested_wall_minutes": requested_wall_minutes,
+                "requested_memory_gib": requested_memory_gib,
+                "slurm_time": _format_slurm_time(requested_wall_minutes),
+                "slurm_memory": f"{int(math.ceil(requested_memory_gib))}G",
+                "planner_task_ids": sorted({
+                    str(planner_task_id)
+                    for task in tier_tasks
+                    for planner_task_id in task.get("planner_task_ids", [])
+                }),
+                **route,
+            })
+        result[script] = tiers
+    return result
+
+
+def _tier_parallelism(counts: Sequence[int], cap: int) -> List[int]:
+    """Share one original array throttle across simultaneously submitted tiers."""
+
+    if cap < 1:
+        raise ExecutionAdapterError("Slurm array parallelism must be positive")
+    if len(counts) > cap:
+        return [1 for _ in counts]
+    allocations = [1 for _ in counts]
+    remaining = cap - len(counts)
+    while remaining:
+        candidates = [
+            index for index, count in enumerate(counts)
+            if allocations[index] < count
+        ]
+        if not candidates:
+            break
+        selected = max(
+            candidates,
+            key=lambda index: (counts[index] - allocations[index], -index),
+        )
+        allocations[selected] += 1
+        remaining -= 1
+    return allocations
+
+
+def _append_afterok_dependencies(options: str, variables: Sequence[str]) -> str:
+    if not variables:
+        return options
+    suffix = ":".join(f"${{{variable}}}" for variable in variables)
+    pattern = r'--dependency="afterok:([^"]*)"'
+    if re.search(pattern, options):
+        return re.sub(
+            pattern,
+            lambda match: f'--dependency="afterok:{match.group(1)}:{suffix}"',
+            options,
+            count=1,
+        )
+    return f'{options} --dependency="afterok:{suffix}"'
+
+
+def _split_tiered_array_submissions(
+    text: str,
+    tiers_by_script: Mapping[str, Sequence[Dict[str, object]]],
+) -> str:
+    """Replace one mixed-resource array submission with safe tier submissions."""
+
+    lines = text.splitlines()
+    output: List[str] = []
+    for line in lines:
+        replacement: Optional[List[str]] = None
+        for script, tiers in tiers_by_script.items():
+            if len(tiers) <= 1 or f'"$ROOT/{script}"' not in line:
+                continue
+            match = re.fullmatch(
+                r'(?P<indent>\s*)(?P<variable>[A-Za-z_][A-Za-z0-9_]*)='
+                r'\$\(sbatch\s+(?P<options>.*?)\s+' +
+                re.escape(f'"$ROOT/{script}"') + r'\)',
+                line,
+            )
+            if not match:
+                continue
+            array_match = re.search(r'(?:^|\s)--array=([^\s]+)', match.group("options"))
+            if not array_match:
+                continue
+            original_array = array_match.group(1)
+            cap_match = re.search(r'%(\d+)$', original_array)
+            cap = (
+                int(cap_match.group(1)) if cap_match
+                else sum(len(tier["array_task_ids"]) for tier in tiers)
+            )
+            options = re.sub(
+                r'(?:^|\s)--array=[^\s]+', '', match.group("options"), count=1
+            ).strip()
+            allocations = _tier_parallelism(
+                [len(tier["array_task_ids"]) for tier in tiers], cap
+            )
+            variable = match.group("variable")
+            indent = match.group("indent")
+            tier_variables: List[str] = []
+            tier_lines: List[str] = []
+            previous_wave: List[str] = []
+            current_wave: List[str] = []
+            wave_width = 0
+            wave_index = 0
+            for tier_index, (tier, parallelism) in enumerate(zip(tiers, allocations)):
+                if wave_width + parallelism > cap:
+                    previous_wave = current_wave
+                    current_wave = []
+                    wave_width = 0
+                    wave_index += 1
+                tier_variable = f"{variable}_TIER_{tier_index}"
+                tier_options = _append_afterok_dependencies(options, previous_wave)
+                scheduler_options = [
+                    tier_options,
+                    f"--array={tier['array_expression']}%{parallelism}",
+                    f"--time={tier['slurm_time']}",
+                    f"--mem={tier['slurm_memory']}",
+                ]
+                if tier.get("selected_partition"):
+                    scheduler_options.append(
+                        f"--partition={tier['selected_partition']}"
+                    )
+                tier_lines.extend([
+                    f"{indent}{tier_variable}=$(sbatch "
+                    + " ".join(scheduler_options)
+                    + f' "$ROOT/{script}")',
+                    f'{indent}{tier_variable}="${{{tier_variable}%%;*}}"',
+                ])
+                tier["submission_parallelism"] = parallelism
+                tier["dependency_wave"] = wave_index
+                tier_variables.append(tier_variable)
+                current_wave.append(tier_variable)
+                wave_width += parallelism
+            tier_lines.append(
+                f'{indent}{variable}="' + ":".join(
+                    f"${{{tier_variable}}}" for tier_variable in tier_variables
+                ) + '"'
+            )
+            replacement = tier_lines
+            break
+        output.extend(replacement if replacement is not None else [line])
+    return "\n".join(output) + ("\n" if text.endswith("\n") else "")
+
+
 def _task_resource_requests(plan: Mapping[str, object]) -> List[Dict[str, object]]:
     rows: List[Dict[str, object]] = []
     for phase in plan.get("phases", []):
@@ -582,53 +857,31 @@ def apply_slurm_profile(
     script_requests = _script_resource_requests(execution_plan)
     partition_limits = profile["partition_maximum_wall_minutes"]
     assert isinstance(partition_limits, Mapping)
+    submission_tiers = _submission_resource_tiers(
+        execution_plan,
+        partitions,
+        partition_limits,
+        resource_policy,
+    )
 
     for path in sorted(root.glob("*.slurm")):
         text = path.read_text(encoding="utf-8")
-        role = _script_role(path.name)
         request = script_requests.get(path.name, {
             "requested_wall_minutes": _existing_wall_minutes(path),
             "requested_memory_gib": _existing_memory_gib(path),
             "planner_task_ids": [],
             "aggregation": "static worker fallback",
         })
-        is_large = (
-            float(request["requested_memory_gib"])
-            >= float(resource_policy["large_memory_threshold_gib"])
-            and bool(partitions.get("large_memory"))
-        )
-        if is_large:
-            role = "large_memory"
-        partition = partitions.get(role) or partitions.get("default")
         requested_wall_minutes = float(request["requested_wall_minutes"])
-        partition_limit = (
-            None if partition is None else partition_limits.get(str(partition))
+        route = _partition_for_request(
+            path.name,
+            requested_wall_minutes,
+            float(request["requested_memory_gib"]),
+            partitions,
+            partition_limits,
+            resource_policy,
         )
-        long_wall_routed = False
-        if (
-            partition_limit is not None
-            and requested_wall_minutes > float(partition_limit)
-        ):
-            long_wall_partition = partitions.get("long_wall")
-            if not long_wall_partition:
-                raise ExecutionAdapterError(
-                    f"{path.name} requests {requested_wall_minutes:g} minutes, "
-                    f"exceeding partition {partition!r} limit "
-                    f"{float(partition_limit):g}, but partitions.long_wall is unset"
-                )
-            long_wall_limit = partition_limits.get(str(long_wall_partition))
-            if (
-                long_wall_limit is not None
-                and requested_wall_minutes > float(long_wall_limit)
-            ):
-                raise ExecutionAdapterError(
-                    f"{path.name} requests {requested_wall_minutes:g} minutes, "
-                    f"exceeding long-wall partition {long_wall_partition!r} limit "
-                    f"{float(long_wall_limit):g}"
-                )
-            role = "long_wall"
-            partition = long_wall_partition
-            long_wall_routed = True
+        partition = route["selected_partition"]
         directives = []
         if account:
             directives.append(f"#SBATCH --account={account}")
@@ -661,12 +914,7 @@ def apply_slurm_profile(
                 text, flags=re.MULTILINE,
             )
         path.write_text(text, encoding="utf-8")
-        request["selected_partition_role"] = role
-        request["selected_partition"] = partition
-        request["long_wall_routed"] = long_wall_routed
-        request["selected_partition_maximum_wall_minutes"] = (
-            None if partition is None else partition_limits.get(str(partition))
-        )
+        request.update(route)
         request["slurm_time"] = _format_slurm_time(
             float(request["requested_wall_minutes"])
         )
@@ -675,6 +923,7 @@ def apply_slurm_profile(
     submit_command = str(profile["submit_command"])
     for path in sorted(root.glob("submit*.sh")):
         text = path.read_text(encoding="utf-8")
+        text = _split_tiered_array_submissions(text, submission_tiers)
         text = text.replace("set -euo pipefail\n", f"set -euo pipefail\n{preamble}\n", 1)
         text = re.sub(r"\bsbatch\b", submit_command, text)
         python_path = environment.get("python_executable")
@@ -692,16 +941,17 @@ def apply_slurm_profile(
             )
         path.write_text(text, encoding="utf-8")
     return {
-        "scheduler_resource_requests_schema": "salsbury-scheduler-resource-requests-v1",
+        "scheduler_resource_requests_schema": "salsbury-scheduler-resource-requests-v2",
         "profile_id": profile["profile_id"],
         "cluster_name": profile["cluster_name"],
         "resource_policy": dict(resource_policy),
         "partition_maximum_wall_minutes": dict(partition_limits),
         "tasks": _task_resource_requests(execution_plan),
         "scripts": script_requests,
+        "submission_resource_tiers": submission_tiers,
         "large_memory_routing": (
-            "a whole worker array uses the large-memory role when the largest "
-            "element request reaches the configured threshold"
+            "mixed-resource arrays are submitted as resource-matched subarrays; "
+            "only tiers at or above the configured threshold use the large-memory role"
         ),
         "long_wall_routing": (
             "a worker script is routed to the long-wall role when its requested "

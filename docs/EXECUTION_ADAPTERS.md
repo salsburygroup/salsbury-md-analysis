@@ -74,8 +74,11 @@ memory only; CPU-hour, critical-path, calibration, and scratch limits still
 fail closed.
 
 Slurm requests can be larger than the raw planner estimate because the site
-profile and execution adapter add explicit safety margins and may aggregate
-several array elements under one array-wide request. Those mappings remain
+profile and execution adapter add explicit safety margins. When one generated
+array contains tasks with different scheduler requirements, the launcher splits
+it into resource-matched subarrays. Each subarray receives its own memory, time,
+partition, and concurrency settings. The original dependency boundary remains
+in place, and downstream work waits for every subarray. The mappings remain
 visible in `scheduler-resource-requests.json`.
 
 ## Slurm cluster
@@ -107,11 +110,16 @@ status, and cancel commands; account, Unix group, QoS, and role-specific partiti
 Python and package paths; environment setup commands and variables; shared-write
 umask; storage and scratch roots; and conservative resource policy metadata. The
 adapter converts every planner task estimate to a time and memory request using the
-profile safety factors. An array receives the maximum request among its elements,
-because Slurm cannot request different resources for individual elements of one
-array. `scheduler-resource-requests.json` records every mapped planner task, margin,
-array aggregation, selected partition, and final request. Requests that cross
-`large_memory_threshold_gib` automatically use the `large_memory` partition role.
+profile safety factors. Slurm cannot vary resources within one array job, so the
+adapter submits resource-matched subsets of the original task indices as separate
+arrays. It also shares the original concurrency cap across those submissions; when
+the cap is smaller than the number of resource tiers, later tiers wait for an
+earlier tier. `scheduler-resource-requests.json` records every mapped planner task,
+the safety margin, each submitted tier, selected partition, final request, task
+indices, concurrency allocation, and dependency wave. Only tiers that cross
+`large_memory_threshold_gib` use the `large_memory` partition role. The generated
+worker retains the largest request as a safe direct-submission fallback, while
+`submit.sh` applies the tier-specific overrides used for a normal campaign launch.
 Copy
 `profiles/slurm/generic-template.json`, review every value with the cluster owner,
 then prepare and run `./submit.sh`. The exact normalized profile is retained beside

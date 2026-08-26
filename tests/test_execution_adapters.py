@@ -1,4 +1,5 @@
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -293,6 +294,148 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertEqual(
             scheduler["scripts"][view.name]["selected_partition_role"],
             "large_memory",
+        )
+
+    def test_mixed_resource_array_is_split_into_scheduler_tiers(self):
+        repository = Path(__file__).resolve().parents[1]
+        profile = load_slurm_profile(repository / "profiles/slurm/deac.json")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "slurm-profile.json").write_text("{}\n", encoding="utf-8")
+            script = "run_view_global_common_heavy_stage_1.slurm"
+            (root / script).write_text(
+                "#!/usr/bin/env bash\n"
+                "#SBATCH --time=24:00:00\n"
+                "#SBATCH --cpus-per-task=1\n"
+                "#SBATCH --mem=389G\n"
+                "set -euo pipefail\n",
+                encoding="utf-8",
+            )
+            (root / "submit-conformational-views.sh").write_text(
+                "#!/usr/bin/env bash\nset -euo pipefail\n"
+                "ROOT=/analysis\n"
+                "VIEW_JOB=$(sbatch --parsable --dependency=\"afterok:$UPSTREAM_JOB\" "
+                f"--array=0-6%7 \"$ROOT/{script}\")\n"
+                "VIEW_JOB=\"${VIEW_JOB%%;*}\"\n"
+                "printf 'Submitted %s.\\n' \"$VIEW_JOB\"\n"
+                "NEXT_JOB=$(sbatch --parsable --dependency=\"afterok:$VIEW_JOB\" "
+                "\"$ROOT/run_finalize_reporting.slurm\")\n",
+                encoding="utf-8",
+            )
+
+            def task(index, memory, minutes):
+                return {
+                    "script": script,
+                    "array_task_id": index,
+                    "requested_wall_minutes": minutes,
+                    "requested_memory_gib": memory,
+                    "planner_task_ids": [f"view:task:{index}"],
+                    "cpu_slots": 1,
+                    "planned_wall_hours": minutes / 60.0,
+                    "planned_peak_memory_gib": memory,
+                    "resource_request_source": "unit_test",
+                    "wall_request_limited_by_campaign_cap": False,
+                    "memory_request_limited_by_campaign_cap": False,
+                }
+
+            scheduler = apply_slurm_profile(root, profile, {
+                "phases": [{
+                    "phase_id": "conformational",
+                    "tasks": [
+                        task(0, 3, 30), task(1, 3, 30), task(2, 3, 30),
+                        task(3, 7, 60), task(4, 3, 30), task(5, 5, 45),
+                        task(6, 389, 120),
+                    ],
+                }],
+            })
+            submit = (root / "submit-conformational-views.sh").read_text(
+                encoding="utf-8"
+            )
+            syntax = subprocess.run(
+                ["bash", "-n", str(root / "submit-conformational-views.sh")],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(syntax.returncode, 0, syntax.stderr)
+        self.assertIn("--array=0-2,4%4 --time=00:30:00 --mem=3G", submit)
+        self.assertIn("--array=3%1 --time=01:00:00 --mem=7G", submit)
+        self.assertIn("--array=5%1 --time=00:45:00 --mem=5G", submit)
+        self.assertIn(
+            "--array=6%1 --time=02:00:00 --mem=389G --partition=large",
+            submit,
+        )
+        self.assertIn(
+            'VIEW_JOB="${VIEW_JOB_TIER_0}:${VIEW_JOB_TIER_1}:'
+            '${VIEW_JOB_TIER_2}:${VIEW_JOB_TIER_3}"',
+            submit,
+        )
+        self.assertIn('--dependency="afterok:$VIEW_JOB"', submit)
+        tiers = scheduler["submission_resource_tiers"][script]
+        self.assertEqual([tier["array_task_ids"] for tier in tiers], [
+            [0, 1, 2, 4], [3], [5], [6],
+        ])
+        self.assertEqual(sum(tier["submission_parallelism"] for tier in tiers), 7)
+        self.assertEqual(tiers[-1]["selected_partition_role"], "large_memory")
+
+    def test_tiered_array_preserves_a_single_cpu_throttle_with_dependencies(self):
+        repository = Path(__file__).resolve().parents[1]
+        profile = load_slurm_profile(repository / "profiles/slurm/deac.json")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "slurm-profile.json").write_text("{}\n", encoding="utf-8")
+            script = "run_stage_0_array.slurm"
+            (root / script).write_text(
+                "#!/usr/bin/env bash\n#SBATCH --time=01:00:00\n"
+                "#SBATCH --cpus-per-task=1\n#SBATCH --mem=128G\n"
+                "set -euo pipefail\n",
+                encoding="utf-8",
+            )
+            (root / "submit.sh").write_text(
+                "#!/usr/bin/env bash\nset -euo pipefail\nROOT=/analysis\n"
+                "STAGE_JOB=$(sbatch --parsable --dependency=\"afterok:$PRE_JOB\" "
+                f"--array=0-1%1 \"$ROOT/{script}\")\n"
+                "STAGE_JOB=\"${STAGE_JOB%%;*}\"\n",
+                encoding="utf-8",
+            )
+
+            def task(index, memory):
+                return {
+                    "script": script, "array_task_id": index,
+                    "requested_wall_minutes": 60,
+                    "requested_memory_gib": memory,
+                    "planner_task_ids": [f"direct:{index}"], "cpu_slots": 1,
+                    "planned_wall_hours": 1,
+                    "planned_peak_memory_gib": memory,
+                    "resource_request_source": "unit_test",
+                    "wall_request_limited_by_campaign_cap": False,
+                    "memory_request_limited_by_campaign_cap": False,
+                }
+
+            scheduler = apply_slurm_profile(root, profile, {
+                "phases": [{"phase_id": "analysis", "tasks": [
+                    task(0, 4), task(1, 128),
+                ]}],
+            })
+            submit = (root / "submit.sh").read_text(encoding="utf-8")
+            syntax = subprocess.run(
+                ["bash", "-n", str(root / "submit.sh")],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(syntax.returncode, 0, syntax.stderr)
+        self.assertIn('--dependency="afterok:$PRE_JOB" --array=0%1', submit)
+        self.assertIn(
+            '--dependency="afterok:$PRE_JOB:${STAGE_JOB_TIER_0}" --array=1%1',
+            submit,
+        )
+        self.assertEqual(
+            [tier["dependency_wave"] for tier in
+             scheduler["submission_resource_tiers"][script]],
+            [0, 1],
         )
 
     def test_local_runner_preserves_dependencies_and_stops_after_failure(self):

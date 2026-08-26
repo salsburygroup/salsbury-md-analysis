@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Split mixed-resource Slurm arrays into resource-matched submissions so only
+  the tasks that need large memory reserve it, while preserving the original
+  CPU cap, dependency graph, planner requests, and scientific sampling.
+- Record submitted array indices, tier-specific memory and time, selected
+  partition, concurrency allocation, and dependency wave in
+  `scheduler-resource-requests.json`.
+
 ## 0.1.1 - 2026-08-25
 
 - Account for every completed module report in the prioritized-finding output,
