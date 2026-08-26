@@ -217,6 +217,8 @@ class SlurmCapacityTests(unittest.TestCase):
             report = advise_slurm_capacity(prepared, wall_hours=2.0, live=False)
         text = render_capacity_markdown(report)
         self.assertIn("Useful workflow maximum: 3 CPUs", text)
+        self.assertIn("Estimated selected CPU-hours:", text)
+        self.assertIn("Scheduler memory needed with safety margin:", text)
         self.assertIn("No job was submitted", text)
 
 

@@ -697,6 +697,10 @@ def render_capacity_markdown(report: Mapping[str, object]) -> str:
         if not isinstance(placement, Mapping)
         else str(placement.get("status"))
     )
+    memory_ceiling_note = (
+        " (clipped; below the safety-margin estimate)"
+        if memory.get("safety_margin_clipped_by_campaign_ceiling") else ""
+    )
     lines = [
         "# Slurm capacity advice",
         "",
@@ -704,8 +708,15 @@ def render_capacity_markdown(report: Mapping[str, object]) -> str:
         f"- Recommended request: {cpus['recommended_maximum_parallel_cpus']} CPUs",
         f"- Requested duration: {report['requested_wall_hours']:g} hours",
         f"- CPU-hour envelope: {campaign['raw_capacity_cpu_hours']:g}",
+        f"- Estimated selected CPU-hours: "
+        f"{campaign['estimated_selected_cpu_hours']:.2f}",
+        f"- Unallocated science CPU-hours: "
+        f"{campaign['unused_science_cpu_hours']:.2f}",
         f"- Largest planned task working set: {memory['planned_working_set_gib']:.2f} GiB",
-        f"- Largest scheduler memory request: {memory['scheduler_request_gib']:.2f} GiB",
+        f"- Scheduler memory needed with safety margin: "
+        f"{memory['unbounded_scheduler_request_gib']:.2f} GiB",
+        f"- Scheduler memory after campaign ceiling: "
+        f"{memory['scheduler_request_gib']:.2f} GiB{memory_ceiling_note}",
         f"- Conservative concurrent scheduler memory: "
         f"{memory['maximum_concurrent_scheduler_request_gib']:.2f} GiB",
         f"- Largest-task placement: {placement_status}",
