@@ -34,7 +34,7 @@ class ComparativeQuickstartTests(unittest.TestCase):
             config_path = root / "low-memory.json"
             config_path.write_text(json.dumps({
                 "config_schema": "salsbury-analysis-config-v1",
-                "execution": {"maximum_memory_gib": 1.5},
+                "execution": {"maximum_memory_gib": 4.0},
             }), encoding="utf-8")
             output = root / "comparison-memory-fit"
             report = prepare_comparative_analysis_memory_fit(

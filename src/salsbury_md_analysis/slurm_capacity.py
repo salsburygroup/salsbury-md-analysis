@@ -365,6 +365,55 @@ def _workflow_useful_cpu_peak(tasks: Sequence[Mapping[str, object]]) -> int:
     return max(values)
 
 
+def _normalize_legacy_memory_models(
+    tasks: Sequence[Mapping[str, object]],
+) -> tuple[List[Dict[str, object]], List[Dict[str, object]]]:
+    """Repair known pre-v81 memory-model metadata for read-only replanning."""
+
+    normalized: List[Dict[str, object]] = []
+    adjustments: List[Dict[str, object]] = []
+    for original in tasks:
+        row = dict(original)
+        measured_model = row.get("measured_memory_cost_model")
+        if not isinstance(measured_model, Mapping):
+            normalized.append(row)
+            continue
+        model = dict(measured_model)
+        evidence = row.get("measured_resource_calibration")
+        complete_count = row.get("calibration_complete_measurement_count")
+        observation_count = row.get("calibration_observation_coverage")
+        if isinstance(evidence, Mapping):
+            if complete_count is None:
+                complete_count = evidence.get("complete_measurement_count")
+            if observation_count is None:
+                observation_count = evidence.get("maximum_measured_observation_count")
+        censored_only = (
+            complete_count is not None
+            and int(complete_count) == 0
+            and (observation_count is None or int(observation_count) == 0)
+        )
+        if censored_only:
+            row.pop("measured_memory_cost_model", None)
+            adjustments.append({
+                "task_id": str(row["task_id"]),
+                "change": "removed_censored_only_observation_scaling",
+            })
+        elif not bool(model.get("workload_scaling_applied", False)):
+            previous = float(model["calibration_memory_gib"])
+            resolved = max(1.0, float(row["estimated_peak_memory_gib"]))
+            model["calibration_memory_gib"] = resolved
+            model["workload_scaling_applied"] = True
+            row["measured_memory_cost_model"] = model
+            adjustments.append({
+                "task_id": str(row["task_id"]),
+                "change": "applied_saved_system_workload_scaling",
+                "previous_calibration_memory_gib": previous,
+                "resolved_calibration_memory_gib": resolved,
+            })
+        normalized.append(row)
+    return normalized, adjustments
+
+
 def _scheduler_memory_request(
     working_set_gib: float,
     maximum_memory_gib: float,
@@ -377,84 +426,69 @@ def _scheduler_memory_request(
             + float(policy["memory_overhead_gib"])
         )),
     )
-    requested = min(maximum_memory_gib, unbounded)
     return {
         "planned_working_set_gib": working_set_gib,
-        "scheduler_request_gib": requested,
+        "scheduler_request_gib": unbounded,
         "unbounded_scheduler_request_gib": unbounded,
-        "safety_margin_clipped_by_campaign_ceiling": requested + 1e-9 < unbounded,
+        "fits_aggregate_campaign_memory_limit": (
+            unbounded <= maximum_memory_gib + 1e-9
+        ),
+        "safety_margin_clipped_by_campaign_ceiling": False,
     }
 
 
-def _maximum_concurrent_memory(
-    tasks: Sequence[Mapping[str, object]],
-    maximum_cpus: int,
-    maximum_memory_gib: float,
-    policy: Mapping[str, object],
+def _planned_resource_wave_memory(
+    plan: Mapping[str, object], tasks: Sequence[Mapping[str, object]]
 ) -> Dict[str, object]:
-    stages: Dict[int, Dict[str, List[Mapping[str, object]]]] = {}
+    """Summarize the exact aggregate-memory waves chosen by the replanner."""
+
+    working_by_bundle: Dict[str, float] = {}
     for row in tasks:
-        stages.setdefault(int(row["dependency_stage"]), {}).setdefault(
-            str(row.get("execution_bundle_id", row["task_id"])), []
-        ).append(row)
-
+        bundle = str(row.get("execution_bundle_id", row["task_id"]))
+        working_by_bundle[bundle] = max(
+            working_by_bundle.get(bundle, 0.0),
+            float(row["estimated_peak_memory_gib_at_selected_observations"]),
+        )
     stage_reports = []
-    for stage, bundles in sorted(stages.items()):
-        items = []
-        for bundle_id, rows in sorted(bundles.items()):
-            working = max(
-                float(row["estimated_peak_memory_gib_at_selected_observations"])
-                for row in rows
-            )
-            cpus = min(
-                maximum_cpus,
-                max(int(row.get("effective_cpu_cap", 1)) for row in rows),
-            )
-            scheduler = _scheduler_memory_request(
-                working, maximum_memory_gib, policy
-            )
-            items.append({
-                "bundle_id": bundle_id,
-                "cpu_slots": cpus,
-                **scheduler,
+    for stage in plan.get("stages", []):
+        waves = []
+        for wave in stage.get("resource_waves", []):
+            bundle_ids = [
+                str(item["item_id"]) for item in wave.get("items", [])
+            ]
+            waves.append({
+                "wave_index": int(wave["wave_index"]),
+                "cpu_slots": int(wave["cpu_slots"]),
+                "scheduler_memory_gib": float(wave["memory_gib"]),
+                "planned_working_set_gib": sum(
+                    working_by_bundle.get(bundle_id, 0.0)
+                    for bundle_id in bundle_ids
+                ),
+                "wall_hours": float(wave["wall_hours"]),
+                "bundle_ids": bundle_ids,
             })
-
-        def select_maximum(key: str) -> Dict[str, object]:
-            states: Dict[int, tuple[float, List[str]]] = {0: (0.0, [])}
-            for item in items:
-                weight = int(item["cpu_slots"])
-                value = float(item[key])
-                updated = dict(states)
-                for used, (total, chosen) in states.items():
-                    if used + weight <= maximum_cpus:
-                        candidate = (total + value, chosen + [str(item["bundle_id"])])
-                        previous = updated.get(used + weight)
-                        if previous is None or candidate[0] > previous[0]:
-                            updated[used + weight] = candidate
-                states = updated
-            used, (total, chosen) = max(
-                states.items(), key=lambda entry: (entry[1][0], entry[0])
-            )
-            return {"cpu_slots": used, "memory_gib": total, "bundle_ids": chosen}
-
-        working_peak = select_maximum("planned_working_set_gib")
-        scheduler_peak = select_maximum("scheduler_request_gib")
         stage_reports.append({
-            "dependency_stage": stage,
-            "bundle_count": len(items),
-            "maximum_concurrent_working_set": working_peak,
-            "maximum_concurrent_scheduler_request": scheduler_peak,
+            "dependency_stage": stage["dependency_stage"],
+            "resource_waves": waves,
         })
-
+    all_waves = [
+        wave for stage in stage_reports for wave in stage["resource_waves"]
+    ]
+    scheduler_peak = max(
+        (float(wave["scheduler_memory_gib"]) for wave in all_waves),
+        default=0.0,
+    )
     return {
         "maximum_concurrent_working_set_gib": max(
-            (float(row["maximum_concurrent_working_set"]["memory_gib"])
-             for row in stage_reports), default=0.0
+            (float(wave["planned_working_set_gib"]) for wave in all_waves),
+            default=0.0,
         ),
-        "maximum_concurrent_scheduler_request_gib": max(
-            (float(row["maximum_concurrent_scheduler_request"]["memory_gib"])
-             for row in stage_reports), default=0.0
+        "maximum_concurrent_scheduler_request_gib": scheduler_peak,
+        "maximum_planned_resource_wave_memory_gib": scheduler_peak,
+        "maximum_planned_resource_wave_cpus": max(
+            (int(wave["cpu_slots"]) for wave in all_waves), default=0
         ),
+        "resource_wave_count": len(all_waves),
         "stages": stage_reports,
     }
 
@@ -556,7 +590,7 @@ def advise_slurm_capacity(
         row for row in plan["tasks"] if isinstance(row, Mapping)
     ]
     executable_task_ids = _executable_planner_task_ids(prepared)
-    planning_tasks = (
+    selected_planning_tasks = (
         all_plan_tasks
         if executable_task_ids is None
         else [
@@ -566,8 +600,11 @@ def advise_slurm_capacity(
     )
     excluded_task_ids = sorted({
         str(row.get("task_id")) for row in all_plan_tasks
-        if row not in planning_tasks
+        if row not in selected_planning_tasks
     })
+    planning_tasks, legacy_memory_adjustments = _normalize_legacy_memory_models(
+        selected_planning_tasks
+    )
     if not planning_tasks:
         raise SlurmCapacityError("no executable planner tasks remain")
     hours = _positive_number(wall_hours, "wall_hours")
@@ -589,6 +626,8 @@ def advise_slurm_capacity(
 
     profile_source = slurm_profile_path or (prepared / "slurm-profile.json")
     profile = load_slurm_profile(profile_source)
+    policy = profile["resource_policy"]
+    assert isinstance(policy, Mapping)
     useful_peak = _workflow_useful_cpu_peak(planning_tasks)
     live_report: Optional[Dict[str, object]] = None
     scheduler_ceiling: Optional[int] = None
@@ -610,23 +649,39 @@ def advise_slurm_capacity(
     if cpu_ceiling is not None:
         limits.append(cpu_ceiling)
         limiting_factors.append("user_cpu_ceiling")
-    recommended_cpus = min(limits)
-
-    replanned = plan_campaign_resource_budget(
-        planning_tasks,
-        maximum_parallel_cpus=recommended_cpus,
-        maximum_wall_hours=hours,
-        maximum_memory_gib=memory,
-        planning_utilization=float(plan.get("planning_utilization", 0.85)),
-        pilot_budget_fraction=float(plan.get("pilot_budget_fraction", 0.05)),
-        finalization_headroom_fraction=float(
-            plan.get("finalization_headroom_fraction", 0.0)
-        ),
-    )
-    policy = profile["resource_policy"]
-    assert isinstance(policy, Mapping)
-    tasks = replanned["tasks"]
-    assert isinstance(tasks, list)
+    resource_independent_cpu_ceiling = min(limits)
+    recommended_cpus = resource_independent_cpu_ceiling
+    replanning_iterations = 0
+    while True:
+        replanning_iterations += 1
+        replanned = plan_campaign_resource_budget(
+            planning_tasks,
+            maximum_parallel_cpus=recommended_cpus,
+            maximum_wall_hours=hours,
+            maximum_memory_gib=memory,
+            planning_utilization=float(plan.get("planning_utilization", 0.85)),
+            pilot_budget_fraction=float(plan.get("pilot_budget_fraction", 0.05)),
+            finalization_headroom_fraction=float(
+                plan.get("finalization_headroom_fraction", 0.0)
+            ),
+            memory_safety_factor=float(policy["memory_safety_factor"]),
+            memory_overhead_gib=float(policy["memory_overhead_gib"]),
+            minimum_scheduler_memory_gib=float(policy["minimum_memory_gib"]),
+        )
+        tasks = replanned["tasks"]
+        assert isinstance(tasks, list)
+        concurrent = _planned_resource_wave_memory(replanned, tasks)
+        planned_cpu_peak = int(concurrent["maximum_planned_resource_wave_cpus"])
+        if (
+            replanned["feasibility_status"] != "feasible"
+            or planned_cpu_peak <= 0
+            or planned_cpu_peak >= recommended_cpus
+            or replanning_iterations >= 8
+        ):
+            break
+        recommended_cpus = planned_cpu_peak
+        if "aggregate_memory_resource_waves" not in limiting_factors:
+            limiting_factors.append("aggregate_memory_resource_waves")
     largest = max(
         tasks,
         key=lambda row: float(
@@ -637,9 +692,6 @@ def advise_slurm_capacity(
         float(largest["estimated_peak_memory_gib_at_selected_observations"]),
         memory,
         policy,
-    )
-    concurrent = _maximum_concurrent_memory(
-        tasks, recommended_cpus, memory, policy
     )
     wall_minutes = max(
         float(row.get("estimated_wall_hours_at_effective_cpu_cap") or 0.0)
@@ -671,10 +723,17 @@ def advise_slurm_capacity(
         "requested_wall_hours": hours,
         "cpu_capacity": {
             "workflow_useful_parallel_cpu_ceiling": useful_peak,
+            "resource_independent_parallel_cpu_ceiling": (
+                resource_independent_cpu_ceiling
+            ),
+            "planned_resource_wave_cpu_peak": concurrent[
+                "maximum_planned_resource_wave_cpus"
+            ],
             "live_scheduler_simultaneous_cpu_ceiling": scheduler_ceiling,
             "user_cpu_ceiling": cpu_ceiling,
             "recommended_maximum_parallel_cpus": recommended_cpus,
             "limiting_factors_considered": limiting_factors,
+            "resource_bounded_replanning_iterations": replanning_iterations,
         },
         "replanned_campaign": {
             "task_selection": {
@@ -685,6 +744,7 @@ def advise_slurm_capacity(
                 ),
                 "executable_task_count": len(planning_tasks),
                 "excluded_nonexecuting_planner_task_ids": excluded_task_ids,
+                "legacy_memory_model_adjustments": legacy_memory_adjustments,
             },
             "feasibility_status": replanned["feasibility_status"],
             "raw_capacity_cpu_hours": replanned["raw_capacity_cpu_hours"],
@@ -703,8 +763,9 @@ def advise_slurm_capacity(
             **concurrent,
             "interpretation": (
                 "Per-task memory changes with the selected observation count. "
-                "Concurrent memory is a conservative dependency-stage packing estimate, "
-                "not a node reservation."
+                "The campaign memory value limits the sum of safety-adjusted "
+                "requests in each planned dependency wave; it is not a per-task "
+                "allowance or a single-node reservation."
             ),
         },
         "queue_forecast": {
@@ -744,14 +805,12 @@ def render_capacity_markdown(report: Mapping[str, object]) -> str:
         if not isinstance(placement, Mapping)
         else str(placement.get("status"))
     )
-    memory_ceiling_note = (
-        " (clipped; below the safety-margin estimate)"
-        if memory.get("safety_margin_clipped_by_campaign_ceiling") else ""
-    )
     lines = [
         "# Slurm capacity advice",
         "",
         f"- Useful workflow maximum: {cpus['workflow_useful_parallel_cpu_ceiling']} CPUs",
+        f"- Planned CPU peak after memory packing: "
+        f"{cpus['planned_resource_wave_cpu_peak']} CPUs",
         f"- Recommended request: {cpus['recommended_maximum_parallel_cpus']} CPUs",
         f"- Requested duration: {report['requested_wall_hours']:g} hours",
         f"- CPU-hour envelope: {campaign['raw_capacity_cpu_hours']:g}",
@@ -762,9 +821,9 @@ def render_capacity_markdown(report: Mapping[str, object]) -> str:
         f"- Largest planned task working set: {memory['planned_working_set_gib']:.2f} GiB",
         f"- Scheduler memory needed with safety margin: "
         f"{memory['unbounded_scheduler_request_gib']:.2f} GiB",
-        f"- Scheduler memory after campaign ceiling: "
-        f"{memory['scheduler_request_gib']:.2f} GiB{memory_ceiling_note}",
-        f"- Conservative concurrent scheduler memory: "
+        f"- Aggregate campaign memory ceiling: "
+        f"{campaign['maximum_memory_gib']:.2f} GiB",
+        f"- Largest planned concurrent scheduler-memory wave: "
         f"{memory['maximum_concurrent_scheduler_request_gib']:.2f} GiB",
         f"- Largest-task placement: {placement_status}",
         "",

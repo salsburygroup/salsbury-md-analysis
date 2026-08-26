@@ -9,6 +9,7 @@ from salsbury_md_analysis.resource_planning import (
     plan_campaign_resource_budget,
     recommend_frame_budget,
     recommend_quadratic_observation_budget,
+    pack_resource_waves,
 )
 
 
@@ -338,9 +339,9 @@ class ResourcePlanningTests(unittest.TestCase):
         )
         memory = plan["memory_feasibility"]
         self.assertFalse(memory["fits_configured_memory"])
-        self.assertEqual(memory["minimum_required_memory_gib"], 7.25)
+        self.assertEqual(memory["minimum_required_memory_gib"], 8.0)
         self.assertEqual(memory["recommended_memory_gib"], 8.0)
-        self.assertEqual(memory["memory_shortfall_gib"], 3.25)
+        self.assertEqual(memory["memory_shortfall_gib"], 4.0)
         self.assertEqual(
             memory["modules_to_disable_to_fit_configured_memory"],
             ["large_module"],
@@ -354,6 +355,77 @@ class ResourcePlanningTests(unittest.TestCase):
         self.assertEqual(
             memory["oversized_tasks"][0]["task_id"], "view:global:large"
         )
+
+    def test_buffered_memory_controls_feasibility_and_resource_waves(self):
+        tasks = []
+        for task_id in ("first", "second"):
+            tasks.append({
+                "task_id": task_id,
+                "module_id": task_id,
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [100],
+                "minimum_frames_per_replica": 10,
+                "maximum_frames_per_replica": 100,
+                "cpu_seconds_per_physical_frame": 1.0,
+                "estimated_peak_memory_gib": 60.0,
+            })
+        plan = plan_campaign_resource_budget(
+            tasks,
+            maximum_parallel_cpus=2,
+            maximum_wall_hours=2.0,
+            maximum_memory_gib=100.0,
+            memory_safety_factor=1.5,
+            memory_overhead_gib=1.0,
+            minimum_scheduler_memory_gib=2.0,
+        )
+        self.assertEqual(plan["feasibility_status"], "feasible")
+        waves = plan["stages"][0]["resource_waves"]
+        self.assertEqual(len(waves), 2)
+        self.assertTrue(all(wave["memory_gib"] == 91.0 for wave in waves))
+        self.assertTrue(all(wave["cpu_slots"] == 1 for wave in waves))
+
+    def test_deac_memory_margin_can_make_raw_working_set_infeasible(self):
+        plan = plan_campaign_resource_budget(
+            [{
+                "task_id": "structural-qc",
+                "module_id": "structural_integrity_qc",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [100],
+                "minimum_frames_per_replica": 10,
+                "maximum_frames_per_replica": 100,
+                "cpu_seconds_per_physical_frame": 0.01,
+                "estimated_peak_memory_gib": 126.491,
+            }],
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=1.0,
+            maximum_memory_gib=185.0,
+            memory_safety_factor=1.5,
+            memory_overhead_gib=1.0,
+            minimum_scheduler_memory_gib=2.0,
+        )
+        memory = plan["memory_feasibility"]
+        self.assertEqual(plan["feasibility_status"], "infeasible")
+        self.assertEqual(memory["minimum_required_working_set_gib"], 126.491)
+        self.assertEqual(memory["minimum_required_memory_gib"], 191.0)
+        self.assertEqual(
+            memory["modules_to_disable_to_fit_configured_memory"],
+            ["structural_integrity_qc"],
+        )
+
+    def test_resource_wave_packer_rejects_one_oversized_task(self):
+        with self.assertRaisesRegex(ResourcePlanningError, "campaign limit"):
+            pack_resource_waves(
+                [{
+                    "item_id": "oversized",
+                    "cpu_slots": 1,
+                    "memory_gib": 101,
+                    "wall_hours": 1,
+                }],
+                maximum_parallel_cpus=2,
+                maximum_parallel_memory_gib=100,
+            )
 
     def test_measured_memory_scales_from_observation_coverage(self):
         plan = plan_campaign_resource_budget(

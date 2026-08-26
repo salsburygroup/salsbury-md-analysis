@@ -38,8 +38,9 @@ Prepare with that config and run `./run-local.sh`. The dependency-aware executor
 runs phases in order and atomically reserves both CPU slots and planner-derived
 memory for independent tasks within a phase. Their combined reservations cannot
 exceed `maximum_parallel_cpus` or `maximum_memory_gib`.
-The memory value is a campaign ceiling rather than a prediction or an amount
-preallocated at startup. Each task keeps its own estimate in
+The memory value is an aggregate campaign ceiling rather than a per-task limit,
+a prediction, or an amount preallocated at startup. Each task keeps both its
+working-set estimate and safety-adjusted reservation in
 `campaign-resource-plan.json`, and completed reports record measured peak
 resident memory for later calibration.
 `maximum_hours_per_cpu` is the complete local campaign wall-time deadline, and each
@@ -73,13 +74,13 @@ module or clustering-method switches and their dependents, and replans. Review
 memory only; CPU-hour, critical-path, calibration, and scratch limits still
 fail closed.
 
-Slurm requests can be larger than the raw planner estimate because the site
-profile and execution adapter add explicit safety margins. When one generated
-array contains tasks with different scheduler requirements, the launcher splits
-it into resource-matched subarrays. Each subarray receives its own memory, time,
-partition, and concurrency settings. The original dependency boundary remains
-in place, and downstream work waits for every subarray. The mappings remain
-visible in `scheduler-resource-requests.json`.
+Slurm requests can be larger than the estimated working set because the site
+profile adds explicit safety margins. Preparation applies those margins before
+testing memory feasibility. It then packs individual array elements and ordinary
+jobs into deterministic resource waves. The sum of CPU slots and the sum of
+buffered memory requests in one wave cannot exceed the two campaign caps.
+`submit.sh` submits each wave with `afterok` dependencies on the preceding wave;
+the complete mapping remains visible in `scheduler-resource-requests.json`.
 
 ## Slurm cluster
 
@@ -110,16 +111,14 @@ status, and cancel commands; account, Unix group, QoS, and role-specific partiti
 Python and package paths; environment setup commands and variables; shared-write
 umask; storage and scratch roots; and conservative resource policy metadata. The
 adapter converts every planner task estimate to a time and memory request using the
-profile safety factors. Slurm cannot vary resources within one array job, so the
-adapter submits resource-matched subsets of the original task indices as separate
-arrays. It also shares the original concurrency cap across those submissions; when
-the cap is smaller than the number of resource tiers, later tiers wait for an
-earlier tier. `scheduler-resource-requests.json` records every mapped planner task,
-the safety margin, each submitted tier, selected partition, final request, task
-indices, concurrency allocation, and dependency wave. Only tiers that cross
+profile safety factors. `scheduler-resource-requests.json` records every mapped
+planner task, the safety margin, selected partition, final request, and exact
+aggregate-resource wave. The canonical `submit.sh` submits individual array
+elements when needed so that both CPU and memory are bounded across all jobs that
+can run at the same time. Only requests that cross
 `large_memory_threshold_gib` use the `large_memory` partition role. The generated
 worker retains the largest request as a safe direct-submission fallback, while
-`submit.sh` applies the tier-specific overrides used for a normal campaign launch.
+`submit.sh` applies the task-specific overrides used for a normal campaign launch.
 Copy
 `profiles/slurm/generic-template.json`, review every value with the cluster owner,
 then prepare and run `./submit.sh`. The exact normalized profile is retained beside
@@ -149,12 +148,12 @@ and account/QoS ceilings it can discover, and the smaller recommended CPU count.
 It then reruns the saved resource allocation in memory using that CPU count and
 the supplied duration. The result includes each method's integer stride, selected
 frames, estimated CPU-hours, observation-scaled memory, largest scheduler request,
-and a conservative concurrent-memory estimate.
+and the largest exact resource-wave memory total.
 
 Live inspection uses only `scontrol`, `sacctmgr`, and `squeue`. It does not call
 `sbatch` or `scancel`. `--offline` skips those queries and replans from saved
 evidence only. `--cpu-ceiling` applies a lower personal or project limit, and
-`--maximum-memory-gib` tests a different per-task ceiling without changing the
+`--maximum-memory-gib` tests a different aggregate concurrent-memory ceiling without changing the
 prepared campaign.
 
 Before submission, the queue section can say whether nodes currently have room

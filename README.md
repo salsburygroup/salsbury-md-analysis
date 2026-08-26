@@ -209,9 +209,12 @@ for 24 wall hours. `execution.maximum_parallel_cpus` and
 `execution.maximum_hours_per_cpu` in `analysis-config.json` configure that
 envelope; `--target-wall-hours` is a command-line override for the latter. It
 is not a separate allowance for every method. The estimate includes a 1.5
-timing safety factor. The generated `campaign-resource-plan.json` applies that
-one limit across base trajectory estimators, inherited base analyses, and every
-enabled PCA/FES/clustering/state view. `sampling-plan.json` records the applied
+timing safety factor. Only 85% of the raw CPU-hour envelope is normally planned,
+with separate pilot and finalization reserves removed before scientific work is
+allocated. Slurm's additional per-job time margin is a timeout threshold, not
+extra planned science time. The generated `campaign-resource-plan.json` applies
+the campaign limits across base trajectory estimators, inherited base analyses,
+and every enabled PCA/FES/clustering/state view. `sampling-plan.json` records the applied
 direct-method selections, while each view project records its shared upstream
 selection. Both files report selected frame counts, coverage, and any
 subsampling.
@@ -230,9 +233,19 @@ their measured observation coverage with a square-root relationship and the
 same 10% floor. This avoids charging a tiny solute or short run the unchanged
 allowance of a large, long calibration while retaining substantial headroom.
 
+`execution.maximum_memory_gib` is the maximum simultaneous memory request for
+the complete campaign, not an allowance for every job. The planner first turns
+each estimated working set into a safety-adjusted scheduler request. With the
+DEAC profile this is `ceil(1.5 × working set + 1 GiB)`, with a 2 GiB minimum.
+It then packs independent tasks into dependency waves whose summed CPU and
+memory requests stay within the configured campaign caps. A lower memory cap
+can therefore increase the integer strides or serialize work even when every
+individual task fits. The local executor and the generated `submit.sh` enforce
+the same limits.
+
 For an insufficient memory cap, `campaign-resource-plan.json` and
 `memory-feasibility-report.json` state (1) the largest enabled technical-minimum
-memory estimate, (2) the rounded-up memory request that would retain all enabled
+working-set estimate, (2) the safety-adjusted memory request that would retain all enabled
 work, and (3) every module or clustering-method switch that cannot fit.
 Preparation remains fail-closed by
 default. If the user explicitly accepts a reduced campaign, add

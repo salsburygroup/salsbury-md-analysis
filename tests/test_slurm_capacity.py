@@ -164,9 +164,9 @@ class SlurmCapacityTests(unittest.TestCase):
             report["cpu_capacity"]["live_scheduler_simultaneous_cpu_ceiling"], 8
         )
         self.assertEqual(
-            report["cpu_capacity"]["recommended_maximum_parallel_cpus"], 3
+            report["cpu_capacity"]["recommended_maximum_parallel_cpus"], 2
         )
-        self.assertEqual(report["replanned_campaign"]["raw_capacity_cpu_hours"], 24.0)
+        self.assertEqual(report["replanned_campaign"]["raw_capacity_cpu_hours"], 16.0)
         self.assertEqual(
             report["queue_forecast"]["forecast_quality"],
             "scheduler_projected_for_submitted_job_ids",
@@ -197,7 +197,7 @@ class SlurmCapacityTests(unittest.TestCase):
             short["memory_capacity"]["planned_working_set_gib"],
         )
         self.assertEqual(
-            long["cpu_capacity"]["recommended_maximum_parallel_cpus"], 3
+            long["cpu_capacity"]["recommended_maximum_parallel_cpus"], 2
         )
 
     def test_cpu_ceiling_is_optional_policy_limit(self):
@@ -237,6 +237,55 @@ class SlurmCapacityTests(unittest.TestCase):
             report["cpu_capacity"]["workflow_useful_parallel_cpu_ceiling"], 2
         )
         self.assertNotEqual(report["memory_capacity"]["largest_task_id"], "task-2")
+
+    def test_legacy_memory_models_are_repaired_during_read_only_replanning(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            prepared = self._prepared_campaign(Path(temporary))
+            plan_path = prepared / "campaign-resource-plan.json"
+            plan = json.loads(plan_path.read_text())
+            plan["tasks"][0].update({
+                "estimated_peak_memory_gib": 2.0,
+                "measured_memory_cost_model": {
+                    "calibration_observations": 10,
+                    "calibration_memory_gib": 10.0,
+                    "memory_exponent": 0.5,
+                    "minimum_observation_scale": 0.1,
+                },
+                "calibration_complete_measurement_count": 1,
+                "calibration_observation_coverage": 10,
+            })
+            plan["tasks"][1].update({
+                "measured_memory_cost_model": {
+                    "calibration_observations": 1,
+                    "calibration_memory_gib": 20.0,
+                    "memory_exponent": 0.5,
+                    "minimum_observation_scale": 0.1,
+                },
+                "calibration_complete_measurement_count": 0,
+                "calibration_observation_coverage": 0,
+            })
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            report = advise_slurm_capacity(
+                prepared, wall_hours=2.0, live=False
+            )
+        adjustments = report["replanned_campaign"]["task_selection"][
+            "legacy_memory_model_adjustments"
+        ]
+        self.assertEqual(
+            {row["change"] for row in adjustments},
+            {
+                "applied_saved_system_workload_scaling",
+                "removed_censored_only_observation_scaling",
+            },
+        )
+        first = next(
+            row for row in report["replanned_campaign"]["tasks"]
+            if row["task_id"] == "task-0"
+        )
+        self.assertEqual(
+            first["measured_memory_cost_model"]["calibration_memory_gib"],
+            2.0,
+        )
 
     def test_invalid_job_id_fails_closed(self):
         with tempfile.TemporaryDirectory() as temporary:

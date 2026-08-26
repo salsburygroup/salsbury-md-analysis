@@ -502,15 +502,19 @@ def _campaign_direct_resource_plan(
             "measured_memory_multiplier": memory_atom_scale,
             **({
                 "measured_memory_cost_model": {
-                    "calibration_observations": max(
-                        1,
-                        int(measured["maximum_measured_observation_count"]),
+                    "calibration_observations": int(
+                        measured["maximum_measured_observation_count"]
                     ),
-                    "calibration_memory_gib": reference_memory_gib,
+                    "calibration_memory_gib": memory_gib,
                     "memory_exponent": 0.5,
                     "minimum_observation_scale": 0.1,
+                    "workload_scaling_applied": True,
                 },
-            } if measured is not None else {}),
+            } if (
+                measured is not None
+                and int(measured["complete_measurement_count"]) > 0
+                and int(measured["maximum_measured_observation_count"]) > 0
+            ) else {}),
             "priority_weight": _CAMPAIGN_PRIORITY.get(module_id, 4.0),
             "calibration_status": calibration_status,
             "calibration_id": calibration_id,

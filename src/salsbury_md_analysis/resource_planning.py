@@ -20,6 +20,86 @@ class ResourcePlanningError(ValueError):
     """Raised when benchmark evidence cannot support a resource estimate."""
 
 
+def pack_resource_waves(
+    items: Sequence[Mapping[str, object]],
+    *,
+    maximum_parallel_cpus: int,
+    maximum_parallel_memory_gib: float,
+) -> list[Dict[str, object]]:
+    """Pack independent tasks into deterministic CPU-and-memory bounded waves."""
+
+    if maximum_parallel_cpus <= 0 or maximum_parallel_memory_gib <= 0.0:
+        raise ResourcePlanningError("resource-wave limits must be positive")
+    normalized = []
+    for index, item in enumerate(items):
+        item_id = str(item.get("item_id", f"item-{index}"))
+        cpus = int(item.get("cpu_slots", 1))
+        memory = float(item.get("memory_gib", 0.0))
+        wall = float(item.get("wall_hours", 0.0))
+        if cpus <= 0 or memory <= 0.0 or wall < 0.0:
+            raise ResourcePlanningError(
+                f"resource-wave item {item_id} has invalid resources"
+            )
+        if cpus > maximum_parallel_cpus:
+            raise ResourcePlanningError(
+                f"resource-wave item {item_id} requests {cpus} CPUs, exceeding "
+                f"the campaign limit {maximum_parallel_cpus}"
+            )
+        if memory > maximum_parallel_memory_gib + 1.0e-12:
+            raise ResourcePlanningError(
+                f"resource-wave item {item_id} requests {memory:g} GiB, exceeding "
+                f"the campaign limit {maximum_parallel_memory_gib:g} GiB"
+            )
+        normalized.append({
+            **dict(item),
+            "item_id": item_id,
+            "cpu_slots": cpus,
+            "memory_gib": memory,
+            "wall_hours": wall,
+        })
+    ordered = sorted(
+        normalized,
+        key=lambda row: (
+            -float(row["memory_gib"]),
+            -int(row["cpu_slots"]),
+            -float(row["wall_hours"]),
+            str(row["item_id"]),
+        ),
+    )
+    waves: list[Dict[str, object]] = []
+    for item in ordered:
+        selected_wave: Optional[Dict[str, object]] = None
+        for wave in waves:
+            if (
+                int(wave["cpu_slots"]) + int(item["cpu_slots"])
+                <= maximum_parallel_cpus
+                and float(wave["memory_gib"]) + float(item["memory_gib"])
+                <= maximum_parallel_memory_gib + 1.0e-12
+            ):
+                selected_wave = wave
+                break
+        if selected_wave is None:
+            selected_wave = {
+                "wave_index": len(waves),
+                "cpu_slots": 0,
+                "memory_gib": 0.0,
+                "wall_hours": 0.0,
+                "items": [],
+            }
+            waves.append(selected_wave)
+        selected_wave["cpu_slots"] = (
+            int(selected_wave["cpu_slots"]) + int(item["cpu_slots"])
+        )
+        selected_wave["memory_gib"] = (
+            float(selected_wave["memory_gib"]) + float(item["memory_gib"])
+        )
+        selected_wave["wall_hours"] = max(
+            float(selected_wave["wall_hours"]), float(item["wall_hours"])
+        )
+        selected_wave["items"].append(dict(item))  # type: ignore[union-attr]
+    return waves
+
+
 _ALTERNATIVE_CLUSTERING_FIT_PROFILES: Mapping[str, Mapping[str, object]] = {
     "pam": {
         "reference_fit_observation_ceiling": 6_000,
@@ -312,6 +392,9 @@ def plan_campaign_resource_budget(
     planning_utilization: float = 0.85,
     pilot_budget_fraction: float = 0.05,
     finalization_headroom_fraction: float = 0.0,
+    memory_safety_factor: float = 1.0,
+    memory_overhead_gib: float = 0.0,
+    minimum_scheduler_memory_gib: float = 0.0,
 ) -> Dict[str, object]:
     """Allocate one hard CPU/wall envelope across an analysis campaign.
 
@@ -335,6 +418,15 @@ def plan_campaign_resource_budget(
         )
     wall_hours = _positive_number(maximum_wall_hours, "maximum_wall_hours")
     memory_gib = _positive_number(maximum_memory_gib, "maximum_memory_gib")
+    memory_factor = _positive_number(
+        memory_safety_factor, "memory_safety_factor"
+    )
+    memory_overhead = _nonnegative_number(
+        memory_overhead_gib, "memory_overhead_gib"
+    )
+    minimum_scheduler_memory = _nonnegative_number(
+        minimum_scheduler_memory_gib, "minimum_scheduler_memory_gib"
+    )
     utilization = _fraction(planning_utilization, "planning_utilization")
     pilot_fraction = _fraction(
         pilot_budget_fraction, "pilot_budget_fraction", allow_zero=True
@@ -668,6 +760,16 @@ def plan_campaign_resource_budget(
             )
         return float(row["estimated_peak_memory_gib"])
 
+    def task_scheduler_memory(
+        row: Mapping[str, object], counts: Sequence[int]
+    ) -> float:
+        return max(
+            minimum_scheduler_memory,
+            float(math.ceil(
+                task_memory(row, counts) * memory_factor + memory_overhead
+            )),
+        )
+
     def known_costs(selection: Mapping[str, Sequence[int]]) -> Dict[str, float]:
         costs = {}
         for row in normalized:
@@ -698,10 +800,37 @@ def plan_campaign_resource_budget(
                 )
                 for bundle_id, bundle_rows in bundles.items()
             }
+            bundle_resources = []
+            for bundle_id, bundle_rows in bundles.items():
+                bundle_resources.append({
+                    "item_id": bundle_id,
+                    "cpu_slots": max(
+                        min(maximum_parallel_cpus, int(row["effective_cpu_cap"]))
+                        for row in bundle_rows
+                    ),
+                    "memory_gib": max(
+                        task_scheduler_memory(
+                            row, selection[str(row["task_id"])]
+                        )
+                        for row in bundle_rows
+                    ),
+                    "wall_hours": bundle_walls[bundle_id],
+                })
+            try:
+                resource_waves = pack_resource_waves(
+                    bundle_resources,
+                    maximum_parallel_cpus=maximum_parallel_cpus,
+                    maximum_parallel_memory_gib=memory_gib,
+                )
+            except ResourcePlanningError:
+                return None, []
             longest = max(bundle_walls.values())
             lower_bound = max(
                 stage_cpu_hours / maximum_parallel_cpus,
                 longest,
+            )
+            packed_wall = sum(
+                float(wave["wall_hours"]) for wave in resource_waves
             )
             useful = sum(
                 max(int(row["effective_cpu_cap"]) for row in bundle_rows)
@@ -715,10 +844,12 @@ def plan_campaign_resource_budget(
                 "maximum_useful_parallel_cpus": useful,
                 "planned_parallel_cpus": min(maximum_parallel_cpus, useful),
                 "estimated_wall_hours_lower_bound": lower_bound,
+                "estimated_wall_hours_with_resource_waves": packed_wall,
+                "resource_waves": resource_waves,
                 "task_ids": [str(row["task_id"]) for row in rows],
                 "execution_bundle_wall_hours": bundle_walls,
             })
-            total_wall += lower_bound
+            total_wall += packed_wall
         return total_wall, stages
 
     calibration_required = sorted(
@@ -771,22 +902,30 @@ def plan_campaign_resource_budget(
                 "workflow_id": str(row.get("workflow_id", "base")),
                 "task_scope": str(row.get("task_scope", "unspecified")),
                 "configuration_switch": memory_configuration_switch(row),
-                "required_memory_gib": task_memory(
+                "required_working_set_gib": task_memory(
+                    row, selected[str(row["task_id"])]
+                ),
+                "required_memory_gib": task_scheduler_memory(
                     row, selected[str(row["task_id"])]
                 ),
             }
             for row in normalized
         ),
-        key=lambda row: (-float(row["required_memory_gib"]), str(row["task_id"])),
+        key=lambda row: (
+            -float(row["required_memory_gib"]), str(row["task_id"])
+        ),
     )
     minimum_required_memory_gib = max(
-        float(row["required_memory_gib"]) for row in minimum_memory_rows
+        float(row["required_memory_gib"])
+        for row in minimum_memory_rows
     )
     oversized_memory_rows = [
         {
             **row,
             "configured_memory_gib": memory_gib,
-            "shortfall_gib": float(row["required_memory_gib"]) - memory_gib,
+            "shortfall_gib": (
+                float(row["required_memory_gib"]) - memory_gib
+            ),
         }
         for row in minimum_memory_rows
         if float(row["required_memory_gib"]) > memory_gib + 1.0e-12
@@ -867,7 +1006,7 @@ def plan_campaign_resource_budget(
                 delta = proposed_total - current_total
                 proposed_wall, _ = schedule_summary(proposed)
                 proposed_memory_fits = all(
-                    task_memory(row, proposed[str(row["task_id"])])
+                    task_scheduler_memory(row, proposed[str(row["task_id"])])
                     <= memory_gib + 1.0e-12
                     for row in normalized
                 )
@@ -912,6 +1051,7 @@ def plan_campaign_resource_budget(
         source_count = sum(source_counts)
         all_frames = counts == source_counts
         selected_memory_gib = task_memory(row, counts)
+        selected_scheduler_memory_gib = task_scheduler_memory(row, counts)
         task_reports.append({
             **row,
             "selected_physical_frames_per_replica": counts,
@@ -943,6 +1083,9 @@ def plan_campaign_resource_budget(
             "estimated_cpu_hours": final_costs.get(task_id),
             "estimated_peak_memory_gib_at_selected_observations": (
                 selected_memory_gib
+            ),
+            "estimated_scheduler_memory_gib_at_selected_observations": (
+                selected_scheduler_memory_gib
             ),
             "estimated_wall_hours_at_effective_cpu_cap": (
                 final_costs[task_id]
@@ -993,6 +1136,10 @@ def plan_campaign_resource_budget(
         "maximum_parallel_cpus_input": maximum_parallel_cpus,
         "maximum_wall_hours_input": wall_hours,
         "maximum_memory_gib_input": memory_gib,
+        "maximum_parallel_memory_gib_input": memory_gib,
+        "scheduler_memory_safety_factor": memory_factor,
+        "memory_overhead_gib": memory_overhead,
+        "minimum_scheduler_memory_gib": minimum_scheduler_memory,
         "raw_capacity_cpu_hours": raw_cpu_hours,
         "planning_utilization": utilization,
         "planned_capacity_cpu_hours": planned_cpu_hours,
@@ -1014,6 +1161,10 @@ def plan_campaign_resource_budget(
         "memory_feasibility": {
             "configured_memory_gib": memory_gib,
             "minimum_required_memory_gib": minimum_required_memory_gib,
+            "minimum_required_working_set_gib": max(
+                float(row["required_working_set_gib"])
+                for row in minimum_memory_rows
+            ),
             "recommended_memory_gib": float(
                 math.ceil(minimum_required_memory_gib)
             ),
@@ -1035,6 +1186,10 @@ def plan_campaign_resource_budget(
                 if oversized_memory_rows else
                 "All enabled task minima fit the configured memory ceiling."
             ),
+            "memory_limit_semantics": (
+                "maximum simultaneous safety-adjusted scheduler memory across "
+                "all active campaign tasks"
+            ),
         },
         "minimum_stages": minimum_stages,
         "stages": final_stages,
@@ -1043,7 +1198,9 @@ def plan_campaign_resource_budget(
         "execution_contract": (
             "The CPU and wall limits apply to the complete campaign. Enabled tasks "
             "receive declared minimum physical-frame coverage before additional "
-            "frames are allocated. Infeasible or uncalibrated plans fail closed; "
+            "frames are allocated. Dependency stages are packed into waves that "
+            "respect both aggregate CPU and safety-adjusted memory ceilings. "
+            "Infeasible or uncalibrated plans fail closed; "
             "no module is silently disabled and no scientific minimum is silently "
             "relaxed."
         ),

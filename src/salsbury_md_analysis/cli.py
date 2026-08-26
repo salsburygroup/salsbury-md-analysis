@@ -1369,8 +1369,9 @@ def build_parser() -> argparse.ArgumentParser:
     capacity_parser.add_argument(
         "--maximum-memory-gib", type=float,
         help=(
-            "Optional per-task memory ceiling; the prepared campaign value is used "
-            "when omitted."
+            "Optional aggregate ceiling for the sum of simultaneously active, "
+            "safety-adjusted task memory requests; the prepared campaign value "
+            "is used when omitted."
         ),
     )
     capacity_parser.add_argument(
