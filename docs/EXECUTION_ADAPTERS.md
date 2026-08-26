@@ -130,6 +130,41 @@ trusted, version-controlled profile. Scheduler command fields accept one executa
 name or absolute path, environment variable names are validated, and additional
 directives must begin with `#SBATCH --`.
 
+## Optional capacity advice
+
+Capacity inspection is separate from preparation and submission. Run it only when
+you want a live planning answer:
+
+```bash
+salsbury-md-analysis advise-slurm-capacity prepared-analysis \
+  --wall-hours 24 --format markdown
+```
+
+The command reads `campaign-resource-plan.json` and `slurm-profile.json`. It first
+reports the maximum parallelism that the workflow graph can use, the live Slurm
+and account/QoS ceilings it can discover, and the smaller recommended CPU count.
+It then reruns the saved resource allocation in memory using that CPU count and
+the supplied duration. The result includes each method's integer stride, selected
+frames, estimated CPU-hours, observation-scaled memory, largest scheduler request,
+and a conservative concurrent-memory estimate.
+
+Live inspection uses only `scontrol`, `sacctmgr`, and `squeue`. It does not call
+`sbatch` or `scancel`. `--offline` skips those queries and replans from saved
+evidence only. `--cpu-ceiling` applies a lower personal or project limit, and
+`--maximum-memory-gib` tests a different per-task ceiling without changing the
+prepared campaign.
+
+Before submission, the queue section can say whether nodes currently have room
+for the largest request and summarize queue pressure. That is not a start-time
+reservation because priority, fair-share, backfill, and later submissions can
+change placement. After submission, repeat `--job-id JOB_ID` for pending jobs to
+include Slurm's own projected start times. JSON is the default output and is the
+best interface for ChatGPTWork; `--format markdown` gives a shorter human-readable
+summary.
+
+This command is optional. Local execution, generic Slurm submission, and every
+analysis module work without invoking it, and it adds no Python dependency.
+
 ## Salsbury-group DEAC default
 
 Use `profiles/analysis/deac-default.json`. It selects

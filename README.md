@@ -149,6 +149,12 @@ configured aggregate CPU and memory caps; Slurm requests are derived from the sa
 planner estimates and retained in `scheduler-resource-requests.json`. See
 [`docs/EXECUTION_ADAPTERS.md`](docs/EXECUTION_ADAPTERS.md).
 
+On a Slurm login node, the optional `advise-slurm-capacity` command can inspect
+a prepared campaign before submission. It reports the cluster ceiling, the
+smaller workflow-useful CPU maximum, sampling and memory estimates for a supplied
+duration, current node fit, and queue pressure. It never runs during normal
+preparation and never submits, cancels, or changes a job.
+
 `--connectivity` is an equivalent, clearer spelling of `--psf` and also accepts
 portable `salsbury-bonds-v1` JSON plus Amber PRMTOP/PARM7 inputs. This allows a
 validated bond graph exported from another engine to enter the same generic

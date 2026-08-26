@@ -148,6 +148,14 @@ arrays and per-system preflights so their simultaneous CPU reservations do not
 exceed `maximum_parallel_cpus`. This controls active compute allocation; queue
 wait and scheduler backfill are not counted as analysis wall time.
 
+`advise-slurm-capacity` is an optional, read-only step for prepared Slurm
+campaigns. It can replace the configured CPU count with the smaller of the live
+scheduler ceiling and the workflow's useful parallelism, then rerun the saved
+sampling allocation for a requested duration. Because selected observations are
+recomputed, observation-scaled memory is recomputed as well. The command reports
+per-task and conservative concurrent memory separately; it does not alter the
+config, regenerate workers, or submit work.
+
 The `exports` section separates feature/alignment atoms from coordinate output.
 The default coordinate payload retains the complete non-water molecular system
 (including hydrogens and chain-associated ligands, cofactors, and ions), while
