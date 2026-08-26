@@ -110,6 +110,18 @@ class SlurmCapacityTests(unittest.TestCase):
         (prepared / "campaign-resource-plan.json").write_text(
             json.dumps(plan), encoding="utf-8"
         )
+        (prepared / "scheduler-resource-requests.json").write_text(
+            json.dumps({
+                "scheduler_resource_requests_schema": (
+                    "salsbury-scheduler-resource-requests-v1"
+                ),
+                "tasks": [
+                    {"planner_task_ids": [f"task-{index}"]}
+                    for index in range(3)
+                ],
+            }),
+            encoding="utf-8",
+        )
         (prepared / "slurm-profile.json").write_text(json.dumps({
             "slurm_profile_schema": "salsbury-slurm-profile-v1",
             "profile_id": "test",
@@ -197,6 +209,34 @@ class SlurmCapacityTests(unittest.TestCase):
         self.assertEqual(
             report["cpu_capacity"]["recommended_maximum_parallel_cpus"], 1
         )
+
+    def test_scheduler_manifest_excludes_nonexecuting_planner_rows(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            prepared = self._prepared_campaign(Path(temporary))
+            (prepared / "scheduler-resource-requests.json").write_text(
+                json.dumps({
+                    "scheduler_resource_requests_schema": (
+                        "salsbury-scheduler-resource-requests-v1"
+                    ),
+                    "tasks": [
+                        {"planner_task_ids": ["task-0"]},
+                        {"planner_task_ids": ["task-1"]},
+                    ],
+                }),
+                encoding="utf-8",
+            )
+            report = advise_slurm_capacity(
+                prepared, wall_hours=2.0, live=False
+            )
+        selection = report["replanned_campaign"]["task_selection"]
+        self.assertEqual(selection["executable_task_count"], 2)
+        self.assertEqual(
+            selection["excluded_nonexecuting_planner_task_ids"], ["task-2"]
+        )
+        self.assertEqual(
+            report["cpu_capacity"]["workflow_useful_parallel_cpu_ceiling"], 2
+        )
+        self.assertNotEqual(report["memory_capacity"]["largest_task_id"], "task-2")
 
     def test_invalid_job_id_fails_closed(self):
         with tempfile.TemporaryDirectory() as temporary:

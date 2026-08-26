@@ -331,17 +331,37 @@ def _query_scheduler(
     }
 
 
-def _workflow_useful_cpu_peak(plan: Mapping[str, object]) -> int:
-    stages = plan.get("stages") or plan.get("minimum_stages")
-    if not isinstance(stages, list) or not stages:
-        raise SlurmCapacityError("campaign resource plan lacks dependency stages")
-    values = [
-        int(row["maximum_useful_parallel_cpus"])
-        for row in stages
-        if isinstance(row, Mapping) and row.get("maximum_useful_parallel_cpus") is not None
-    ]
+def _executable_planner_task_ids(prepared: Path) -> Optional[set[str]]:
+    """Return planner rows that have a generated scheduler execution task."""
+
+    path = prepared / "scheduler-resource-requests.json"
+    if not path.exists():
+        return None
+    document = load_json(path)
+    rows = document.get("tasks") if isinstance(document, Mapping) else None
+    if not isinstance(rows, list):
+        raise SlurmCapacityError("scheduler-resource-requests.json is invalid")
+    task_ids = {
+        str(task_id)
+        for row in rows
+        if isinstance(row, Mapping)
+        for task_id in row.get("planner_task_ids", [])
+        if isinstance(task_id, str) and task_id
+    }
+    return task_ids or None
+
+
+def _workflow_useful_cpu_peak(tasks: Sequence[Mapping[str, object]]) -> int:
+    stages: Dict[int, Dict[str, int]] = {}
+    for row in tasks:
+        stage = int(row["dependency_stage"])
+        bundle = str(row.get("execution_bundle_id", row["task_id"]))
+        cap = max(1, int(row.get("effective_cpu_cap", 1)))
+        bundle_caps = stages.setdefault(stage, {})
+        bundle_caps[bundle] = max(cap, bundle_caps.get(bundle, 0))
+    values = [sum(bundles.values()) for bundles in stages.values()]
     if not values:
-        raise SlurmCapacityError("campaign resource plan lacks useful CPU limits")
+        raise SlurmCapacityError("campaign resource plan lacks executable tasks")
     return max(values)
 
 
@@ -532,6 +552,24 @@ def advise_slurm_capacity(
     plan = load_json(plan_path)
     if not isinstance(plan, dict) or not isinstance(plan.get("tasks"), list):
         raise SlurmCapacityError("campaign-resource-plan.json is invalid")
+    all_plan_tasks = [
+        row for row in plan["tasks"] if isinstance(row, Mapping)
+    ]
+    executable_task_ids = _executable_planner_task_ids(prepared)
+    planning_tasks = (
+        all_plan_tasks
+        if executable_task_ids is None
+        else [
+            row for row in all_plan_tasks
+            if str(row.get("task_id")) in executable_task_ids
+        ]
+    )
+    excluded_task_ids = sorted({
+        str(row.get("task_id")) for row in all_plan_tasks
+        if row not in planning_tasks
+    })
+    if not planning_tasks:
+        raise SlurmCapacityError("no executable planner tasks remain")
     hours = _positive_number(wall_hours, "wall_hours")
     original_memory = _positive_number(
         plan.get("maximum_memory_gib_input"),
@@ -551,7 +589,7 @@ def advise_slurm_capacity(
 
     profile_source = slurm_profile_path or (prepared / "slurm-profile.json")
     profile = load_slurm_profile(profile_source)
-    useful_peak = _workflow_useful_cpu_peak(plan)
+    useful_peak = _workflow_useful_cpu_peak(planning_tasks)
     live_report: Optional[Dict[str, object]] = None
     scheduler_ceiling: Optional[int] = None
     if live:
@@ -575,7 +613,7 @@ def advise_slurm_capacity(
     recommended_cpus = min(limits)
 
     replanned = plan_campaign_resource_budget(
-        plan["tasks"],
+        planning_tasks,
         maximum_parallel_cpus=recommended_cpus,
         maximum_wall_hours=hours,
         maximum_memory_gib=memory,
@@ -639,6 +677,15 @@ def advise_slurm_capacity(
             "limiting_factors_considered": limiting_factors,
         },
         "replanned_campaign": {
+            "task_selection": {
+                "source": (
+                    "scheduler-resource-requests.json"
+                    if executable_task_ids is not None
+                    else "campaign-resource-plan.json_fallback"
+                ),
+                "executable_task_count": len(planning_tasks),
+                "excluded_nonexecuting_planner_task_ids": excluded_task_ids,
+            },
             "feasibility_status": replanned["feasibility_status"],
             "raw_capacity_cpu_hours": replanned["raw_capacity_cpu_hours"],
             "estimated_selected_cpu_hours": replanned["estimated_selected_cpu_hours"],

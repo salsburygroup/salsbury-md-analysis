@@ -140,7 +140,10 @@ salsbury-md-analysis advise-slurm-capacity prepared-analysis \
   --wall-hours 24 --format markdown
 ```
 
-The command reads `campaign-resource-plan.json` and `slurm-profile.json`. It first
+The command reads `campaign-resource-plan.json`, `scheduler-resource-requests.json`,
+and `slurm-profile.json`. The scheduler-request manifest limits the calculation to
+planner rows that have generated execution tasks, avoiding double counting of
+pooled planning rows that were replaced by per-system chemistry tasks. It first
 reports the maximum parallelism that the workflow graph can use, the live Slurm
 and account/QoS ceilings it can discover, and the smaller recommended CPU count.
 It then reruns the saved resource allocation in memory using that CPU count and
