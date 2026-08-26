@@ -2,6 +2,13 @@
 
 ## 0.2.0a1 - unreleased
 
+- Split mixed-resource Slurm arrays into resource-matched submissions so only
+  the tasks that need large memory reserve it, while preserving the original
+  CPU cap, dependency graph, planner requests, and scientific sampling.
+- Record submitted array indices, tier-specific memory and time, selected
+  partition, concurrency allocation, and dependency wave in
+  `scheduler-resource-requests.json`.
+
 - Add default-off temporal interaction-fingerprint persistence with exact
   source-observation missingness, physical-time regularity checks, zero-gap and
   gap-tolerant event definitions, segment-boundary censoring, and complete-event

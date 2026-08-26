@@ -174,8 +174,11 @@ Salsbury-group DEAC profile. Both adapters run the same workers and output contr
 The Slurm adapter translates the task-level planner estimates into scheduler time
 and memory requests with explicit safety margins, records the mapping in
 `scheduler-resource-requests.json`, and routes sufficiently large requests through
-the profile's large-memory role. It limits base arrays to the configured CPU count,
-and dependency-batches view
+the profile's large-memory role. Mixed-resource worker arrays are submitted as
+resource-matched subarrays so a large clustering task does not force every small
+task onto a large-memory node. The adapter shares the original concurrency limit
+across those subarrays and preserves downstream dependencies. It limits base arrays
+to the configured CPU count, and dependency-batches view
 arrays and per-system preflights so their simultaneous CPU reservations do not
 exceed `maximum_parallel_cpus`. This controls active compute allocation; queue
 wait and scheduler backfill are not counted as analysis wall time.
