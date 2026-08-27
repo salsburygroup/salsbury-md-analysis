@@ -111,6 +111,8 @@ PYTHONPATH=src python -m salsbury_md_analysis preflight-system path/to/system.js
 PYTHONPATH=src python -m salsbury_md_analysis structural-qc path/to/project.json --hash-content
 PYTHONPATH=src python -m salsbury_md_analysis common-pca path/to/project.json --hash-content
 PYTHONPATH=src python -m salsbury_md_analysis build-coordinate-cache path/to/system.json --output path/to/new-cache
+PYTHONPATH=src python -m salsbury_md_analysis prepare-unwrapped-cache path/to/system.json --output path/to/lossless-cache
+PYTHONPATH=src python -m salsbury_md_analysis write-scientific-minimums-template --output scientific-minimums.json
 PYTHONPATH=src python -m salsbury_md_analysis compare-hydrogen-bonds path/to/comparison-request.json
 PYTHONPATH=src python -m salsbury_md_analysis plan-automatic-sampling path/to/system.json --simulation-kind unbiased_md
 PYTHONPATH=src python -m salsbury_md_analysis plan-frame-resources pilot-100.json pilot-500.json --total-source-frames 30000 --replica-count 3
@@ -130,6 +132,17 @@ PYTHONPATH=src python -m salsbury_md_analysis prepare-analysis \
 cd my-study-analysis
 ./run-local.sh
 ```
+
+Add `--plan-only` to `prepare-analysis` or `prepare-comparison` when you want
+the complete resource and sampling plan before deciding whether to run it. The
+command validates inputs and writes the prepared directory, but it does not
+start local workers or submit scheduler jobs. Its JSON response includes the
+full `campaign-resource-plan.json` and the reviewed command that would run the
+prepared campaign.
+
+That prepared directory also contains `prepared/system.json`. Pass that
+manifest to `prepare-unwrapped-cache` when you want to create a reusable,
+stride-1 continuously unwrapped cache before running any analyses.
 
 Supported compositions, input-format boundaries, automatic chemistry routing,
 and the behavior for RNA, oligomers, ligands/cofactors, ions, water, membranes,
@@ -388,9 +401,29 @@ prepared campaign writes the complete resolved configuration to
 `analysis-config.json` and records every enabled, disabled, or deferred module
 in `module-coverage.json`. Disabling an upstream module also disables analyses
 that depend on it; required preflight, provenance, and atom-mapping checks
-cannot be turned off. The full set of module, view, comparison, export,
+cannot be turned off. Each complete module row includes `depends_on` and
+`turning_off_also_disables`, while `module_groups` arranges the switches as
+infrastructure, quality/motion, conformational bases, states/kinetics,
+internal geometry, interactions/solvent/ions, and integration. This metadata
+is generated from the workflow graph and cannot be edited independently of the
+module switches. The full set of module, view, comparison, export,
 inference, execution, and reporting controls is described in
 [`docs/CONFIGURATION_AND_FINAL_REPORTING.md`](docs/CONFIGURATION_AND_FINAL_REPORTING.md).
+
+Sampling floors live in a separate file so module choices and scientific
+minimums are not mixed together. Generate a complete editable copy with:
+
+```bash
+salsbury-md-analysis write-scientific-minimums-template \
+  --output scientific-minimums.json
+```
+
+Every method lists `minimum_frames_per_replica`,
+`minimum_frames_overall_per_system` (pooled across that system's replicas), and
+`maximum_time_gap_between_retained_frames_ns`. Point
+`sampling.scientific_minimums_file` at the reviewed file. Values may be kept or
+made stricter; the public workflow refuses a lower frame floor or a looser
+positive time-gap gate.
 
 The default remains all automatically applicable modules and high-detail
 conformational views. Each instrumented result includes measured CPU,
@@ -427,7 +460,13 @@ Large solvated campaigns can build one connectivity-aware, unaligned
 `molecular_payload` cache and reuse it for solute-only conformational work.
 The cache retains protein, nucleic acid, hydrogens, ligands, cofactors, and
 ions, while water-dependent analyses continue to read the immutable solvated
-source. Cache construction is atomic and fail-if-present. See
+source. `prepare-unwrapped-cache` is the explicit preprocessing-only mode: it
+continuously reconstructs every source frame, saves a stride-1 payload, and
+stops. Set `execution.coordinate_cache_input` to that cache directory in later
+analysis configs. Reuse validates the source manifest, topology, connectivity,
+trajectory path/size/modification identity, complete report, and all-frame
+retention before planning; water-dependent methods still use the original
+solvated inputs. Cache construction is atomic and fail-if-present. See
 [`docs/COORDINATE_CACHE.md`](docs/COORDINATE_CACHE.md).
 
 Inexpensive streaming modules use every frame when `frame_stride` is one.

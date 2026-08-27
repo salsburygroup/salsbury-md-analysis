@@ -154,6 +154,25 @@ source-limited failures, is written into `sampling-plan.json` and
 floors in its locked configuration; reducing them changes the scientific
 standard and is not an automatic resource-planning action.
 
+Generate the complete user-editable policy with:
+
+```bash
+salsbury-md-analysis write-scientific-minimums-template \
+  --output scientific-minimums.json
+```
+
+Each method has three explicit fields:
+
+- `minimum_frames_per_replica`;
+- `minimum_frames_overall_per_system`, pooled across that system's replicas;
+- `maximum_time_gap_between_retained_frames_ns`, where zero means no time-gap
+  gate for a static ensemble estimator.
+
+Set `sampling.scientific_minimums_file` in the analysis config. The loader
+accepts equal or stricter frame counts and equal or smaller positive time gaps.
+It rejects weaker values and records the file path and SHA-256 with each
+planned task.
+
 Thermodynamic and ensemble estimators have no time-gap rule because randomizing
 their stride-1 frame order would not change the estimator. Their count floors
 are deliberately lenient feasibility minima, not convergence claims. Ordered

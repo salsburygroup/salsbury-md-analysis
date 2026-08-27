@@ -8,6 +8,20 @@
   "properties": {
     "config_schema": {"const": "salsbury-analysis-config-v1"},
     "default_module_policy": {"const": "all_applicable"},
+    "module_groups": {
+      "type": "object",
+      "readOnly": true,
+      "description": "Generated dependency-oriented display groups. These labels do not control execution.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["description", "modules"],
+        "properties": {
+          "description": {"type": "string"},
+          "modules": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+        }
+      }
+    },
     "modules": {
       "type": "object",
       "additionalProperties": {
@@ -15,7 +29,9 @@
         "additionalProperties": false,
         "properties": {
           "enabled": {"type": "boolean", "default": true},
-          "options": {"type": "object"}
+          "options": {"type": "object"},
+          "depends_on": {"type": "array", "items": {"type": "string"}, "readOnly": true},
+          "turning_off_also_disables": {"type": "array", "items": {"type": "string"}, "readOnly": true}
         }
       }
     },
@@ -72,6 +88,11 @@
         "preserve_replica_balance": {"type": "boolean", "default": true},
         "b_vs_2b_sensitivity": {"type": "boolean", "default": false},
         "optional_replica_diagnostics": {"type": "boolean", "default": false}
+        ,"scientific_minimums_file": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Optional standard-or-stricter per-method sample-count and ordered-method time-gap policy."
+        }
       }
     },
     "clustering": {
@@ -172,6 +193,10 @@
         "maximum_scratch_gib": {"type": "number", "exclusiveMinimum": 0, "default": 512.0},
         "planning_utilization": {"type": "number", "exclusiveMinimum": 0, "maximum": 1, "default": 0.85},
         "pilot_budget_fraction": {"type": "number", "minimum": 0, "exclusiveMaximum": 1, "default": 0.05},
+        "finalization_headroom_fraction": {"type": "number", "minimum": 0, "exclusiveMaximum": 1, "default": 0.05},
+        "time_safety_factor": {"type": "number", "exclusiveMinimum": 0, "default": 1.5},
+        "memory_safety_factor": {"type": "number", "exclusiveMinimum": 0, "default": 1.25},
+        "censored_timeout_safety_factor": {"type": "number", "exclusiveMinimum": 0, "default": 1.5},
         "fail_if_minimum_coverage_unaffordable": {"type": "boolean", "default": true},
         "submission_adapter": {
           "enum": ["unspecified", "local", "slurm"],
@@ -182,7 +207,21 @@
           "enum": ["auto", "off", "required"],
           "default": "auto",
           "description": "Reuse a validated optimized coordinate cache when possible."
-        }
+        },
+        "coordinate_cache_input": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Optional validated stride-1 cache created by prepare-unwrapped-cache."
+        },
+        "coordinate_cache_materialization": {"enum": ["planned_strided", "lossless"], "default": "planned_strided"},
+        "coordinate_cache_full_scan_fraction": {"type": "number", "minimum": 0, "maximum": 1, "default": 1.0},
+        "overall_stride_candidates": {
+          "type": "array", "items": {"type": "integer", "minimum": 1},
+          "minItems": 1, "uniqueItems": true,
+          "default": [1, 2, 3, 4, 5, 10, 20, 100]
+        },
+        "resource_calibration_catalog": {"type": ["string", "null"], "default": null},
+        "slurm_profile": {"type": ["string", "null"], "default": null}
       }
     }
   },

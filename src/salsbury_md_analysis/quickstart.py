@@ -44,6 +44,7 @@ from .conformational_views import plan_conformational_views
 from .coordinate_cache import (
     coordinate_cache_prefix,
     coordinate_cache_system_manifest_filename,
+    validate_reusable_coordinate_cache,
 )
 from .geometry import distance3
 from .hydrogen_bond_chemistry import NUCLEIC_RESIDUES, PROTEIN_RESIDUES
@@ -865,9 +866,15 @@ def _configure_coordinate_cache_views(
     view_ids: Sequence[str],
     *,
     cache_stride: int,
+    cache_directory: Optional[Path] = None,
 ) -> list[str]:
     """Point conformational views at the future unwrapped working cache."""
 
+    external = cache_directory is not None
+    cache_root = (
+        Path(cache_directory).expanduser().resolve(strict=True)
+        if external else root / "coordinate-cache"
+    )
     records = []
     for view_id in view_ids:
         project_path = root / f"project-{view_id}.json"
@@ -910,9 +917,18 @@ def _configure_coordinate_cache_views(
                 f"view {view_id} has an unsupported cache manifest scope"
             )
         project.update({
-            "system_manifest": f"coordinate-cache/{cache_manifest_name}",
-            "reference_structure": f"coordinate-cache/{prefix}.pdb",
-            "reference_connectivity": f"coordinate-cache/{prefix}.bonds.json",
+            "system_manifest": (
+                str(cache_root / cache_manifest_name)
+                if external else f"coordinate-cache/{cache_manifest_name}"
+            ),
+            "reference_structure": (
+                str(cache_root / f"{prefix}.pdb")
+                if external else f"coordinate-cache/{prefix}.pdb"
+            ),
+            "reference_connectivity": (
+                str(cache_root / f"{prefix}.bonds.json")
+                if external else f"coordinate-cache/{prefix}.bonds.json"
+            ),
         })
         _json_write(project_path, project)
         validate_project(project, source_path=project_path, check_paths=False)
@@ -928,14 +944,15 @@ def _configure_coordinate_cache_views(
         })
     contract = {
         "cache_contract_schema": "salsbury-coordinate-cache-workflow-v1",
-        "technical_status": "planned",
-        "cache_output_directory": "coordinate-cache",
+        "technical_status": "reused" if external else "planned",
+        "cache_output_directory": str(cache_root),
         "source_system_manifest": "system.json",
         "coordinate_representation": (
             "continuous_unwrap_strided_molecular_payload_v2"
         ),
         "source_frame_scan": "all_frames_continuous_unwrap",
         "cache_stride": cache_stride,
+        "external_cache_reused": external,
         "base_workflow_uses_original_solvated_trajectories": True,
         "conformational_views_use_cache": True,
         "alignment_is_performed_downstream_per_view": True,
@@ -2161,6 +2178,17 @@ def prepare_standard_analysis(
     system_path = root / "system.json"
     _json_write(system_path, system)
     validate_system(system, source_path=system_path, check_paths=True)
+    execution_config = analysis_config["execution"]
+    assert isinstance(execution_config, dict)
+    coordinate_cache_input = execution_config.get("coordinate_cache_input")
+    if coordinate_cache_input is not None:
+        try:
+            cache_reuse = validate_reusable_coordinate_cache(
+                Path(str(coordinate_cache_input)), system_path
+            )
+        except (OSError, ValueError) as exc:
+            raise QuickstartError(str(exc)) from exc
+        _json_write(root / "coordinate-cache-reuse.json", cache_reuse)
     dssp = _discover_dssp_executable(dssp_executable)
     sampling_plan = automatic_sampling_plan(
         system_path,
@@ -2339,6 +2367,9 @@ def prepare_standard_analysis(
     coordinate_cache_enabled = _coordinate_cache_enabled(
         analysis_config, view_ids
     )
+    coordinate_cache_build_required = (
+        coordinate_cache_enabled and coordinate_cache_input is None
+    )
     cache_coupling = campaign_resource_plan.get("global_stride_coupling")
     coordinate_cache_stride = (
         int(cache_coupling["selected_coordinate_cache_integer_stride"])
@@ -2351,7 +2382,11 @@ def prepare_standard_analysis(
     )
     coordinate_cache_files = (
         _configure_coordinate_cache_views(
-            root, view_ids, cache_stride=coordinate_cache_stride
+            root, view_ids, cache_stride=coordinate_cache_stride,
+            cache_directory=(
+                Path(str(coordinate_cache_input))
+                if coordinate_cache_input is not None else None
+            ),
         )
         if coordinate_cache_enabled else []
     )
@@ -2439,7 +2474,7 @@ def prepare_standard_analysis(
         maximum_parallel_cpus=int(
             analysis_config["execution"]["maximum_parallel_cpus"]  # type: ignore[index]
         ),
-        coordinate_cache_enabled=coordinate_cache_enabled,
+        coordinate_cache_enabled=coordinate_cache_build_required,
         coordinate_cache_workers=coordinate_cache_workers,
         coordinate_cache_stride=coordinate_cache_stride,
     )
@@ -2517,6 +2552,7 @@ override them with `SALSBURY_MD_ANALYSIS_PYTHON` and
         "generated_files": [
             "system.json", "project.json", "sampling-plan.json",
             "campaign-resource-plan.json", "module-coverage.json",
+            *(["coordinate-cache-reuse.json"] if coordinate_cache_input is not None else []),
             *(
                 [str(generated_connectivity_file.relative_to(root))]
                 if generated_connectivity_file is not None else []

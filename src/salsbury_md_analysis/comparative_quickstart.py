@@ -56,6 +56,7 @@ from .quickstart import (
     _slurm_files,
     _validate_reference_connectivity,
 )
+from .coordinate_cache import validate_reusable_coordinate_cache
 from .registry import list_modules
 
 
@@ -686,6 +687,17 @@ def prepare_comparative_analysis(
         )
     except (AnalysisConfigError, OSError) as exc:
         raise QuickstartError(str(exc)) from exc
+    execution_config = analysis_config["execution"]
+    assert isinstance(execution_config, dict)
+    coordinate_cache_input = execution_config.get("coordinate_cache_input")
+    if coordinate_cache_input is not None:
+        try:
+            cache_reuse = validate_reusable_coordinate_cache(
+                Path(str(coordinate_cache_input)), system_path
+            )
+        except (OSError, ValueError) as exc:
+            raise QuickstartError(str(exc)) from exc
+        _json_write(root / "coordinate-cache-reuse.json", cache_reuse)
     if target_hours is not None:
         execution = analysis_config["execution"]
         assert isinstance(execution, dict)
@@ -934,6 +946,9 @@ def prepare_comparative_analysis(
     coordinate_cache_enabled = _coordinate_cache_enabled(
         analysis_config, view_ids
     )
+    coordinate_cache_build_required = (
+        coordinate_cache_enabled and coordinate_cache_input is None
+    )
     cache_coupling = campaign_resource_plan.get("global_stride_coupling")
     coordinate_cache_stride = (
         int(cache_coupling["selected_coordinate_cache_integer_stride"])
@@ -946,7 +961,11 @@ def prepare_comparative_analysis(
     )
     coordinate_cache_files = (
         _configure_coordinate_cache_views(
-            root, view_ids, cache_stride=coordinate_cache_stride
+            root, view_ids, cache_stride=coordinate_cache_stride,
+            cache_directory=(
+                Path(str(coordinate_cache_input))
+                if coordinate_cache_input is not None else None
+            ),
         )
         if coordinate_cache_enabled else []
     )
@@ -1040,7 +1059,7 @@ def prepare_comparative_analysis(
         maximum_parallel_cpus=int(
             analysis_config["execution"]["maximum_parallel_cpus"]  # type: ignore[index]
         ),
-        coordinate_cache_enabled=coordinate_cache_enabled,
+        coordinate_cache_enabled=coordinate_cache_build_required,
         coordinate_cache_workers=coordinate_cache_workers,
         coordinate_cache_stride=coordinate_cache_stride,
         automatic_context_stage_counts=context_stage_counts,
@@ -1109,6 +1128,7 @@ remain visible in `module-coverage.json`.
         "generated_files": [
             "system.json", "project.json", "sampling-plan.json",
             "campaign-resource-plan.json", "module-coverage.json",
+            *(["coordinate-cache-reuse.json"] if coordinate_cache_input is not None else []),
             *per_system_manifest_files, *view_project_files,
             *context_generated_files, *context_slurm_files,
             *coordinate_cache_files, *view_slurm_files,

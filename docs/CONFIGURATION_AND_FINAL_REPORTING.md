@@ -18,6 +18,13 @@ dependent analyses; the generated `module-coverage.json` records this rather
 than producing a workflow that will fail later. Preflight, provenance, and
 common-atom mapping infrastructure cannot be disabled. Each topology-derived
 view has its own `enabled` flag and optional per-view `module_options`.
+The complete generated config also gives each module its direct `depends_on`
+list and `turning_off_also_disables` list. `module_groups` places the switches
+in numbered sections: required infrastructure, quality/motion,
+conformational bases, states/kinetics, internal geometry,
+interactions/solvent/ions, and integration. These fields explain the graph;
+only `enabled` and `options` are editable. Changing an explanatory dependency
+field is rejected because it would make the config disagree with execution.
 The high-detail common-heavy and interface views are enabled by default.
 `macromolecular_trace` PCA and its state trajectories are off by default but
 can be enabled independently for a deliberately coarse diagnostic.
@@ -93,6 +100,14 @@ between two allocations, it derives the componentwise lower projection ceiling
 from that cycle and replans the fits; it never falls back to a saved count.
 A configured envelope that cannot fund the small
 technical minima fails closed by default.
+
+The method floors are independently configurable. Create a complete policy
+file with `write-scientific-minimums-template`, review its per-replica,
+pooled-overall-per-system, and ordered-method time-gap values, and set
+`sampling.scientific_minimums_file` to that path. The public policy allows a
+user or publication workflow to raise count floors or tighten positive
+time-gap maxima. It rejects changes that weaken the packaged standard. The
+resolved policy ID, source path, and SHA-256 are copied into the campaign plan.
 
 Stride upgrades follow a progressive absolute resource frontier. For an
 otherwise identical plan, increasing the wall limit extends the shorter

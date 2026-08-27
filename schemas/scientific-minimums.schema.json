@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Scientific sampling minimums",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["minimums_schema", "base_policy_id", "methods"],
+  "properties": {
+    "minimums_schema": {"const": "salsbury-scientific-minimums-v1"},
+    "base_policy_id": {"const": "scientific-sampling-standard-v3"},
+    "interpretation": {"type": "object"},
+    "override_policy": {"type": "string"},
+    "methods": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "minimum_frames_per_replica",
+          "minimum_frames_overall_per_system",
+          "maximum_time_gap_between_retained_frames_ns"
+        ],
+        "properties": {
+          "minimum_frames_per_replica": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "minimum_frames_overall_per_system": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "maximum_time_gap_between_retained_frames_ns": {
+            "type": "number",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  }
+}

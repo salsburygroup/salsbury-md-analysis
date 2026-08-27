@@ -80,6 +80,112 @@ DEPENDENCIES = {
 
 PROTECTED_MODULES = {"provenance_manifest", "preflight_inventory", "common_atom_mapping"}
 
+MODULE_GROUPS = {
+    "01_infrastructure": {
+        "description": "Required provenance, input validation, and atom identity.",
+        "modules": PROTECTED_MODULES,
+    },
+    "02_quality_and_motion": {
+        "description": "Structural QC, replica motion, fluctuations, and uncertainty.",
+        "modules": {
+            "structural_integrity_qc", "replica_rmsd_rg", "pooled_rmsf",
+            "convergence_uncertainty", "rmsf_permutation_inference",
+        },
+    },
+    "03_conformational_bases": {
+        "description": "Correlation, PCA, tICA, and information representations.",
+        "modules": {
+            "dccm", "individual_pca", "common_pca",
+            "generalized_correlation_and_information", "information_dynamics",
+            "correlation_networks", "time_lagged_independent_component_analysis",
+        },
+    },
+    "04_states_and_kinetics": {
+        "description": "FES, clustering, representatives, exports, and MSMs.",
+        "modules": {
+            "pca_fes_basins", "clustering_kmeans", "clustering_hdbscan",
+            "clustering_imwkmeans", "alternative_clustering",
+            "pald_community_analysis", "representative_frames",
+            "representative_structures", "state_coordinate_exports",
+            "markov_state_models", "grouped_ml",
+        },
+    },
+    "05_internal_geometry": {
+        "description": "Protein, nucleic-acid, and generic internal geometry.",
+        "modules": {
+            "dihedral_distributions", "secondary_structure",
+            "nucleic_acid_structure", "nucleic_acid_geometry",
+            "trajectory_features", "scalar_feature_distributions",
+            "scalar_threshold_states", "optional_observables",
+        },
+    },
+    "06_interactions_solvent_and_ions": {
+        "description": "Hydrogen bonds, solvent exposure, distributions, and ions.",
+        "modules": {
+            "hydrogen_bonds", "hydrogen_bond_discovery",
+            "hydrogen_bond_patterns", "hydrogen_bond_comparison",
+            "water_mediated_hydrogen_bond_networks",
+            "grouped_regularized_classification",
+            "solvent_accessible_surface_area", "radial_distribution_functions",
+            "ion_coordination_geometry", "ion_atmosphere",
+        },
+    },
+    "07_integration": {
+        "description": "Cross-system integration and final comparison reporting.",
+        "modules": {"integrated_comparison"},
+    },
+}
+
+
+def _module_configuration_metadata(
+    module_ids: Sequence[str],
+    *,
+    clustering_feature_space: str = "tica",
+) -> tuple[Dict[str, object], Dict[str, object]]:
+    known = set(module_ids)
+    dependencies = {key: set(value) for key, value in DEPENDENCIES.items()}
+    clustering_dependency = (
+        "time_lagged_independent_component_analysis"
+        if clustering_feature_space == "tica" else "common_pca"
+    )
+    for module_id in (
+        "clustering_kmeans", "clustering_hdbscan", "clustering_imwkmeans",
+        "alternative_clustering", "pald_community_analysis",
+    ):
+        dependencies[module_id] = {clustering_dependency}
+    direct_dependents = {module_id: set() for module_id in known}
+    for dependent, requirements in dependencies.items():
+        for requirement in requirements:
+            if requirement in direct_dependents and dependent in known:
+                direct_dependents[requirement].add(dependent)
+    module_rows: Dict[str, object] = {}
+    for module_id in sorted(known):
+        module_rows[module_id] = {
+            "enabled": True,
+            "options": {},
+            "depends_on": sorted(
+                dependencies.get(module_id, set()).intersection(known)
+            ),
+            "turning_off_also_disables": sorted(direct_dependents[module_id]),
+        }
+    groups: Dict[str, object] = {}
+    assigned = set()
+    for group_id, definition in MODULE_GROUPS.items():
+        members = sorted(set(definition["modules"]).intersection(known))
+        if members:
+            groups[group_id] = {
+                "description": definition["description"],
+                "modules": members,
+            }
+            assigned.update(members)
+    unassigned = sorted(known.difference(assigned))
+    if unassigned:
+        groups["08_additional_or_project_specific"] = {
+            "description": "Registered modules not assigned to another dependency group.",
+            "modules": unassigned,
+        }
+    return module_rows, groups
+
 
 CLUSTERING_METHODS = {
     "kmeans": {"module_id": "clustering_kmeans", "algorithm": None},
@@ -120,13 +226,12 @@ _ALTERNATIVE_METHOD_ORDER = [
 def default_analysis_config(
     module_ids: Sequence[str], view_ids: Sequence[str]
 ) -> Dict[str, object]:
+    module_rows, module_groups = _module_configuration_metadata(module_ids)
     return {
         "config_schema": "salsbury-analysis-config-v1",
         "default_module_policy": "all_applicable",
-        "modules": {
-            module_id: {"enabled": True, "options": {}}
-            for module_id in sorted(module_ids)
-        },
+        "module_groups": module_groups,
+        "modules": module_rows,
         "views": {
             view_id: {
                 "enabled": view_id != "macromolecular_trace",
@@ -155,6 +260,7 @@ def default_analysis_config(
             "preserve_replica_balance": True,
             "b_vs_2b_sensitivity": False,
             "optional_replica_diagnostics": False,
+            "scientific_minimums_file": None,
         },
         "clustering": {
             "feature_space": "tica",
@@ -214,6 +320,7 @@ def default_analysis_config(
             "slurm_profile": None,
             "maximum_total_cpu_hours": 384.0,
             "coordinate_cache": "auto",
+            "coordinate_cache_input": None,
             "coordinate_cache_materialization": "planned_strided",
             "coordinate_cache_full_scan_fraction": 1.0,
             "overall_stride_candidates": [1, 2, 3, 4, 5, 10, 20, 100],
@@ -232,7 +339,7 @@ def load_analysis_config(
     if not isinstance(supplied, dict):
         raise AnalysisConfigError("analysis config must be a JSON object")
     allowed_top = {
-        "config_schema", "default_module_policy", "modules", "views",
+        "config_schema", "default_module_policy", "module_groups", "modules", "views",
         "reporting", "comparisons", "sampling", "oligomers", "exports",
         "execution", "inference", "clustering", "community_analysis",
     }
@@ -244,23 +351,34 @@ def load_analysis_config(
     if supplied.get("default_module_policy", "all_applicable") != "all_applicable":
         raise AnalysisConfigError("default_module_policy must be all_applicable")
     known_modules = set(module_ids)
+    raw_groups = supplied.get("module_groups")
+    if raw_groups is not None and raw_groups != config["module_groups"]:
+        raise AnalysisConfigError(
+            "module_groups is generated dependency metadata and may not be edited"
+        )
     raw_modules = supplied.get("modules", {})
     if not isinstance(raw_modules, dict):
         raise AnalysisConfigError("modules must be an object")
     for module_id, raw in raw_modules.items():
         if module_id not in known_modules:
             raise AnalysisConfigError(f"unknown module in analysis config: {module_id}")
-        if not isinstance(raw, dict) or set(raw).difference({"enabled", "options"}):
-            raise AnalysisConfigError(f"module {module_id} accepts only enabled and options")
+        allowed_module_fields = {
+            "enabled", "options", "depends_on", "turning_off_also_disables",
+        }
+        if not isinstance(raw, dict) or set(raw).difference(allowed_module_fields):
+            raise AnalysisConfigError(
+                f"module {module_id} has unknown configuration fields"
+            )
         enabled = raw.get("enabled", True)
         options = raw.get("options", {})
         if not isinstance(enabled, bool) or not isinstance(options, dict):
             raise AnalysisConfigError(f"module {module_id} has invalid enabled/options values")
         if module_id in PROTECTED_MODULES and not enabled:
             raise AnalysisConfigError(f"preparation infrastructure module {module_id} cannot be disabled")
-        config["modules"][module_id] = {  # type: ignore[index]
-            "enabled": enabled, "options": deepcopy(options)
-        }
+        default_row = config["modules"][module_id]  # type: ignore[index]
+        assert isinstance(default_row, dict)
+        default_row["enabled"] = enabled
+        default_row["options"] = deepcopy(options)
     raw_views = supplied.get("views", {})
     if not isinstance(raw_views, dict):
         raise AnalysisConfigError("views must be an object")
@@ -345,7 +463,7 @@ def load_analysis_config(
     raw_sampling = supplied.get("sampling", {})
     allowed_sampling = {
         "strategy", "preserve_replica_balance", "b_vs_2b_sensitivity",
-        "optional_replica_diagnostics",
+        "optional_replica_diagnostics", "scientific_minimums_file",
     }
     if not isinstance(raw_sampling, dict) or set(raw_sampling).difference(allowed_sampling):
         raise AnalysisConfigError("sampling configuration is invalid")
@@ -362,6 +480,18 @@ def load_analysis_config(
     ):
         if not isinstance(sampling[field], bool):
             raise AnalysisConfigError(f"sampling.{field} must be boolean")
+    minimums_file = sampling["scientific_minimums_file"]
+    if minimums_file is not None and (
+        not isinstance(minimums_file, str) or not minimums_file.strip()
+    ):
+        raise AnalysisConfigError(
+            "sampling.scientific_minimums_file must be null or a nonempty path"
+        )
+    if minimums_file is not None:
+        candidate = Path(minimums_file).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path(path).expanduser().resolve(strict=True).parent / candidate
+        sampling["scientific_minimums_file"] = str(candidate.resolve(strict=True))
 
     raw_clustering = supplied.get("clustering", {})
     if (
@@ -397,6 +527,27 @@ def load_analysis_config(
                 f"clustering method {method} enabled flag must be boolean"
             )
         methods[method] = {"enabled": raw["enabled"]}
+    resolved_rows, resolved_groups = _module_configuration_metadata(
+        module_ids, clustering_feature_space=str(clustering["feature_space"])
+    )
+    if raw_groups is not None and raw_groups != resolved_groups:
+        raise AnalysisConfigError(
+            "module_groups is generated dependency metadata and may not be edited"
+        )
+    config["module_groups"] = resolved_groups
+    for module_id, row in config["modules"].items():  # type: ignore[union-attr]
+        assert isinstance(row, dict)
+        resolved = resolved_rows[module_id]
+        assert isinstance(resolved, dict)
+        supplied_row = raw_modules.get(module_id, {})
+        assert isinstance(supplied_row, dict)
+        for field in ("depends_on", "turning_off_also_disables"):
+            if field in supplied_row and supplied_row[field] != resolved[field]:
+                raise AnalysisConfigError(
+                    f"module {module_id}.{field} is generated dependency metadata "
+                    "and may not be edited"
+                )
+            row[field] = deepcopy(resolved[field])
 
     raw_community = supplied.get("community_analysis", {})
     if (
@@ -537,6 +688,7 @@ def load_analysis_config(
         "censored_timeout_safety_factor",
         "fail_if_minimum_coverage_unaffordable",
         "submission_adapter", "slurm_profile", "coordinate_cache",
+        "coordinate_cache_input",
         "coordinate_cache_materialization",
         "coordinate_cache_full_scan_fraction", "overall_stride_candidates",
         "resource_calibration_catalog", "maximum_total_cpu_hours",
@@ -618,6 +770,23 @@ def load_analysis_config(
         raise AnalysisConfigError(
             "execution.coordinate_cache must be auto, off, or required"
         )
+    coordinate_cache_input = execution["coordinate_cache_input"]
+    if coordinate_cache_input is not None and (
+        not isinstance(coordinate_cache_input, str)
+        or not coordinate_cache_input.strip()
+    ):
+        raise AnalysisConfigError(
+            "execution.coordinate_cache_input must be null or a nonempty path"
+        )
+    if coordinate_cache_input is not None:
+        if execution["coordinate_cache"] == "off":
+            raise AnalysisConfigError(
+                "execution.coordinate_cache_input cannot be used when the cache is off"
+            )
+        candidate = Path(coordinate_cache_input).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path(path).expanduser().resolve(strict=True).parent / candidate
+        execution["coordinate_cache_input"] = str(candidate.resolve(strict=True))
     if execution["coordinate_cache_materialization"] not in {
         "planned_strided", "lossless"
     }:
