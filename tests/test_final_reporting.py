@@ -653,6 +653,80 @@ class FinalReportingTests(unittest.TestCase):
                 scalar_evidence["symmetry_expanded_observations"], 100
             )
 
+    def test_cross_report_hydrogen_bonds_and_ions_use_chemical_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "analysis-config.json").write_text(json.dumps({
+                "comparisons": {"mode": "all_pairs", "alpha": 0.05},
+            }), encoding="utf-8")
+            donor = {
+                "chain_id": "A", "residue_name": "LYS", "residue_number": 10,
+                "insertion_code": "", "atom_name": "NZ",
+            }
+            acceptor = {
+                "chain_id": "B", "residue_name": "ASP", "residue_number": 20,
+                "insertion_code": "", "atom_name": "OD1",
+            }
+            for system_id, offset, occupancy in (
+                ("control", 0, 0.8), ("variant", 100, 0.2),
+            ):
+                hbond_path = (
+                    root / "results" / f"hbond-{system_id}" / "report.json"
+                )
+                hbond_path.parent.mkdir(parents=True)
+                hbond_path.write_text(json.dumps({
+                    "module_id": "hydrogen_bond_discovery",
+                    "technical_status": "complete",
+                    "atom_dictionary": [
+                        {"atom_index": offset, "identity": donor},
+                        {"atom_index": offset + 1, "identity": acceptor},
+                    ],
+                    "candidate_dictionary": [{
+                        "bond_id": f"bond-{system_id}",
+                        "donor_atom_index": offset,
+                        "hydrogen_atom_index": offset + 2,
+                        "acceptor_atom_index": offset + 1,
+                    }],
+                    "occupancies": [{
+                        "system_id": system_id, "replica_id": "replica-1",
+                        "bond_id": f"bond-{system_id}",
+                        "evaluated_frame_count": 100,
+                        "present_frame_count": round(100 * occupancy),
+                        "occupancy_fraction": occupancy,
+                    }],
+                }), encoding="utf-8")
+                ion_path = (
+                    root / "results" / f"ions-{system_id}" / "report.json"
+                )
+                ion_path.parent.mkdir()
+                ion_path.write_text(json.dumps({
+                    "module_id": "ion_atmosphere", "technical_status": "complete",
+                    "per_ion_inner_shell_persistence": [{
+                        "system_id": system_id, "replica_id": "replica-1",
+                        "species": "K", "ion_atom_index": offset + 50,
+                        "evaluated_frame_count": 100,
+                        "inner_shell_occupancy": occupancy,
+                    }],
+                }), encoding="utf-8")
+
+            report = prioritize_findings(root, maximum_findings=50)
+            families = {row["comparison_family"] for row in report["findings"]}
+            self.assertIn(
+                "hydrogen_bond_discovery:chemical_identity_pairwise_difference",
+                families,
+            )
+            self.assertIn(
+                "ion_atmosphere:pairwise_species_maximum_difference", families
+            )
+            hydrogen = next(
+                row for row in report["findings"]
+                if row["comparison_family"].startswith(
+                    "hydrogen_bond_discovery:chemical_identity"
+                )
+            )
+            self.assertAlmostEqual(hydrogen["effect_value"], 0.6)
+            self.assertEqual(len(hydrogen["report_paths"]), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,6 +21,21 @@ A successful picker run has zero silent omissions. Reports without highlights
 remain linked and are not treated as empty, unimportant, or scientifically
 negative results.
 
+Comparative campaigns first write
+`results/integrated-comparison/report.json`. That mandatory finalizer reviews
+every completed report, preserves method-aware cross-system candidates, groups
+them by system pair, and records modules that produced no automatic highlight.
+The finding picker then takes cross-system candidates from this integrated
+report instead of independently recreating them. Single-system findings remain
+eligible, so a comparison campaign can still highlight a noteworthy result
+that occurs in only one system.
+
+The integration step compares matched scientific summaries produced by each
+module. It does not subtract arbitrary arrays, treat differently defined state
+labels as equivalent, or calculate a composite biological score. A module with
+no standardized comparison remains visible in `module_comparison_coverage`;
+that disposition does not imply that the systems are equivalent.
+
 ## Ranking and statistical language
 
 Candidates are ordered by the documented presentation categories, followed by

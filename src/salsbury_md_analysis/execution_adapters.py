@@ -361,6 +361,12 @@ def _task_planner_rows(
     script = str(task["script"])
     if script == "run_coordinate_cache.slurm":
         return [row for row in rows if row.get("task_id") == "preprocessing:coordinate_cache"]
+    if script == "run_finalize_reporting.slurm":
+        text = (root / script).read_text(encoding="utf-8")
+        final_modules = set()
+        if "rmsf-permutation-from-report" in text:
+            final_modules.add("rmsf_permutation_inference")
+        return [row for row in rows if row.get("module_id") in final_modules]
     array_id = task.get("array_task_id")
     if array_id is None:
         return []
@@ -1331,6 +1337,8 @@ def build_local_execution_plan(
         completion_reports.append("final-resource-summary.json")
     if bool(reporting.get("finding_picker_enabled")):
         completion_reports.append("final-findings-summary.json")
+    if "rmsf-permutation-from-report" in finalizer.read_text(encoding="utf-8"):
+        completion_reports.append("results/rmsf-permutation-inference/report.json")
     if not completion_reports:
         completion_reports.append("final-reporting-disabled.json")
     final_task = _task(finalizer)
@@ -1390,6 +1398,83 @@ def prepare_execution_artifacts(
     (root / "local-execution-plan.json").write_text(
         json.dumps(plan, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    contract_phases = []
+    previous_phase_id: Optional[str] = None
+    for phase in plan["phases"]:
+        phase_id = str(phase["phase_id"])
+        tasks = []
+        for index, task in enumerate(phase["tasks"]):
+            cpu_slots = int(task["cpu_slots"])
+            memory_gib = float(task.get("requested_memory_gib", 1.0))
+            wall_minutes = float(task.get("requested_wall_minutes", 30.0))
+            array_task_id = task.get("array_task_id")
+            environment = {
+                "SLURM_CPUS_PER_TASK": str(cpu_slots),
+                "SLURM_MEM_PER_NODE": str(int(math.ceil(memory_gib * 1024.0))),
+                "SLURM_TIMELIMIT": str(max(1, int(math.ceil(wall_minutes)))),
+            }
+            if array_task_id is not None:
+                environment["SLURM_ARRAY_TASK_ID"] = str(array_task_id)
+            tasks.append({
+                "launcher_task_id": f"{phase_id}:{index}",
+                "argv": ["bash", str(task["script"])],
+                "working_directory": str(root),
+                "environment": environment,
+                "launcher_assigned_environment": [
+                    "SLURM_JOB_ID", "SLURM_ARRAY_JOB_ID", "SLURM_CLUSTER_NAME"
+                ],
+                "script": task["script"],
+                "array_task_id": array_task_id,
+                "cpu_slots": cpu_slots,
+                "requested_memory_gib": memory_gib,
+                "requested_wall_minutes": wall_minutes,
+                "planner_task_ids": task.get("planner_task_ids", []),
+                "completion_reports": task.get("completion_reports", []),
+            })
+        contract_phases.append({
+            "phase_id": phase_id,
+            "depends_on": [] if previous_phase_id is None else [previous_phase_id],
+            "tasks": tasks,
+        })
+        previous_phase_id = phase_id
+    launcher_contract = {
+        "launcher_contract_schema": "salsbury-external-launcher-contract-v1",
+        "analysis_root": str(root),
+        "resource_envelope": {
+            "maximum_parallel_cpus": plan["maximum_parallel_cpus"],
+            "maximum_parallel_memory_gib": plan["maximum_parallel_memory_gib"],
+            "maximum_campaign_wall_hours": plan["maximum_campaign_wall_hours"],
+        },
+        "dependency_policy": (
+            "phases are serial and fail closed; tasks within one phase may run "
+            "concurrently only while their summed CPU and memory requests stay "
+            "within the resource envelope"
+        ),
+        "task_success_policy": (
+            "a task succeeds only with exit code zero; do not launch dependent "
+            "phases after a failure or timeout"
+        ),
+        "environment_contract": {
+            "compatibility_note": (
+                "Worker scripts use Slurm-compatible environment names even when "
+                "the external launcher is not Slurm."
+            ),
+            "launcher_assigned_values": {
+                "SLURM_JOB_ID": "unique task-attempt identifier",
+                "SLURM_ARRAY_JOB_ID": "stable identifier shared by one array script",
+                "SLURM_CLUSTER_NAME": "external launcher or site name",
+            },
+            "optional_user_overrides": [
+                "SALSBURY_MD_ANALYSIS_PYTHON",
+                "SALSBURY_MD_ANALYSIS_PYTHONPATH",
+            ],
+        },
+        "phases": contract_phases,
+    }
+    (root / "launcher-contract.json").write_text(
+        json.dumps(launcher_contract, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     package_root = str(Path(__file__).resolve(strict=True).parents[1])
     # Keep the virtual-environment entry point rather than resolving its
     # symlink to a base interpreter that may not have the package dependencies.
@@ -1407,8 +1492,29 @@ exec "$PYTHON" -m salsbury_md_analysis run-local-workflow "$ROOT"
     (root / "run-local.sh").write_text(launcher, encoding="utf-8")
     os.chmod(root / "run-local.sh", 0o755)
 
+    custom_launcher = f"""#!/usr/bin/env bash
+set -euo pipefail
+ROOT={shlex.quote(str(root))}
+CONTRACT="$ROOT/launcher-contract.json"
+LAUNCHER="${{SALSBURY_MD_ANALYSIS_CUSTOM_LAUNCHER:-}}"
+if [[ -z "$LAUNCHER" ]]; then
+  printf 'Set SALSBURY_MD_ANALYSIS_CUSTOM_LAUNCHER to an executable that accepts launcher-contract.json.\n' >&2
+  exit 2
+fi
+if [[ ! -x "$LAUNCHER" ]]; then
+  printf 'Custom launcher is not executable: %s\n' "$LAUNCHER" >&2
+  exit 2
+fi
+exec "$LAUNCHER" "$CONTRACT"
+"""
+    (root / "run-custom.sh").write_text(custom_launcher, encoding="utf-8")
+    os.chmod(root / "run-custom.sh", 0o755)
+
     profile_id = None
-    generated = ["local-execution-plan.json", "run-local.sh"]
+    generated = [
+        "local-execution-plan.json", "launcher-contract.json",
+        "run-local.sh", "run-custom.sh",
+    ]
     if adapter == "slurm":
         assert profile is not None
         profile_id = str(profile["profile_id"])
@@ -1432,7 +1538,9 @@ exec "$PYTHON" -m salsbury_md_analysis run-local-workflow "$ROOT"
         "slurm_profile_id": profile_id,
         "local_launcher": "run-local.sh",
         "slurm_launcher": "submit.sh",
+        "custom_launcher": "run-custom.sh",
         "shared_resource_plan": "local-execution-plan.json",
+        "external_launcher_contract": "launcher-contract.json",
         "scheduler_resource_requests": (
             "scheduler-resource-requests.json" if adapter == "slurm" else None
         ),
@@ -1441,7 +1549,7 @@ exec "$PYTHON" -m salsbury_md_analysis run-local-workflow "$ROOT"
             "per_task_wall_minutes", "complete_campaign_wall_deadline",
         ],
         "scientific_workflow_identity": (
-            "both launchers execute the same generated worker scripts and output contracts"
+            "all launchers execute the same generated worker scripts and output contracts"
         ),
     }
     (root / "execution-adapter.json").write_text(
@@ -1451,7 +1559,10 @@ exec "$PYTHON" -m salsbury_md_analysis run-local-workflow "$ROOT"
     return {
         "adapter": adapter,
         "generated_files": generated,
-        "next_command": f"cd {root} && ./{'submit.sh' if adapter == 'slurm' else 'run-local.sh'}",
+        "next_command": (
+            f"cd {root} && ./"
+            f"{'submit.sh' if adapter == 'slurm' else 'run-custom.sh' if adapter == 'custom' else 'run-local.sh'}"
+        ),
         "slurm_profile_id": profile_id,
     }
 

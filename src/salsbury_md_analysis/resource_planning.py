@@ -1557,20 +1557,27 @@ def plan_campaign_resource_budget(
     useful_parallel_cpu_ceiling = workflow_useful_parallel_cpu_ceiling(
         normalized
     )
+    effective_parallel_cpu_cap = min(
+        maximum_parallel_cpus, useful_parallel_cpu_ceiling
+    )
     resource_warnings = []
     if maximum_parallel_cpus > useful_parallel_cpu_ceiling:
+        cpu_label = "CPU" if effective_parallel_cpu_cap == 1 else "CPUs"
         resource_warnings.append({
             "severity": "warning",
             "code": "REQUESTED_CPUS_EXCEED_USEFUL_PARALLELISM",
             "requested_parallel_cpus": maximum_parallel_cpus,
             "useful_parallel_cpu_ceiling": useful_parallel_cpu_ceiling,
+            "effective_parallel_cpu_cap": effective_parallel_cpu_cap,
             "excess_parallel_cpus": (
                 maximum_parallel_cpus - useful_parallel_cpu_ceiling
             ),
             "message": (
-                f"The campaign requests {maximum_parallel_cpus} CPUs, but its "
-                f"dependency graph can use at most {useful_parallel_cpu_ceiling} "
-                "concurrently. Extra cores do not shorten this plan."
+                f"You requested {maximum_parallel_cpus} concurrent CPUs, but "
+                f"the resolved workflow can use at most "
+                f"{useful_parallel_cpu_ceiling}. The execution cap and generated "
+                f"Slurm submission will be changed to "
+                f"{effective_parallel_cpu_cap} {cpu_label}."
             ),
         })
     permissive_minimum_request = _permissive_minimum_resource_request(
@@ -1596,6 +1603,7 @@ def plan_campaign_resource_budget(
         "feasibility_status": feasibility,
         "execution_authorized": feasibility == "feasible",
         "maximum_parallel_cpus_input": maximum_parallel_cpus,
+        "effective_parallel_cpu_cap": effective_parallel_cpu_cap,
         "maximum_wall_hours_input": wall_hours,
         "maximum_memory_gib_input": memory_gib,
         "maximum_parallel_memory_gib_input": memory_gib,
@@ -1628,7 +1636,9 @@ def plan_campaign_resource_budget(
         "resource_warnings": resource_warnings,
         "permissive_minimum_resource_request": permissive_minimum_request,
         "workflow_parallel_capacity": {
+            "requested_parallel_cpu_cap": maximum_parallel_cpus,
             "useful_parallel_cpu_ceiling": useful_parallel_cpu_ceiling,
+            "effective_parallel_cpu_cap": effective_parallel_cpu_cap,
             "coordinate_cache_replica_parallel_cpu_ceiling": max(
                 (
                     int(row.get("intrinsic_cpu_cap", row.get("effective_cpu_cap", 1)))

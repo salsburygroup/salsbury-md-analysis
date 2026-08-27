@@ -199,7 +199,7 @@
         "censored_timeout_safety_factor": {"type": "number", "exclusiveMinimum": 0, "default": 1.5},
         "fail_if_minimum_coverage_unaffordable": {"type": "boolean", "default": true},
         "submission_adapter": {
-          "enum": ["unspecified", "local", "slurm"],
+          "enum": ["unspecified", "local", "slurm", "custom"],
           "default": "unspecified",
           "description": "Optional launcher adapter. Scientific planning and project manifests do not depend on it."
         },

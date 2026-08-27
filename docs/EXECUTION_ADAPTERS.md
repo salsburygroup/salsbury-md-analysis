@@ -6,15 +6,38 @@ Neither adapter changes module selection, frame strides, definitions, dependenci
 or report/hash contracts.
 
 Choose `local` when you want the package to manage work on the current computer,
-and choose `slurm` when a cluster scheduler should manage it.
+`slurm` when a Slurm scheduler should manage it, and `custom` when an external
+launcher should consume the generated dependency and resource contract.
 The scientific plan is the same either way; only the way resources are requested
 and jobs are launched changes.
+
+Every prepared campaign writes `planning-report.md` and `planning-report.json`.
+The Markdown report starts with an analysis-family table: numeric cells are
+effective integer strides over the original trajectories, while `Off`, `Deferred`,
+`Not applicable`, and `Not scheduled` remain distinct. The JSON report retains
+the cache, projection, and method-local stride components; exact per-replica frame
+counts; selected totals; retained time spacing; and sampling-floor status.
+
+To compare several prepared envelopes in the compact matrix form, run:
+
+```bash
+salsbury-md-analysis report-plan-matrix \
+  --plan "8 h reduced=/plans/8h/planning-report.json" \
+  --plan "24 h reduced=/plans/24h/planning-report.json" \
+  --plan "48 h reduced=/plans/48h/planning-report.json" \
+  --plan "168 h complete=/plans/168h/planning-report.json" \
+  --output analysis-plan-matrix.md
+```
 
 To inspect the prepared plan without using either executor, add `--plan-only`
 to `prepare-analysis` or `prepare-comparison`. Preparation still validates and
 writes the campaign artifacts. It reports `execution_started: false` and
 `jobs_submitted: false`, returns the complete plan, and leaves the local or
 Slurm launch command for a separate reviewed step.
+If the requested CPU cap exceeds the resolved workflow's useful concurrent
+width, this output includes `REQUESTED_CPUS_EXCEED_USEFUL_PARALLELISM` and the
+effective cap. Generated launchers use the effective cap, including Slurm array
+concurrency and any multiprocess coordinate-cache request.
 
 ## Local desktop or workstation
 
@@ -61,6 +84,43 @@ on one Apollo CPU in about four minutes, with roughly 162 MiB peak resident
 memory. That bounded run establishes that the installed local adapter and its
 dependency order work without Slurm; it is not a runtime promise for larger
 systems and carries `scientific_status: not evaluated`.
+
+## External launcher
+
+Set `execution.submission_adapter` to `custom` when a site launcher, workflow
+engine, container service, or another scheduler should start the generated work:
+
+```json
+{
+  "config_schema": "salsbury-analysis-config-v1",
+  "execution": {
+    "submission_adapter": "custom",
+    "maximum_parallel_cpus": 16,
+    "maximum_hours_per_cpu": 24,
+    "maximum_memory_gib": 128
+  }
+}
+```
+
+Preparation writes `launcher-contract.json`. Its phases are ordered dependencies.
+Tasks in one phase may run concurrently only while their summed `cpu_slots` and
+`requested_memory_gib` remain within the contract envelope. For each task the
+contract supplies the script, argument vector, working directory, compatibility
+environment, timeout, planner task IDs, and expected completion reports. A
+nonzero exit, timeout, or missing accepted report stops dependent phases.
+
+The user-supplied executable receives the contract path as its only argument:
+
+```bash
+export SALSBURY_MD_ANALYSIS_CUSTOM_LAUNCHER=/absolute/path/to/my-launcher
+./run-custom.sh
+```
+
+Worker scripts retain Slurm-compatible variable names for portability. The
+external launcher assigns unique `SLURM_JOB_ID` values, a stable
+`SLURM_ARRAY_JOB_ID` for related array elements, and its site name in
+`SLURM_CLUSTER_NAME`; the contract supplies the remaining task environment.
+`custom` mode prepares the work but does not run or submit it automatically.
 
 ## When the requested memory is too small
 

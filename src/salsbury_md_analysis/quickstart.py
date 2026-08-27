@@ -60,6 +60,7 @@ from .openmm_connectivity import (
 from .preflight import (
     FileProbeError, probe_connectivity, probe_topology, probe_trajectory,
 )
+from .planning_report import PlanningReportError, write_planning_report
 from .periodic import (
     PeriodicReconstructionError,
     load_connectivity,
@@ -1542,6 +1543,37 @@ rm "$TMP" "$SUMMARY_TMP"
     return generated
 
 
+def _effective_parallel_cpu_cap(
+    campaign_resource_plan: Mapping[str, object],
+) -> int:
+    """Return the resolved launcher cap while retaining the user's request."""
+
+    requested = int(campaign_resource_plan["maximum_parallel_cpus_input"])
+    value = campaign_resource_plan.get("effective_parallel_cpu_cap", requested)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise QuickstartError(
+            "campaign resource plan has an invalid effective parallel CPU cap"
+        )
+    if value > requested:
+        raise QuickstartError(
+            "campaign resource plan cannot raise the requested parallel CPU cap"
+        )
+    return value
+
+
+def _execution_config_for_parallel_cpu_cap(
+    analysis_config: Mapping[str, object], effective_parallel_cpu_cap: int,
+) -> Dict[str, object]:
+    """Copy a user config and apply only its resolved execution CPU cap."""
+
+    resolved = deepcopy(dict(analysis_config))
+    execution = resolved.get("execution")
+    if not isinstance(execution, dict):
+        raise QuickstartError("analysis config lacks an execution object")
+    execution["maximum_parallel_cpus"] = effective_parallel_cpu_cap
+    return resolved
+
+
 def _slurm_files(
     root: Path, project_id: str, commands: Sequence[str], *, target_wall_hours: float,
     python_executable: str, package_root: str,
@@ -1553,6 +1585,8 @@ def _slurm_files(
     coordinate_cache_workers: int = 1,
     coordinate_cache_stride: int = 1,
     automatic_context_stage_counts: Optional[Mapping[int, int]] = None,
+    rmsf_permutation_enabled: bool = False,
+    integrated_comparison_enabled: bool = False,
 ) -> list[str]:
     stage_members = _GENERIC_STAGE_COMMANDS
     stages = {
@@ -1866,6 +1900,51 @@ rm "$TMP"
         ]) if conformational_view_ids else ""
     )
     reporting_commands = []
+    if rmsf_permutation_enabled:
+        reporting_commands.append("""RMSF_INFERENCE_DIR="$ROOT/results/rmsf-permutation-inference"
+mkdir -p "$RMSF_INFERENCE_DIR"
+RMSF_INFERENCE_TMP="$RMSF_INFERENCE_DIR/report.json.tmp.$SLURM_JOB_ID"
+RMSF_INFERENCE_FINAL="$RMSF_INFERENCE_DIR/report.json"
+if [[ -e "$RMSF_INFERENCE_FINAL" ]]; then
+  printf 'RMSF permutation report already exists; refusing overwrite: %s\n' "$RMSF_INFERENCE_FINAL" >&2
+  exit 1
+fi
+"$PYTHON" -m salsbury_md_analysis rmsf-permutation-from-report \
+  "$ROOT/results/rmsf/report.json" "$ROOT/analysis-config.json" > "$RMSF_INFERENCE_TMP"
+"$PYTHON" - "$RMSF_INFERENCE_TMP" <<'PY'
+import json, sys
+report = json.load(open(sys.argv[1], encoding='utf-8'))
+if report.get('technical_status') != 'complete':
+    raise SystemExit('RMSF permutation inference did not complete')
+PY
+ln "$RMSF_INFERENCE_TMP" "$RMSF_INFERENCE_FINAL"
+rm "$RMSF_INFERENCE_TMP"
+""")
+    if integrated_comparison_enabled:
+        reporting_commands.append("""INTEGRATED_DIR="$ROOT/results/integrated-comparison"
+mkdir -p "$INTEGRATED_DIR"
+INTEGRATED_TMP="$INTEGRATED_DIR/report.json.tmp.$SLURM_JOB_ID"
+INTEGRATED_FINAL="$INTEGRATED_DIR/report.json"
+if [[ -e "$INTEGRATED_FINAL" ]]; then
+  printf 'Integrated comparison report already exists; refusing overwrite: %s\n' "$INTEGRATED_FINAL" >&2
+  exit 1
+fi
+"$PYTHON" -m salsbury_md_analysis integrate-comparison-results \
+  "$ROOT" > "$INTEGRATED_TMP"
+"$PYTHON" - "$INTEGRATED_TMP" <<'PY'
+import json, sys
+report = json.load(open(sys.argv[1], encoding='utf-8'))
+contract = report.get('integration_contract', {})
+if report.get('technical_status') != 'complete':
+    raise SystemExit('integrated comparison did not complete')
+if report.get('unreviewed_complete_report_count') != 0:
+    raise SystemExit('integrated comparison silently omitted a completed report')
+if contract.get('all_completed_reports_reviewed') is not True:
+    raise SystemExit('integrated comparison lacks all-report review evidence')
+PY
+ln "$INTEGRATED_TMP" "$INTEGRATED_FINAL"
+rm "$INTEGRATED_TMP"
+""")
     if resource_table_enabled:
         reporting_commands.append("""RESOURCE_TMP="$ROOT/final-resource-summary.json.tmp.$SLURM_JOB_ID"
 RESOURCE_FINAL="$ROOT/final-resource-summary.json"
@@ -2383,6 +2462,9 @@ def prepare_standard_analysis(
         raise QuickstartError(str(exc)) from exc
     _json_write(root / "sampling-plan.json", sampling_plan)
     _json_write(root / "campaign-resource-plan.json", campaign_resource_plan)
+    effective_parallel_cpu_cap = _effective_parallel_cpu_cap(
+        campaign_resource_plan
+    )
     coordinate_cache_enabled = _coordinate_cache_enabled(
         analysis_config, view_ids
     )
@@ -2410,7 +2492,7 @@ def prepare_standard_analysis(
         if coordinate_cache_enabled else []
     )
     coordinate_cache_workers = min(
-        int(analysis_config["execution"]["maximum_parallel_cpus"]),  # type: ignore[index]
+        effective_parallel_cpu_cap,
         len(trajectory_paths),
     )
     deferred = {
@@ -2419,12 +2501,18 @@ def prepare_standard_analysis(
         "trajectory_features": "requires a declared scientific feature rather than an arbitrary atom pair",
         "scalar_feature_distributions": "runs after a question-linked scalar trajectory feature is declared",
         "scalar_threshold_states": "requires a physically justified threshold and sensitivity range",
-        "hydrogen_bonds": "requires explicitly indexed bonds; automatic chemistry discovery is the zero-input default",
+        "hydrogen_bonds": (
+            "optional manual fixed-feature override; automatic chemistry-backed "
+            "donor-hydrogen-acceptor discovery is the production default"
+        ),
         "hydrogen_bond_comparison": "requires at least two chemically mapped conditions",
         "hydrogen_bond_patterns": "runs after a direct-hydrogen-bond report has defined frame patterns",
         "grouped_regularized_classification": "requires at least two conditions and discovered hydrogen-bond features",
         "state_coordinate_exports": "runs after the user accepts a fitted FES or clustering state definition",
-        "representative_structures": "runs after a state membership or coordinate ensemble has been selected",
+        "representative_structures": (
+            "optional coordinate-space mean/medoid utility; observed state-centered "
+            "representative frames and coordinate exports are automatic"
+        ),
         "optional_observables": "requires a residue- or question-specific definition; deliberately deferred",
         "radial_distribution_functions": "requires explicit chemically meaningful atom groups",
         "nucleic_acid_geometry": "automatic ring and stacking definition generation is not yet enabled in the generic initializer",
@@ -2476,9 +2564,7 @@ def prepare_standard_analysis(
         ),
         python_executable=_active_python_executable(),
         package_root=str(Path(__file__).resolve(strict=True).parents[1]),
-        maximum_parallel_cpus=int(
-            analysis_config["execution"]["maximum_parallel_cpus"]  # type: ignore[index]
-        ),
+        maximum_parallel_cpus=effective_parallel_cpu_cap,
     )
     slurm_files = _slurm_files(
         root, project_id, commands,
@@ -2490,33 +2576,44 @@ def prepare_standard_analysis(
         conformational_view_ids=view_ids,
         resource_table_enabled=bool(analysis_config["reporting"]["resource_table_enabled"]),  # type: ignore[index]
         finding_picker_enabled=bool(analysis_config["reporting"]["finding_picker_enabled"]),  # type: ignore[index]
-        maximum_parallel_cpus=int(
-            analysis_config["execution"]["maximum_parallel_cpus"]  # type: ignore[index]
-        ),
+        maximum_parallel_cpus=effective_parallel_cpu_cap,
         coordinate_cache_enabled=coordinate_cache_build_required,
         coordinate_cache_workers=coordinate_cache_workers,
         coordinate_cache_stride=coordinate_cache_stride,
     )
     try:
-        execution_artifacts = prepare_execution_artifacts(root, analysis_config)
-    except (ExecutionAdapterError, OSError) as exc:
+        execution_artifacts = prepare_execution_artifacts(
+            root,
+            _execution_config_for_parallel_cpu_cap(
+                analysis_config, effective_parallel_cpu_cap
+            ),
+        )
+        planning_report_files = write_planning_report(root)
+    except (ExecutionAdapterError, PlanningReportError, OSError) as exc:
         raise QuickstartError(str(exc)) from exc
     active_launcher = (
         "submit.sh" if execution_artifacts["adapter"] == "slurm"
+        else "run-custom.sh" if execution_artifacts["adapter"] == "custom"
         else "run-local.sh"
     )
     adapter_description = (
         f"Slurm profile `{execution_artifacts['slurm_profile_id']}`"
         if execution_artifacts["adapter"] == "slurm"
-        else "local dependency-aware executor"
+        else (
+            "external launcher contract"
+            if execution_artifacts["adapter"] == "custom"
+            else "local dependency-aware executor"
+        )
     )
     readme = f"""# {project_id}: generated Salsbury MD analysis
 
 Inputs were inspected read-only. The PDB, connectivity, and {len(trajectory_paths)} DCD files are
 referenced by absolute path and are not copied or modified.
 
-Review `campaign-resource-plan.json` and `sampling-plan.json`, especially every estimated
-wall time and sampling decision. The configured whole-campaign envelope is
+Review `planning-report.md` first. It lists every analysis family, the effective raw
+stride over the original trajectory, and every explicitly disabled, deferred, or
+inapplicable capability. Exact decisions remain in `planning-report.json`,
+`campaign-resource-plan.json`, and `sampling-plan.json`. The configured whole-campaign envelope is
 {analysis_config['execution']['maximum_parallel_cpus']} CPUs for at most
 {analysis_config['execution']['maximum_hours_per_cpu']:g} wall hours with a 1.5 timing
 safety factor. Then submit:
@@ -2527,8 +2624,8 @@ cd {root}
 ```
 
 The active execution adapter is the {adapter_description}. Change
-`execution.submission_adapter` in the preparation config to `local` or `slurm`;
-Slurm mode also requires `execution.slurm_profile`. Both adapters execute the same
+`execution.submission_adapter` in the preparation config to `local`, `slurm`, or
+`custom`; Slurm mode also requires `execution.slurm_profile`. All adapters execute the same
 worker scripts and therefore retain the same dependencies, atomic reports, hashes,
 frame selections, and scientific definitions. `execution-adapter.json` records the
 choice and `local-execution-plan.json` records the workstation dependency plan.
@@ -2578,7 +2675,8 @@ override them with `SALSBURY_MD_ANALYSIS_PYTHON` and
             ),
             *view_project_files, *coordinate_cache_files, *view_slurm_files,
             "analysis-config.json", *slurm_files,
-            *execution_artifacts["generated_files"], "README.md",
+            *execution_artifacts["generated_files"], *planning_report_files,
+            "README.md",
         ],
         "execution_adapter": execution_artifacts["adapter"],
         "slurm_profile_id": execution_artifacts["slurm_profile_id"],

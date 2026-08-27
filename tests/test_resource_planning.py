@@ -1340,6 +1340,15 @@ class ResourcePlanningTests(unittest.TestCase):
             "REQUESTED_CPUS_EXCEED_USEFUL_PARALLELISM",
         )
         self.assertEqual(report["resource_warnings"][0]["excess_parallel_cpus"], 7)
+        self.assertEqual(report["effective_parallel_cpu_cap"], 1)
+        self.assertEqual(
+            report["workflow_parallel_capacity"]["effective_parallel_cpu_cap"],
+            1,
+        )
+        self.assertIn(
+            "Slurm submission will be changed to 1 CPU",
+            report["resource_warnings"][0]["message"],
+        )
 
 
 if __name__ == "__main__":

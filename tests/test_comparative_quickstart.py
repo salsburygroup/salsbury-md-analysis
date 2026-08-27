@@ -396,6 +396,7 @@ class ComparativeQuickstartTests(unittest.TestCase):
                 )
             task_ids = {row["task_id"] for row in campaign["tasks"]}
             self.assertNotIn("direct:common_pca", task_ids)
+            self.assertIn("base:rmsf_permutation_inference", task_ids)
             self.assertIn("view:global_common_heavy:common_pca", task_ids)
             self.assertIn("view:global_common_heavy:pca_fes_basins", task_ids)
             self.assertIn(
@@ -511,8 +512,33 @@ class ComparativeQuickstartTests(unittest.TestCase):
             config = json.loads((output / "analysis-config.json").read_text())
             self.assertEqual(config["default_module_policy"], "all_applicable")
             self.assertEqual(config["comparisons"]["mode"], "all_pairs")
+            self.assertTrue(
+                config["modules"]["integrated_comparison"]["protected"]
+            )
             coverage = json.loads((output / "module-coverage.json").read_text())
             self.assertEqual(coverage["comparison_system_ids"], ["control", "variant"])
+            self.assertEqual(
+                coverage["module_status"]["rmsf_permutation_inference"]["status"],
+                "automatic",
+            )
+            self.assertEqual(
+                coverage["module_status"]["integrated_comparison"]["status"],
+                "automatic",
+            )
+            self.assertIn(
+                "rmsf-permutation-from-report",
+                (output / "run_finalize_reporting.slurm").read_text(),
+            )
+            self.assertIn(
+                "integrate-comparison-results",
+                (output / "run_finalize_reporting.slurm").read_text(),
+            )
+            planning = json.loads((output / "planning-report.json").read_text())
+            rmsf_family = next(
+                row for row in planning["sampling"]["analysis_families"]
+                if row["family_id"] == "rmsf_inference"
+            )
+            self.assertEqual(rmsf_family["status"], "on")
             subprocess.run(["bash", "-n", str(output / "submit.sh")], check=True)
             subprocess.run(
                 ["bash", "-n", str(output / "submit-conformational-views.sh")],

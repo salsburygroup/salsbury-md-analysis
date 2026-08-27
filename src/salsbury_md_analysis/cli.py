@@ -45,7 +45,10 @@ from .grouped_ml import grouped_ml_project_safe
 from .grouped_regularized_classification import (
     grouped_regularized_classification_project_safe,
 )
-from .integrated import integrated_comparison_project_safe
+from .integrated import (
+    integrated_comparison_project_safe,
+    integrated_comparison_results_safe,
+)
 from .information import generalized_correlation_and_information_project_safe
 from .information_dynamics import information_dynamics_project_safe
 from .trajectory_features import trajectory_features_project_safe
@@ -59,7 +62,11 @@ from .representative_structures import (
     RepresentativeStructureError,
     representative_structures,
 )
-from .rmsf_inference import RMSFInferenceError, rmsf_permutation_test
+from .rmsf_inference import (
+    RMSFInferenceError,
+    rmsf_permutation_test,
+    rmsf_replica_permutation_comparisons,
+)
 from .manifests import (
     MANIFEST_KINDS,
     ManifestValidationError,
@@ -70,6 +77,11 @@ from .manifests import (
 from .msm import markov_state_models_project_safe
 from .observables import optional_observables_project_safe
 from .preflight import preflight_system
+from .planning_report import (
+    PlanningReportError,
+    write_plan_matrix,
+    write_planning_report,
+)
 from .quickstart import (
     QuickstartError,
     QuickstartMemoryError,
@@ -432,6 +444,12 @@ def _integrated_command(path: Path, hash_content: bool) -> int:
     return 0 if report["technical_status"] == "complete" else 2
 
 
+def _integrated_results_command(root: Path) -> int:
+    report = integrated_comparison_results_safe(root)
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report["technical_status"] == "complete" else 2
+
+
 def _secondary_structure_command(path: Path, hash_content: bool) -> int:
     report = secondary_structure_project_safe(path, hash_content=hash_content)
     print(json.dumps(report, indent=2, sort_keys=True))
@@ -651,6 +669,9 @@ def _campaign_plan_terminal_summary(
         "science_wall_hours": plan.get("science_budget_wall_hours"),
         "useful_parallel_cpu_ceiling": capacity.get(
             "useful_parallel_cpu_ceiling"
+        ),
+        "effective_parallel_cpu_cap": plan.get(
+            "effective_parallel_cpu_cap"
         ),
         "requested_plan_feasibility": plan.get("feasibility_status"),
         "requested_plan_minimum_critical_path_hours": plan.get(
@@ -1363,6 +1384,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--hash-content", action="store_true",
         help="Also stream SHA-256 hashes for every declared input file.",
     )
+    integrated_results_parser = subparsers.add_parser(
+        "integrate-comparison-results",
+        help=(
+            "Review and integrate every completed report in a prepared "
+            "comparative campaign."
+        ),
+    )
+    integrated_results_parser.add_argument(
+        "root", type=Path, help="Prepared comparative analysis root."
+    )
 
     secondary_parser = subparsers.add_parser(
         "secondary-structure",
@@ -1585,6 +1616,38 @@ def build_parser() -> argparse.ArgumentParser:
     local_workflow_parser.add_argument(
         "root", type=Path, help="Prepared analysis directory."
     )
+
+    plan_matrix_parser = subparsers.add_parser(
+        "report-plan-matrix",
+        help=(
+            "Combine prepared planning-report.json files into an analysis-family "
+            "by resource-envelope stride table."
+        ),
+    )
+    plan_matrix_parser.add_argument(
+        "--plan", action="append", required=True, metavar="LABEL=PATH",
+        help="Scenario label and planning-report.json path; repeat for each plan.",
+    )
+    plan_matrix_parser.add_argument(
+        "--output", type=Path, required=True,
+        help="Destination .md or .json file.",
+    )
+
+    planning_report_parser = subparsers.add_parser(
+        "write-planning-report",
+        help="Regenerate the user-facing report for an existing prepared campaign.",
+    )
+    planning_report_parser.add_argument("root", type=Path)
+
+    rmsf_comparison_parser = subparsers.add_parser(
+        "rmsf-permutation-from-report",
+        help=(
+            "Compare per-replica RMSF profiles between systems using the "
+            "prepared comparison policy."
+        ),
+    )
+    rmsf_comparison_parser.add_argument("report", type=Path)
+    rmsf_comparison_parser.add_argument("analysis_config", type=Path)
 
     capacity_parser = subparsers.add_parser(
         "advise-slurm-capacity",
@@ -1921,6 +1984,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _grouped_ml_command(args.path, args.hash_content)
     if args.command == "integrate":
         return _integrated_command(args.path, args.hash_content)
+    if args.command == "integrate-comparison-results":
+        return _integrated_results_command(args.root)
     if args.command == "secondary-structure":
         return _secondary_structure_command(args.path, args.hash_content)
     if args.command in EXTENDED_PROJECT_COMMANDS:
@@ -1999,6 +2064,82 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "issues": [{
                     "severity": "error",
                     "code": "LOCAL_WORKFLOW_FAILED",
+                    "message": str(exc),
+                }],
+            }
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0 if report.get("technical_status") == "complete" else 2
+    if args.command == "report-plan-matrix":
+        try:
+            scenarios = []
+            for value in args.plan:
+                label, separator, path = value.partition("=")
+                if not separator or not label.strip() or not path.strip():
+                    raise PlanningReportError(
+                        "each --plan must use the form LABEL=/path/planning-report.json"
+                    )
+                scenarios.append((label.strip(), Path(path).expanduser().resolve()))
+            output = args.output.expanduser().resolve(strict=False)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            write_plan_matrix(scenarios, output)
+            report = {
+                "technical_status": "complete",
+                "scenario_count": len(scenarios),
+                "output": str(output),
+            }
+        except (PlanningReportError, OSError, ValueError) as exc:
+            report = {
+                "technical_status": "failed",
+                "issues": [{
+                    "severity": "error",
+                    "code": "PLAN_MATRIX_FAILED",
+                    "message": str(exc),
+                }],
+            }
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0 if report.get("technical_status") == "complete" else 2
+    if args.command == "write-planning-report":
+        try:
+            root = args.root.expanduser().resolve(strict=True)
+            files = write_planning_report(root)
+            report = {
+                "technical_status": "complete",
+                "output_directory": str(root),
+                "generated_files": files,
+            }
+        except (PlanningReportError, OSError, ValueError) as exc:
+            report = {
+                "technical_status": "failed",
+                "issues": [{
+                    "severity": "error",
+                    "code": "PLANNING_REPORT_FAILED",
+                    "message": str(exc),
+                }],
+            }
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0 if report.get("technical_status") == "complete" else 2
+    if args.command == "rmsf-permutation-from-report":
+        try:
+            rmsf_report = load_json(args.report)
+            config = load_json(args.analysis_config)
+            comparisons = config.get("comparisons") if isinstance(config, dict) else None
+            if not isinstance(rmsf_report, dict) or not isinstance(comparisons, dict):
+                raise RMSFInferenceError(
+                    "RMSF report and analysis comparison policy must be JSON objects"
+                )
+            report = rmsf_replica_permutation_comparisons(
+                rmsf_report, comparisons
+            )
+        except (RMSFInferenceError, OSError, ValueError) as exc:
+            report = {
+                "module_id": "rmsf_permutation_inference",
+                "technical_status": "failed",
+                "scientific_status": "not evaluated",
+                "error_count": 1,
+                "warning_count": 0,
+                "issues": [{
+                    "severity": "error",
+                    "code": "RMSF_PERMUTATION_COMPARISON_FAILED",
                     "message": str(exc),
                 }],
             }

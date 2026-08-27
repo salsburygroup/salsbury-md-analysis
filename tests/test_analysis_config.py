@@ -204,6 +204,28 @@ class AnalysisConfigTests(unittest.TestCase):
             ):
                 load_analysis_config(path, module_ids, ["global_common_heavy"])
 
+    def test_comparison_context_protects_integrated_finalizer(self):
+        module_ids = ["provenance_manifest", "integrated_comparison"]
+        generated = default_analysis_config(
+            module_ids, [],
+            protected_modules=["provenance_manifest", "integrated_comparison"],
+        )
+        self.assertTrue(generated["modules"]["integrated_comparison"]["protected"])
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "config.json"
+            path.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "modules": {"integrated_comparison": {"enabled": False}},
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(
+                AnalysisConfigError,
+                "protected module integrated_comparison cannot be disabled",
+            ):
+                load_analysis_config(
+                    path, module_ids, [],
+                    additional_protected_modules=("integrated_comparison",),
+                )
+
     def test_memory_fit_refuses_to_disable_protected_structural_qc(self):
         config = default_analysis_config(
             ["structural_integrity_qc", "replica_rmsd_rg"], []

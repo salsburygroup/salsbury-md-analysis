@@ -128,6 +128,15 @@ selected clustering partition into coordinate files:
 - a checksummed export manifest containing every source frame identity and input
   lineage.
 
+The default `representative_frames` result is an observed frame nearest the
+declared state center in the state-defining feature space. For K-means that is
+the point nearest the fitted centroid; for an FES basin it is the point nearest
+the density-basin root. This is not generally the full-coordinate RMSD medoid,
+which minimizes average pairwise RMSD to all state members. The separate
+`representative_structures` function can calculate that coordinate-space
+medoid for an explicitly supplied, prealigned ensemble, but it is quadratic in
+the number of frames and is not a separate default campaign analysis.
+
 An optional `coordinate_selection` names a project selection to materialize.
 Routine conformational-view workflows use the full solute-heavy selection, so
 FES trajectories retain the protein–nucleic-acid context while omitting bulk

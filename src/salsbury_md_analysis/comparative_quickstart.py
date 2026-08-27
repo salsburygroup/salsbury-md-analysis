@@ -38,6 +38,7 @@ from .preflight import (
     probe_topology,
     probe_trajectory,
 )
+from .planning_report import PlanningReportError, write_planning_report
 from .quickstart import (
     QuickstartError,
     QuickstartMemoryError,
@@ -50,6 +51,8 @@ from .quickstart import (
     _coordinate_cache_enabled,
     _discover_dssp_executable,
     _exclude_conformational_views_from_base_workflow,
+    _effective_parallel_cpu_cap,
+    _execution_config_for_parallel_cpu_cap,
     _generic_definitions,
     _json_write,
     _require_new_directory,
@@ -100,12 +103,18 @@ def _deferred_modules(exclusions: Dict[str, str], disabled: Dict[str, str]) -> D
         "trajectory_features": "requires a declared scientific feature rather than an arbitrary atom pair",
         "scalar_feature_distributions": "runs after a question-linked scalar feature is declared",
         "scalar_threshold_states": "requires a physically justified threshold and sensitivity range",
-        "hydrogen_bonds": "requires explicit bonds; automatic chemistry discovery is the zero-input default",
+        "hydrogen_bonds": (
+            "optional manual fixed-feature override; automatic chemistry-backed "
+            "donor-hydrogen-acceptor discovery is the production default"
+        ),
         "hydrogen_bond_comparison": "runs after chemically mapped condition reports are complete",
         "hydrogen_bond_patterns": "runs after direct-hydrogen-bond reports define frame patterns",
         "grouped_regularized_classification": "runs after cross-condition hydrogen-bond features are accepted",
         "state_coordinate_exports": "automatic for non-trace FES views; extra exports require an accepted state definition",
-        "representative_structures": "runs after a state membership or coordinate ensemble is selected",
+        "representative_structures": (
+            "optional coordinate-space mean/medoid utility; observed state-centered "
+            "representative frames and coordinate exports are automatic"
+        ),
         "optional_observables": "requires a residue- or question-specific definition",
         "radial_distribution_functions": "requires explicit chemically meaningful atom groups",
         "nucleic_acid_geometry": "automatic ring and stacking definitions are not yet enabled in the generic initializer",
@@ -684,7 +693,8 @@ def prepare_comparative_analysis(
                 view_ids_for_config.add(str(view["view_id"]))
     try:
         analysis_config = load_analysis_config(
-            config_path, registry_ids, sorted(view_ids_for_config)
+            config_path, registry_ids, sorted(view_ids_for_config),
+            additional_protected_modules=("integrated_comparison",),
         )
     except (AnalysisConfigError, OSError) as exc:
         raise QuickstartError(str(exc)) from exc
@@ -751,6 +761,7 @@ def prepare_comparative_analysis(
         "alternative_clustering", "representative_frames", "markov_state_models",
         "grouped_ml", "dihedral_distributions", "hydrogen_bond_discovery",
         "solvent_accessible_surface_area", "convergence_uncertainty",
+        "rmsf_permutation_inference", "integrated_comparison",
     ]
     if "water_mediated_hydrogen_bond_networks" in definitions:
         requested.append("water_mediated_hydrogen_bond_networks")
@@ -762,6 +773,10 @@ def prepare_comparative_analysis(
         )
     except AnalysisConfigError as exc:
         raise QuickstartError(str(exc)) from exc
+    if "integrated_comparison" not in requested:
+        raise QuickstartError(
+            "integrated_comparison is mandatory for comparative campaigns and cannot be disabled"
+        )
     commands, requested = _exclude_conformational_views_from_base_workflow(
         commands, requested
     )
@@ -948,6 +963,9 @@ def prepare_comparative_analysis(
         raise QuickstartError(str(exc)) from exc
     _json_write(root / "sampling-plan.json", sampling_plan)
     _json_write(root / "campaign-resource-plan.json", campaign_resource_plan)
+    effective_parallel_cpu_cap = _effective_parallel_cpu_cap(
+        campaign_resource_plan
+    )
     coordinate_cache_enabled = _coordinate_cache_enabled(
         analysis_config, view_ids
     )
@@ -975,7 +993,7 @@ def prepare_comparative_analysis(
         if coordinate_cache_enabled else []
     )
     coordinate_cache_workers = min(
-        int(analysis_config["execution"]["maximum_parallel_cpus"]),  # type: ignore[index]
+        effective_parallel_cpu_cap,
         len(frame_counts),
     )
     deferred = _deferred_modules(exclusions, disabled)
@@ -1045,9 +1063,7 @@ def prepare_comparative_analysis(
         ),
         python_executable=_active_python_executable(),
         package_root=str(Path(__file__).resolve(strict=True).parents[1]),
-        maximum_parallel_cpus=int(
-            analysis_config["execution"]["maximum_parallel_cpus"]  # type: ignore[index]
-        ),
+        maximum_parallel_cpus=effective_parallel_cpu_cap,
     )
     slurm_files = _slurm_files(
         root,
@@ -1061,26 +1077,37 @@ def prepare_comparative_analysis(
         conformational_view_ids=view_ids,
         resource_table_enabled=bool(analysis_config["reporting"]["resource_table_enabled"]),  # type: ignore[index]
         finding_picker_enabled=bool(analysis_config["reporting"]["finding_picker_enabled"]),  # type: ignore[index]
-        maximum_parallel_cpus=int(
-            analysis_config["execution"]["maximum_parallel_cpus"]  # type: ignore[index]
-        ),
+        maximum_parallel_cpus=effective_parallel_cpu_cap,
         coordinate_cache_enabled=coordinate_cache_build_required,
         coordinate_cache_workers=coordinate_cache_workers,
         coordinate_cache_stride=coordinate_cache_stride,
         automatic_context_stage_counts=context_stage_counts,
+        rmsf_permutation_enabled=("rmsf_permutation_inference" in requested),
+        integrated_comparison_enabled=True,
     )
     try:
-        execution_artifacts = prepare_execution_artifacts(root, analysis_config)
-    except (ExecutionAdapterError, OSError) as exc:
+        execution_artifacts = prepare_execution_artifacts(
+            root,
+            _execution_config_for_parallel_cpu_cap(
+                analysis_config, effective_parallel_cpu_cap
+            ),
+        )
+        planning_report_files = write_planning_report(root)
+    except (ExecutionAdapterError, PlanningReportError, OSError) as exc:
         raise QuickstartError(str(exc)) from exc
     active_launcher = (
         "submit.sh" if execution_artifacts["adapter"] == "slurm"
+        else "run-custom.sh" if execution_artifacts["adapter"] == "custom"
         else "run-local.sh"
     )
     adapter_description = (
         f"Slurm profile `{execution_artifacts['slurm_profile_id']}`"
         if execution_artifacts["adapter"] == "slurm"
-        else "local dependency-aware executor"
+        else (
+            "external launcher contract"
+            if execution_artifacts["adapter"] == "custom"
+            else "local dependency-aware executor"
+        )
     )
     readme = f"""# {project_id}: generated comparative Salsbury MD analysis
 
@@ -1093,18 +1120,22 @@ provenance; they are not mislabeled as independent replicas.
 Every conformational view reads the all-frame made-whole molecular-payload cache;
 base water-dependent analyses retain the original solvated trajectories.
 
-Review `campaign-resource-plan.json`, `sampling-plan.json`, and
-`analysis-config.json`, then run:
+Review `planning-report.md` first. It lists every analysis family, its effective raw
+stride over the original trajectory, and every explicitly disabled, deferred, or
+inapplicable capability. Exact decisions remain in `planning-report.json`,
+`campaign-resource-plan.json`, `sampling-plan.json`, and `analysis-config.json`.
+Then run:
 
 ```bash
 cd {root}
 ./{active_launcher}
 ```
 
-The active execution adapter is the {adapter_description}. Local and Slurm modes
-execute the same staged workers, outputs, hashes, and scientific definitions. Select
-the mode with `execution.submission_adapter`; Slurm additionally requires a validated
-`execution.slurm_profile`. The retained `execution-adapter.json` and
+The active execution adapter is the {adapter_description}. Local, Slurm, and custom
+modes execute the same staged workers, outputs, hashes, and scientific definitions. Select
+the mode with `execution.submission_adapter`; `custom` hands the scheduler-neutral
+`launcher-contract.json` to a user-supplied launcher, and Slurm additionally requires
+a validated `execution.slurm_profile`. The retained `execution-adapter.json` and
 `local-execution-plan.json` make the launch decision and local dependency graph explicit.
 
 The finding picker applies the configured all-pairs or reference-versus-all policy with
@@ -1138,7 +1169,8 @@ remain visible in `module-coverage.json`.
             *context_generated_files, *context_slurm_files,
             *coordinate_cache_files, *view_slurm_files,
             "analysis-config.json", *slurm_files,
-            *execution_artifacts["generated_files"], "README.md",
+            *execution_artifacts["generated_files"], *planning_report_files,
+            "README.md",
         ],
         "execution_adapter": execution_artifacts["adapter"],
         "slurm_profile_id": execution_artifacts["slurm_profile_id"],

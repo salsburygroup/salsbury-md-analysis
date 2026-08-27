@@ -138,13 +138,21 @@ the complete resource and sampling plan before deciding whether to run it. The
 command validates inputs and writes the prepared directory, but it does not
 start local workers or submit scheduler jobs. Its JSON response includes the
 full `campaign-resource-plan.json`, a compact `planning_summary`, and the
-reviewed command that would run the prepared campaign.
+reviewed command that would run the prepared campaign. The prepared directory's
+`planning-report.md` gives the quicker human review: one row per analysis family,
+effective raw strides over the original trajectories, and distinct `Off`,
+`Deferred`, and `Not applicable` states. `planning-report.json` retains exact
+per-task and per-replica details. Several plans can be combined with
+`report-plan-matrix` into an 8-hour/24-hour/48-hour/168-hour-style comparison.
 
 If the requested CPU count is above the dependency graph's useful parallel
 ceiling, the response includes
 `REQUESTED_CPUS_EXCEED_USEFUL_PARALLELISM` with the useful and excess core
-counts. If the envelope cannot retain protected preparation and
-structural-integrity checks at their minima, planning returns
+counts. The planning record keeps the requested count, but the generated local,
+custom, and Slurm launchers use the smaller effective count; Slurm array widths
+and multiprocess worker requests are capped accordingly. If the envelope cannot
+retain protected preparation and structural-integrity checks at their minima,
+planning returns
 `planning_outcome: no_acceptable_reduced_plan`; it does not propose disabling
 those checks. The response also reports a
 `protected_subset_minimum_request`: padded CPUs, aggregate memory, and whole
@@ -168,8 +176,8 @@ For work on WFU's DEAC cluster, add
 `profiles/slurm/deac.json` cluster profile. Other groups can copy
 `profiles/slurm/generic-template.json` and set their account, Unix group, QoS,
 partitions, scheduler commands, Python/environment setup, and storage paths.
-The active choice is recorded in `execution-adapter.json`; local and Slurm modes
-execute the same worker scripts, dependency order, frame selections, atomic
+The active choice is recorded in `execution-adapter.json`; local, Slurm, and
+custom-launcher modes execute the same worker scripts, dependency order, frame selections, atomic
 outputs, hashes, and resource instrumentation. Local execution enforces the
 configured aggregate CPU and memory caps; Slurm requests are derived from the same
 planner estimates and retained in `scheduler-resource-requests.json`. See
@@ -229,6 +237,13 @@ balanced physical-frame budgets across conditions. Equivalent oligomer members
 may expand the observation set but are never relabeled as replicas. The same
 config supports all-pairs or reference-versus-all reporting for panels such as
 20 variants.
+
+Comparative preparation also schedules RMSF permutation inference automatically
+when that module is enabled. Each declared simulation replica contributes one
+exchangeable RMSF profile. Frames, time blocks, and symmetry-equivalent oligomer
+members are not promoted to independent units. A pair with fewer than two
+replicas per system is reported as insufficient rather than tested with
+pseudoreplicated frames.
 
 The default preparation target is one campaign envelope of 16 parallel CPUs
 for 24 wall hours. `execution.maximum_parallel_cpus` and
