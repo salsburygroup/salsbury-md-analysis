@@ -41,6 +41,7 @@ from .preflight import (
 from .quickstart import (
     QuickstartError,
     QuickstartMemoryError,
+    QuickstartPlanningError,
     _composition,
     _applicable_sampling_modules,
     _configure_coordinate_cache_views,
@@ -940,6 +941,10 @@ def prepare_comparative_analysis(
                     str(exc), plan=exc.plan, analysis_config=analysis_config,
                     output_directory=root,
                 ) from exc
+            raise QuickstartPlanningError(
+                str(exc), plan=exc.plan, analysis_config=analysis_config,
+                output_directory=root,
+            ) from exc
         raise QuickstartError(str(exc)) from exc
     _json_write(root / "sampling-plan.json", sampling_plan)
     _json_write(root / "campaign-resource-plan.json", campaign_resource_plan)

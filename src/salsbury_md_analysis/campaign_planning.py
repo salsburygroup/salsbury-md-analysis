@@ -1862,14 +1862,24 @@ def plan_and_apply_complete_campaign(
             plan["feasibility_status"] != "feasible"
             and bool(execution.get("fail_if_minimum_coverage_unaffordable", True))
         ):
-            plan["method_reduction_recommendation"] = (
-                recommend_scientifically_valid_task_subset(
-                    tasks, **planning_kwargs
-                )
+            recommendation = recommend_scientifically_valid_task_subset(
+                tasks, **planning_kwargs
             )
+            plan["method_reduction_recommendation"] = recommendation
+            if recommendation["recommendation_status"] == "no_feasible_subset_found":
+                message = (
+                    "No acceptable reduced plan: the configured whole-campaign "
+                    "envelope cannot retain every protected module at its "
+                    "scientific minimum. "
+                )
+            else:
+                message = (
+                    "The configured whole-campaign envelope cannot fund every "
+                    "enabled technical minimum; a reduced configuration is "
+                    "available for explicit review. "
+                )
             raise CampaignPlanningError(
-                "configured whole-campaign envelope cannot fund the declared "
-                f"technical minima: {_campaign_infeasibility_detail(plan)}",
+                message + _campaign_infeasibility_detail(plan),
                 plan=plan,
             )
         _apply_campaign_direct_allocations(

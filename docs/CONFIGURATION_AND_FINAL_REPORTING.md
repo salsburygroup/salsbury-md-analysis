@@ -14,12 +14,14 @@ salsbury-md-analysis prepare-analysis ... --config my-analysis-config.json
 Each `modules.<module_id>` entry has an `enabled` flag and an `options` object.
 Options replace generated definition fields and then undergo the normal strict
 project-schema validation. Disabling an upstream module also disables its
-dependent analyses; the generated `module-coverage.json` records this rather
-than producing a workflow that will fail later. Preflight, provenance, and
-common-atom mapping infrastructure cannot be disabled. Each topology-derived
+dependent analyses; the resolved config turns off affected conformational
+views before project construction, and `module-coverage.json` records the
+decision. Preflight, provenance, common-atom mapping, and structural-integrity
+QC cannot be disabled. Each topology-derived
 view has its own `enabled` flag and optional per-view `module_options`.
-The complete generated config also gives each module its direct `depends_on`
-list and `turning_off_also_disables` list. `module_groups` places the switches
+The complete generated config also gives each module a generated `protected`
+flag, its direct `depends_on` list, and its `turning_off_also_disables` list.
+`module_groups` places the switches
 in numbered sections: required infrastructure, quality/motion,
 conformational bases, states/kinetics, internal geometry,
 interactions/solvent/ions, and integration. These fields explain the graph;
@@ -101,6 +103,12 @@ from that cycle and replans the fits; it never falls back to a saved count.
 A configured envelope that cannot fund the small
 technical minima fails closed by default.
 
+Method-reduction advice preserves every module marked `protected: true`,
+including protection through dependency closure. If those retained tasks do
+not fit, the terminal and saved plan report `No acceptable reduced plan` and
+recommend a larger envelope. A reduced configuration is never manufactured by
+turning off structural-integrity QC.
+
 The method floors are independently configurable. Create a complete policy
 file with `write-scientific-minimums-template`, review its per-replica,
 pooled-overall-per-system, and ordered-method time-gap values, and set
@@ -125,6 +133,10 @@ caps can saturate wall time while many requested cores are idle.
 ceilings, memory-blocked groups, and the wall allowance required by the next
 stride upgrade. No duplicate calculation is added merely to consume the raw
 CPU-hour envelope.
+When `maximum_parallel_cpus` exceeds the largest concurrently useful stage,
+`resource_warnings` reports `REQUESTED_CPUS_EXCEED_USEFUL_PARALLELISM`, the
+useful ceiling, and the excess requested cores. The limit remains a user input;
+the warning explains why the extra cores cannot shorten that plan.
 That failure includes the minimum calibrated critical path, the science wall
 and CPU allowances after reserves, the configured campaign ceiling, and the
 smallest calculated `--target-wall-hours` retry bound. The number is guidance,

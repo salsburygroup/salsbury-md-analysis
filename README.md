@@ -137,8 +137,16 @@ Add `--plan-only` to `prepare-analysis` or `prepare-comparison` when you want
 the complete resource and sampling plan before deciding whether to run it. The
 command validates inputs and writes the prepared directory, but it does not
 start local workers or submit scheduler jobs. Its JSON response includes the
-full `campaign-resource-plan.json` and the reviewed command that would run the
-prepared campaign.
+full `campaign-resource-plan.json`, a compact `planning_summary`, and the
+reviewed command that would run the prepared campaign.
+
+If the requested CPU count is above the dependency graph's useful parallel
+ceiling, the response includes
+`REQUESTED_CPUS_EXCEED_USEFUL_PARALLELISM` with the useful and excess core
+counts. If the envelope cannot retain protected preparation and
+structural-integrity checks at their minima, planning returns
+`planning_outcome: no_acceptable_reduced_plan`; it does not propose disabling
+those checks.
 
 That prepared directory also contains `prepared/system.json`. Pass that
 manifest to `prepare-unwrapped-cache` when you want to create a reusable,
@@ -401,7 +409,8 @@ prepared campaign writes the complete resolved configuration to
 `analysis-config.json` and records every enabled, disabled, or deferred module
 in `module-coverage.json`. Disabling an upstream module also disables analyses
 that depend on it; required preflight, provenance, and atom-mapping checks
-cannot be turned off. Each complete module row includes `depends_on` and
+cannot be turned off, and neither can structural-integrity QC. Each complete
+module row includes a generated `protected` flag, `depends_on`, and
 `turning_off_also_disables`, while `module_groups` arranges the switches as
 infrastructure, quality/motion, conformational bases, states/kinetics,
 internal geometry, interactions/solvent/ions, and integration. This metadata

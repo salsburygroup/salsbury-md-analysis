@@ -7,7 +7,7 @@ import hashlib
 import json
 import sys
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 from . import __version__
 from .atom_mapping import (
@@ -73,6 +73,7 @@ from .preflight import preflight_system
 from .quickstart import (
     QuickstartError,
     QuickstartMemoryError,
+    QuickstartPlanningError,
     prepare_standard_analysis,
     prepare_standard_analysis_memory_fit,
 )
@@ -624,6 +625,39 @@ def _build_resource_calibration_catalog_command(
     return 0 if result["technical_status"] == "complete" else 2
 
 
+def _campaign_plan_terminal_summary(
+    plan: Mapping[str, object],
+) -> dict[str, object]:
+    """Return the bounded fields a person needs before reading the full plan."""
+
+    capacity = plan.get("workflow_parallel_capacity")
+    capacity = capacity if isinstance(capacity, Mapping) else {}
+    recommendation = plan.get("method_reduction_recommendation")
+    recommendation = recommendation if isinstance(recommendation, Mapping) else {}
+    reduced_plan = recommendation.get("recommended_plan")
+    reduced_plan = reduced_plan if isinstance(reduced_plan, Mapping) else {}
+    return {
+        "requested_parallel_cpus": plan.get("maximum_parallel_cpus_input"),
+        "requested_memory_gib": plan.get("maximum_memory_gib_input"),
+        "requested_wall_hours": plan.get("maximum_wall_hours_input"),
+        "science_wall_hours": plan.get("science_budget_wall_hours"),
+        "useful_parallel_cpu_ceiling": capacity.get(
+            "useful_parallel_cpu_ceiling"
+        ),
+        "requested_plan_feasibility": plan.get("feasibility_status"),
+        "requested_plan_minimum_critical_path_hours": plan.get(
+            "minimum_wall_hours_lower_bound"
+        ),
+        "reduction_status": recommendation.get("recommendation_status"),
+        "reduction_message": recommendation.get("recommendation_message"),
+        "protected_module_ids": recommendation.get("protected_module_ids", []),
+        "protected_subset_minimum_critical_path_hours": reduced_plan.get(
+            "minimum_wall_hours_lower_bound"
+        ),
+        "configuration_patch": recommendation.get("configuration_patch", {}),
+    }
+
+
 def _prepare_analysis_command(
     pdb: Path,
     psf: Optional[Path],
@@ -665,12 +699,16 @@ def _prepare_analysis_command(
             plan_path = output_directory.expanduser().resolve(strict=True) / (
                 "campaign-resource-plan.json"
             )
+            campaign_plan = load_json(plan_path)
             report = {
                 **report,
                 "planning_mode": "plan_only",
                 "execution_started": False,
                 "jobs_submitted": False,
-                "campaign_resource_plan": load_json(plan_path),
+                "warning_count": int(campaign_plan.get("warning_count", 0)),
+                "resource_warnings": campaign_plan.get("resource_warnings", []),
+                "planning_summary": _campaign_plan_terminal_summary(campaign_plan),
+                "campaign_resource_plan": campaign_plan,
                 "review_then_run": report.get("next_command"),
             }
     except (QuickstartError, OSError, ValueError) as exc:
@@ -683,11 +721,33 @@ def _prepare_analysis_command(
                 "message": str(exc),
             }],
         }
+        if isinstance(exc, QuickstartPlanningError):
+            recommendation = exc.plan.get("method_reduction_recommendation")
+            recommendation_status = (
+                recommendation.get("recommendation_status")
+                if isinstance(recommendation, Mapping) else None
+            )
+            report.update({
+                "planning_mode": "plan_only" if plan_only else "preparation",
+                "planning_outcome": (
+                    "no_acceptable_reduced_plan"
+                    if recommendation_status == "no_feasible_subset_found"
+                    else "infeasible_requested_plan"
+                ),
+                "execution_started": False,
+                "jobs_submitted": False,
+                "warning_count": int(exc.plan.get("warning_count", 0)),
+                "resource_warnings": exc.plan.get("resource_warnings", []),
+                "planning_summary": _campaign_plan_terminal_summary(exc.plan),
+                "campaign_resource_plan": exc.plan,
+                "partial_output_directory": str(exc.output_directory),
+            })
+            if recommendation_status == "no_feasible_subset_found":
+                report["issues"][0]["code"] = "NO_ACCEPTABLE_REDUCED_PLAN"
         if isinstance(exc, QuickstartMemoryError):
             report["memory_feasibility"] = exc.plan.get(
                 "memory_feasibility"
             )
-            report["partial_output_directory"] = str(exc.output_directory)
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["technical_status"] == "complete" else 2
 
@@ -721,12 +781,16 @@ def _prepare_comparison_command(
             plan_path = output_directory.expanduser().resolve(strict=True) / (
                 "campaign-resource-plan.json"
             )
+            campaign_plan = load_json(plan_path)
             report = {
                 **report,
                 "planning_mode": "plan_only",
                 "execution_started": False,
                 "jobs_submitted": False,
-                "campaign_resource_plan": load_json(plan_path),
+                "warning_count": int(campaign_plan.get("warning_count", 0)),
+                "resource_warnings": campaign_plan.get("resource_warnings", []),
+                "planning_summary": _campaign_plan_terminal_summary(campaign_plan),
+                "campaign_resource_plan": campaign_plan,
                 "review_then_run": report.get("next_command"),
             }
     except (QuickstartError, OSError, ValueError) as exc:
@@ -739,11 +803,33 @@ def _prepare_comparison_command(
                 "message": str(exc),
             }],
         }
+        if isinstance(exc, QuickstartPlanningError):
+            recommendation = exc.plan.get("method_reduction_recommendation")
+            recommendation_status = (
+                recommendation.get("recommendation_status")
+                if isinstance(recommendation, Mapping) else None
+            )
+            report.update({
+                "planning_mode": "plan_only" if plan_only else "preparation",
+                "planning_outcome": (
+                    "no_acceptable_reduced_plan"
+                    if recommendation_status == "no_feasible_subset_found"
+                    else "infeasible_requested_plan"
+                ),
+                "execution_started": False,
+                "jobs_submitted": False,
+                "warning_count": int(exc.plan.get("warning_count", 0)),
+                "resource_warnings": exc.plan.get("resource_warnings", []),
+                "planning_summary": _campaign_plan_terminal_summary(exc.plan),
+                "campaign_resource_plan": exc.plan,
+                "partial_output_directory": str(exc.output_directory),
+            })
+            if recommendation_status == "no_feasible_subset_found":
+                report["issues"][0]["code"] = "NO_ACCEPTABLE_REDUCED_PLAN"
         if isinstance(exc, QuickstartMemoryError):
             report["memory_feasibility"] = exc.plan.get(
                 "memory_feasibility"
             )
-            report["partial_output_directory"] = str(exc.output_directory)
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["technical_status"] == "complete" else 2
 

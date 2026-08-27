@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from salsbury_md_analysis.analysis_config import (
+    AnalysisConfigError,
     apply_module_configuration,
     default_analysis_config,
     load_analysis_config,
@@ -163,6 +164,54 @@ class AnalysisConfigTests(unittest.TestCase):
             self.assertEqual(requested, ["replica_rmsd_rg"])
             self.assertEqual(definitions["replica_rmsd_rg"]["frame_stride"], 7)
             self.assertIn("pca_fes_basins", reasons)
+
+    def test_structural_qc_is_protected_and_disabled_pca_turns_off_views(self):
+        module_ids = [
+            "provenance_manifest", "preflight_inventory", "common_atom_mapping",
+            "structural_integrity_qc", "common_pca", "pca_fes_basins",
+        ]
+        generated = default_analysis_config(module_ids, ["global_common_heavy"])
+        self.assertTrue(
+            generated["modules"]["structural_integrity_qc"]["protected"]
+        )
+        self.assertIn(
+            "structural_integrity_qc",
+            generated["module_groups"]["01_infrastructure"]["modules"],
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "config.json"
+            path.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "modules": {"common_pca": {"enabled": False}},
+            }), encoding="utf-8")
+            resolved = load_analysis_config(
+                path, module_ids, ["global_common_heavy"]
+            )
+            self.assertFalse(resolved["views"]["global_common_heavy"]["enabled"])
+            self.assertFalse(
+                resolved["views"]["global_common_heavy"][
+                    "state_trajectory_exports_enabled"
+                ]
+            )
+
+            path.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "modules": {"structural_integrity_qc": {"enabled": False}},
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(
+                AnalysisConfigError,
+                "protected module structural_integrity_qc cannot be disabled",
+            ):
+                load_analysis_config(path, module_ids, ["global_common_heavy"])
+
+    def test_memory_fit_refuses_to_disable_protected_structural_qc(self):
+        config = default_analysis_config(
+            ["structural_integrity_qc", "replica_rmsd_rg"], []
+        )
+        with self.assertRaisesRegex(
+            AnalysisConfigError, "no acceptable reduced configuration"
+        ):
+            make_memory_fit_config(config, ["structural_integrity_qc"])
 
     def test_memory_fit_config_materializes_dependency_disables(self):
         config = default_analysis_config(
