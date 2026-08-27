@@ -223,6 +223,45 @@ class ComparativeQuickstartTests(unittest.TestCase):
             )
             self.assertEqual(capacity["useful_parallel_cpu_ceiling"], 154)
 
+    def test_disabled_common_pca_prepares_without_conformational_projects(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pdb, psf, trajectories = _write_inputs(root)
+            request_path = root / "comparison.json"
+            request_path.write_text(json.dumps({
+                "request_schema": "salsbury-comparative-analysis-input-v1",
+                "systems": [
+                    {
+                        "system_id": system_id,
+                        "pdb": str(pdb),
+                        "psf": str(psf),
+                        "trajectories": [str(path) for path in trajectories],
+                        "frame_interval_ps": 10.0,
+                    }
+                    for system_id in ("control", "variant")
+                ],
+            }), encoding="utf-8")
+            config_path = root / "config.json"
+            config_path.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "modules": {"common_pca": {"enabled": False}},
+            }), encoding="utf-8")
+            output = root / "analysis"
+            report = prepare_comparative_analysis(
+                request_path=request_path,
+                output_directory=output,
+                project_id="no-common-pca",
+                config_path=config_path,
+            )
+            self.assertEqual(report["technical_status"], "complete")
+            resolved = json.loads((output / "analysis-config.json").read_text())
+            self.assertTrue(all(
+                row["enabled"] is False
+                for row in resolved["views"].values()
+            ))
+            self.assertFalse(any(output.glob("project-global_common_heavy*.json")))
+            self.assertTrue((output / "conformational-views.json").exists())
+
     def test_schema_v2_preserves_segmented_replica_boundaries_and_counts(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

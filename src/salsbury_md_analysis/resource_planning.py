@@ -1378,6 +1378,25 @@ def plan_campaign_resource_budget(
             "wall/CPU envelope. Unused CPU-hours are stranded by discrete stride "
             "steps and available parallelism, not silently discarded work."
         )
+    useful_parallel_cpu_ceiling = workflow_useful_parallel_cpu_ceiling(
+        normalized
+    )
+    resource_warnings = []
+    if maximum_parallel_cpus > useful_parallel_cpu_ceiling:
+        resource_warnings.append({
+            "severity": "warning",
+            "code": "REQUESTED_CPUS_EXCEED_USEFUL_PARALLELISM",
+            "requested_parallel_cpus": maximum_parallel_cpus,
+            "useful_parallel_cpu_ceiling": useful_parallel_cpu_ceiling,
+            "excess_parallel_cpus": (
+                maximum_parallel_cpus - useful_parallel_cpu_ceiling
+            ),
+            "message": (
+                f"The campaign requests {maximum_parallel_cpus} CPUs, but its "
+                f"dependency graph can use at most {useful_parallel_cpu_ceiling} "
+                "concurrently. Extra cores do not shorten this plan."
+            ),
+        })
     return {
         "planning_schema": "salsbury-campaign-resource-plan-v1",
         "technical_status": "complete",
@@ -1413,10 +1432,10 @@ def plan_campaign_resource_budget(
             ),
             "maximum_parallel_cpus": maximum_parallel_cpus,
         },
+        "warning_count": len(resource_warnings),
+        "resource_warnings": resource_warnings,
         "workflow_parallel_capacity": {
-            "useful_parallel_cpu_ceiling": workflow_useful_parallel_cpu_ceiling(
-                normalized
-            ),
+            "useful_parallel_cpu_ceiling": useful_parallel_cpu_ceiling,
             "coordinate_cache_replica_parallel_cpu_ceiling": max(
                 (
                     int(row.get("intrinsic_cpu_cap", row.get("effective_cpu_cap", 1)))
@@ -2573,7 +2592,7 @@ def recommend_scientifically_valid_task_subset(
     minimum_scheduler_memory_gib: float = 0.0,
     protected_module_ids: Sequence[str] = (
         "coordinate_cache", "provenance_manifest", "preflight_inventory",
-        "common_atom_mapping",
+        "common_atom_mapping", "structural_integrity_qc",
     ),
 ) -> Dict[str, object]:
     """Propose the broadest scientifically valid task subset for an envelope.
@@ -2586,7 +2605,7 @@ def recommend_scientifically_valid_task_subset(
     to keep the method nominally enabled.
     """
 
-    from .analysis_config import DEPENDENCIES
+    from .analysis_config import DEPENDENCIES, PROTECTED_MODULES
 
     started = time.monotonic()
     planner_kwargs = {
@@ -2603,7 +2622,16 @@ def recommend_scientifically_valid_task_subset(
     working = [deepcopy(dict(task)) for task in tasks]
     if not working:
         raise ResourcePlanningError("task-subset recommendation requires tasks")
-    protected = set(str(value) for value in protected_module_ids)
+    protected = (
+        set(str(value) for value in protected_module_ids)
+        | set(PROTECTED_MODULES)
+        | {"coordinate_cache"}
+    )
+    protected_task_ids = {
+        str(row["task_id"])
+        for row in working
+        if str(row.get("module_id")) in protected
+    }
     disabled_switches: list[str] = []
     decisions: list[Dict[str, object]] = []
 
@@ -2654,6 +2682,8 @@ def recommend_scientifically_valid_task_subset(
         candidates = []
         for switch in switches:
             removed_ids = task_ids_for_switch(working, switch)
+            if removed_ids.intersection(protected_task_ids):
+                continue
             candidate_tasks = [
                 row for row in working if str(row["task_id"]) not in removed_ids
             ]
@@ -2702,20 +2732,41 @@ def recommend_scientifically_valid_task_subset(
         working = candidate_tasks
         current_plan = candidate_plan
         current_score = _resource_shortfall_score(current_plan)
+    feasible = current_plan["feasibility_status"] == "feasible"
     return {
         "recommendation_schema": "salsbury-scientific-method-fit-v1",
         "technical_status": "complete",
         "recommendation_status": (
-            "feasible_subset_found"
-            if current_plan["feasibility_status"] == "feasible"
-            else "no_feasible_subset_found"
+            "feasible_subset_found" if feasible else "no_feasible_subset_found"
+        ),
+        "recommendation_message": (
+            "A reduced configuration can meet the envelope while retaining every "
+            "protected module. Review and apply the proposed switches explicitly."
+            if feasible else
+            "No acceptable reduced plan: the envelope cannot retain every "
+            "protected module at its scientific minimum. Increase the resource "
+            "envelope; protected checks will not be disabled."
         ),
         "automatic_changes_applied": False,
-        "disabled_configuration_switches": disabled_switches,
-        "configuration_patch": {
-            switch: ("off" if switch == "execution.coordinate_cache" else False)
-            for switch in disabled_switches
-        },
+        "protected_module_ids": sorted(protected),
+        "protected_task_ids": sorted(protected_task_ids),
+        "protected_set_preserved": not any(
+            task_id not in {str(row["task_id"]) for row in working}
+            for task_id in protected_task_ids
+        ),
+        "disabled_configuration_switches": disabled_switches if feasible else [],
+        "attempted_configuration_switches": (
+            [] if feasible else disabled_switches
+        ),
+        "configuration_patch": (
+            {
+                switch: (
+                    "off" if switch == "execution.coordinate_cache" else False
+                )
+                for switch in disabled_switches
+            }
+            if feasible else {}
+        ),
         "retained_task_ids": sorted(str(row["task_id"]) for row in working),
         "decisions": decisions,
         "recommended_plan": current_plan,
@@ -2727,6 +2778,9 @@ def recommend_scientifically_valid_task_subset(
         "scientific_boundary": (
             "This is a proposed configuration. Apply and rerun planning explicitly; "
             "a disabled method is absent, not a low-sample scientific result."
+            if feasible else
+            "No configuration change is proposed. Diagnostic removals did not make "
+            "the protected workflow feasible, so the resource envelope must change."
         ),
     }
 

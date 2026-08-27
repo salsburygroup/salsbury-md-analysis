@@ -78,18 +78,24 @@ DEPENDENCIES = {
     "convergence_uncertainty": {"replica_rmsd_rg"},
 }
 
-PROTECTED_MODULES = {"provenance_manifest", "preflight_inventory", "common_atom_mapping"}
+PROTECTED_MODULES = {
+    "provenance_manifest", "preflight_inventory", "common_atom_mapping",
+    "structural_integrity_qc",
+}
 
 MODULE_GROUPS = {
     "01_infrastructure": {
-        "description": "Required provenance, input validation, and atom identity.",
+        "description": (
+            "Required provenance, input validation, atom identity, and structural "
+            "integrity QC."
+        ),
         "modules": PROTECTED_MODULES,
     },
     "02_quality_and_motion": {
-        "description": "Structural QC, replica motion, fluctuations, and uncertainty.",
+        "description": "Replica motion, fluctuations, and uncertainty.",
         "modules": {
-            "structural_integrity_qc", "replica_rmsd_rg", "pooled_rmsf",
-            "convergence_uncertainty", "rmsf_permutation_inference",
+            "replica_rmsd_rg", "pooled_rmsf", "convergence_uncertainty",
+            "rmsf_permutation_inference",
         },
     },
     "03_conformational_bases": {
@@ -163,6 +169,7 @@ def _module_configuration_metadata(
         module_rows[module_id] = {
             "enabled": True,
             "options": {},
+            "protected": module_id in PROTECTED_MODULES,
             "depends_on": sorted(
                 dependencies.get(module_id, set()).intersection(known)
             ),
@@ -363,7 +370,8 @@ def load_analysis_config(
         if module_id not in known_modules:
             raise AnalysisConfigError(f"unknown module in analysis config: {module_id}")
         allowed_module_fields = {
-            "enabled", "options", "depends_on", "turning_off_also_disables",
+            "enabled", "options", "protected", "depends_on",
+            "turning_off_also_disables",
         }
         if not isinstance(raw, dict) or set(raw).difference(allowed_module_fields):
             raise AnalysisConfigError(
@@ -374,7 +382,9 @@ def load_analysis_config(
         if not isinstance(enabled, bool) or not isinstance(options, dict):
             raise AnalysisConfigError(f"module {module_id} has invalid enabled/options values")
         if module_id in PROTECTED_MODULES and not enabled:
-            raise AnalysisConfigError(f"preparation infrastructure module {module_id} cannot be disabled")
+            raise AnalysisConfigError(
+                f"protected module {module_id} cannot be disabled"
+            )
         default_row = config["modules"][module_id]  # type: ignore[index]
         assert isinstance(default_row, dict)
         default_row["enabled"] = enabled
@@ -541,7 +551,7 @@ def load_analysis_config(
         assert isinstance(resolved, dict)
         supplied_row = raw_modules.get(module_id, {})
         assert isinstance(supplied_row, dict)
-        for field in ("depends_on", "turning_off_also_disables"):
+        for field in ("protected", "depends_on", "turning_off_also_disables"):
             if field in supplied_row and supplied_row[field] != resolved[field]:
                 raise AnalysisConfigError(
                     f"module {module_id}.{field} is generated dependency metadata "
@@ -836,6 +846,13 @@ def load_analysis_config(
     execution["maximum_total_cpu_hours"] = (
         int(maximum_cpus) * float(execution["maximum_hours_per_cpu"])
     )
+    if "common_pca" not in enabled_modules(config):
+        views = config.get("views")
+        if isinstance(views, dict):
+            for row in views.values():
+                if isinstance(row, dict):
+                    row["enabled"] = False
+                    row["state_trajectory_exports_enabled"] = False
     return config
 
 
@@ -939,6 +956,11 @@ def make_memory_fit_config(
             direct.append(module_id)
         elif module_id.startswith("modules.") and module_id.endswith(".enabled"):
             resolved_module_id = module_id[len("modules.") : -len(".enabled")]
+            if resolved_module_id in PROTECTED_MODULES:
+                raise AnalysisConfigError(
+                    "no acceptable reduced configuration: protected module "
+                    f"{resolved_module_id} cannot be disabled"
+                )
             row = modules.get(resolved_module_id)
             if not isinstance(row, dict):
                 raise AnalysisConfigError(
@@ -947,6 +969,11 @@ def make_memory_fit_config(
             row["enabled"] = False
             direct.append(module_id)
         elif module_id in modules:
+            if module_id in PROTECTED_MODULES:
+                raise AnalysisConfigError(
+                    "no acceptable reduced configuration: protected module "
+                    f"{module_id} cannot be disabled"
+                )
             row = modules[module_id]
             if not isinstance(row, dict):
                 raise AnalysisConfigError(f"module {module_id} config is invalid")

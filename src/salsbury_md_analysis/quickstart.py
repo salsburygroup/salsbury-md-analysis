@@ -74,8 +74,8 @@ class QuickstartError(ValueError):
     """Raised when a safe runnable project cannot be prepared."""
 
 
-class QuickstartMemoryError(QuickstartError):
-    """Raised with a complete plan when enabled minima exceed the memory cap."""
+class QuickstartPlanningError(QuickstartError):
+    """Raised with a complete plan when an execution envelope is infeasible."""
 
     def __init__(
         self, message: str, *, plan: Mapping[str, object],
@@ -85,6 +85,10 @@ class QuickstartMemoryError(QuickstartError):
         self.plan = deepcopy(dict(plan))
         self.analysis_config = deepcopy(dict(analysis_config))
         self.output_directory = output_directory
+
+
+class QuickstartMemoryError(QuickstartPlanningError):
+    """Raised with a complete plan when enabled minima exceed the memory cap."""
 
 
 _GENERIC_DIRECT_ESTIMATORS = (
@@ -986,6 +990,17 @@ def _conformational_view_projects(
     assert isinstance(views, list)
     base_definitions = base_project["definitions"]
     assert isinstance(base_definitions, dict)
+    if "common_pca" not in base_definitions:
+        for view in views:
+            assert isinstance(view, dict)
+            view["execution"] = (
+                "not generated because common_pca is disabled by analysis config"
+            )
+        plan["workflow_scope"] = workflow_scope
+        plan["workflow_prefix"] = workflow_prefix
+        plan["workflow_system_id"] = workflow_system_id
+        _json_write(root / plan_filename, plan)
+        return [], [plan_filename]
     view_definition_ids = {
         "common_pca", "generalized_correlation_and_information",
         "information_dynamics", "time_lagged_independent_component_analysis",
@@ -2361,6 +2376,10 @@ def prepare_standard_analysis(
                     str(exc), plan=exc.plan, analysis_config=analysis_config,
                     output_directory=root,
                 ) from exc
+            raise QuickstartPlanningError(
+                str(exc), plan=exc.plan, analysis_config=analysis_config,
+                output_directory=root,
+            ) from exc
         raise QuickstartError(str(exc)) from exc
     _json_write(root / "sampling-plan.json", sampling_plan)
     _json_write(root / "campaign-resource-plan.json", campaign_resource_plan)

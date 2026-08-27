@@ -1089,6 +1089,84 @@ class ResourcePlanningTests(unittest.TestCase):
         )
         self.assertFalse(report["automatic_changes_applied"])
 
+    def test_method_subset_never_removes_protected_structural_qc(self):
+        tasks = [
+            {
+                "task_id": "qc",
+                "module_id": "structural_integrity_qc",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [100],
+                "minimum_frames_per_replica": 100,
+                "maximum_frames_per_replica": 100,
+                "cpu_seconds_per_physical_frame": 360.0,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 1.0,
+            },
+            {
+                "task_id": "dccm",
+                "module_id": "dccm",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [100],
+                "minimum_frames_per_replica": 10,
+                "maximum_frames_per_replica": 100,
+                "cpu_seconds_per_physical_frame": 0.01,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 1.0,
+            },
+        ]
+        report = recommend_scientifically_valid_task_subset(
+            tasks,
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=1.0,
+            maximum_memory_gib=8.0,
+            planning_utilization=1.0,
+            pilot_budget_fraction=0.0,
+        )
+        self.assertEqual(
+            report["recommendation_status"], "no_feasible_subset_found"
+        )
+        self.assertIn("No acceptable reduced plan", report["recommendation_message"])
+        self.assertIn("qc", report["retained_task_ids"])
+        self.assertTrue(report["protected_set_preserved"])
+        self.assertEqual(report["disabled_configuration_switches"], [])
+        self.assertEqual(report["configuration_patch"], {})
+        self.assertIn(
+            "modules.dccm.enabled", report["attempted_configuration_switches"]
+        )
+
+    def test_campaign_plan_warns_when_requested_cpus_exceed_useful_ceiling(self):
+        report = plan_campaign_resource_budget(
+            [{
+                "task_id": "qc",
+                "module_id": "structural_integrity_qc",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "intrinsic_cpu_cap": 1,
+                "source_frames_per_replica": [10],
+                "minimum_frames_per_replica": 1,
+                "maximum_frames_per_replica": 10,
+                "cpu_seconds_per_physical_frame": 0.01,
+                "estimated_peak_memory_gib": 1.0,
+            }],
+            maximum_parallel_cpus=8,
+            maximum_wall_hours=1.0,
+            maximum_memory_gib=8.0,
+            planning_utilization=1.0,
+            pilot_budget_fraction=0.0,
+        )
+        self.assertEqual(
+            report["workflow_parallel_capacity"]["useful_parallel_cpu_ceiling"],
+            1,
+        )
+        self.assertEqual(report["warning_count"], 1)
+        self.assertEqual(
+            report["resource_warnings"][0]["code"],
+            "REQUESTED_CPUS_EXCEED_USEFUL_PARALLELISM",
+        )
+        self.assertEqual(report["resource_warnings"][0]["excess_parallel_cpus"], 7)
+
 
 if __name__ == "__main__":
     unittest.main()
