@@ -171,6 +171,7 @@ def _automatic_context_project(
     reference_structure: Path,
     reference_connectivity: Path,
     source_frame_counts: Sequence[int],
+    composition: Mapping[str, object],
     analysis_config: Mapping[str, object],
     dssr_executable: Optional[str],
 ) -> tuple[Optional[str], Dict[str, object], Dict[str, str], list[str]]:
@@ -218,14 +219,20 @@ def _automatic_context_project(
         "executable": dssr_executable,
     }
     if helical_requested:
-        helical_probe = (
-            probe_dssr_reference_duplex(dssr_executable, reference_structure)
-            if dssr_executable is not None
-            else {
+        if not bool(composition.get("has_nucleic_acid")):
+            helical_probe = {
+                "status": "not_available", "reason": "no_duplex_dna_or_rna",
+                "executable": dssr_executable,
+            }
+        elif dssr_executable is None:
+            helical_probe = {
                 "status": "not_available", "reason": "dssr_not_installed",
                 "executable": None,
             }
-        )
+        else:
+            helical_probe = probe_dssr_reference_duplex(
+                dssr_executable, reference_structure
+            )
         source_definition = raw_definitions.get("nucleic_acid_structure")
         base_definitions = base_project.get("definitions")
         helical_definition = (
@@ -874,6 +881,9 @@ def prepare_comparative_analysis(
         row.get("availability_status") == "available"
         for row in energetic_parameter_details
     )
+    energetic_systems_have_protein = all(
+        bool(row.get("has_protein")) for row in compositions
+    )
     sampling_plan = automatic_sampling_plan(
         system_path,
         simulation_kind="unbiased_md",
@@ -941,7 +951,10 @@ def prepare_comparative_analysis(
     energetic_availability_file: Optional[str] = None
     if (
         "energetic_network_embeddings" in requested
-        and not energetic_parameter_available
+        and (
+            not energetic_systems_have_protein
+            or not energetic_parameter_available
+        )
     ):
         commands = [
             command for command in commands
@@ -951,13 +964,24 @@ def prepare_comparative_analysis(
             module_id for module_id in requested
             if module_id != "energetic_network_embeddings"
         ]
-        unavailable = next(
-            row for row in energetic_parameter_details
-            if row.get("availability_status") != "available"
-        )
-        reason = "not available: " + str(
-            unavailable.get("availability_reason", "no compatible parameters")
-        )
+        if not energetic_systems_have_protein:
+            protein_absent = [
+                str(inputs["system_id"])
+                for inputs in system_inputs
+                if not bool(inputs["composition"].get("has_protein"))
+            ]
+            reason = (
+                "not applicable: protein residues are absent from "
+                + ", ".join(protein_absent)
+            )
+        else:
+            unavailable = next(
+                row for row in energetic_parameter_details
+                if row.get("availability_status") != "available"
+            )
+            reason = "not available: " + str(
+                unavailable.get("availability_reason", "no compatible parameters")
+            )
         exclusions["energetic_network_embeddings"] = reason
         energetic_availability_file = (
             "energetic-network-embeddings-availability.json"
@@ -1070,6 +1094,7 @@ def prepare_comparative_analysis(
                 reference_structure=inputs["pdb"],
                 reference_connectivity=inputs["connectivity"],
                 source_frame_counts=inputs["frame_counts"],
+                composition=inputs["composition"],
                 analysis_config=analysis_config,
                 dssr_executable=dssr,
             )

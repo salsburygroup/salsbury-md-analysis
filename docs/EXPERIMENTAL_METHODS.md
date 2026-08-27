@@ -420,6 +420,9 @@ When any prerequisite is absent, preparation writes
 task. When the module is enabled and the DSSR/duplex/descriptor probe passes, it
 inherits the DSSR frame set, receives a planner task, and the runtime repeats
 the duplex and executable-provenance checks before analysis.
+Protein-only systems are reported as scientifically inapplicable before DSSR
+availability is considered; a missing DSSR executable is relevant only when a
+nucleic-acid system could support the method.
 
 `prepare-comparison` applies the same gate independently to every system. An
 enabled system with a verified duplex receives paired DSSR and helical-mechanics
@@ -466,7 +469,9 @@ representable by one standard `NonbondedForce`.
 When the module is enabled without a complete supported source, preparation
 writes `energetic-network-embeddings-availability.json`, records
 `availability_status: "not_available"`, and creates no planner task. No missing
-force-field parameter is inferred.
+force-field parameter is inferred. Systems without protein residues are first
+reported as scientifically inapplicable, rather than as missing force-field
+parameters.
 
 For a one-system CHARMM preparation, repeat the parameter flag in the same
 order used to build the simulation:

@@ -428,6 +428,10 @@ class QuickstartTests(unittest.TestCase):
         self.assertNotIn("random_feature_koopman", base["requested_modules"])
         self.assertNotIn("helical_mechanics", base["requested_modules"])
         self.assertEqual(helical_availability["availability_status"], "not_available")
+        self.assertEqual(
+            helical_availability["availability_reason"],
+            "no_duplex_dna_or_rna",
+        )
         self.assertFalse(helical_availability["planner_task_created"])
         self.assertEqual(
             base["definitions"]["multivalent_molecular_bridges"]

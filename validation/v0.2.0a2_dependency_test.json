@@ -12,14 +12,14 @@
     "openmm": "not installed; one expected optional test skip"
   },
   "command": "<isolated-python> -m unittest discover -s tests -q",
-  "tests_run": 612,
+  "tests_run": 613,
   "expected_skips": 1,
   "failures": 0,
   "errors": 0,
-  "elapsed_seconds": 14.512,
+  "elapsed_seconds": 14.672,
   "generated_documentation_check": "pass via the dependency-equipped suite",
-  "artifact_build_check": "pass; sdist sha256 bbfeee5e07e1b14d8ca7e133ecde70e3a5c1ca7e6a315f29ac8e41e09c155f1c; wheel sha256 b0f753e219cbfa3f7bb746850983f890360910c4604e6746924a14e38285d0b5; no embedded interactive-report module",
-  "github_ci_status": "not submitted; unreleased experimental branch candidate",
+  "artifact_build_check": "pass; sdist sha256 c9f840ffd0a521558ecf5db0c6f9e9ed975ec3914bd6270284e7137582b58179; wheel sha256 facd1e2a13bade6d903075d0477be2f04e52159d584b050efbb092204b66964b; no embedded interactive-report module",
+  "github_ci_status": "tracked by experimental-branch pull request; verify live status on GitHub",
   "technical_status": "local dependency-equipped regression, generated-document, and artifact-build pass",
   "scientific_status": "not evaluated",
   "interpretation": "Dependency-equipped regression evidence only. This does not establish scientific validity, promote experimental modules, or constitute a release decision."

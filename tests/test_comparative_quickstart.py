@@ -15,6 +15,42 @@ from tests.test_quickstart import _write_dcd, _write_inputs, _write_oligomer_inp
 
 
 class ComparativeQuickstartTests(unittest.TestCase):
+    def test_protein_only_comparison_marks_helical_mechanics_inapplicable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pdb, psf, trajectories = _write_inputs(root)
+            request = root / "comparison.json"
+            request.write_text(json.dumps({
+                "request_schema": "salsbury-comparative-analysis-input-v1",
+                "systems": [{
+                    "system_id": system_id,
+                    "pdb": str(pdb),
+                    "psf": str(psf),
+                    "trajectories": [str(path) for path in trajectories],
+                    "frame_interval_ps": 10.0,
+                } for system_id in ("control", "variant")],
+            }), encoding="utf-8")
+            config = root / "config.json"
+            config.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "modules": {"helical_mechanics": {"enabled": True}},
+            }), encoding="utf-8")
+            output = root / "analysis"
+            prepare_comparative_analysis(
+                request_path=request,
+                output_directory=output,
+                project_id="protein-only-comparison",
+                config_path=config,
+            )
+            availability = json.loads(
+                (output / "helical-mechanics-availability-control.json")
+                .read_text()
+            )
+        self.assertEqual(availability["availability_status"], "not_available")
+        self.assertEqual(
+            availability["availability_reason"], "no_duplex_dna_or_rna"
+        )
+
     def test_enabled_available_duplex_mechanics_gets_per_system_planner_tasks(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -77,7 +113,10 @@ class ComparativeQuickstartTests(unittest.TestCase):
             config = root / "config.json"
             config.write_text(json.dumps({
                 "config_schema": "salsbury-analysis-config-v1",
-                "modules": {"helical_mechanics": {"enabled": True}},
+                "modules": {
+                    "helical_mechanics": {"enabled": True},
+                    "energetic_network_embeddings": {"enabled": True},
+                },
             }), encoding="utf-8")
             output = root / "analysis"
             prepare_comparative_analysis(
@@ -97,6 +136,10 @@ class ComparativeQuickstartTests(unittest.TestCase):
             worker = (
                 output / "run_automatic_context_stage_1_array.slurm"
             ).read_text()
+            energetic_availability = json.loads(
+                (output / "energetic-network-embeddings-availability.json")
+                .read_text()
+            )
         tasks = {row["task_id"]: row for row in campaign["tasks"]}
         for system_id in ("control", "variant"):
             structure_id = (
@@ -124,6 +167,13 @@ class ComparativeQuickstartTests(unittest.TestCase):
         self.assertIn("'helical-mechanics'", worker)
         self.assertIn(
             "SALSBURY_MD_ANALYSIS_NUCLEIC_ACID_STRUCTURE_REPORT", worker
+        )
+        self.assertEqual(
+            energetic_availability["availability_status"], "not_available"
+        )
+        self.assertEqual(
+            energetic_availability["availability_reason"],
+            "not applicable: protein residues are absent from control, variant",
         )
 
     def test_comparison_memory_fallback_writes_explicit_reduced_config(self):

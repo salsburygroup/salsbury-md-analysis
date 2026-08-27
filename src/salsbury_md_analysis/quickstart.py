@@ -2969,7 +2969,10 @@ def prepare_standard_analysis(
     energetic_availability_file: Optional[str] = None
     if (
         "energetic_network_embeddings" in requested
-        and not energetic_parameter_available
+        and (
+            not bool(composition.get("has_protein"))
+            or not energetic_parameter_available
+        )
     ):
         commands = [
             command for command in commands
@@ -2980,10 +2983,14 @@ def prepare_standard_analysis(
             if module_id != "energetic_network_embeddings"
         ]
         reason = (
-            "not available: "
-            + str(energetic_parameter_probe.get(
-                "availability_reason", "no compatible interaction parameters"
-            ))
+            "not applicable: system contains no protein residues"
+            if not bool(composition.get("has_protein"))
+            else (
+                "not available: "
+                + str(energetic_parameter_probe.get(
+                    "availability_reason", "no compatible interaction parameters"
+                ))
+            )
         )
         exclusions["energetic_network_embeddings"] = reason
         energetic_availability_file = "energetic-network-embeddings-availability.json"
