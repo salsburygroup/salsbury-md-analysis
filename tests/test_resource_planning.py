@@ -7,12 +7,155 @@ from salsbury_md_analysis.resource_planning import (
     calibrate_quadratic_from_benchmarks,
     plan_alternative_clustering_fit_strides,
     plan_campaign_resource_budget,
+    plan_projection_coupled_campaign_resource_budget,
     recommend_frame_budget,
     recommend_quadratic_observation_budget,
+    pack_resource_waves,
 )
 
 
 class ResourcePlanningTests(unittest.TestCase):
+    def test_projection_coupled_replanning_rebuilds_clustering_sources(self):
+        tasks = [
+            {
+                "task_id": "view:shared:common_pca",
+                "workflow_id": "shared",
+                "module_id": "common_pca",
+                "task_scope": "conformational_view",
+                "dependency_stage": 1,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [1_000, 1_000],
+                "minimum_frames_per_replica": 100,
+                "maximum_frames_per_replica": 1_000,
+                "cpu_seconds_per_physical_frame": 0.1,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 5.0,
+            },
+            {
+                "task_id": "view:shared:alternative_clustering:pam",
+                "workflow_id": "shared",
+                "module_id": "alternative_clustering",
+                "algorithm_id": "pam",
+                "task_scope": "conformational_view_algorithm_fit",
+                "dependency_stage": 2,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [100, 100],
+                "minimum_frames_per_replica": 10,
+                "maximum_frames_per_replica": 100,
+                "cpu_seconds_per_physical_frame": 0.1,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 1.0,
+            },
+        ]
+        plan = plan_projection_coupled_campaign_resource_budget(
+            tasks,
+            maximum_parallel_cpus=2,
+            maximum_wall_hours=8.0,
+            maximum_memory_gib=8.0,
+        )
+        rows = {row["task_id"]: row for row in plan["tasks"]}
+        parent = rows["view:shared:common_pca"]
+        child = rows["view:shared:alternative_clustering:pam"]
+        self.assertEqual(
+            child["source_frames_per_replica"],
+            parent["selected_physical_frames_per_replica"],
+        )
+        self.assertEqual(child["source_frames_per_replica"], [1_000, 1_000])
+        self.assertEqual(child["maximum_frames_per_replica"], 1_000)
+        self.assertTrue(plan["projection_clustering_coupling"]["converged"])
+        self.assertGreaterEqual(
+            plan["projection_clustering_coupling"]["iterations"], 2
+        )
+
+    def test_projection_coupled_replanning_rejects_orphan_clustering_source(self):
+        task = {
+            "task_id": "view:missing:alternative_clustering:pam",
+            "workflow_id": "missing",
+            "module_id": "alternative_clustering",
+            "algorithm_id": "pam",
+            "task_scope": "conformational_view_algorithm_fit",
+            "dependency_stage": 2,
+            "effective_cpu_cap": 1,
+            "source_frames_per_replica": [100],
+            "minimum_frames_per_replica": 10,
+            "maximum_frames_per_replica": 100,
+            "cpu_seconds_per_physical_frame": 0.1,
+            "estimated_peak_memory_gib": 1.0,
+            "priority_weight": 1.0,
+        }
+        with self.assertRaisesRegex(
+            ResourcePlanningError, "has no common-PCA projection task"
+        ):
+            plan_projection_coupled_campaign_resource_budget(
+                [task],
+                maximum_parallel_cpus=1,
+                maximum_wall_hours=1.0,
+                maximum_memory_gib=4.0,
+            )
+
+    def test_projection_coupled_replanning_stabilizes_discrete_stride_cycle(self):
+        common = {
+            "workflow_id": "shared",
+            "source_frames_per_replica": [1_000],
+            "minimum_frames_per_replica": 100,
+            "maximum_frames_per_replica": 1_000,
+            "cpu_seconds_per_physical_frame": 1.0,
+            "estimated_peak_memory_gib": 1.0,
+            "effective_cpu_cap": 1,
+        }
+        tasks = [
+            {
+                **common,
+                "task_id": "projection",
+                "module_id": "common_pca",
+                "task_scope": "conformational_view",
+                "dependency_stage": 0,
+                "priority_weight": 10.0,
+            },
+            {
+                **common,
+                "task_id": "fit",
+                "module_id": "alternative_clustering",
+                "task_scope": "conformational_view_algorithm_fit",
+                "dependency_stage": 1,
+                "priority_weight": 1.0,
+            },
+        ]
+        plan = plan_projection_coupled_campaign_resource_budget(
+            tasks,
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=0.2,
+            maximum_memory_gib=4.0,
+            planning_utilization=1.0,
+            pilot_budget_fraction=0.0,
+        )
+        rows = {row["task_id"]: row for row in plan["tasks"]}
+        self.assertEqual(
+            rows["projection"]["selected_physical_frames_per_replica"], [334]
+        )
+        self.assertEqual(rows["fit"]["source_frames_per_replica"], [334])
+        coupling = plan["projection_clustering_coupling"]
+        self.assertEqual(coupling["dynamic_cycle_resolution_count"], 1)
+        self.assertEqual(coupling["iterations"], 4)
+        extended = plan_projection_coupled_campaign_resource_budget(
+            plan["tasks"],
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=1.0,
+            maximum_memory_gib=4.0,
+            planning_utilization=1.0,
+            pilot_budget_fraction=0.0,
+        )
+        extended_rows = {row["task_id"]: row for row in extended["tasks"]}
+        self.assertEqual(
+            extended_rows["projection"][
+                "selected_physical_frames_per_replica"
+            ],
+            [1_000],
+        )
+        self.assertEqual(
+            extended_rows["fit"]["source_frames_per_replica"], [1_000]
+        )
+
     def test_alternative_algorithms_receive_distinct_integer_strides(self):
         plan = plan_alternative_clustering_fit_strides(
             [24_700] * 6,
@@ -190,13 +333,101 @@ class ResourcePlanningTests(unittest.TestCase):
         constrained_tasks = {
             row["task_id"]: row for row in constrained["tasks"]
         }
-        self.assertGreater(
+        self.assertGreaterEqual(
             constrained_tasks["fes"]["selected_physical_frame_count"],
             constrained_tasks["sasa"]["selected_physical_frame_count"],
         )
         self.assertTrue(all(
             not row["subsampling_triggered"] for row in extended["tasks"]
         ))
+
+    def test_larger_wall_envelope_never_reduces_task_coverage(self):
+        tasks = [
+            {
+                "task_id": "high-priority-quadratic",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [100],
+                "minimum_frames_per_replica": 10,
+                "maximum_frames_per_replica": 100,
+                "cpu_seconds_per_physical_frame": 0.0,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 10.0,
+                "power_law_cost_model": {
+                    "calibration_observations": 10,
+                    "calibration_cpu_hours": 0.5,
+                    "time_exponent": 2.0,
+                    "calibration_memory_gib": 1.0,
+                    "memory_exponent": 1.0,
+                },
+            },
+            {
+                "task_id": "lower-priority-linear",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [100],
+                "minimum_frames_per_replica": 10,
+                "maximum_frames_per_replica": 100,
+                "cpu_seconds_per_physical_frame": 180.0,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 1.0,
+            },
+        ]
+        shorter = plan_campaign_resource_budget(
+            tasks,
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=2.0,
+            maximum_memory_gib=8.0,
+        )
+        longer = plan_campaign_resource_budget(
+            tasks,
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=3.25,
+            maximum_memory_gib=8.0,
+        )
+        shorter_rows = {
+            row["task_id"]: row for row in shorter["tasks"]
+        }
+        longer_rows = {
+            row["task_id"]: row for row in longer["tasks"]
+        }
+        self.assertEqual(shorter["feasibility_status"], "feasible")
+        self.assertEqual(longer["feasibility_status"], "feasible")
+        for task_id in shorter_rows:
+            self.assertGreaterEqual(
+                longer_rows[task_id]["selected_physical_frame_count"],
+                shorter_rows[task_id]["selected_physical_frame_count"],
+                task_id,
+            )
+
+    def test_unused_cpu_budget_reports_wall_or_parallelism_limit(self):
+        plan = plan_campaign_resource_budget(
+            [{
+                "task_id": "serial-analysis",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [10_000],
+                "minimum_frames_per_replica": 100,
+                "maximum_frames_per_replica": 2_500,
+                "cpu_seconds_per_physical_frame": 1.1,
+                "estimated_peak_memory_gib": 1.0,
+            }],
+            maximum_parallel_cpus=42,
+            maximum_wall_hours=1.0,
+            maximum_memory_gib=8.0,
+        )
+        self.assertGreater(plan["unused_science_cpu_hours"], 0.0)
+        utilization = plan["resource_budget_utilization"]
+        self.assertLess(utilization["science_cpu_hour_fraction"], 0.1)
+        self.assertGreater(utilization["science_wall_time_fraction"], 0.9)
+        self.assertEqual(
+            plan["allocation_saturation"]["stop_reason"],
+            "all_eligible_frame_ceilings_reached",
+        )
+        self.assertIn(
+            "parallelism",
+            plan["allocation_saturation"]["unused_cpu_hour_interpretation"],
+        )
 
     def test_power_law_methods_are_allocated_separately_but_scheduled_as_bundle(self):
         tasks = []
@@ -338,9 +569,9 @@ class ResourcePlanningTests(unittest.TestCase):
         )
         memory = plan["memory_feasibility"]
         self.assertFalse(memory["fits_configured_memory"])
-        self.assertEqual(memory["minimum_required_memory_gib"], 7.25)
+        self.assertEqual(memory["minimum_required_memory_gib"], 8.0)
         self.assertEqual(memory["recommended_memory_gib"], 8.0)
-        self.assertEqual(memory["memory_shortfall_gib"], 3.25)
+        self.assertEqual(memory["memory_shortfall_gib"], 4.0)
         self.assertEqual(
             memory["modules_to_disable_to_fit_configured_memory"],
             ["large_module"],
@@ -354,6 +585,77 @@ class ResourcePlanningTests(unittest.TestCase):
         self.assertEqual(
             memory["oversized_tasks"][0]["task_id"], "view:global:large"
         )
+
+    def test_buffered_memory_controls_feasibility_and_resource_waves(self):
+        tasks = []
+        for task_id in ("first", "second"):
+            tasks.append({
+                "task_id": task_id,
+                "module_id": task_id,
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [100],
+                "minimum_frames_per_replica": 10,
+                "maximum_frames_per_replica": 100,
+                "cpu_seconds_per_physical_frame": 1.0,
+                "estimated_peak_memory_gib": 60.0,
+            })
+        plan = plan_campaign_resource_budget(
+            tasks,
+            maximum_parallel_cpus=2,
+            maximum_wall_hours=2.0,
+            maximum_memory_gib=100.0,
+            memory_safety_factor=1.5,
+            memory_overhead_gib=1.0,
+            minimum_scheduler_memory_gib=2.0,
+        )
+        self.assertEqual(plan["feasibility_status"], "feasible")
+        waves = plan["stages"][0]["resource_waves"]
+        self.assertEqual(len(waves), 2)
+        self.assertTrue(all(wave["memory_gib"] == 91.0 for wave in waves))
+        self.assertTrue(all(wave["cpu_slots"] == 1 for wave in waves))
+
+    def test_deac_memory_margin_can_make_raw_working_set_infeasible(self):
+        plan = plan_campaign_resource_budget(
+            [{
+                "task_id": "structural-qc",
+                "module_id": "structural_integrity_qc",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [100],
+                "minimum_frames_per_replica": 10,
+                "maximum_frames_per_replica": 100,
+                "cpu_seconds_per_physical_frame": 0.01,
+                "estimated_peak_memory_gib": 126.491,
+            }],
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=1.0,
+            maximum_memory_gib=185.0,
+            memory_safety_factor=1.5,
+            memory_overhead_gib=1.0,
+            minimum_scheduler_memory_gib=2.0,
+        )
+        memory = plan["memory_feasibility"]
+        self.assertEqual(plan["feasibility_status"], "infeasible")
+        self.assertEqual(memory["minimum_required_working_set_gib"], 126.491)
+        self.assertEqual(memory["minimum_required_memory_gib"], 191.0)
+        self.assertEqual(
+            memory["modules_to_disable_to_fit_configured_memory"],
+            ["structural_integrity_qc"],
+        )
+
+    def test_resource_wave_packer_rejects_one_oversized_task(self):
+        with self.assertRaisesRegex(ResourcePlanningError, "campaign limit"):
+            pack_resource_waves(
+                [{
+                    "item_id": "oversized",
+                    "cpu_slots": 1,
+                    "memory_gib": 101,
+                    "wall_hours": 1,
+                }],
+                maximum_parallel_cpus=2,
+                maximum_parallel_memory_gib=100,
+            )
 
     def test_measured_memory_scales_from_observation_coverage(self):
         plan = plan_campaign_resource_budget(

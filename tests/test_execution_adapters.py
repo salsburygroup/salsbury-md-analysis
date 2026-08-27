@@ -68,6 +68,8 @@ class ExecutionAdapterTests(unittest.TestCase):
                 encoding="utf-8",
             )
             scheduler = apply_slurm_profile(root, profile, {
+                "maximum_parallel_cpus": 1,
+                "maximum_parallel_memory_gib": 8,
                 "phases": [{"phase_id": "analysis", "tasks": [{
                     "script": "run_stage_0_array.slurm",
                     "array_task_id": 0,
@@ -98,7 +100,8 @@ class ExecutionAdapterTests(unittest.TestCase):
             scheduler["scripts"]["run_stage_0_array.slurm"]["selected_partition"],
             "small",
         )
-        self.assertIn("/opt/scyld/slurm/bin/sbatch worker.slurm", submit)
+        self.assertIn("SUBMIT_COMMAND=/opt/scyld/slurm/bin/sbatch", submit)
+        self.assertIn('"$ROOT"/run_stage_0_array.slurm', submit)
 
     def test_deac_profile_routes_requests_over_small_limit_to_long_wall(self):
         repository = Path(__file__).resolve().parents[1]
@@ -116,6 +119,8 @@ class ExecutionAdapterTests(unittest.TestCase):
                 encoding="utf-8",
             )
             scheduler = apply_slurm_profile(root, profile, {
+                "maximum_parallel_cpus": 1,
+                "maximum_parallel_memory_gib": 8,
                 "phases": [{"phase_id": "analysis", "tasks": [{
                     "script": worker.name,
                     "array_task_id": 0,
@@ -162,6 +167,8 @@ class ExecutionAdapterTests(unittest.TestCase):
                 ExecutionAdapterError, "partitions.long_wall is unset"
             ):
                 apply_slurm_profile(root, profile, {
+                    "maximum_parallel_cpus": 1,
+                    "maximum_parallel_memory_gib": 2,
                     "phases": [{"phase_id": "analysis", "tasks": [{
                         "script": worker.name,
                         "array_task_id": 0,
@@ -264,7 +271,7 @@ class ExecutionAdapterTests(unittest.TestCase):
             execution = {
                 "maximum_parallel_cpus": 2,
                 "maximum_hours_per_cpu": 24,
-                "maximum_memory_gib": 128,
+                "maximum_memory_gib": 256,
             }
             reporting = {
                 "resource_table_enabled": False,
@@ -290,7 +297,7 @@ class ExecutionAdapterTests(unittest.TestCase):
             scheduler = apply_slurm_profile(root, profile, plan)
             view_text = view.read_text(encoding="utf-8")
         self.assertIn("#SBATCH --partition=large", view_text)
-        self.assertIn("#SBATCH --mem=128G", view_text)
+        self.assertIn("#SBATCH --mem=151G", view_text)
         self.assertEqual(
             scheduler["scripts"][view.name]["selected_partition_role"],
             "large_memory",
@@ -339,6 +346,8 @@ class ExecutionAdapterTests(unittest.TestCase):
                 }
 
             scheduler = apply_slurm_profile(root, profile, {
+                "maximum_parallel_cpus": 7,
+                "maximum_parallel_memory_gib": 512,
                 "phases": [{
                     "phase_id": "conformational",
                     "tasks": [
@@ -414,6 +423,8 @@ class ExecutionAdapterTests(unittest.TestCase):
                 }
 
             scheduler = apply_slurm_profile(root, profile, {
+                "maximum_parallel_cpus": 1,
+                "maximum_parallel_memory_gib": 128,
                 "phases": [{"phase_id": "analysis", "tasks": [
                     task(0, 4), task(1, 128),
                 ]}],
@@ -427,16 +438,70 @@ class ExecutionAdapterTests(unittest.TestCase):
             )
 
         self.assertEqual(syntax.returncode, 0, syntax.stderr)
-        self.assertIn('--dependency="afterok:$PRE_JOB" --array=0%1', submit)
-        self.assertIn(
-            '--dependency="afterok:$PRE_JOB:${STAGE_JOB_TIER_0}" --array=1%1',
-            submit,
-        )
+        self.assertIn("--mem=128G --partition=large --array=1", submit)
+        self.assertIn("--mem=4G --partition=small --array=0", submit)
+        self.assertIn('--dependency="afterok:${JOB_W000_T000}"', submit)
         self.assertEqual(
-            [tier["dependency_wave"] for tier in
-             scheduler["submission_resource_tiers"][script]],
-            [0, 1],
+            [wave["memory_gib"] for wave in scheduler["resource_waves"]],
+            [128.0, 4.0],
         )
+
+    def test_canonical_slurm_launcher_enforces_aggregate_memory_waves(self):
+        repository = Path(__file__).resolve().parents[1]
+        profile = load_slurm_profile(repository / "profiles/slurm/deac.json")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "slurm-profile.json").write_text("{}\n", encoding="utf-8")
+            script = "run_stage_0_array.slurm"
+            (root / script).write_text(
+                "#!/usr/bin/env bash\n#SBATCH --time=01:00:00\n"
+                "#SBATCH --cpus-per-task=1\n#SBATCH --mem=100G\n"
+                "set -euo pipefail\n",
+                encoding="utf-8",
+            )
+            (root / "submit.sh").write_text(
+                "#!/usr/bin/env bash\nset -euo pipefail\n", encoding="utf-8"
+            )
+
+            def task(index, memory):
+                return {
+                    "script": script,
+                    "array_task_id": index,
+                    "requested_wall_minutes": 60,
+                    "requested_memory_gib": memory,
+                    "planner_task_ids": [f"direct:{index}"],
+                    "cpu_slots": 1,
+                    "planned_wall_hours": 1,
+                    "planned_peak_memory_gib": memory,
+                    "resource_request_source": "unit_test",
+                    "wall_request_limited_by_campaign_cap": False,
+                    "memory_request_limited_by_campaign_cap": False,
+                }
+
+            scheduler = apply_slurm_profile(root, profile, {
+                "maximum_parallel_cpus": 3,
+                "maximum_parallel_memory_gib": 185,
+                "phases": [{"phase_id": "analysis", "tasks": [
+                    task(0, 100), task(1, 90), task(2, 80),
+                ]}],
+            })
+            submit = (root / "submit.sh").read_text(encoding="utf-8")
+            syntax = subprocess.run(
+                ["bash", "-n", str(root / "submit.sh")],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(syntax.returncode, 0, syntax.stderr)
+        self.assertEqual(
+            [wave["memory_gib"] for wave in scheduler["resource_waves"]],
+            [180.0, 90.0],
+        )
+        self.assertTrue(all(
+            wave["memory_gib"] <= 185.0
+            for wave in scheduler["resource_waves"]
+        ))
+        self.assertIn('--dependency="afterok:${JOB_W000_T000}:${JOB_W000_T001}"', submit)
 
     def test_local_runner_preserves_dependencies_and_stops_after_failure(self):
         with tempfile.TemporaryDirectory() as temporary:

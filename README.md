@@ -168,6 +168,12 @@ configured aggregate CPU and memory caps; Slurm requests are derived from the sa
 planner estimates and retained in `scheduler-resource-requests.json`. See
 [`docs/EXECUTION_ADAPTERS.md`](docs/EXECUTION_ADAPTERS.md).
 
+On a Slurm login node, the optional `advise-slurm-capacity` command can inspect
+a prepared campaign before submission. It reports the cluster ceiling, the
+smaller workflow-useful CPU maximum, sampling and memory estimates for a supplied
+duration, current node fit, and queue pressure. It never runs during normal
+preparation and never submits, cancels, or changes a job.
+
 `--connectivity` is an equivalent, clearer spelling of `--psf` and also accepts
 portable `salsbury-bonds-v1` JSON plus Amber PRMTOP/PARM7 inputs. This allows a
 validated bond graph exported from another engine to enter the same generic
@@ -222,9 +228,12 @@ for 24 wall hours. `execution.maximum_parallel_cpus` and
 `execution.maximum_hours_per_cpu` in `analysis-config.json` configure that
 envelope; `--target-wall-hours` is a command-line override for the latter. It
 is not a separate allowance for every method. The estimate includes a 1.5
-timing safety factor. The generated `campaign-resource-plan.json` applies that
-one limit across base trajectory estimators, inherited base analyses, and every
-enabled PCA/FES/clustering/state view. `sampling-plan.json` records the applied
+timing safety factor. Only 85% of the raw CPU-hour envelope is normally planned,
+with separate pilot and finalization reserves removed before scientific work is
+allocated. Slurm's additional per-job time margin is a timeout threshold, not
+extra planned science time. The generated `campaign-resource-plan.json` applies
+the campaign limits across base trajectory estimators, inherited base analyses,
+and every enabled PCA/FES/clustering/state view. `sampling-plan.json` records the applied
 direct-method selections, while each view project records its shared upstream
 selection. Both files report selected frame counts, coverage, and any
 subsampling.
@@ -243,9 +252,19 @@ their measured observation coverage with a square-root relationship and the
 same 10% floor. This avoids charging a tiny solute or short run the unchanged
 allowance of a large, long calibration while retaining substantial headroom.
 
+`execution.maximum_memory_gib` is the maximum simultaneous memory request for
+the complete campaign, not an allowance for every job. The planner first turns
+each estimated working set into a safety-adjusted scheduler request. With the
+DEAC profile this is `ceil(1.5 × working set + 1 GiB)`, with a 2 GiB minimum.
+It then packs independent tasks into dependency waves whose summed CPU and
+memory requests stay within the configured campaign caps. A lower memory cap
+can therefore increase the integer strides or serialize work even when every
+individual task fits. The local executor and the generated `submit.sh` enforce
+the same limits.
+
 For an insufficient memory cap, `campaign-resource-plan.json` and
 `memory-feasibility-report.json` state (1) the largest enabled technical-minimum
-memory estimate, (2) the rounded-up memory request that would retain all enabled
+working-set estimate, (2) the safety-adjusted memory request that would retain all enabled
 work, and (3) every module or clustering-method switch that cannot fit.
 Preparation remains fail-closed by
 default. If the user explicitly accepts a reduced campaign, add
@@ -260,16 +279,30 @@ Trajectory execution subsampling is never random: it is deterministic,
 replica-balanced, and spread over the full time range. Every production
 trajectory selector receives one exact integer stride over each concatenated
 replica timeline; frame zero is retained and segment boundaries do not restart
-the stride. The campaign planner iterates those integer strides until the exact
-retained counts satisfy both the total CPU-hour and dependency-stage wall-time
-limits. Each alternative-clustering family receives its own explicit integer
+the stride. The campaign planner advances stride upgrades through an absolute
+CPU-and-wall resource frontier. Replanning the same tasks with a longer wall
+limit extends that allocation path, so no task loses frames merely because a
+previously unaffordable method becomes affordable. The exact retained counts
+must satisfy both the total CPU-hour and dependency-stage wall-time limits.
+Each alternative-clustering family receives its own explicit integer
 fit stride according to its scaling profile; PCA projection and fit allocations
-are reapplied until the complete task plan stops changing. Families performed
+are reapplied until every clustering source count exactly matches the final PCA
+projection count. A discrete-stride cycle is resolved by deriving a conservative
+projection ceiling from that replan, not by restoring a saved projection count.
+Families performed
 serially by one view command are accounted as one execution bundle for wall
 time while remaining separate logical allocations. All strides operate over
 each replica-member timeline. Seeded random focal-observation
 sampling is reserved for bounded silhouette estimates against the full fitted
 partition.
+
+`resource_budget_utilization` reports CPU-hour and wall-time use separately.
+A campaign can nearly exhaust its wall-time allowance while leaving many raw
+CPU-hours unused when dependency stages or serial methods cannot use all cores.
+`allocation_saturation` records whether every frame ceiling was reached, memory
+blocked the remaining work, or the next deterministic stride step would exceed
+the campaign envelope. The planner does not duplicate analyses just to occupy
+idle cores.
 
 Preparation also classifies the reference chemistry and creates complementary
 conformational projects automatically. Protein–nucleic-acid complexes declare

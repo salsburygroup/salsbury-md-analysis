@@ -2,6 +2,16 @@
 
 ## 0.2.0a1 - unreleased
 
+- Regenerate each shared or per-system PCA projection allocation during resource
+  replanning and feed its exact selected counts into every downstream clustering
+  fit. Coupling now iterates to equality, stabilizes discrete stride cycles with
+  a dynamically derived conservative projection ceiling, and fails closed on a
+  missing parent or unresolved mismatch.
+
+- Make campaign stride allocation monotonic across longer wall-time envelopes
+  and report whether residual CPU-hours come from frame ceilings, memory, the
+  next discrete stride step, or limited dependency/task parallelism.
+
 - Split mixed-resource Slurm arrays into resource-matched submissions so only
   the tasks that need large memory reserve it, while preserving the original
   CPU cap, dependency graph, planner requests, and scientific sampling.

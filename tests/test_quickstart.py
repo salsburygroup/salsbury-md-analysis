@@ -800,6 +800,13 @@ class QuickstartTests(unittest.TestCase):
                 sampling["campaign_resource_plan"]["raw_capacity_cpu_hours"],
                 384.0,
             )
+            safety = sampling["campaign_resource_plan"][
+                "resource_safety_margins"
+            ]
+            self.assertEqual(safety["modeled_task_time_factor"], 1.5)
+            self.assertEqual(safety["analysis_memory_model_factor"], 1.25)
+            self.assertEqual(safety["scheduler_memory_safety_factor"], 1.5)
+            self.assertEqual(safety["scheduler_memory_overhead_gib"], 1.0)
             self.assertTrue((output / "submit.sh").stat().st_mode & 0o100)
             self.assertTrue((output / "run-local.sh").stat().st_mode & 0o100)
             self.assertEqual(report["execution_adapter"], "local")
@@ -809,7 +816,7 @@ class QuickstartTests(unittest.TestCase):
             )
             self.assertEqual(
                 local_plan["local_execution_plan_schema"],
-                "salsbury-local-execution-plan-v2",
+                "salsbury-local-execution-plan-v3",
             )
             self.assertEqual(local_plan["maximum_parallel_cpus"], 16)
             self.assertEqual(local_plan["maximum_parallel_memory_gib"], 128.0)
@@ -976,7 +983,7 @@ class QuickstartTests(unittest.TestCase):
             config_path = root / "low-memory.json"
             config_path.write_text(json.dumps({
                 "config_schema": "salsbury-analysis-config-v1",
-                "execution": {"maximum_memory_gib": 1.5},
+                "execution": {"maximum_memory_gib": 4.0},
             }), encoding="utf-8")
             output = root / "analysis-memory-fit"
             report = prepare_standard_analysis_memory_fit(

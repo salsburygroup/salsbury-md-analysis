@@ -85,6 +85,14 @@ CPUs for 24 wall hours, or 768 raw CPU-hours before the configured utilization
 and pilot/finalization reserves. It does **not** mean 24 hours for every method.
 `time_safety_factor`, `memory_safety_factor`, and
 `censored_timeout_safety_factor` are independently configurable.
+The analysis-config `memory_safety_factor` adjusts measured working-set
+calibrations. It is distinct from the execution profile's scheduler-memory
+factor and fixed overhead; both are recorded in `resource_safety_margins`.
+The default 1.5 time factor is applied to modeled task costs before frame
+allocation. The planner then uses only the configured utilization fraction
+(normally 0.85) and removes pilot and finalization reserves. A Slurm profile may
+add a further per-job wall-time margin; that is a timeout request, not additional
+planned analysis time.
 `finalization_headroom_fraction` reserves campaign capacity for dependency
 barriers, summaries, hashes, and fail-closed acceptance rather than allocating
 the entire envelope to scientific estimators. A timed-out job is retained as a
@@ -106,18 +114,40 @@ within the shared envelope and reports every reduction. Preparation writes
 base tasks, and all enabled conformational-view tasks. Downstream FES,
 clustering, and state methods share the selected physical-frame identities of
 their view PCA; equivalent oligomer members add observations but do not add
-physical frames or replicas. A configured envelope that cannot fund the small
+physical frames or replicas. Every replan regenerates the PCA projection count
+and uses it as the source count for each downstream clustering fit. The planner
+iterates until those counts agree exactly. If discrete stride upgrades alternate
+between two allocations, it derives the componentwise lower projection ceiling
+from that cycle and replans the fits; it never falls back to a saved count.
+A configured envelope that cannot fund the small
 technical minima fails closed by default.
 The plan also includes `experimental_module_coverage`: one row for every
 default-off method, its resolved configuration state, planner task IDs, or an
 explicit `not_available` reason. Preparation fails if an enabled method is
 neither planned nor availability-gated.
+
+Stride upgrades follow a progressive absolute resource frontier. For an
+otherwise identical plan, increasing the wall limit extends the shorter
+allocation instead of replacing its inexpensive upgrades with newly affordable
+expensive work. Per-task frame coverage is therefore nondecreasing across a
+duration series such as 8, 24, 48, and 168 hours. Priority weights decide among
+upgrades that become affordable at the same frontier; they do not retract an
+earlier task's frames.
+
+CPU-hours and wall time are reported separately in
+`resource_budget_utilization`. A low CPU-hour fraction is not automatically
+unused scientific work: serial estimators, dependency barriers, and per-task CPU
+caps can saturate wall time while many requested cores are idle.
+`allocation_saturation` identifies the stop reason, the groups at their frame
+ceilings, memory-blocked groups, and the wall allowance required by the next
+stride upgrade. No duplicate calculation is added merely to consume the raw
+CPU-hour envelope.
 That failure includes the minimum calibrated critical path, the science wall
 and CPU allowances after reserves, the configured campaign ceiling, and the
 smallest calculated `--target-wall-hours` retry bound. The number is guidance,
 not an automatic change to the user's resource request.
 
-Memory is planned per task at its technical minimum. Legacy tier values are
+Memory starts with a per-task working-set estimate at its technical minimum. Legacy tier values are
 referenced to the retained 85,206-atom solvated benchmark system, then adjusted
 by a conservative square-root atom-count factor. The factor cannot fall below
 0.1 or rise above 4.0, so fixed library allocations retain headroom and very
@@ -125,10 +155,16 @@ large systems do not extrapolate without bound. Measured maxima are transferred
 by the measured observation coverage instead: the square-root observation
 factor also has a 0.1 floor. A power-law method keeps its declared
 observation-based exponent. Every task records the reference value, applicable
-scaling model, and final selected-observation estimate.
+scaling model, and final selected-observation estimate. The execution profile
+then converts each working set to a buffered request. The DEAC rule is
+`ceil(1.5 × working set + 1 GiB)`, with a 2 GiB minimum. The campaign's
+`maximum_memory_gib` limits the sum of those requests in each concurrent wave.
+It is not repeated for every job. CPU and memory limits are both considered
+while allocating frames and estimating dependency-stage wall time.
 
-When one or more technical minima exceed `maximum_memory_gib`, the plan's
-`memory_feasibility` section reports the exact largest estimate, its shortfall,
+When one or more safety-adjusted technical minima exceed `maximum_memory_gib`, the plan's
+`memory_feasibility` section reports the largest raw working set, the required
+buffered request, its shortfall,
 a whole-GiB rounded recommendation, the oversized task rows, and the minimal
 set of module or individual clustering-method switches that must be disabled
 at that cap. The default behavior does not alter the user's analysis. It writes
@@ -171,17 +207,21 @@ Slurm mode requires a validated `execution.slurm_profile`, which keeps account,
 partition, QoS, environment, command, and storage conventions outside scientific
 configuration. The supplied `profiles/analysis/deac-default.json` selects the
 Salsbury-group DEAC profile. Both adapters run the same workers and output contracts.
-The Slurm adapter translates the task-level planner estimates into scheduler time
-and memory requests with explicit safety margins, records the mapping in
-`scheduler-resource-requests.json`, and routes sufficiently large requests through
-the profile's large-memory role. Mixed-resource worker arrays are submitted as
-resource-matched subarrays so a large clustering task does not force every small
-task onto a large-memory node. The adapter shares the original concurrency limit
-across those subarrays and preserves downstream dependencies. It limits base arrays
-to the configured CPU count, and dependency-batches view
-arrays and per-system preflights so their simultaneous CPU reservations do not
-exceed `maximum_parallel_cpus`. This controls active compute allocation; queue
+The Slurm adapter records task-specific scheduler requests in
+`scheduler-resource-requests.json` and routes sufficiently large requests through
+the profile's large-memory role. Its canonical launcher submits deterministic
+dependency waves. Each wave stays within both `maximum_parallel_cpus` and the
+aggregate `maximum_memory_gib`; downstream work waits for all jobs in the preceding
+wave. This controls active compute allocation; queue
 wait and scheduler backfill are not counted as analysis wall time.
+
+`advise-slurm-capacity` is an optional, read-only step for prepared Slurm
+campaigns. It can replace the configured CPU count with the smaller of the live
+scheduler ceiling and the workflow's useful parallelism, then rerun the saved
+sampling allocation for a requested duration. Because selected observations are
+recomputed, observation-scaled memory is recomputed as well. The command reports
+per-task and exact planned resource-wave memory separately; it does not alter the
+config, regenerate workers, or submit work.
 
 The `exports` section separates feature/alignment atoms from coordinate output.
 The default coordinate payload retains the complete non-water molecular system
