@@ -492,7 +492,15 @@ class ExecutionAdapterTests(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
+            preview_run = subprocess.run(
+                [str(root / "submit.sh"), "--preview"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            preview = json.loads(preview_run.stdout)
         self.assertEqual(syntax.returncode, 0, syntax.stderr)
+        self.assertEqual(preview_run.returncode, 0, preview_run.stderr)
         self.assertEqual(
             [wave["memory_gib"] for wave in scheduler["resource_waves"]],
             [180.0, 90.0],
@@ -502,6 +510,29 @@ class ExecutionAdapterTests(unittest.TestCase):
             for wave in scheduler["resource_waves"]
         ))
         self.assertIn('--dependency="afterok:${JOB_W000_T000}:${JOB_W000_T001}"', submit)
+        self.assertFalse(preview["execution_started"])
+        self.assertFalse(preview["jobs_submitted"])
+        self.assertEqual(preview["task_count"], 3)
+        self.assertEqual(preview["dependency_wave_count"], 2)
+        self.assertEqual(preview["maximum_parallel_cpus_configured"], 3)
+        self.assertEqual(preview["maximum_parallel_cpus_in_generated_waves"], 2)
+        self.assertEqual(preview["maximum_parallel_memory_gib_configured"], 185)
+        self.assertEqual(preview["maximum_parallel_memory_gib_in_generated_waves"], 180)
+        self.assertEqual(
+            preview["planner_estimated_dependency_critical_path_hours"], 2,
+        )
+        self.assertEqual(
+            preview["scheduler_time_limit_reservation_critical_path_hours"], 2,
+        )
+        self.assertEqual(preview["warning_count"], 1)
+        self.assertEqual(
+            preview["warnings"][0]["code"],
+            "REQUESTED_CPUS_EXCEED_GENERATED_PARALLELISM",
+        )
+        self.assertEqual(
+            scheduler["submission_preview_file"],
+            "slurm-submission-preview.json",
+        )
 
     def test_local_runner_preserves_dependencies_and_stops_after_failure(self):
         with tempfile.TemporaryDirectory() as temporary:

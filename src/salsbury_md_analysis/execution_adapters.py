@@ -883,6 +883,7 @@ def _slurm_resource_waves(
                 "cpu_slots": int(task["cpu_slots"]),
                 "memory_gib": requested_memory_gib,
                 "wall_hours": requested_wall_minutes / 60.0,
+                "planned_wall_hours": float(task["planned_wall_hours"]),
                 "requested_wall_minutes": requested_wall_minutes,
                 "requested_memory_gib": requested_memory_gib,
                 "slurm_time": _format_slurm_time(requested_wall_minutes),
@@ -899,10 +900,111 @@ def _slurm_resource_waves(
         except ResourcePlanningError as exc:
             raise ExecutionAdapterError(str(exc)) from exc
         for wave in waves:
+            wave["planned_wall_hours"] = max(
+                (
+                    float(item.get("planned_wall_hours", 0.0))
+                    for item in wave.get("items", [])
+                ),
+                default=0.0,
+            )
             wave["phase_index"] = phase_index
             wave["phase_id"] = phase_id
             phase_waves.append(wave)
     return phase_waves
+
+
+def _slurm_submission_preview(
+    execution_plan: Mapping[str, object],
+    resource_waves: Sequence[Mapping[str, object]],
+) -> Dict[str, object]:
+    """Return a bounded, machine-readable contract shown before submission."""
+
+    maximum_cpus = int(execution_plan["maximum_parallel_cpus"])
+    maximum_memory = float(execution_plan["maximum_parallel_memory_gib"])
+    task_count = sum(
+        len(wave.get("items", [])) for wave in resource_waves
+    )
+    peak_cpus = max(
+        (int(wave["cpu_slots"]) for wave in resource_waves), default=0
+    )
+    peak_memory = max(
+        (float(wave["memory_gib"]) for wave in resource_waves), default=0.0
+    )
+    planner_critical_path = sum(
+        float(wave.get("planned_wall_hours", 0.0)) for wave in resource_waves
+    )
+    scheduler_reservation_path = sum(
+        float(wave.get("wall_hours", 0.0)) for wave in resource_waves
+    )
+    warnings: List[Dict[str, object]] = []
+    if peak_cpus < maximum_cpus:
+        warnings.append({
+            "severity": "warning",
+            "code": "REQUESTED_CPUS_EXCEED_GENERATED_PARALLELISM",
+            "message": (
+                f"The campaign allows {maximum_cpus} simultaneous CPUs, but its "
+                f"generated dependency and memory waves can use at most {peak_cpus}; "
+                f"the remaining {maximum_cpus - peak_cpus} CPUs cannot shorten "
+                "this prepared schedule."
+            ),
+            "requested_parallel_cpus": maximum_cpus,
+            "generated_parallel_cpu_ceiling": peak_cpus,
+            "excess_cpus": maximum_cpus - peak_cpus,
+        })
+    wave_summaries = [
+        {
+            "dependency_wave_index": index,
+            "phase_id": wave.get("phase_id"),
+            "phase_wave_index": wave.get("wave_index"),
+            "task_count": len(wave.get("items", [])),
+            "cpu_slots": int(wave["cpu_slots"]),
+            "aggregate_memory_gib": float(wave["memory_gib"]),
+            "planner_estimated_wall_hours": float(
+                wave.get("planned_wall_hours", 0.0)
+            ),
+            "scheduler_time_limit_hours": float(wave.get("wall_hours", 0.0)),
+        }
+        for index, wave in enumerate(resource_waves)
+    ]
+    return {
+        "slurm_submission_preview_schema": "salsbury-slurm-submission-preview-v1",
+        "technical_status": "complete",
+        "scientific_status": "not evaluated",
+        "execution_started": False,
+        "jobs_submitted": False,
+        "task_count": task_count,
+        "dependency_wave_count": len(resource_waves),
+        "maximum_parallel_cpus_configured": maximum_cpus,
+        "maximum_parallel_cpus_in_generated_waves": peak_cpus,
+        "maximum_parallel_memory_gib_configured": maximum_memory,
+        "maximum_parallel_memory_gib_in_generated_waves": peak_memory,
+        "planner_estimated_dependency_critical_path_hours": (
+            planner_critical_path
+        ),
+        "scheduler_time_limit_reservation_critical_path_hours": (
+            scheduler_reservation_path
+        ),
+        "campaign_planner_wall_hours": (
+            float(execution_plan["maximum_campaign_wall_hours"])
+            if execution_plan.get("maximum_campaign_wall_hours") is not None
+            else None
+        ),
+        "dependency_waves": wave_summaries,
+        "resource_contract": (
+            "Each later dependency wave waits for every job in the preceding "
+            "wave. CPU slots and safety-adjusted memory summed within every "
+            "wave stay at or below the configured aggregate caps."
+        ),
+        "time_interpretation": (
+            "Planner hours are estimated execution time. Scheduler reservation "
+            "hours sum per-job kill limits along the serialized dependency path; "
+            "they are upper bounds, not an execution-time prediction."
+        ),
+        "preview_command": "./submit.sh --preview",
+        "execution_command": "./submit.sh",
+        "warning_count": len(warnings),
+        "warnings": warnings,
+    }
 
 
 def _render_resource_bounded_submit(
@@ -920,6 +1022,20 @@ def _render_resource_bounded_submit(
         'ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)',
         _profile_preamble(profile, profile_path),
         f"SUBMIT_COMMAND={submit_command}",
+        'PREVIEW="$ROOT/slurm-submission-preview.json"',
+        'case "${1:-}" in',
+        '  --preview)',
+        '    cat "$PREVIEW"',
+        '    exit 0',
+        '    ;;',
+        '  "") ;;',
+        '  *)',
+        '    printf "Usage: %s [--preview]\\n" "$0" >&2',
+        '    exit 2',
+        '    ;;',
+        'esac',
+        'cat "$PREVIEW"',
+        'printf "Submitting the reviewed Slurm resource waves now.\\n"',
         "",
     ]
     previous_jobs: List[str] = []
@@ -1010,6 +1126,13 @@ def apply_slurm_profile(
         partitions,
         partition_limits,
         resource_policy,
+    )
+    submission_preview = _slurm_submission_preview(
+        execution_plan, resource_waves
+    )
+    (root / "slurm-submission-preview.json").write_text(
+        json.dumps(submission_preview, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
     )
 
     for path in sorted(root.glob("*.slurm")):
@@ -1111,6 +1234,8 @@ def apply_slurm_profile(
             "maximum_parallel_memory_gib"
         ],
         "resource_waves": resource_waves,
+        "submission_preview": submission_preview,
+        "submission_preview_file": "slurm-submission-preview.json",
         "canonical_submit_script": (
             "submit.sh" if canonical_submit.is_file() else None
         ),
@@ -1296,7 +1421,11 @@ exec "$PYTHON" -m salsbury_md_analysis run-local-workflow "$ROOT"
             json.dumps(scheduler_requests, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        generated.extend(["slurm-profile.json", "scheduler-resource-requests.json"])
+        generated.extend([
+            "slurm-profile.json",
+            "scheduler-resource-requests.json",
+            "slurm-submission-preview.json",
+        ])
     metadata = {
         "execution_adapter_schema": "salsbury-execution-adapter-v1",
         "active_adapter": adapter,

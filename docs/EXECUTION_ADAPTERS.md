@@ -87,6 +87,19 @@ jobs into deterministic resource waves. The sum of CPU slots and the sum of
 buffered memory requests in one wave cannot exceed the two campaign caps.
 `submit.sh` submits each wave with `afterok` dependencies on the preceding wave;
 the complete mapping remains visible in `scheduler-resource-requests.json`.
+Before submission, run:
+
+```bash
+./submit.sh --preview
+```
+
+This prints `slurm-submission-preview.json` and exits without calling Slurm. The
+preview gives the exact job and dependency-wave counts, configured CPU and
+aggregate-memory caps, peak resources in any generated wave, the planner's
+estimated dependency critical path, and the sum of scheduler time-limit
+reservations. It warns when the prepared dependency and memory waves cannot use
+all requested cores. Running `./submit.sh` prints the same contract immediately
+before the first submission.
 
 ## Slurm cluster
 
@@ -125,6 +138,9 @@ can run at the same time. Only requests that cross
 `large_memory_threshold_gib` use the `large_memory` partition role. The generated
 worker retains the largest request as a safe direct-submission fallback, while
 `submit.sh` applies the task-specific overrides used for a normal campaign launch.
+`slurm-submission-preview.json` is the concise preflight view of that complete
+mapping; `execution_started: false` and `jobs_submitted: false` describe the
+preview itself, not the state after `./submit.sh` is executed.
 Copy
 `profiles/slurm/generic-template.json`, review every value with the cluster owner,
 then prepare and run `./submit.sh`. The exact normalized profile is retained beside
