@@ -15,6 +15,10 @@ from salsbury_md_analysis.resource_planning import (
     pack_resource_waves,
     workflow_useful_parallel_cpu_ceiling,
 )
+from salsbury_md_analysis.scientific_sampling import (
+    profile_contract,
+    scientific_sampling_profile,
+)
 
 
 class ResourcePlanningTests(unittest.TestCase):
@@ -185,6 +189,54 @@ class ResourcePlanningTests(unittest.TestCase):
                 candidate["planner_evaluation_wall_seconds"], 0.0
             )
         self.assertGreaterEqual(coupling["planner_total_wall_seconds"], 0.0)
+
+    def test_effective_raw_stride_preserves_hbond_system_and_replica_floors(self):
+        tasks = self._cache_coupling_tasks()[:1]
+        tasks[0].update({
+            "source_frames_per_replica": [100_000] * 6,
+            "minimum_frames_per_replica": 1,
+            "maximum_frames_per_replica": 100_000,
+            "cpu_seconds_per_physical_frame": 0.000001,
+        })
+        tasks.append({
+            "task_id": "hbond-discovery",
+            "workflow_id": "hbond-discovery",
+            "module_id": "hydrogen_bond_discovery",
+            "task_scope": "direct_trajectory_estimator",
+            "dependency_stage": 1,
+            "effective_cpu_cap": 1,
+            "source_frames_per_replica": [100_000] * 6,
+            "system_ids_per_replica": ["a"] * 3 + ["b"] * 3,
+            "minimum_frames_per_replica": 334,
+            "maximum_frames_per_replica": 100_000,
+            "scientific_sampling_requirements": profile_contract(
+                scientific_sampling_profile("hydrogen_bond_discovery")
+            ),
+            "cpu_seconds_per_physical_frame": 0.000001,
+            "estimated_peak_memory_gib": 1.0,
+        })
+        plan = plan_global_stride_projection_coupled_campaign_resource_budget(
+            tasks,
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=24.0,
+            maximum_memory_gib=8.0,
+            coordinate_cache_minimum_frames_per_replica=1,
+            coordinate_cache_full_scan_fraction=0.0,
+            planning_utilization=1.0,
+            pilot_budget_fraction=0.0,
+        )
+        hbond = next(
+            row for row in plan["tasks"]
+            if row["task_id"] == "hbond-discovery"
+        )
+        self.assertLessEqual(hbond["effective_raw_integer_stride"], 300)
+        self.assertGreaterEqual(
+            min(hbond["selected_physical_frames_per_replica"]), 334
+        )
+        self.assertEqual(
+            hbond["scientific_sampling_assessment"]["system_floor_failures"],
+            [],
+        )
 
     def test_cache_coupling_rejects_invalid_candidate_stride(self):
         with self.assertRaisesRegex(
@@ -1135,6 +1187,128 @@ class ResourcePlanningTests(unittest.TestCase):
         self.assertIn(
             "modules.dccm.enabled", report["attempted_configuration_switches"]
         )
+        minimum_request = report[
+            "best_protected_subset_minimum_resource_request"
+        ]
+        self.assertEqual(
+            minimum_request["request_scope"],
+            "best_dependency_closed_subset_that_preserves_all_protected_modules",
+        )
+        self.assertEqual(
+            minimum_request["recommended_request"]["wall_hours"], 10
+        )
+        self.assertEqual(
+            minimum_request["warning"]["code"],
+            "PERMISSIVE_MINIMUM_NOT_SCIENTIFIC_SUFFICIENCY",
+        )
+
+    def test_campaign_plan_reports_padded_permissive_minimum_request(self):
+        tasks = [
+            {
+                "task_id": task_id,
+                "module_id": f"project_local_{task_id}",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [10],
+                "minimum_frames_per_replica": 10,
+                "maximum_frames_per_replica": 10,
+                "cpu_seconds_per_physical_frame": 360.0,
+                "estimated_peak_memory_gib": 1.0,
+            }
+            for task_id in ("a", "b")
+        ]
+        report = plan_campaign_resource_budget(
+            tasks,
+            maximum_parallel_cpus=2,
+            maximum_wall_hours=4.0,
+            maximum_memory_gib=10.0,
+            planning_utilization=0.8,
+            pilot_budget_fraction=0.1,
+            finalization_headroom_fraction=0.1,
+            memory_safety_factor=2.0,
+            memory_overhead_gib=1.0,
+        )
+        minimum_request = report["permissive_minimum_resource_request"]
+        self.assertEqual(
+            minimum_request["status"], "available_within_all_input_caps"
+        )
+        self.assertEqual(minimum_request["recommended_request"], {
+            "parallel_cpus": 2,
+            "aggregate_memory_gib": 6.0,
+            "wall_hours": 2,
+        })
+        self.assertAlmostEqual(
+            minimum_request["unrounded_request"]["wall_hours"], 5.0 / 3.0
+        )
+        self.assertAlmostEqual(
+            minimum_request["padding_factors"]["science_wall_fraction"], 0.6
+        )
+        self.assertTrue(minimum_request["fits_input_wall_cap"])
+
+    def test_permissive_minimum_reports_larger_wall_request(self):
+        report = plan_campaign_resource_budget(
+            [{
+                "task_id": "protected",
+                "module_id": "structural_integrity_qc",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [10],
+                "minimum_frames_per_replica": 10,
+                "maximum_frames_per_replica": 10,
+                "cpu_seconds_per_physical_frame": 360.0,
+                "estimated_peak_memory_gib": 1.0,
+            }],
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=0.5,
+            maximum_memory_gib=8.0,
+            planning_utilization=0.8,
+            pilot_budget_fraction=0.1,
+            finalization_headroom_fraction=0.1,
+        )
+        request = report["permissive_minimum_resource_request"]
+        self.assertEqual(request["status"], "requires_larger_wall_time")
+        self.assertFalse(request["fits_input_wall_cap"])
+        self.assertEqual(request["recommended_request"]["wall_hours"], 2)
+        self.assertEqual(request["additional_wall_hours_required"], 2)
+
+    def test_hydrogen_bond_stride_meets_replica_and_system_floors(self):
+        system_ids = [
+            system_id
+            for system_id in ("system-a", "system-b")
+            for _ in range(3)
+        ]
+        report = plan_campaign_resource_budget(
+            [{
+                "task_id": "hbond-discovery",
+                "module_id": "hydrogen_bond_discovery",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [100_000] * 6,
+                "system_ids_per_replica": system_ids,
+                "minimum_frames_per_replica": 334,
+                "maximum_frames_per_replica": 100_000,
+                "scientific_sampling_requirements": profile_contract(
+                    scientific_sampling_profile("hydrogen_bond_discovery")
+                ),
+                "cpu_seconds_per_physical_frame": 0.0001,
+                "estimated_peak_memory_gib": 1.0,
+            }],
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=24.0,
+            maximum_memory_gib=8.0,
+            planning_utilization=1.0,
+            pilot_budget_fraction=0.0,
+        )
+        task = report["tasks"][0]
+        self.assertLessEqual(task["integer_stride"], 300)
+        self.assertGreaterEqual(
+            min(task["selected_physical_frames_per_replica"]), 334
+        )
+        self.assertEqual(
+            task["scientific_sampling_assessment"]["system_floor_failures"],
+            [],
+        )
+        self.assertEqual(report["feasibility_status"], "feasible")
 
     def test_campaign_plan_warns_when_requested_cpus_exceed_useful_ceiling(self):
         report = plan_campaign_resource_budget(

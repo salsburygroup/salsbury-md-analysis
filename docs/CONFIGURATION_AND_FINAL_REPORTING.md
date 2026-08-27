@@ -109,6 +109,18 @@ not fit, the terminal and saved plan report `No acceptable reduced plan` and
 recommend a larger envelope. A reduced configuration is never manufactured by
 turning off structural-integrity QC.
 
+The terminal summary and `campaign-resource-plan.json` also report the padded
+minimum resource request for the best protected dependency-closed subset. CPU
+and aggregate memory come from its busiest resource wave under the supplied
+CPU and memory caps. Requested wall time is its modeled science critical path
+divided by the usable science fraction after pilot and finalization reserves,
+then rounded up to a whole hour. The report records the task-time model factor,
+analysis-memory factor, scheduler-memory factor and overhead, and per-job
+Slurm timeout margin. A status of `requires_larger_wall_time` means the subset
+fits the supplied CPU and memory caps but needs a longer campaign ceiling. The
+accompanying warning states that this permissive minimum is an execution floor,
+not a convergence, equilibration, or biological-validity claim.
+
 The method floors are independently configurable. Create a complete policy
 file with `write-scientific-minimums-template`, review its per-replica,
 pooled-overall-per-system, and ordered-method time-gap values, and set

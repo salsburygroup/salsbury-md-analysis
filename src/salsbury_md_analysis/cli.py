@@ -636,6 +636,14 @@ def _campaign_plan_terminal_summary(
     recommendation = recommendation if isinstance(recommendation, Mapping) else {}
     reduced_plan = recommendation.get("recommended_plan")
     reduced_plan = reduced_plan if isinstance(reduced_plan, Mapping) else {}
+    protected_request = recommendation.get(
+        "best_protected_subset_minimum_resource_request"
+    )
+    if not isinstance(protected_request, Mapping):
+        protected_request = plan.get("permissive_minimum_resource_request")
+    protected_request = (
+        protected_request if isinstance(protected_request, Mapping) else {}
+    )
     return {
         "requested_parallel_cpus": plan.get("maximum_parallel_cpus_input"),
         "requested_memory_gib": plan.get("maximum_memory_gib_input"),
@@ -653,6 +661,27 @@ def _campaign_plan_terminal_summary(
         "protected_module_ids": recommendation.get("protected_module_ids", []),
         "protected_subset_minimum_critical_path_hours": reduced_plan.get(
             "minimum_wall_hours_lower_bound"
+        ),
+        "protected_subset_minimum_request_status": protected_request.get(
+            "status"
+        ),
+        "protected_subset_minimum_request_fits_input_wall_cap": (
+            protected_request.get("fits_input_wall_cap")
+        ),
+        "protected_subset_additional_wall_hours_required": (
+            protected_request.get("additional_wall_hours_required")
+        ),
+        "protected_subset_minimum_request_scope": protected_request.get(
+            "request_scope"
+        ),
+        "protected_subset_minimum_request": protected_request.get(
+            "recommended_request", {}
+        ),
+        "protected_subset_minimum_request_padding": protected_request.get(
+            "padding_factors", {}
+        ),
+        "protected_subset_minimum_request_warning": protected_request.get(
+            "warning", {}
         ),
         "configuration_patch": recommendation.get("configuration_patch", {}),
     }

@@ -5,10 +5,52 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
-from salsbury_md_analysis.cli import main
+from salsbury_md_analysis.cli import _campaign_plan_terminal_summary, main
 
 
 class CliTests(unittest.TestCase):
+    def test_campaign_terminal_summary_includes_protected_minimum_request(self):
+        request = {
+            "request_scope": "best_dependency_closed_subset",
+            "status": "available_within_all_input_caps",
+            "fits_input_wall_cap": False,
+            "additional_wall_hours_required": 25,
+            "recommended_request": {
+                "parallel_cpus": 4,
+                "aggregate_memory_gib": 12.0,
+                "wall_hours": 73,
+            },
+            "padding_factors": {"science_wall_fraction": 0.75},
+            "warning": {
+                "code": "PERMISSIVE_MINIMUM_NOT_SCIENTIFIC_SUFFICIENCY"
+            },
+        }
+        summary = _campaign_plan_terminal_summary({
+            "maximum_parallel_cpus_input": 8,
+            "maximum_memory_gib_input": 32.0,
+            "maximum_wall_hours_input": 48.0,
+            "method_reduction_recommendation": {
+                "recommendation_status": "no_feasible_subset_found",
+                "best_protected_subset_minimum_resource_request": request,
+                "recommended_plan": {"minimum_wall_hours_lower_bound": 54.1},
+            },
+        })
+        self.assertEqual(summary["protected_subset_minimum_request"], {
+            "parallel_cpus": 4,
+            "aggregate_memory_gib": 12.0,
+            "wall_hours": 73,
+        })
+        self.assertEqual(
+            summary["protected_subset_minimum_request_warning"]["code"],
+            "PERMISSIVE_MINIMUM_NOT_SCIENTIFIC_SUFFICIENCY",
+        )
+        self.assertFalse(
+            summary["protected_subset_minimum_request_fits_input_wall_cap"]
+        )
+        self.assertEqual(
+            summary["protected_subset_additional_wall_hours_required"], 25
+        )
+
     def test_validate_manifest_json_report(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "system.json"
