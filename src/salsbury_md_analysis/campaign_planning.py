@@ -72,8 +72,10 @@ def _scientific_task_contract(
         "attainable_scientific_minimum_frames_per_replica": attainable,
         "minimum_frame_role": "standard_scientific_raw_coverage",
         "minimum_frame_interpretation": (
-            "Fixed method-specific sample-count and temporal-separation floor; "
-            "the planner does not estimate autocorrelation times or event rates."
+            "Method-specific sample-count floor plus any applicable configured "
+            "lag-pair or temporal-resolution requirement; trajectory duration "
+            "is provenance, and the planner does not estimate autocorrelation "
+            "times or event rates."
         ),
         **({
             "frame_intervals_ns_per_replica": [
@@ -791,6 +793,121 @@ def _view_tasks(
                         "replica-and-member-segment-safe projected sequences"
                     ),
                 }
+        elif module_id == "time_lagged_independent_component_analysis":
+            definitions = project.get("definitions")
+            definition = (
+                definitions.get(module_id)
+                if isinstance(definitions, dict) else None
+            )
+            if not isinstance(definition, dict):
+                raise CampaignPlanningError(
+                    f"view {view_id} has no tICA definition"
+                )
+            lag_frames = definition.get("lag_frames")
+            minimum_pairs = definition.get("minimum_pairs_per_segment")
+            if (
+                isinstance(lag_frames, bool)
+                or not isinstance(lag_frames, int)
+                or lag_frames <= 0
+                or isinstance(minimum_pairs, bool)
+                or not isinstance(minimum_pairs, int)
+                or minimum_pairs <= 0
+            ):
+                raise CampaignPlanningError(
+                    f"view {view_id} tICA lag/pair settings are invalid"
+                )
+            required_per_replica = lag_frames + minimum_pairs
+            insufficient = [
+                index for index, count in enumerate(projected_counts)
+                if count < required_per_replica
+            ]
+            if insufficient:
+                raise CampaignPlanningError(
+                    f"view {view_id} tICA requires at least "
+                    f"{required_per_replica} projected frames in every physical "
+                    "replica for the configured lag and minimum pairs per "
+                    f"segment; insufficient replicas are {insufficient}"
+                )
+            available_pairs = multiplier * sum(
+                max(0, count - lag_frames) for count in projected_counts
+            )
+            minimum_frames_per_replica = max(
+                minimum_frames_per_replica, required_per_replica
+            )
+            method_specific = {
+                "lag_frames": lag_frames,
+                "minimum_lag_pairs_per_segment": minimum_pairs,
+                "minimum_frames_per_replica_for_lag_pairs": (
+                    required_per_replica
+                ),
+                "maximum_available_lag_pairs": available_pairs,
+                "lag_pair_count_basis": (
+                    "each replica-and-member segment independently satisfies "
+                    "the configured lag-pair minimum"
+                ),
+            }
+        elif module_id == "markov_state_models":
+            definitions = project.get("definitions")
+            definition = (
+                definitions.get(module_id)
+                if isinstance(definitions, dict) else None
+            )
+            if not isinstance(definition, dict):
+                raise CampaignPlanningError(
+                    f"view {view_id} has no MSM definition"
+                )
+            lag_values = definition.get("lag_frames")
+            minimum_transitions = definition.get("minimum_transition_count")
+            if (
+                not isinstance(lag_values, list)
+                or not lag_values
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or value <= 0
+                    for value in lag_values
+                )
+                or isinstance(minimum_transitions, bool)
+                or not isinstance(minimum_transitions, int)
+                or minimum_transitions <= 0
+            ):
+                raise CampaignPlanningError(
+                    f"view {view_id} MSM lag/transition settings are invalid"
+                )
+            maximum_lag = max(int(value) for value in lag_values)
+            available_pairs = multiplier * sum(
+                max(0, count - maximum_lag) for count in projected_counts
+            )
+            required_per_replica = maximum_lag + math.ceil(
+                minimum_transitions
+                / (len(projected_counts) * multiplier)
+            )
+            if available_pairs < minimum_transitions:
+                raise CampaignPlanningError(
+                    f"view {view_id} markov_state_models can provide only "
+                    f"{available_pairs} segment-safe transition pairs at its "
+                    f"largest configured lag; minimum_transition_count is "
+                    f"{minimum_transitions}. At least {required_per_replica} "
+                    "frames per physical replica are required for the current "
+                    "lag set, replica count, and member multiplier"
+                )
+            minimum_frames_per_replica = max(
+                minimum_frames_per_replica, required_per_replica
+            )
+            method_specific = {
+                "lag_frames": sorted(int(value) for value in lag_values),
+                "largest_configured_lag_frames": maximum_lag,
+                "minimum_transition_count": minimum_transitions,
+                "minimum_frames_per_replica_for_transition_pairs": (
+                    required_per_replica
+                ),
+                "maximum_available_transition_pairs_at_largest_lag": (
+                    available_pairs
+                ),
+                "transition_pair_count_basis": (
+                    "replica-and-member-segment-safe projected state sequences"
+                ),
+            }
         elif module_id == "grouped_ml":
             definitions = project.get("definitions")
             definition = (

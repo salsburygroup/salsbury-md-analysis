@@ -97,7 +97,6 @@ from .regression import run_regression_case_safe
 from .resource_planning import (
     ResourcePlanningError,
     calibrate_from_benchmarks,
-    estimate_analysis_level_resource_requirements,
     plan_campaign_resource_budget,
     plan_global_stride_projection_coupled_campaign_resource_budget,
     recommend_frame_budget,
@@ -505,7 +504,6 @@ def _plan_frame_resources_command(
 def _plan_campaign_resources_command(
     path: Path,
     *,
-    mode: str,
     maximum_parallel_cpus: int,
     maximum_memory_gib: float,
     maximum_wall_hours: float,
@@ -520,38 +518,31 @@ def _plan_campaign_resources_command(
             raise ResourcePlanningError(
                 "campaign planner input must be a task list or an object with tasks"
             )
-        if mode == "analysis-levels":
-            report = estimate_analysis_level_resource_requirements(
-                tasks,
-                maximum_parallel_cpus=maximum_parallel_cpus,
-                maximum_memory_gib=maximum_memory_gib,
+        kwargs = {
+            "maximum_parallel_cpus": maximum_parallel_cpus,
+            "maximum_wall_hours": maximum_wall_hours,
+            "maximum_memory_gib": maximum_memory_gib,
+        }
+        if sum(
+            row.get("module_id") == "coordinate_cache" for row in tasks
+        ) == 1:
+            report = (
+                plan_global_stride_projection_coupled_campaign_resource_budget(
+                    tasks,
+                    coordinate_cache_full_scan_fraction=1.0,
+                    **kwargs,
+                )
             )
         else:
-            kwargs = {
-                "maximum_parallel_cpus": maximum_parallel_cpus,
-                "maximum_wall_hours": maximum_wall_hours,
-                "maximum_memory_gib": maximum_memory_gib,
-            }
-            if sum(
-                row.get("module_id") == "coordinate_cache" for row in tasks
-            ) == 1:
-                report = (
-                    plan_global_stride_projection_coupled_campaign_resource_budget(
-                        tasks,
-                        coordinate_cache_full_scan_fraction=1.0,
-                        **kwargs,
-                    )
-                )
-            else:
-                report = plan_campaign_resource_budget(tasks, **kwargs)
-            report["planning_mode"] = "resources_to_sampling"
-            if (
-                recommend_method_reduction
-                and report["feasibility_status"] != "feasible"
-            ):
-                report["method_reduction_recommendation"] = (
-                    recommend_scientifically_valid_task_subset(tasks, **kwargs)
-                )
+            report = plan_campaign_resource_budget(tasks, **kwargs)
+        report["planning_mode"] = "resources_to_sampling"
+        if (
+            recommend_method_reduction
+            and report["feasibility_status"] != "feasible"
+        ):
+            report["method_reduction_recommendation"] = (
+                recommend_scientifically_valid_task_subset(tasks, **kwargs)
+            )
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0
     except (OSError, ResourcePlanningError, ValueError) as exc:
@@ -1305,18 +1296,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     campaign_resource_parser = subparsers.add_parser(
         "plan-campaign-resources",
-        help=(
-            "Plan sampling from a CPU/memory/time envelope, or estimate the "
-            "resources required for named analysis levels."
-        ),
+        help="Plan sampling from a CPU, memory, and time envelope.",
     )
     campaign_resource_parser.add_argument(
         "path", type=Path,
         help="JSON task list or campaign plan containing a tasks list.",
-    )
-    campaign_resource_parser.add_argument(
-        "--mode", choices=("resource-envelope", "analysis-levels"),
-        default="resource-envelope",
     )
     campaign_resource_parser.add_argument(
         "--maximum-parallel-cpus", type=int, required=True
@@ -1326,7 +1310,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     campaign_resource_parser.add_argument(
         "--maximum-wall-hours", type=float, default=24.0,
-        help="Campaign wall limit for resource-envelope mode.",
+        help="Campaign wall-time limit.",
     )
     campaign_resource_parser.add_argument(
         "--recommend-method-reduction", action="store_true",
@@ -1772,7 +1756,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.command == "plan-campaign-resources":
         return _plan_campaign_resources_command(
             args.path,
-            mode=args.mode,
             maximum_parallel_cpus=args.maximum_parallel_cpus,
             maximum_memory_gib=args.maximum_memory_gib,
             maximum_wall_hours=args.maximum_wall_hours,

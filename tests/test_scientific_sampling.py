@@ -74,6 +74,30 @@ class ScientificSamplingTests(unittest.TestCase):
             assessment["planner_estimates_autocorrelation_or_event_rates"]
         )
 
+    def test_short_duration_is_provenance_not_an_acceptance_gate(self):
+        profile = scientific_sampling_profile("common_pca")
+        assessment = assess_raw_sampling(
+            profile,
+            selected_frames_per_replica=[1_000],
+            source_frames_per_replica=[1_000],
+            system_ids_per_replica=["short"],
+            integer_stride=1,
+            frame_intervals_ns_per_replica=[0.001],
+            source_time_spans_ns_per_replica=[0.999],
+        )
+        self.assertTrue(assessment["keep_enabled"])
+        self.assertEqual(
+            assessment["raw_coverage_status"], "meets_standard_raw_floor"
+        )
+        self.assertFalse(assessment["time_span_fraction_is_acceptance_gate"])
+        self.assertFalse(assessment["physical_time_span_is_acceptance_gate"])
+
+    def test_generic_profiles_have_no_effective_sample_or_duration_gate(self):
+        contract = scientific_sampling_profile("common_pca")
+        self.assertFalse(hasattr(contract, "minimum_effective_samples_per_system"))
+        self.assertFalse(hasattr(contract, "minimum_time_span_fraction"))
+        self.assertFalse(hasattr(contract, "minimum_physical_span_ns"))
+
     def test_temporal_method_converts_maximum_spacing_to_frame_floor(self):
         profile = scientific_sampling_profile("information_dynamics")
         required = required_frames_per_replica(
@@ -109,8 +133,6 @@ class ScientificSamplingTests(unittest.TestCase):
             "information_dynamics",
             "time_lagged_independent_component_analysis",
             "markov_state_models",
-            "scalar_threshold_states",
-            "convergence_uncertainty",
         })
         self.assertEqual(
             scientific_sampling_profile("common_pca")

@@ -117,35 +117,36 @@ and inherited downstream frame identities.
 
 ## Scientific minima used by the planner
 
-Each method has a fixed production floor. The floor uses a minimum number of
-retained samples per physical replica, a minimum pooled count per system, a
-maximum physical-time separation between retained frames, or both. The selected
-frames must also cover 90% of each supplied replica timeline (95% for lagged
-dynamics and convergence methods). These are permissive keep-enabled defaults,
-not publication-grade targets or claims that a trajectory is converged.
+Each framed method has a permissive feasibility floor: a minimum number of
+retained samples per physical replica and a minimum pooled count per system.
+There is no universal effective-sample-size threshold, minimum trajectory
+duration, or required percentage of the timeline. Short trajectories remain
+eligible when they contain enough saved observations. Duration, selected span,
+stride, and spacing are reported as provenance.
 
-The planner reads the frame interval from the system manifest and converts the
-maximum temporal separation into an additional frame-count requirement over
-the required span. It applies the stricter of the count and timing requirements.
-If the supplied trajectory is shorter than the minimum physical span, or an
-order-dependent method receives a saved-frame interval already coarser than its permitted separation, the
-report labels the source below standard; adding compute cannot recover data
-that were not saved. Runtime pilots calibrate CPU and memory costs only.
+The planner uses a maximum retained-frame separation only for information
+dynamics, tICA, and MSMs. It also reads each project's configured lags and
+minimum valid pair or transition counts. These requirements are evaluated on
+replica- and member-segment-safe sequences. The planner does not estimate
+autocorrelation times or event rates. Runtime pilots calibrate CPU and memory
+costs only.
 
-| Methods | Frames per replica | Frames per system | Minimum physical span per replica | Maximum retained-frame separation |
-|---|---:|---:|---:|---:|
-| Structural-integrity QC | 100 | 500 | 50 ns | none; continuity scan still reads every raw frame |
-| Replica RMSD/Rg | 100 | 100 | 50 ns | none; convergence is a separate temporal method |
-| RMSF, dihedrals, nucleic-acid geometry, optional observables, scalar distributions, H-bond pattern/comparison, grouped regularized classification, RMSF permutation | 200 | 1,000 | 50 ns | none; order-independent |
-| H bonds, automatic H-bond discovery, ion coordination, ion atmosphere, RDF, trajectory features | 200 | 1,000 | 50 ns | none; order-independent |
-| Water-mediated H-bond networks, DSSP, nucleic-acid structure, SASA | 100 | 500 | 50 ns | none; order-independent |
-| DCCM | 250 | 1,000 | 50 ns | none; order-independent |
-| Individual/common PCA | 250 | 1,000 | 50 ns | none; order-independent |
-| Generalized correlation, correlation networks, FES, clustering, representatives/exports, grouped ML | 250 | 1,000 | 50 ns | none; order-independent |
-| PaLD, when explicitly enabled | 20 | 100 | 50 ns | none; order-independent |
-| tICA, information dynamics, and MSMs | 500 | 2,000 | 100 ns | 0.50 ns |
-| Scalar threshold-state dynamics | 250 | 1,000 | 100 ns | 0.50 ns |
-| Convergence/uncertainty | 250 | 250 | 100 ns | 1.0 ns |
+| Methods | Frames per replica | Frames per system | Temporal rule |
+|---|---:|---:|---|
+| Structural-integrity QC | 100 | 500 | Count floor; continuity preprocessing still scans every raw frame |
+| Replica RMSD/Rg | 100 | 100 | Count floor; order and times are retained for reporting |
+| RMSF, dihedrals, nucleic-acid geometry, optional observables, scalar distributions, H-bond pattern/comparison, grouped regularized classification, RMSF permutation | 200 | 1,000 | Count floor; no spacing gate |
+| H bonds, automatic H-bond discovery, ion coordination, ion atmosphere, RDF, trajectory features | 200 | 1,000 | Count floor; no spacing gate |
+| Water-mediated H-bond networks, DSSP, nucleic-acid structure, SASA | 100 | 500 | Count floor; no spacing gate |
+| DCCM | 250 | 1,000 | Count floor; no spacing gate |
+| Individual/common PCA | 250 | 1,000 | Count floor; no spacing gate |
+| Generalized correlation, correlation networks, FES, clustering, representatives/exports, grouped ML | 250 | 1,000 | Count floor; no spacing gate |
+| PaLD, when explicitly enabled | 20 | 100 | Count floor; no spacing gate |
+| Information dynamics | 500 | 2,000 | At most 0.50 ns between retained frames plus configured lag and total valid-pair minimum |
+| tICA | 500 | 2,000 | At most 0.50 ns between retained frames plus configured lag and valid pairs in every segment |
+| MSMs | 500 | 2,000 | At most 0.50 ns between retained frames plus largest configured lag and total valid-transition minimum |
+| Scalar threshold-state dynamics | 250 | 1,000 | Ordered, segment-safe series; selected spacing is reported, with no universal gap gate |
+| Convergence/uncertainty | 250 | 250 | Ordered per-replica series; duration and spacing are reported, with no universal gap gate |
 
 The complete per-module contract, including inherited upstream sampling and
 source-limited failures, is written into `sampling-plan.json` and
@@ -153,12 +154,12 @@ source-limited failures, is written into `sampling-plan.json` and
 floors in its locked configuration; reducing them changes the scientific
 standard and is not an automatic resource-planning action.
 
-The temporal-separation column is intentionally empty for thermodynamic and
-ensemble estimators: randomizing their stride-1 frame order would not change
-the estimator. They still require a generous count and broad production-span
-coverage. Here, "generous" means lenient enough to keep useful analyses on; it
-does not mean demanding a large retained sample. A maximum separation is used
-only when frame order and lag carry the quantity being estimated.
+Thermodynamic and ensemble estimators have no time-gap rule because randomizing
+their stride-1 frame order would not change the estimator. Their count floors
+are deliberately lenient feasibility minima, not convergence claims. Ordered
+scalar-state and convergence reports preserve their temporal lineage without a
+universal duration or gap threshold; project-specific validation may impose a
+stronger requirement.
 
 The automatic plan gives every directly sampled estimator an exact integer
 stride. Modules with the concatenated-replica selection interface receive

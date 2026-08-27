@@ -17,6 +17,7 @@ from .frame_sampling import (
     integer_stride_selected_count,
 )
 from .scientific_sampling import (
+    POLICY_ID,
     ScientificSamplingError,
     assess_raw_sampling,
     scientific_sampling_profile,
@@ -1272,16 +1273,12 @@ def plan_campaign_resource_budget(
                 ),
             })
         if (
-            assessment.get("postrun_effective_sample_gate") is not None
-            or assessment.get("postrun_event_or_transition_gate") is not None
+            assessment.get("postrun_event_or_transition_gate") is not None
             or assessment.get("temporal_resolution_validation_required")
         ):
             scientific_postrun_gates.append({
                 "task_id": str(report["task_id"]),
                 "module_id": module_id,
-                "minimum_effective_samples_per_system": assessment.get(
-                    "postrun_effective_sample_gate"
-                ),
                 "minimum_events_or_transitions": assessment.get(
                     "postrun_event_or_transition_gate"
                 ),
@@ -1412,7 +1409,7 @@ def plan_campaign_resource_budget(
         "tasks_requiring_project_pilots": calibration_required,
         "infeasibility_reasons": infeasibility_reasons,
         "scientific_sampling_feasibility": {
-            "policy_id": "scientific-sampling-standard-v1",
+            "policy_id": POLICY_ID,
             "raw_coverage_status": (
                 "all_enabled_methods_meet_or_exhaust_available_source"
                 if not scientific_below_standard else
@@ -1425,9 +1422,10 @@ def plan_campaign_resource_budget(
             }),
             "postrun_gates": scientific_postrun_gates,
             "source_limited_policy": (
-                "A complete short source may still be executed for technical or "
-                "exploratory use, but its report remains explicitly below the "
-                "standard scientific sampling floor."
+                "A complete short source remains eligible for analysis. Source "
+                "duration and selected span are reported as provenance; only "
+                "unmet sample-count or applicable ordered-method resolution "
+                "requirements place a task below the planning floor."
             ),
         },
         "memory_feasibility": {
@@ -2456,169 +2454,6 @@ def plan_cache_projection_coupled_campaign_resource_budget(
     return plan_global_stride_projection_coupled_campaign_resource_budget(
         tasks, **kwargs
     )
-
-
-ANALYSIS_LEVELS = (
-    "technical_check", "standard", "extended", "all_frames"
-)
-
-
-def _analysis_level_task(
-    task: Mapping[str, object], level: str
-) -> Dict[str, object]:
-    """Freeze one task at the deterministic frame ceiling for a named level."""
-
-    row = deepcopy(dict(task))
-    source = [int(value) for value in row["source_frames_per_replica"]]
-    available = max(source)
-    standard = min(
-        available,
-        int(row.get(
-            "attainable_scientific_minimum_frames_per_replica",
-            row["minimum_frames_per_replica"],
-        )),
-    )
-    technical = min(
-        available,
-        int(row.get(
-            "technical_pilot_frames_per_replica",
-            min(standard, 50),
-        )),
-    )
-    if level == "technical_check":
-        target = max(1, technical)
-    elif level == "standard":
-        target = max(1, standard)
-    elif level == "extended":
-        target = max(
-            1, standard,
-            int(math.ceil(math.sqrt(max(1, standard) * available))),
-        )
-    elif level == "all_frames":
-        target = available
-    else:
-        raise ResourcePlanningError(
-            "analysis level must be technical_check, standard, extended, or "
-            "all_frames"
-        )
-    row.update({
-        "minimum_frames_per_replica": target,
-        "maximum_frames_per_replica": target,
-        "analysis_level": level,
-        "analysis_level_target_frames_per_replica": target,
-        "minimum_frame_role": f"fixed_{level}_resource_estimate",
-        "maximum_frame_role": f"fixed_{level}_resource_estimate",
-    })
-    return row
-
-
-def estimate_analysis_level_resource_requirements(
-    tasks: Sequence[Mapping[str, object]],
-    *,
-    maximum_parallel_cpus: int,
-    maximum_memory_gib: float,
-    levels: Sequence[str] = ANALYSIS_LEVELS,
-    memory_safety_factor: float = 1.0,
-    memory_overhead_gib: float = 0.0,
-    minimum_scheduler_memory_gib: float = 0.0,
-) -> Dict[str, object]:
-    """Estimate time and resource requirements for named analysis depths.
-
-    This is the inverse companion to resource-envelope planning.  The caller
-    supplies available CPUs and aggregate concurrent memory; each named level
-    fixes the sampling depth and reports the resulting CPU work, packed wall
-    time, and minimum single-task memory.  ``technical_check`` is execution
-    validation only, ``standard`` applies the package scientific raw floors,
-    ``extended`` is the geometric midpoint between standard and all frames,
-    and ``all_frames`` retains every available frame.
-    """
-
-    started = time.monotonic()
-    if not levels:
-        raise ResourcePlanningError("at least one analysis level is required")
-    rows = []
-    for raw_level in levels:
-        level = str(raw_level)
-        if level not in ANALYSIS_LEVELS:
-            raise ResourcePlanningError(f"unsupported analysis level: {level}")
-        fixed = [_analysis_level_task(task, level) for task in tasks]
-        unconstrained_memory_plan = plan_campaign_resource_budget(
-            fixed,
-            maximum_parallel_cpus=maximum_parallel_cpus,
-            maximum_wall_hours=1_000_000.0,
-            maximum_memory_gib=1_000_000_000.0,
-            planning_utilization=1.0,
-            pilot_budget_fraction=0.0,
-            finalization_headroom_fraction=0.0,
-            memory_safety_factor=memory_safety_factor,
-            memory_overhead_gib=memory_overhead_gib,
-            minimum_scheduler_memory_gib=minimum_scheduler_memory_gib,
-        )
-        constrained_memory_plan = plan_campaign_resource_budget(
-            fixed,
-            maximum_parallel_cpus=maximum_parallel_cpus,
-            maximum_wall_hours=1_000_000.0,
-            maximum_memory_gib=maximum_memory_gib,
-            planning_utilization=1.0,
-            pilot_budget_fraction=0.0,
-            finalization_headroom_fraction=0.0,
-            memory_safety_factor=memory_safety_factor,
-            memory_overhead_gib=memory_overhead_gib,
-            minimum_scheduler_memory_gib=minimum_scheduler_memory_gib,
-        )
-        rows.append({
-            "analysis_level": level,
-            "interpretation": (
-                "technical execution check; not a scientific production floor"
-                if level == "technical_check" else
-                "standard package raw-frame floor; post-run scientific gates remain"
-                if level == "standard" else
-                "geometric sampling extension between standard and all frames"
-                if level == "extended" else
-                "all available frames"
-            ),
-            "estimated_cpu_hours": unconstrained_memory_plan[
-                "estimated_selected_cpu_hours"
-            ],
-            "estimated_wall_hours_with_cpu_and_memory_limits": (
-                constrained_memory_plan.get(
-                    "estimated_selected_wall_hours_lower_bound"
-                )
-                if constrained_memory_plan["memory_feasibility"][
-                    "fits_configured_memory"
-                ] else None
-            ),
-            "minimum_single_task_memory_gib": unconstrained_memory_plan[
-                "memory_feasibility"
-            ]["minimum_required_memory_gib"],
-            "fits_supplied_memory": constrained_memory_plan[
-                "memory_feasibility"
-            ]["fits_configured_memory"],
-            "task_sampling": [
-                {
-                    "task_id": row["task_id"],
-                    "module_id": row.get("module_id"),
-                    "integer_stride": row["integer_stride"],
-                    "selected_physical_frames_per_replica": row[
-                        "selected_physical_frames_per_replica"
-                    ],
-                }
-                for row in unconstrained_memory_plan["tasks"]
-                if isinstance(row, Mapping)
-            ],
-        })
-    return {
-        "planner_schema": "salsbury-analysis-level-resource-requirements-v1",
-        "planning_mode": "analysis_levels_to_required_resources",
-        "maximum_parallel_cpus_input": maximum_parallel_cpus,
-        "maximum_memory_gib_input": maximum_memory_gib,
-        "levels": rows,
-        "planner_wall_seconds": time.monotonic() - started,
-        "scientific_boundary": (
-            "Named levels define raw-frame coverage, not convergence, effective "
-            "sample size, event sufficiency, or biological interpretation."
-        ),
-    }
 
 
 def _configuration_switch_for_task(task: Mapping[str, object]) -> str:

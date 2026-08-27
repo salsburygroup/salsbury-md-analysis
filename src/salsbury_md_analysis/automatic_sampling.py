@@ -30,6 +30,7 @@ from .resource_calibrations import (
     ResourceCalibrationError, load_resource_calibration_catalog,
 )
 from .scientific_sampling import (
+    POLICY_ID,
     assess_raw_sampling,
     profile_contract,
     required_frames_per_replica,
@@ -1387,9 +1388,9 @@ def _module_plan(
         },
         "rationale": profile.rationale,
         "planning_warning": (
-            "selected coverage is below the standard scientific raw-frame or "
-            "time-span floor; increase resources, reduce the enabled-method set, "
-            "or explicitly retain this as a technical/exploratory run"
+            "selected coverage is below the method's sample-count or applicable "
+            "ordered-method temporal-resolution floor; increase resources or "
+            "reduce the enabled-method set"
             if not scientific_assessment["keep_enabled"] else
             None if minimum_pilot_met else
             "the pooled ceiling cannot provide even the small technical runtime pilot to every replica"
@@ -1587,14 +1588,14 @@ def automatic_sampling_plan(
         },
         "method_plans": method_plans,
         "scientific_sampling_summary": {
-            "policy_id": "scientific-sampling-standard-v1",
+            "policy_id": POLICY_ID,
             "profile_count": len(method_plans),
             "direct_modules_below_standard_raw_floor": below_standard,
             "all_requested_modules_have_explicit_requirements": True,
             "postrun_policy": (
-                "Effective sample size, event or transition counts, temporal "
-                "resolution, and independent-unit requirements remain explicit "
-                "post-run gates and are never inferred from raw frame count."
+                "Event or transition counts, temporal validation, and "
+                "independent-unit requirements remain explicit post-run "
+                "diagnostics and are never inferred from raw frame count."
             ),
         },
         "campaign_resource_plan": campaign_resource_plan,

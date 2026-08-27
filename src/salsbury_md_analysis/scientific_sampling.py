@@ -8,12 +8,13 @@ standard-coverage policy for every registered analysis method.
 The numerical floors are deliberately permissive feasibility minima, not
 publication targets or universal convergence claims.  They are intended to
 prevent scientifically empty calculations without disabling useful methods
-merely because a campaign is resource constrained.  Raw-frame coverage is
-enforceable before execution.  Effective sample
-size, event counts, transition counts, and temporal-resolution requirements are
-post-run gates.  Short pilots are execution and throughput checks only.  The
-planner does not estimate autocorrelation times or event rates.  It uses a
-method-specific minimum sample count, maximum temporal separation, or both.
+merely because a campaign is resource constrained. Raw-frame coverage is
+enforceable before execution. Event and transition counts remain
+observable-specific post-run diagnostics. Short pilots are execution and
+throughput checks only. The planner does not estimate autocorrelation times or
+event rates. It uses a method-specific minimum sample count and, only for
+ordered methods, an explicit temporal-resolution or configured lag-pair
+requirement.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from dataclasses import asdict, dataclass
 from typing import Dict, Mapping, Optional, Sequence
 
 
-POLICY_ID = "scientific-sampling-standard-v2"
+POLICY_ID = "scientific-sampling-standard-v3"
 
 
 class ScientificSamplingError(ValueError):
@@ -36,9 +37,6 @@ class ScientificSamplingProfile:
     sampling_class: str
     minimum_frames_per_replica: int
     minimum_frames_per_system: int
-    minimum_effective_samples_per_system: int
-    minimum_time_span_fraction: float
-    minimum_physical_span_ns: float
     maximum_uniform_spacing_ns: float
     requires_contiguous_frames: bool
     temporal_resolution_rule: str
@@ -54,10 +52,7 @@ def _profile(
     sampling_class: str,
     per_replica: int,
     per_system: int,
-    effective: int,
-    span: float,
     *,
-    physical_span_ns: float = 50.0,
     maximum_spacing_ns: float = 0.0,
     contiguous: bool = False,
     temporal_rule: str = "uniform_static_ensemble",
@@ -72,9 +67,6 @@ def _profile(
         sampling_class=sampling_class,
         minimum_frames_per_replica=per_replica,
         minimum_frames_per_system=per_system,
-        minimum_effective_samples_per_system=effective,
-        minimum_time_span_fraction=span,
-        minimum_physical_span_ns=physical_span_ns,
         maximum_uniform_spacing_ns=maximum_spacing_ns,
         requires_contiguous_frames=contiguous,
         temporal_resolution_rule=temporal_rule,
@@ -97,51 +89,50 @@ _NO_FRAME = {
 _PROFILES = [
     *(
         _profile(
-            module_id, "no_frame_estimator", 0, 0, 0, 0.0,
-            physical_span_ns=0.0, maximum_spacing_ns=0.0,
+            module_id, "no_frame_estimator", 0, 0,
+            maximum_spacing_ns=0.0,
             temporal_rule="not_applicable", action="not_applicable",
             rationale=rationale,
         )
         for module_id, rationale in _NO_FRAME.items()
     ),
-    _profile("structural_integrity_qc", "trajectory_quality_control", 100, 500, 0, 0.90,
-             physical_span_ns=50.0,
+    _profile("structural_integrity_qc", "trajectory_quality_control", 100, 500,
              rationale="distributed structural checks must cover the production span; lightweight continuity checks should still scan every raw frame"),
-    _profile("replica_rmsd_rg", "replica_time_series", 100, 100, 50, 0.90,
+    _profile("replica_rmsd_rg", "replica_time_series", 100, 100,
              temporal_rule="uniform_ensemble_with_ordered_series_output", rationale="each replica requires its own fitted trajectory profile; time-dependent convergence is evaluated separately"),
-    _profile("pooled_rmsf", "ensemble_fluctuation", 200, 1_000, 100, 0.90,
+    _profile("pooled_rmsf", "ensemble_fluctuation", 200, 1_000,
              rationale="per-position fluctuations require broad per-system ensemble coverage"),
-    _profile("dccm", "pairwise_correlation", 250, 1_000, 200, 0.90,
+    _profile("dccm", "pairwise_correlation", 250, 1_000,
              rationale="a dense correlation matrix is unstable with a small pooled configuration sample"),
-    _profile("individual_pca", "conformational_basis", 250, 1_000, 100, 0.90,
+    _profile("individual_pca", "conformational_basis", 250, 1_000,
              rationale="a per-system covariance basis requires broad configuration-space coverage"),
-    _profile("common_pca", "shared_conformational_basis", 250, 1_000, 100, 0.90,
+    _profile("common_pca", "shared_conformational_basis", 250, 1_000,
              rationale="shared bases and projections require balanced coverage from every compared system"),
-    _profile("dihedral_distributions", "static_distribution", 200, 1_000, 100, 0.90,
+    _profile("dihedral_distributions", "static_distribution", 200, 1_000,
              rationale="angular populations and Scott-rule histograms require more than a sparse frame screen"),
-    _profile("hydrogen_bonds", "contact_occupancy", 200, 1_000, 100, 0.90, events=20,
+    _profile("hydrogen_bonds", "contact_occupancy", 200, 1_000, events=20,
              rationale="bond occupancies require enough frames and occurrences to distinguish rare contacts from noise"),
-    _profile("hydrogen_bond_discovery", "high_dimensional_contact_occupancy", 200, 1_000, 100, 0.90, events=20,
+    _profile("hydrogen_bond_discovery", "high_dimensional_contact_occupancy", 200, 1_000, events=20,
              rationale="automatic candidate discovery and occupancy ranking are multiple high-dimensional estimates"),
-    _profile("water_mediated_hydrogen_bond_networks", "high_dimensional_network_occupancy", 100, 500, 100, 0.90, events=20,
+    _profile("water_mediated_hydrogen_bond_networks", "high_dimensional_network_occupancy", 100, 500, events=20,
              rationale="water-bridge edges and network populations cannot be supported by a few disconnected snapshots"),
-    _profile("secondary_structure", "categorical_residue_occupancy", 100, 500, 100, 0.90, events=20,
+    _profile("secondary_structure", "categorical_residue_occupancy", 100, 500, events=20,
              rationale="per-residue DSSP populations require distributed observations despite external-program cost"),
-    _profile("nucleic_acid_structure", "categorical_structural_occupancy", 100, 500, 100, 0.90, events=20,
+    _profile("nucleic_acid_structure", "categorical_structural_occupancy", 100, 500, events=20,
              rationale="motif and descriptor populations require distributed observations despite external-program cost"),
-    _profile("nucleic_acid_geometry", "static_distribution", 200, 1_000, 100, 0.90,
+    _profile("nucleic_acid_geometry", "static_distribution", 200, 1_000,
              rationale="ring, stacking, and helical geometry distributions require broad temporal coverage"),
-    _profile("ion_coordination_geometry", "contact_and_geometry_occupancy", 200, 1_000, 100, 0.90, events=20,
+    _profile("ion_coordination_geometry", "contact_and_geometry_occupancy", 200, 1_000, events=20,
              rationale="coordination identities and geometry populations require repeated observations"),
-    _profile("ion_atmosphere", "species_resolved_shell_occupancy", 200, 1_000, 100, 0.90, events=20,
+    _profile("ion_atmosphere", "species_resolved_shell_occupancy", 200, 1_000, events=20,
              rationale="species-resolved shell populations require enough configurations per system and ion species"),
-    _profile("solvent_accessible_surface_area", "static_distribution", 100, 500, 100, 0.90,
+    _profile("solvent_accessible_surface_area", "static_distribution", 100, 500,
              rationale="SASA distributions and residue summaries require more than a small surface-calculation pilot"),
-    _profile("radial_distribution_functions", "normalized_pair_distribution", 200, 1_000, 100, 0.90,
+    _profile("radial_distribution_functions", "normalized_pair_distribution", 200, 1_000,
              rationale="normalized shell counts require broad cell-volume and pair-distance sampling"),
-    _profile("optional_observables", "question_defined_distribution", 200, 1_000, 100, 0.90, events=20,
+    _profile("optional_observables", "question_defined_distribution", 200, 1_000, events=20,
              rationale="distance, contact, and native-contact questions require explicit standard coverage"),
-    _profile("trajectory_features", "feature_time_series", 200, 1_000, 100, 0.90,
+    _profile("trajectory_features", "feature_time_series", 200, 1_000,
              temporal_rule="uniform_ensemble_features; temporal consumers impose their own spacing", rationale="downstream distributions and states inherit this feature coverage"),
 ]
 
@@ -153,9 +144,6 @@ def _inherited(
     *,
     per_replica: int = 200,
     per_system: int = 1_000,
-    effective: int = 100,
-    span: float = 0.90,
-    physical_span_ns: float = 50.0,
     maximum_spacing_ns: float = 0.0,
     contiguous: bool = False,
     temporal_rule: str = "inherit_uniform_upstream_frames",
@@ -164,8 +152,7 @@ def _inherited(
     rationale: str,
 ) -> ScientificSamplingProfile:
     return _profile(
-        module_id, sampling_class, per_replica, per_system, effective, span,
-        physical_span_ns=physical_span_ns,
+        module_id, sampling_class, per_replica, per_system,
         maximum_spacing_ns=maximum_spacing_ns,
         contiguous=contiguous, temporal_rule=temporal_rule,
         events=events,
@@ -175,28 +162,28 @@ def _inherited(
 
 
 _PROFILES.extend([
-    _inherited("generalized_correlation_and_information", "common_pca", "nonlinear_dependence", per_replica=250, per_system=1_000, effective=200, rationale="nonlinear dependence estimates inherit the shared feature sample"),
-    _inherited("information_dynamics", "common_pca", "lagged_information_dynamics", per_replica=500, per_system=2_000, effective=200, span=0.95, physical_span_ns=100.0, maximum_spacing_ns=0.5, contiguous=True, temporal_rule="segment_contiguous_lag_pairs_with_stride_sensitivity", events=100, rationale="lagged information estimates require contiguous, segment-safe pairs and sensitivity to bins and lag"),
-    _inherited("correlation_networks", "dccm", "derived_correlation_network", per_replica=250, per_system=1_000, effective=200, rationale="network edges inherit the complete DCCM sampling gate"),
-    _inherited("time_lagged_independent_component_analysis", "common_pca", "time_lagged_basis", per_replica=500, per_system=2_000, effective=200, span=0.95, physical_span_ns=100.0, maximum_spacing_ns=0.5, contiguous=True, temporal_rule="segment_contiguous_lag_pairs_with_lag_sensitivity", events=100, rationale="tICA requires ordered lag pairs and cannot use disconnected sparse observations"),
-    _inherited("pca_fes_basins", "common_pca", "free_energy_surface", per_replica=250, per_system=1_000, effective=100, rationale="density surfaces and basin populations require broad balanced projected coverage"),
-    _inherited("clustering_kmeans", "common_pca", "partition_clustering", per_replica=250, per_system=1_000, effective=100, events=20, rationale="cluster selection and populations require enough observations and members per reported cluster"),
-    _inherited("clustering_hdbscan", "common_pca", "density_clustering", per_replica=250, per_system=1_000, effective=100, events=20, rationale="density clusters and noise fractions require a sufficiently populated feature sample"),
-    _inherited("clustering_imwkmeans", "common_pca", "partition_clustering", per_replica=250, per_system=1_000, effective=100, events=20, rationale="weighted partition fitting and populations require a populated feature sample"),
-    _inherited("alternative_clustering", "common_pca", "algorithm_specific_clustering", per_replica=250, per_system=1_000, effective=100, events=20, rationale="each clustering family retains its separate fit floor and complete-assignment contract"),
-    _inherited("pald_community_analysis", "common_pca", "bounded_community_sample", per_replica=20, per_system=100, effective=50, events=10, rationale="the cubic bounded sample still needs enough observations to define communities"),
-    _inherited("representative_frames", "common_pca", "state_representatives", per_replica=250, per_system=1_000, effective=100, events=20, rationale="representatives inherit state definitions and require adequate observations in every exported state"),
-    _inherited("state_coordinate_exports", "common_pca", "state_export", per_replica=250, per_system=1_000, effective=100, events=1, rationale="exports inherit accepted state assignments and always retain representative structures"),
-    _inherited("representative_structures", "common_pca", "state_representatives", per_replica=250, per_system=1_000, effective=100, events=20, rationale="means, medoids, and central structures inherit adequately populated aligned states"),
-    _inherited("markov_state_models", "common_pca", "transition_model", per_replica=500, per_system=2_000, effective=200, span=0.95, physical_span_ns=100.0, maximum_spacing_ns=0.5, contiguous=True, temporal_rule="segment_contiguous_transition_counts_with_lag_sensitivity", events=100, rationale="MSMs require ordered state sequences, connected counts, and lag-time validation"),
-    _inherited("scalar_feature_distributions", "trajectory_features", "static_distribution", per_replica=200, per_system=1_000, effective=100, rationale="automatic histograms require an adequately sampled upstream scalar series"),
-    _inherited("scalar_threshold_states", "trajectory_features", "threshold_state_series", per_replica=250, per_system=1_000, effective=100, physical_span_ns=100.0, maximum_spacing_ns=0.5, contiguous=True, temporal_rule="segment_contiguous_state_runs_with_stride_sensitivity", events=50, rationale="state populations, transitions, and residence runs require ordered segment-safe series"),
-    _inherited("hydrogen_bond_patterns", "hydrogen_bond_discovery", "contact_pattern_clustering", per_replica=200, per_system=1_000, effective=100, events=20, rationale="pattern clusters inherit hydrogen-bond coverage and need populated patterns"),
-    _inherited("hydrogen_bond_comparison", "hydrogen_bond_discovery", "matched_contact_comparison", per_replica=200, per_system=1_000, effective=100, events=20, rationale="each compared system must independently meet the upstream occupancy floor"),
-    _inherited("grouped_ml", "common_pca", "grouped_predictive_validation", per_replica=250, per_system=1_000, effective=100, independent_units=5, rationale="held-out validation requires complete independent groups rather than random frame splits"),
-    _inherited("grouped_regularized_classification", "hydrogen_bond_discovery", "grouped_predictive_validation", per_replica=200, per_system=1_000, effective=100, independent_units=2, rationale="each class requires multiple independent held-out groups"),
-    _inherited("convergence_uncertainty", "replica_rmsd_rg", "autocorrelation_and_uncertainty", per_replica=250, per_system=250, effective=100, span=0.95, physical_span_ns=100.0, maximum_spacing_ns=1.0, contiguous=True, temporal_rule="ordered_series_for_uncertainty_blocks", rationale="uncertainty requires ordered per-replica series at a fixed maximum temporal spacing"),
-    _inherited("rmsf_permutation_inference", "pooled_rmsf", "independent_unit_inference", per_replica=200, per_system=1_000, effective=100, independent_units=2, rationale="permutation units are independent replicas or justified blocks, never individual frames"),
+    _inherited("generalized_correlation_and_information", "common_pca", "nonlinear_dependence", per_replica=250, per_system=1_000, rationale="nonlinear dependence estimates inherit the shared feature sample"),
+    _inherited("information_dynamics", "common_pca", "lagged_information_dynamics", per_replica=500, per_system=2_000, maximum_spacing_ns=0.5, contiguous=True, temporal_rule="segment_contiguous_lag_pairs_with_stride_sensitivity", events=100, rationale="lagged information estimates require contiguous, segment-safe pairs and sensitivity to bins and lag"),
+    _inherited("correlation_networks", "dccm", "derived_correlation_network", per_replica=250, per_system=1_000, rationale="network edges inherit the complete DCCM sampling gate"),
+    _inherited("time_lagged_independent_component_analysis", "common_pca", "time_lagged_basis", per_replica=500, per_system=2_000, maximum_spacing_ns=0.5, contiguous=True, temporal_rule="segment_contiguous_lag_pairs_with_lag_sensitivity", events=100, rationale="tICA requires ordered lag pairs and cannot use disconnected sparse observations"),
+    _inherited("pca_fes_basins", "common_pca", "free_energy_surface", per_replica=250, per_system=1_000, rationale="density surfaces and basin populations require broad balanced projected coverage"),
+    _inherited("clustering_kmeans", "common_pca", "partition_clustering", per_replica=250, per_system=1_000, events=20, rationale="cluster selection and populations require enough observations and members per reported cluster"),
+    _inherited("clustering_hdbscan", "common_pca", "density_clustering", per_replica=250, per_system=1_000, events=20, rationale="density clusters and noise fractions require a sufficiently populated feature sample"),
+    _inherited("clustering_imwkmeans", "common_pca", "partition_clustering", per_replica=250, per_system=1_000, events=20, rationale="weighted partition fitting and populations require a populated feature sample"),
+    _inherited("alternative_clustering", "common_pca", "algorithm_specific_clustering", per_replica=250, per_system=1_000, events=20, rationale="each clustering family retains its separate fit floor and complete-assignment contract"),
+    _inherited("pald_community_analysis", "common_pca", "bounded_community_sample", per_replica=20, per_system=100, events=10, rationale="the cubic bounded sample still needs enough observations to define communities"),
+    _inherited("representative_frames", "common_pca", "state_representatives", per_replica=250, per_system=1_000, events=20, rationale="representatives inherit state definitions and require adequate observations in every exported state"),
+    _inherited("state_coordinate_exports", "common_pca", "state_export", per_replica=250, per_system=1_000, events=1, rationale="exports inherit accepted state assignments and always retain representative structures"),
+    _inherited("representative_structures", "common_pca", "state_representatives", per_replica=250, per_system=1_000, events=20, rationale="means, medoids, and central structures inherit adequately populated aligned states"),
+    _inherited("markov_state_models", "common_pca", "transition_model", per_replica=500, per_system=2_000, maximum_spacing_ns=0.5, contiguous=True, temporal_rule="segment_contiguous_transition_counts_with_lag_sensitivity", events=100, rationale="MSMs require ordered state sequences, connected counts, and lag-time validation"),
+    _inherited("scalar_feature_distributions", "trajectory_features", "static_distribution", per_replica=200, per_system=1_000, rationale="automatic histograms require an adequately sampled upstream scalar series"),
+    _inherited("scalar_threshold_states", "trajectory_features", "threshold_state_series", per_replica=250, per_system=1_000, contiguous=True, temporal_rule="segment_contiguous_state_runs_with_stride_sensitivity", events=50, rationale="state populations, transitions, and residence runs require ordered segment-safe series; temporal resolution is reported from the configured stride"),
+    _inherited("hydrogen_bond_patterns", "hydrogen_bond_discovery", "contact_pattern_clustering", per_replica=200, per_system=1_000, events=20, rationale="pattern clusters inherit hydrogen-bond coverage and need populated patterns"),
+    _inherited("hydrogen_bond_comparison", "hydrogen_bond_discovery", "matched_contact_comparison", per_replica=200, per_system=1_000, events=20, rationale="each compared system must independently meet the upstream occupancy floor"),
+    _inherited("grouped_ml", "common_pca", "grouped_predictive_validation", per_replica=250, per_system=1_000, independent_units=5, rationale="held-out validation requires complete independent groups rather than random frame splits"),
+    _inherited("grouped_regularized_classification", "hydrogen_bond_discovery", "grouped_predictive_validation", per_replica=200, per_system=1_000, independent_units=2, rationale="each class requires multiple independent held-out groups"),
+    _inherited("convergence_uncertainty", "replica_rmsd_rg", "autocorrelation_and_uncertainty", per_replica=250, per_system=250, contiguous=True, temporal_rule="ordered_series_for_uncertainty_blocks", rationale="uncertainty diagnostics require ordered per-replica series; their selected spacing and physical span are reported rather than compared with a universal duration gate"),
+    _inherited("rmsf_permutation_inference", "pooled_rmsf", "independent_unit_inference", per_replica=200, per_system=1_000, independent_units=2, rationale="permutation units are independent replicas or justified blocks, never individual frames"),
 ])
 
 
@@ -231,11 +218,12 @@ def required_frames_per_replica(
     frame_intervals_ns_per_replica: Optional[Sequence[float]] = None,
     source_time_spans_ns_per_replica: Optional[Sequence[float]] = None,
 ) -> int:
-    """Return the conservative per-replica count and time-separation floor.
+    """Return the per-replica count and applicable temporal-spacing floor.
 
-    Timing-aware planning converts a method's maximum allowed temporal
-    separation into a frame floor over the required production-span fraction.
-    This is a fixed rule; no autocorrelation or event-rate estimate is used.
+    For an ordered method with a maximum allowed spacing, timing-aware planning
+    converts that spacing to an exact integer-stride frame floor. Supplied
+    trajectory duration is provenance, not an acceptance gate. No
+    autocorrelation or event-rate estimate is used.
     """
 
     if profile.minimum_frames_per_replica == 0:
@@ -312,10 +300,12 @@ def assess_raw_sampling(
     frame_intervals_ns_per_replica: Optional[Sequence[float]] = None,
     source_time_spans_ns_per_replica: Optional[Sequence[float]] = None,
 ) -> Dict[str, object]:
-    """Assess enforceable raw-frame and temporal-span gates.
+    """Assess count floors and applicable ordered-method spacing gates.
 
-    Effective sample size and event/transition counts require the resulting
-    observable and are deliberately returned as pending post-run gates.
+    Selected coverage and physical duration are reported as provenance and do
+    not determine whether a short supplied trajectory may run. Event and
+    transition counts require the resulting observable and are returned as
+    post-run diagnostics, not estimated by the planner.
     """
 
     selected = [int(value) for value in selected_frames_per_replica]
@@ -401,15 +391,9 @@ def assess_raw_sampling(
         else:
             last_index = min(available - 1, (chosen - 1) * integer_stride)
             span_fractions.append(last_index / (available - 1))
-    span_failures = [
-        index for index, value in enumerate(span_fractions)
-        if value + 1.0e-12 < profile.minimum_time_span_fraction
-    ]
     selected_spans_ns = None
     selected_spacings_ns = None
-    physical_span_failures = []
     temporal_spacing_failures = []
-    source_physical_span_failures = []
     source_temporal_resolution_failures = []
     if intervals is not None and source_spans is not None:
         selected_spans_ns = []
@@ -422,13 +406,6 @@ def assess_raw_sampling(
             observed_spacing = interval if chosen == available else interval * integer_stride
             selected_spans_ns.append(observed_span)
             selected_spacings_ns.append(observed_spacing)
-            attainable_required_span = min(
-                profile.minimum_physical_span_ns, source_span
-            )
-            if observed_span + 1.0e-12 < attainable_required_span:
-                physical_span_failures.append(index)
-            if source_span + 1.0e-12 < profile.minimum_physical_span_ns:
-                source_physical_span_failures.append(index)
             if (
                 profile.maximum_uniform_spacing_ns > 0.0
                 and observed_spacing - 1.0e-12
@@ -449,12 +426,9 @@ def assess_raw_sampling(
             if current == system_id
         ) < profile.minimum_frames_per_system
         for system_id in set(ids)
-    ) or bool(source_physical_span_failures) or bool(
-        source_temporal_resolution_failures
-    )
+    ) or bool(source_temporal_resolution_failures)
     keep = not (
-        replica_failures or system_failures or span_failures
-        or physical_span_failures or temporal_spacing_failures
+        replica_failures or system_failures or temporal_spacing_failures
     )
     return {
         "policy_id": POLICY_ID,
@@ -467,7 +441,6 @@ def assess_raw_sampling(
         "scientific_interpretation_ready": (
             keep
             and not source_limited
-            and profile.minimum_effective_samples_per_system == 0
             and profile.minimum_events_or_transitions == 0
             and not profile.requires_contiguous_frames
         ),
@@ -482,25 +455,21 @@ def assess_raw_sampling(
         ),
         "selected_frames_per_system": per_system,
         "minimum_observed_time_span_fraction": min(span_fractions),
+        "time_span_fraction_is_acceptance_gate": False,
+        "physical_time_span_is_acceptance_gate": False,
         "replica_floor_failures": replica_failures,
         "system_floor_failures": sorted(system_failures),
-        "time_span_failures": span_failures,
         "timing_metadata_status": (
             "available" if intervals is not None else "not_supplied"
         ),
+        "source_time_spans_ns_per_replica": source_spans,
         "selected_time_spans_ns_per_replica": selected_spans_ns,
         "selected_temporal_spacings_ns_per_replica": selected_spacings_ns,
-        "physical_span_failures": physical_span_failures,
         "temporal_spacing_failures": temporal_spacing_failures,
-        "source_physical_span_failures": source_physical_span_failures,
         "source_temporal_resolution_failures": (
             source_temporal_resolution_failures
         ),
         "planner_estimates_autocorrelation_or_event_rates": False,
-        "postrun_effective_sample_gate": (
-            profile.minimum_effective_samples_per_system
-            if profile.minimum_effective_samples_per_system else None
-        ),
         "postrun_event_or_transition_gate": (
             profile.minimum_events_or_transitions
             if profile.minimum_events_or_transitions else None

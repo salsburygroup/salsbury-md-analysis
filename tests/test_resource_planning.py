@@ -5,7 +5,6 @@ from salsbury_md_analysis.resource_planning import (
     calibrate_from_benchmark,
     calibrate_from_benchmarks,
     calibrate_quadratic_from_benchmarks,
-    estimate_analysis_level_resource_requirements,
     plan_alternative_clustering_fit_strides,
     plan_global_stride_projection_coupled_campaign_resource_budget,
     plan_campaign_resource_budget,
@@ -1031,34 +1030,6 @@ class ResourcePlanningTests(unittest.TestCase):
                 pilot_budget_fraction=0.05,
                 finalization_headroom_fraction=0.80,
             )
-
-    def test_analysis_level_mode_reports_monotonic_resource_depths(self):
-        task = {
-            "task_id": "rmsd",
-            "module_id": "replica_rmsd_rg",
-            "dependency_stage": 0,
-            "effective_cpu_cap": 1,
-            "source_frames_per_replica": [10_000],
-            "minimum_frames_per_replica": 500,
-            "attainable_scientific_minimum_frames_per_replica": 500,
-            "technical_pilot_frames_per_replica": 20,
-            "maximum_frames_per_replica": 10_000,
-            "cpu_seconds_per_physical_frame": 1.0,
-            "estimated_peak_memory_gib": 2.0,
-        }
-        report = estimate_analysis_level_resource_requirements(
-            [task], maximum_parallel_cpus=1, maximum_memory_gib=8.0
-        )
-        rows = {row["analysis_level"]: row for row in report["levels"]}
-        self.assertLess(
-            rows["technical_check"]["estimated_cpu_hours"],
-            rows["standard"]["estimated_cpu_hours"],
-        )
-        self.assertLess(
-            rows["standard"]["estimated_cpu_hours"],
-            rows["all_frames"]["estimated_cpu_hours"],
-        )
-        self.assertGreaterEqual(report["planner_wall_seconds"], 0.0)
 
     def test_method_subset_recommendation_removes_low_priority_bottleneck(self):
         tasks = [
