@@ -32,6 +32,7 @@ from .resource_calibrations import (
 from .scientific_sampling import (
     POLICY_ID,
     assess_raw_sampling,
+    profile_from_contract,
     profile_contract,
     required_frames_per_replica,
     scientific_sampling_profile,
@@ -669,8 +670,18 @@ def _apply_campaign_direct_allocations(
         selection, stride, selected_count, selected_maximum = _execution_selection(
             _BY_MODULE[module_id], dimensions, requested_budget
         )
+        embedded_contract = allocation.get("scientific_sampling_requirements")
+        assessment_profile = (
+            profile_from_contract(embedded_contract)
+            if isinstance(embedded_contract, Mapping)
+            else scientific_sampling_profile(module_id)
+        )
+        assessment_policy_id = (
+            str(embedded_contract.get("policy_id", POLICY_ID))
+            if isinstance(embedded_contract, Mapping) else POLICY_ID
+        )
         scientific_assessment = assess_raw_sampling(
-            scientific_sampling_profile(module_id),
+            assessment_profile,
             selected_frames_per_replica=selected_per_replica,
             source_frames_per_replica=[
                 int(value)
@@ -701,6 +712,7 @@ def _apply_campaign_direct_allocations(
                     allocation.get("source_time_spans_ns_per_replica"), list
                 ) else None
             ),
+            policy_id=assessment_policy_id,
         )
         source_count = int(dimensions["total_source_frame_count"])
         row.update({
@@ -723,6 +735,15 @@ def _apply_campaign_direct_allocations(
             "frame_selection": selection,
             "frame_stride": stride,
             "scientific_sampling_assessment": scientific_assessment,
+            "scientific_sampling_requirements": scientific_assessment[
+                "requirements"
+            ],
+            "scientific_minimums_source_path": allocation.get(
+                "scientific_minimums_source_path"
+            ),
+            "scientific_minimums_source_sha256": allocation.get(
+                "scientific_minimums_source_sha256"
+            ),
             "recommended_execution": bool(
                 scientific_assessment["keep_enabled"]
             ),

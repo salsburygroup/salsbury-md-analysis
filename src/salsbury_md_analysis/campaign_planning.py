@@ -26,6 +26,8 @@ from .resource_calibrations import (
     ResourceCalibrationError, load_resource_calibration_catalog,
 )
 from .scientific_sampling import (
+    apply_scientific_minimums_to_tasks,
+    load_scientific_minimums,
     profile_contract,
     required_frames_per_replica,
     scientific_sampling_profile,
@@ -1603,6 +1605,16 @@ def plan_and_apply_complete_campaign(
     execution = analysis_config.get("execution")
     if not isinstance(execution, dict):
         raise CampaignPlanningError("analysis execution configuration is unavailable")
+    sampling_configuration = analysis_config.get("sampling")
+    if not isinstance(sampling_configuration, dict):
+        raise CampaignPlanningError("analysis sampling configuration is unavailable")
+    minimums_path = sampling_configuration.get("scientific_minimums_file")
+    try:
+        scientific_minimums = load_scientific_minimums(
+            Path(minimums_path) if isinstance(minimums_path, str) else None
+        )
+    except (OSError, ValueError) as exc:
+        raise CampaignPlanningError(str(exc)) from exc
     try:
         measured_calibrations = load_resource_calibration_catalog(
             execution.get("resource_calibration_catalog"),
@@ -1657,6 +1669,10 @@ def plan_and_apply_complete_campaign(
                 scheduler_time_policy[key] = float(policy[key])
     cache_mode = str(execution.get("coordinate_cache", "auto"))
     coordinate_cache_enabled = bool(view_paths) and cache_mode in {"auto", "required"}
+    coordinate_cache_input = execution.get("coordinate_cache_input")
+    coordinate_cache_build_required = (
+        coordinate_cache_enabled and coordinate_cache_input is None
+    )
     cache_materialization = str(
         execution.get("coordinate_cache_materialization", "planned_strided")
     )
@@ -1668,7 +1684,7 @@ def plan_and_apply_complete_campaign(
                 and str(row.get("module_id")) in delegated_context_modules
             )
         ]
-        if coordinate_cache_enabled:
+        if coordinate_cache_build_required:
             cache_workers = min(
                 int(execution["maximum_parallel_cpus"]), len(source_counts)
             )
@@ -1682,6 +1698,7 @@ def plan_and_apply_complete_campaign(
                 "task_scope": "continuous_unwrap_working_cache",
                 "dependency_stage": 0,
                 "effective_cpu_cap": cache_workers,
+                "intrinsic_cpu_cap": len(source_counts),
                 "source_frames_per_replica": list(source_counts),
                 "minimum_frames_per_replica": max(source_counts),
                 "minimum_frame_role": "planner-selected working-cache coverage",
@@ -1777,6 +1794,9 @@ def plan_and_apply_complete_campaign(
                     view_source_counts
                 )[1],
             ))
+        built = apply_scientific_minimums_to_tasks(
+            built, scientific_minimums
+        )
         _apply_system_memory_scaling(
             built, int(dimensions["maximum_atom_count"])
         )
@@ -1816,7 +1836,10 @@ def plan_and_apply_complete_campaign(
                     "minimum_memory_gib"
                 ],
             }
-            if coordinate_cache_enabled and cache_materialization == "planned_strided":
+            if (
+                coordinate_cache_build_required
+                and cache_materialization == "planned_strided"
+            ):
                 plan = plan_global_stride_projection_coupled_campaign_resource_budget(
                     tasks,
                     coordinate_cache_minimum_frames_per_replica=1,
@@ -1856,6 +1879,13 @@ def plan_and_apply_complete_campaign(
             time_safety_factor=time_safety_factor,
         )
         sampling_plan["campaign_resource_plan"] = plan
+        if coordinate_cache_enabled and coordinate_cache_input is not None:
+            plan["coordinate_cache_reuse"] = {
+                "status": "external_lossless_cache",
+                "cache_directory": str(coordinate_cache_input),
+                "cache_stride": 1,
+                "cache_build_task_omitted": True,
+            }
         _apply_direct_project_sampling(base_project, sampling_plan)
         base_project_path.write_text(
             json.dumps(base_project, indent=2, sort_keys=True) + "\n",
@@ -1957,10 +1987,17 @@ def plan_and_apply_complete_campaign(
         "generated_view_count": len(view_paths),
         "generated_automatic_context_project_count": len(context_paths),
         "coordinate_cache_mode": cache_mode,
-        "coordinate_cache_materialization": cache_materialization,
+        "coordinate_cache_materialization": (
+            "external_lossless_stride_1"
+            if coordinate_cache_input is not None else cache_materialization
+        ),
         "coordinate_cache_enabled": coordinate_cache_enabled,
         "coordinate_cache_scope": (
-            "all source frames scanned for continuous unwrapping; the planned "
+            "a separately prepared lossless stride-1 cache is reused for molecular-"
+            "payload views; base water-dependent analyses retain original solvated "
+            "trajectories"
+            if coordinate_cache_enabled and coordinate_cache_input is not None
+            else "all source frames scanned for continuous unwrapping; the planned "
             "integer-stride working set is materialized without bulk solvent; "
             "base water-dependent analyses retain original solvated trajectories"
             if coordinate_cache_enabled else "disabled"

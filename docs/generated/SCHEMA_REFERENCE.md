@@ -10,6 +10,7 @@ Source: `schemas/analysis-config.schema.json`
 |---|---|---|
 | `config_schema` | yes | `structured` |
 | `default_module_policy` | no | `structured` |
+| `module_groups` | no | `object` |
 | `modules` | no | `object` |
 | `views` | no | `object` |
 | `reporting` | no | `object` |
@@ -120,6 +121,18 @@ Source: `schemas/regression-case.schema.json`
 | `expected_identity` | yes | `object` |
 | `assertions` | yes | `array` |
 | `approval` | yes | `object` |
+
+## Scientific sampling minimums
+
+Source: `schemas/scientific-minimums.schema.json`
+
+| Field | Required | Type or constraint |
+|---|---|---|
+| `minimums_schema` | yes | `structured` |
+| `base_policy_id` | yes | `structured` |
+| `interpretation` | no | `object` |
+| `override_policy` | no | `string` |
+| `methods` | yes | `object` |
 
 ## System and Continuous-Segment Manifest
 

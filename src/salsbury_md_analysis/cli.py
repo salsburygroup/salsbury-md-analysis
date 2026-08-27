@@ -111,6 +111,7 @@ from .rmsf import pooled_rmsf_project_safe
 from .rmsf_visualization import RMSFVisualizationError, export_rmsf_visualization
 from .secondary_structure import secondary_structure_project_safe
 from .sasa import solvent_accessible_surface_area_project_safe
+from .scientific_sampling import scientific_minimums_document
 from .structural_qc import structural_qc_project_safe
 from .tica import time_lagged_independent_component_analysis_project_safe
 from .execution_resources import (
@@ -548,7 +549,7 @@ def _plan_campaign_resources_command(
     except (OSError, ResourcePlanningError, ValueError) as exc:
         print(json.dumps({
             "technical_status": "failed",
-            "planning_mode": mode,
+            "planning_mode": "resources_to_sampling",
             "issues": [{
                 "severity": "error",
                 "code": "CAMPAIGN_RESOURCE_PLANNING_FAILED",
@@ -638,6 +639,7 @@ def _prepare_analysis_command(
     generate_connectivity_openmm: bool,
     openmm_bond_definitions: Sequence[Path],
     auto_disable_to_fit_memory: bool,
+    plan_only: bool,
 ) -> int:
     try:
         prepare = (
@@ -659,6 +661,18 @@ def _prepare_analysis_command(
             generate_connectivity_openmm=generate_connectivity_openmm,
             openmm_bond_definitions=openmm_bond_definitions,
         )
+        if plan_only and report.get("technical_status") == "complete":
+            plan_path = output_directory.expanduser().resolve(strict=True) / (
+                "campaign-resource-plan.json"
+            )
+            report = {
+                **report,
+                "planning_mode": "plan_only",
+                "execution_started": False,
+                "jobs_submitted": False,
+                "campaign_resource_plan": load_json(plan_path),
+                "review_then_run": report.get("next_command"),
+            }
     except (QuickstartError, OSError, ValueError) as exc:
         report = {
             "technical_status": "failed",
@@ -687,6 +701,7 @@ def _prepare_comparison_command(
     dssp_executable: Optional[str],
     config_path: Optional[Path],
     auto_disable_to_fit_memory: bool,
+    plan_only: bool,
 ) -> int:
     try:
         prepare = (
@@ -702,6 +717,18 @@ def _prepare_comparison_command(
             dssp_executable=dssp_executable,
             config_path=config_path,
         )
+        if plan_only and report.get("technical_status") == "complete":
+            plan_path = output_directory.expanduser().resolve(strict=True) / (
+                "campaign-resource-plan.json"
+            )
+            report = {
+                **report,
+                "planning_mode": "plan_only",
+                "execution_started": False,
+                "jobs_submitted": False,
+                "campaign_resource_plan": load_json(plan_path),
+                "review_then_run": report.get("next_command"),
+            }
     except (QuickstartError, OSError, ValueError) as exc:
         report = {
             "technical_status": "failed",
@@ -1406,6 +1433,13 @@ def build_parser() -> argparse.ArgumentParser:
             "config. Without this flag preparation fails closed."
         ),
     )
+    prepare_parser.add_argument(
+        "--plan-only", action="store_true",
+        help=(
+            "Prepare and return the complete campaign resource plan without "
+            "starting local execution or submitting scheduler jobs."
+        ),
+    )
 
     comparison_parser = subparsers.add_parser(
         "prepare-comparison",
@@ -1531,6 +1565,45 @@ def build_parser() -> argparse.ArgumentParser:
             "memory-incompatible switches and dependents, replan, and write "
             "the resolved on/off config. Without this flag preparation fails closed."
         ),
+    )
+    comparison_parser.add_argument(
+        "--plan-only", action="store_true",
+        help=(
+            "Prepare and return the complete comparison plan without starting "
+            "local execution or submitting scheduler jobs."
+        ),
+    )
+
+    unwrap_cache_parser = subparsers.add_parser(
+        "prepare-unwrapped-cache",
+        help=(
+            "Continuously unwrap every source frame once and write a reusable "
+            "lossless molecular-payload cache."
+        ),
+    )
+    unwrap_cache_parser.add_argument(
+        "path", type=Path, help="System manifest path."
+    )
+    unwrap_cache_parser.add_argument("--output", type=Path, required=True)
+    unwrap_cache_parser.add_argument(
+        "--hash-source-content", action="store_true",
+        help="Hash each source trajectory while recording cache provenance.",
+    )
+    unwrap_cache_parser.add_argument(
+        "--workers", type=int, default=1,
+        help="Maximum replica-parallel workers; every replica retains stride 1.",
+    )
+
+    minimums_parser = subparsers.add_parser(
+        "write-scientific-minimums-template",
+        help=(
+            "Write the editable per-replica, pooled-per-system, and ordered-method "
+            "time-gap minima used by campaign planning."
+        ),
+    )
+    minimums_parser.add_argument(
+        "--output", type=Path, required=True,
+        help="New JSON path; an existing file is never overwritten.",
     )
 
     timeseries_parser = subparsers.add_parser(
@@ -1787,6 +1860,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.generate_connectivity_openmm,
             args.openmm_bond_definitions,
             args.auto_disable_to_fit_memory,
+            args.plan_only,
         )
     if args.command == "prepare-comparison":
         return _prepare_comparison_command(
@@ -1798,6 +1872,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.dssp_executable,
             args.config,
             args.auto_disable_to_fit_memory,
+            args.plan_only,
         )
     if args.command == "run-local-workflow":
         try:
@@ -1853,6 +1928,43 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0 if report["technical_status"] == "complete" else 2
+    if args.command == "prepare-unwrapped-cache":
+        report = build_coordinate_cache_safe(
+            args.path, args.output,
+            hash_source_content=args.hash_source_content,
+            maximum_workers=args.workers,
+            cache_stride=1,
+        )
+        report["preparation_mode"] = "lossless_continuous_unwrap_only"
+        report["reusable_input"] = (
+            f"Set execution.coordinate_cache_input to {args.output} in a "
+            "future analysis config."
+        )
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0 if report["technical_status"] == "complete" else 2
+    if args.command == "write-scientific-minimums-template":
+        destination = args.output.expanduser().resolve(strict=False)
+        if destination.exists():
+            print(json.dumps({
+                "technical_status": "failed",
+                "issues": [{
+                    "severity": "error",
+                    "code": "SCIENTIFIC_MINIMUMS_OUTPUT_EXISTS",
+                    "message": f"output already exists: {destination}",
+                }],
+            }, indent=2, sort_keys=True))
+            return 2
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            json.dumps(scientific_minimums_document(), indent=2, sort_keys=True)
+            + "\n",
+            encoding="utf-8",
+        )
+        print(json.dumps({
+            "technical_status": "complete",
+            "scientific_minimums_file": str(destination),
+        }, indent=2, sort_keys=True))
+        return 0
     if args.command == "summarize-timeseries":
         return _summarize_timeseries_command(args.path)
     if args.command == "run-instrumented":

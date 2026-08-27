@@ -220,6 +220,23 @@ def _source_identity(path: Path, hash_content: bool) -> Dict[str, object]:
     }
 
 
+def _validate_source_identity(
+    recorded: object, current_path: Path, label: str
+) -> None:
+    if not isinstance(recorded, dict):
+        raise CoordinateCacheError(
+            f"reusable cache lacks recorded {label} identity"
+        )
+    current = _source_identity(
+        current_path, bool(recorded.get("sha256"))
+    )
+    for field in ("path", "size_bytes", "modified_time_ns", "sha256"):
+        if recorded.get(field) != current.get(field):
+            raise CoordinateCacheError(
+                f"reusable cache {label} changed for {current_path}: {field}"
+            )
+
+
 def _write_cache_metadata(
     temporary: Path,
     output: Path,
@@ -737,6 +754,12 @@ def build_coordinate_cache(
                         int(row["retained_frame_count"])
                         for row in segment_reports
                     ),
+                    "source_topology": _source_identity(
+                        topology, hash_source_content
+                    ),
+                    "source_connectivity": _source_identity(
+                        connectivity, hash_source_content
+                    ),
                     "topology_sha256": sha256_file(cached_topology),
                     "connectivity_sha256": sha256_file(cached_connectivity),
                     "periodic_reconstruction": processor.report(),
@@ -797,3 +820,111 @@ def build_coordinate_cache_safe(
                 "message": str(exc),
             }],
         }
+
+
+def validate_reusable_coordinate_cache(
+    cache_directory: Path, source_system_manifest: Path
+) -> Dict[str, object]:
+    """Validate a lossless external cache against the current source inputs."""
+
+    root = Path(cache_directory).expanduser().resolve(strict=True)
+    source = Path(source_system_manifest).expanduser().resolve(strict=True)
+    report_path = root / "coordinate-cache-report.json"
+    manifest_path = root / "system-cache.json"
+    report = load_json(report_path)
+    cached = load_json(manifest_path)
+    original = load_json(source)
+    if not isinstance(report, dict) or report.get("technical_status") != "complete":
+        raise CoordinateCacheError("reusable coordinate cache report is incomplete")
+    if report.get("cache_stride") != 1:
+        raise CoordinateCacheError(
+            "a reusable coordinate cache must materialize every frame at stride 1"
+        )
+    if report.get("source_frame_scan") != "all source frames decoded in order":
+        raise CoordinateCacheError(
+            "reusable coordinate cache lacks an all-frame continuity scan"
+        )
+    if not isinstance(cached, dict) or not isinstance(original, dict):
+        raise CoordinateCacheError("source or cached system manifest is invalid")
+    validate_system(cached, source_path=manifest_path, check_paths=True)
+    validate_system(original, source_path=source, check_paths=True)
+    report_rows = report.get("rows")
+    if not isinstance(report_rows, list):
+        raise CoordinateCacheError("reusable coordinate cache has no replica rows")
+    rows = {
+        (str(row.get("system_id")), str(row.get("replica_id"))): row
+        for row in report_rows if isinstance(row, dict)
+    }
+    expected_keys = set()
+    for system in original["systems"]:
+        assert isinstance(system, dict)
+        for replica in system["replicas"]:
+            assert isinstance(replica, dict)
+            key = (str(system["system_id"]), str(replica["replica_id"]))
+            expected_keys.add(key)
+            row = rows.get(key)
+            if not isinstance(row, dict):
+                raise CoordinateCacheError(
+                    f"reusable cache is missing {key[0]}/{key[1]}"
+                )
+            topology = resolve_manifest_path(str(replica["topology"]), source)
+            _validate_source_identity(
+                row.get("source_topology"), topology, "topology"
+            )
+            connectivity_value = replica.get("connectivity")
+            if not isinstance(connectivity_value, str):
+                raise CoordinateCacheError(
+                    f"reusable cache source {key[0]}/{key[1]} lacks connectivity"
+                )
+            connectivity = resolve_manifest_path(connectivity_value, source)
+            _validate_source_identity(
+                row.get("source_connectivity"), connectivity, "connectivity"
+            )
+            cached_segments = row.get("segments")
+            source_segments = replica.get("segments")
+            if (
+                not isinstance(cached_segments, list)
+                or not isinstance(source_segments, list)
+                or len(cached_segments) != len(source_segments)
+            ):
+                raise CoordinateCacheError(
+                    f"reusable cache segment count changed for {key[0]}/{key[1]}"
+                )
+            for cached_segment, source_segment in zip(
+                cached_segments, source_segments
+            ):
+                assert isinstance(cached_segment, dict)
+                assert isinstance(source_segment, dict)
+                path = resolve_manifest_path(
+                    str(source_segment["trajectory"]), source
+                )
+                _validate_source_identity(
+                    cached_segment.get("source"), path, "trajectory"
+                )
+                if int(cached_segment.get("retained_frame_count", -1)) != int(
+                    cached_segment.get("decoded_frame_count", -2)
+                ):
+                    raise CoordinateCacheError(
+                        "reusable cache does not retain every decoded source frame"
+                    )
+    if set(rows) != expected_keys:
+        raise CoordinateCacheError(
+            "reusable coordinate cache system/replica identities do not match"
+        )
+    return {
+        "technical_status": "complete",
+        "cache_directory": str(root),
+        "cache_report": str(report_path),
+        "cache_report_sha256": sha256_file(report_path),
+        "cached_system_manifest": str(manifest_path),
+        "cached_system_manifest_sha256": sha256_file(manifest_path),
+        "source_system_manifest": str(source),
+        "source_system_manifest_sha256": sha256_file(source),
+        "cache_stride": 1,
+        "replica_count": len(rows),
+        "reuse_boundary": (
+            "Validated for conformational and other non-bulk-solvent analyses; "
+            "water- and solvent-dependent modules continue to read the original "
+            "solvated trajectories."
+        ),
+    }

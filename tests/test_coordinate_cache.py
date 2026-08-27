@@ -5,8 +5,10 @@ import unittest
 from pathlib import Path
 
 from salsbury_md_analysis.coordinate_cache import (
+    CoordinateCacheError,
     build_coordinate_cache,
     build_coordinate_cache_safe,
+    validate_reusable_coordinate_cache,
 )
 from salsbury_md_analysis.coordinates import iter_coordinate_frames
 from salsbury_md_analysis.manifests import load_json, validate_system
@@ -114,6 +116,9 @@ class CoordinateCacheTests(unittest.TestCase):
             self.assertFalse((output / "partial").exists())
             per_system = report["cached_per_system_manifests"]["test"]
             self.assertTrue((output / per_system["path"]).is_file())
+            reuse = validate_reusable_coordinate_cache(output, manifest)
+            self.assertEqual(reuse["technical_status"], "complete")
+            self.assertEqual(reuse["replica_count"], 1)
             failed = build_coordinate_cache_safe(manifest, output)
             self.assertEqual(failed["technical_status"], "failed")
 
@@ -156,6 +161,18 @@ class CoordinateCacheTests(unittest.TestCase):
             self.assertEqual(
                 len(list(parallel_output.glob("*-segment-00.dcd"))), 2
             )
+            with self.assertRaisesRegex(
+                CoordinateCacheError, "stride 1"
+            ):
+                validate_reusable_coordinate_cache(strided_output, manifest)
+            pdb.write_text(
+                pdb.read_text(encoding="utf-8") + "REMARK source changed\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                CoordinateCacheError, "topology changed"
+            ):
+                validate_reusable_coordinate_cache(parallel_output, manifest)
 
 
 if __name__ == "__main__":

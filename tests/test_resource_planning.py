@@ -13,10 +13,26 @@ from salsbury_md_analysis.resource_planning import (
     recommend_scientifically_valid_task_subset,
     recommend_quadratic_observation_budget,
     pack_resource_waves,
+    workflow_useful_parallel_cpu_ceiling,
 )
 
 
 class ResourcePlanningTests(unittest.TestCase):
+    def test_useful_cpu_ceiling_sums_independent_bundles_in_busiest_stage(self):
+        tasks = [
+            {
+                "task_id": "a", "dependency_stage": 0,
+                "effective_cpu_cap": 16, "intrinsic_cpu_cap": 63,
+            },
+            {"task_id": "b", "dependency_stage": 1, "effective_cpu_cap": 21},
+            {"task_id": "c", "dependency_stage": 1, "effective_cpu_cap": 42},
+            {
+                "task_id": "c-alias", "execution_bundle_id": "c",
+                "dependency_stage": 1, "effective_cpu_cap": 42,
+            },
+        ]
+        self.assertEqual(workflow_useful_parallel_cpu_ceiling(tasks), 63)
+
     @staticmethod
     def _cache_coupling_tasks():
         common = {

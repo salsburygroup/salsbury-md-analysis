@@ -10,6 +10,12 @@ and choose `slurm` when a cluster scheduler should manage it.
 The scientific plan is the same either way; only the way resources are requested
 and jobs are launched changes.
 
+To inspect the prepared plan without using either executor, add `--plan-only`
+to `prepare-analysis` or `prepare-comparison`. Preparation still validates and
+writes the campaign artifacts. It reports `execution_started: false` and
+`jobs_submitted: false`, returns the complete plan, and leaves the local or
+Slurm launch command for a separate reviewed step.
+
 ## Local desktop or workstation
 
 Local mode is the default. It needs Python 3.10 or newer plus the package's analysis

@@ -20,12 +20,35 @@ from .scientific_sampling import (
     POLICY_ID,
     ScientificSamplingError,
     assess_raw_sampling,
+    profile_from_contract,
     scientific_sampling_profile,
 )
 
 
 class ResourcePlanningError(ValueError):
     """Raised when benchmark evidence cannot support a resource estimate."""
+
+
+def workflow_useful_parallel_cpu_ceiling(
+    tasks: Sequence[Mapping[str, object]],
+) -> int:
+    """Return the dependency-stage CPU peak without a user or cluster cap."""
+
+    stages: Dict[int, Dict[str, int]] = {}
+    for row in tasks:
+        stage = int(row.get("dependency_stage", 0))
+        bundle = str(
+            row.get("execution_bundle_id") or row.get("task_id", "task")
+        )
+        cap = max(
+            1,
+            int(row.get("intrinsic_cpu_cap", row.get("effective_cpu_cap", 1))),
+        )
+        stage_bundles = stages.setdefault(stage, {})
+        stage_bundles[bundle] = max(cap, stage_bundles.get(bundle, 0))
+    if not stages:
+        raise ResourcePlanningError("workflow has no tasks for CPU capacity")
+    return max(sum(bundles.values()) for bundles in stages.values())
 
 
 def pack_resource_waves(
@@ -1218,7 +1241,12 @@ def plan_campaign_resource_budget(
     for report in task_reports:
         module_id = str(report.get("module_id", ""))
         try:
-            profile = scientific_sampling_profile(module_id)
+            embedded_contract = report.get("scientific_sampling_requirements")
+            profile = (
+                profile_from_contract(embedded_contract)
+                if isinstance(embedded_contract, Mapping)
+                else scientific_sampling_profile(module_id)
+            )
         except ScientificSamplingError:
             # Preprocessing and project-local extension tasks are not analysis
             # estimators.  Their own explicit task contract remains authoritative.
@@ -1257,6 +1285,11 @@ def plan_campaign_resource_budget(
                 ) else None
             ),
         )
+        if isinstance(embedded_contract, Mapping):
+            assessment["requirements"] = dict(embedded_contract)
+            assessment["policy_id"] = str(
+                embedded_contract.get("policy_id", POLICY_ID)
+            )
         report["scientific_sampling_assessment"] = assessment
         if not bool(assessment["keep_enabled"]):
             scientific_below_standard.append({
@@ -1379,6 +1412,25 @@ def plan_campaign_resource_budget(
                 average_parallel_cpus
             ),
             "maximum_parallel_cpus": maximum_parallel_cpus,
+        },
+        "workflow_parallel_capacity": {
+            "useful_parallel_cpu_ceiling": workflow_useful_parallel_cpu_ceiling(
+                normalized
+            ),
+            "coordinate_cache_replica_parallel_cpu_ceiling": max(
+                (
+                    int(row.get("intrinsic_cpu_cap", row.get("effective_cpu_cap", 1)))
+                    for row in normalized
+                    if row.get("module_id") == "coordinate_cache"
+                ),
+                default=0,
+            ),
+            "interpretation": (
+                "The useful ceiling is the largest sum of independent execution "
+                "bundle CPU caps in one dependency stage. Aggregate memory, the "
+                "configured CPU envelope, scheduler policy, and queue state may "
+                "reduce the practical request."
+            ),
         },
         "allocation_saturation": {
             "allocation_strategy": (

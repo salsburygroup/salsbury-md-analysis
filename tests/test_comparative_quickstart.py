@@ -9,7 +9,7 @@ from salsbury_md_analysis.comparative_quickstart import (
     prepare_comparative_analysis,
     prepare_comparative_analysis_memory_fit,
 )
-from tests.test_quickstart import _write_dcd, _write_oligomer_inputs
+from tests.test_quickstart import _write_dcd, _write_inputs, _write_oligomer_inputs
 
 
 class ComparativeQuickstartTests(unittest.TestCase):
@@ -182,10 +182,10 @@ class ComparativeQuickstartTests(unittest.TestCase):
                 project["reference_connectivity"], str(connectivity.resolve())
             )
 
-    def test_preparation_accepts_twenty_system_variant_panel(self):
+    def test_preparation_accepts_wt_plus_twenty_variant_panel(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            pdb, psf, trajectories = _write_oligomer_inputs(root)
+            pdb, psf, trajectories = _write_inputs(root)
             request = {
                 "request_schema": "salsbury-comparative-analysis-input-v1",
                 "systems": [
@@ -196,7 +196,7 @@ class ComparativeQuickstartTests(unittest.TestCase):
                         "trajectories": [str(path) for path in trajectories],
                         "frame_interval_ps": 10.0,
                     }
-                    for index in range(20)
+                    for index in range(21)
                 ],
             }
             request_path = root / "panel.json"
@@ -204,15 +204,24 @@ class ComparativeQuickstartTests(unittest.TestCase):
             report = prepare_comparative_analysis(
                 request_path=request_path,
                 output_directory=root / "panel-analysis",
-                project_id="twenty-variant-panel",
+                project_id="wt-plus-twenty-variant-panel",
             )
-            self.assertEqual(report["system_count"], 20)
-            self.assertEqual(report["replica_count"], 60)
-            self.assertEqual(report["total_source_frame_count"], 6000)
+            self.assertEqual(report["system_count"], 21)
+            self.assertEqual(report["replica_count"], 63)
+            self.assertEqual(report["total_source_frame_count"], 1260)
             config = json.loads(
                 (root / "panel-analysis" / "analysis-config.json").read_text()
             )
             self.assertEqual(config["comparisons"]["mode"], "all_pairs")
+            campaign = json.loads(
+                (root / "panel-analysis" / "campaign-resource-plan.json")
+                .read_text()
+            )
+            capacity = campaign["workflow_parallel_capacity"]
+            self.assertEqual(
+                capacity["coordinate_cache_replica_parallel_cpu_ceiling"], 63
+            )
+            self.assertEqual(capacity["useful_parallel_cpu_ceiling"], 154)
 
     def test_schema_v2_preserves_segmented_replica_boundaries_and_counts(self):
         with tempfile.TemporaryDirectory() as temporary:

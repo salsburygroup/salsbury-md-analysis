@@ -1,15 +1,73 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from salsbury_md_analysis.registry import list_modules
 from salsbury_md_analysis.scientific_sampling import (
+    ScientificSamplingError,
+    apply_scientific_minimums_to_tasks,
     assess_raw_sampling,
     list_scientific_sampling_profiles,
+    load_scientific_minimums,
     required_frames_per_replica,
+    scientific_minimums_document,
     scientific_sampling_profile,
 )
 
 
 class ScientificSamplingTests(unittest.TestCase):
+    def test_editable_minimums_are_complete_and_stricter_values_apply(self):
+        document = scientific_minimums_document()
+        self.assertEqual(
+            set(document["methods"]),
+            {row.module_id for row in list_scientific_sampling_profiles()},
+        )
+        document["methods"]["common_pca"].update({
+            "minimum_frames_per_replica": 600,
+            "minimum_frames_overall_per_system": 2_400,
+        })
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "minimums.json"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            policy = load_scientific_minimums(path)
+        tasks = apply_scientific_minimums_to_tasks([{
+            "task_id": "pca",
+            "module_id": "common_pca",
+            "source_frames_per_replica": [2_000, 2_000],
+            "system_ids_per_replica": ["system", "system"],
+            "minimum_frames_per_replica": 100,
+            "maximum_frames_per_replica": 2_000,
+        }], policy)
+        self.assertEqual(tasks[0]["minimum_frames_per_replica"], 1_200)
+        self.assertTrue(
+            str(tasks[0]["scientific_sampling_requirements"]["policy_id"])
+            .startswith("scientific-sampling-standard-v3+strict-")
+        )
+
+    def test_editable_minimums_cannot_weaken_packaged_policy(self):
+        document = scientific_minimums_document()
+        document["methods"]["common_pca"][
+            "minimum_frames_per_replica"
+        ] = 249
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "minimums.json"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ScientificSamplingError, "at least 250"
+            ):
+                load_scientific_minimums(path)
+        document = scientific_minimums_document()
+        document["methods"]["markov_state_models"][
+            "maximum_time_gap_between_retained_frames_ns"
+        ] = 0.75
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "minimums.json"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ScientificSamplingError, "may not exceed"
+            ):
+                load_scientific_minimums(path)
     def test_every_registered_module_has_exactly_one_policy(self):
         registered = {row.module_id for row in list_modules()}
         profiled = {

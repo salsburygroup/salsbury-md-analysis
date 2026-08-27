@@ -46,6 +46,54 @@ class AnalysisConfigTests(unittest.TestCase):
         self.assertFalse(
             config["community_analysis"]["pald"]["community_msm_enabled"]
         )
+        self.assertIn("03_conformational_bases", config["module_groups"])
+        self.assertEqual(
+            config["modules"]["pca_fes_basins"]["depends_on"],
+            ["common_pca"],
+        )
+        self.assertIn(
+            "pca_fes_basins",
+            config["modules"]["common_pca"]["turning_off_also_disables"],
+        )
+
+    def test_generated_complete_config_can_be_reloaded_unchanged(self):
+        module_ids = [
+            "provenance_manifest", "preflight_inventory", "common_atom_mapping",
+            "common_pca", "pca_fes_basins", "representative_frames",
+        ]
+        expected = default_analysis_config(module_ids, ["global_common_heavy"])
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "analysis-config.json"
+            path.write_text(json.dumps(expected), encoding="utf-8")
+            observed = load_analysis_config(
+                path, module_ids, ["global_common_heavy"]
+            )
+        self.assertEqual(observed, expected)
+
+    def test_minimums_and_reusable_cache_paths_resolve_from_config(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            minimums = root / "minimums.json"
+            minimums.write_text("{}", encoding="utf-8")
+            cache = root / "lossless-cache"
+            cache.mkdir()
+            path = root / "analysis-config.json"
+            path.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "sampling": {"scientific_minimums_file": "minimums.json"},
+                "execution": {"coordinate_cache_input": "lossless-cache"},
+            }), encoding="utf-8")
+            config = load_analysis_config(
+                path, ["provenance_manifest"], ["global"]
+            )
+        self.assertEqual(
+            config["sampling"]["scientific_minimums_file"],
+            str(minimums.resolve()),
+        )
+        self.assertEqual(
+            config["execution"]["coordinate_cache_input"],
+            str(cache.resolve()),
+        )
 
     def test_ion_site_classification_can_be_disabled(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -207,6 +255,27 @@ class AnalysisConfigTests(unittest.TestCase):
         self.assertNotIn("cluster-kmeans", commands)
         self.assertNotIn("clustering_kmeans", requested)
         self.assertIn("clustering_kmeans", reasons)
+
+    def test_dependency_metadata_tracks_selected_clustering_feature_space(self):
+        module_ids = [
+            "common_pca", "time_lagged_independent_component_analysis",
+            "clustering_kmeans",
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "config.json"
+            path.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "clustering": {"feature_space": "common_pca"},
+            }), encoding="utf-8")
+            config = load_analysis_config(path, module_ids, ["global"])
+        self.assertEqual(
+            config["modules"]["clustering_kmeans"]["depends_on"],
+            ["common_pca"],
+        )
+        self.assertIn(
+            "clustering_kmeans",
+            config["modules"]["common_pca"]["turning_off_also_disables"],
+        )
 
 
 if __name__ == "__main__":

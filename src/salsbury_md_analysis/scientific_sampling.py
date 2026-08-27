@@ -19,12 +19,16 @@ requirement.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
+from pathlib import Path
 from typing import Dict, Mapping, Optional, Sequence
 
 
 POLICY_ID = "scientific-sampling-standard-v3"
+MINIMUMS_SCHEMA = "salsbury-scientific-minimums-v1"
 
 
 class ScientificSamplingError(ValueError):
@@ -205,8 +209,243 @@ def scientific_sampling_profile(module_id: str) -> ScientificSamplingProfile:
         ) from exc
 
 
-def profile_contract(profile: ScientificSamplingProfile) -> Dict[str, object]:
-    return {"policy_id": POLICY_ID, **asdict(profile)}
+def profile_contract(
+    profile: ScientificSamplingProfile, *, policy_id: str = POLICY_ID
+) -> Dict[str, object]:
+    return {"policy_id": policy_id, **asdict(profile)}
+
+
+def scientific_minimums_document() -> Dict[str, object]:
+    """Return the complete editable sampling-minimums document."""
+
+    return {
+        "minimums_schema": MINIMUMS_SCHEMA,
+        "base_policy_id": POLICY_ID,
+        "interpretation": {
+            "minimum_frames_per_replica": (
+                "Minimum retained physical frames in each simulation replica."
+            ),
+            "minimum_frames_overall_per_system": (
+                "Minimum retained physical frames pooled across replicas of one "
+                "system; this is not a multi-system campaign total."
+            ),
+            "maximum_time_gap_between_retained_frames_ns": (
+                "Largest allowed time gap between retained frames for an ordered "
+                "method. Zero means the method is treated as a static ensemble "
+                "estimator and has no time-gap gate."
+            ),
+        },
+        "override_policy": (
+            "Values may keep or strengthen the packaged standard. Frame minima "
+            "may increase. A positive time-gap maximum may decrease; a method "
+            "with no packaged time-gap gate may be given a positive one."
+        ),
+        "methods": {
+            profile.module_id: {
+                "minimum_frames_per_replica": profile.minimum_frames_per_replica,
+                "minimum_frames_overall_per_system": (
+                    profile.minimum_frames_per_system
+                ),
+                "maximum_time_gap_between_retained_frames_ns": (
+                    profile.maximum_uniform_spacing_ns
+                ),
+            }
+            for profile in sorted(_PROFILES, key=lambda value: value.module_id)
+        },
+    }
+
+
+def load_scientific_minimums(
+    path: Optional[Path],
+) -> Dict[str, object]:
+    """Load a standard or stricter user sampling policy with provenance."""
+
+    if path is None:
+        return {
+            "policy_id": POLICY_ID,
+            "source_path": None,
+            "source_sha256": None,
+            "profiles": dict(_BY_MODULE),
+        }
+    source = Path(path).expanduser().resolve(strict=True)
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ScientificSamplingError(str(exc)) from exc
+    if not isinstance(payload, dict):
+        raise ScientificSamplingError("scientific minimums file must be an object")
+    allowed_top = {
+        "minimums_schema", "base_policy_id", "interpretation",
+        "override_policy", "methods",
+    }
+    unknown_top = sorted(set(payload).difference(allowed_top))
+    if unknown_top:
+        raise ScientificSamplingError(
+            "scientific minimums file has unknown fields: "
+            + ", ".join(unknown_top)
+        )
+    if payload.get("minimums_schema") != MINIMUMS_SCHEMA:
+        raise ScientificSamplingError(
+            f"minimums_schema must be {MINIMUMS_SCHEMA}"
+        )
+    if payload.get("base_policy_id") != POLICY_ID:
+        raise ScientificSamplingError(
+            f"base_policy_id must be the current {POLICY_ID}"
+        )
+    methods = payload.get("methods")
+    if not isinstance(methods, dict):
+        raise ScientificSamplingError("scientific minimums methods must be an object")
+    unknown_methods = sorted(set(methods).difference(_BY_MODULE))
+    if unknown_methods:
+        raise ScientificSamplingError(
+            "scientific minimums file names unknown methods: "
+            + ", ".join(unknown_methods)
+        )
+    profiles = dict(_BY_MODULE)
+    allowed_fields = {
+        "minimum_frames_per_replica", "minimum_frames_overall_per_system",
+        "maximum_time_gap_between_retained_frames_ns",
+    }
+    for module_id, raw in methods.items():
+        if not isinstance(raw, dict) or set(raw).difference(allowed_fields):
+            raise ScientificSamplingError(
+                f"scientific minimums for {module_id} are invalid"
+            )
+        base = _BY_MODULE[module_id]
+        per_replica = raw.get(
+            "minimum_frames_per_replica", base.minimum_frames_per_replica
+        )
+        per_system = raw.get(
+            "minimum_frames_overall_per_system", base.minimum_frames_per_system
+        )
+        gap = raw.get(
+            "maximum_time_gap_between_retained_frames_ns",
+            base.maximum_uniform_spacing_ns,
+        )
+        for value, label, floor in (
+            (per_replica, "minimum_frames_per_replica", base.minimum_frames_per_replica),
+            (
+                per_system, "minimum_frames_overall_per_system",
+                base.minimum_frames_per_system,
+            ),
+        ):
+            if (
+                isinstance(value, bool) or not isinstance(value, int)
+                or value < floor
+            ):
+                raise ScientificSamplingError(
+                    f"{module_id}.{label} must be an integer at least {floor}"
+                )
+        if (
+            isinstance(gap, bool) or not isinstance(gap, (int, float))
+            or not math.isfinite(float(gap)) or float(gap) < 0.0
+        ):
+            raise ScientificSamplingError(
+                f"{module_id}.maximum_time_gap_between_retained_frames_ns must "
+                "be finite and nonnegative"
+            )
+        if (
+            base.maximum_uniform_spacing_ns > 0.0
+            and (
+                float(gap) <= 0.0
+                or float(gap) > base.maximum_uniform_spacing_ns + 1.0e-12
+            )
+        ):
+            raise ScientificSamplingError(
+                f"{module_id}.maximum_time_gap_between_retained_frames_ns may not "
+                "exceed the "
+                f"packaged {base.maximum_uniform_spacing_ns:g} ns gate"
+            )
+        profiles[module_id] = replace(
+            base,
+            minimum_frames_per_replica=int(per_replica),
+            minimum_frames_per_system=int(per_system),
+            maximum_uniform_spacing_ns=float(gap),
+        )
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    return {
+        "policy_id": f"{POLICY_ID}+strict-{digest[:12]}",
+        "source_path": str(source),
+        "source_sha256": digest,
+        "profiles": profiles,
+    }
+
+
+def profile_from_contract(contract: Mapping[str, object]) -> ScientificSamplingProfile:
+    """Reconstruct a profile embedded in a planner task or report."""
+
+    fields = set(ScientificSamplingProfile.__dataclass_fields__)
+    missing = sorted(fields.difference(contract))
+    if missing:
+        raise ScientificSamplingError(
+            "scientific sampling contract is missing: " + ", ".join(missing)
+        )
+    return ScientificSamplingProfile(**{
+        field: contract[field] for field in fields
+    })
+
+
+def apply_scientific_minimums_to_tasks(
+    tasks: Sequence[Mapping[str, object]], policy: Mapping[str, object]
+) -> list[Dict[str, object]]:
+    """Raise task floors to a resolved user policy without mutating inputs."""
+
+    profiles = policy.get("profiles")
+    policy_id = policy.get("policy_id")
+    if not isinstance(profiles, Mapping) or not isinstance(policy_id, str):
+        raise ScientificSamplingError("resolved scientific minimums policy is invalid")
+    output: list[Dict[str, object]] = []
+    for raw in tasks:
+        row = dict(raw)
+        module_id = str(row.get("module_id", ""))
+        profile = profiles.get(module_id)
+        if not isinstance(profile, ScientificSamplingProfile):
+            output.append(row)
+            continue
+        source = row.get("source_frames_per_replica")
+        if not isinstance(source, (list, tuple)) or not source:
+            raise ScientificSamplingError(
+                f"task {row.get('task_id')} has no source frame counts"
+            )
+        counts = [int(value) for value in source]
+        system_ids = row.get("system_ids_per_replica")
+        ids = (
+            [str(value) for value in system_ids]
+            if isinstance(system_ids, list) else None
+        )
+        intervals = row.get("frame_intervals_ns_per_replica")
+        spans = row.get("source_time_spans_ns_per_replica")
+        timing_available = isinstance(intervals, list) and isinstance(spans, list)
+        required = required_frames_per_replica(
+            profile,
+            system_ids_per_replica=ids,
+            replica_count=None if ids is not None else len(counts),
+            source_frames_per_replica=counts if timing_available else None,
+            frame_intervals_ns_per_replica=(
+                [float(value) for value in intervals]
+                if timing_available else None
+            ),
+            source_time_spans_ns_per_replica=(
+                [float(value) for value in spans]
+                if timing_available else None
+            ),
+        )
+        attainable = min(required, min(counts))
+        existing = int(row.get("minimum_frames_per_replica", 1))
+        row["minimum_frames_per_replica"] = max(existing, attainable)
+        row["maximum_frames_per_replica"] = max(
+            int(row.get("maximum_frames_per_replica", max(counts))),
+            int(row["minimum_frames_per_replica"]),
+        )
+        row["scientific_minimum_frames_per_replica"] = required
+        row["attainable_scientific_minimum_frames_per_replica"] = attainable
+        row["scientific_sampling_requirements"] = profile_contract(
+            profile, policy_id=policy_id
+        )
+        row["scientific_minimums_source_path"] = policy.get("source_path")
+        row["scientific_minimums_source_sha256"] = policy.get("source_sha256")
+        output.append(row)
+    return output
 
 
 def required_frames_per_replica(
@@ -299,6 +538,7 @@ def assess_raw_sampling(
     integer_stride: int = 1,
     frame_intervals_ns_per_replica: Optional[Sequence[float]] = None,
     source_time_spans_ns_per_replica: Optional[Sequence[float]] = None,
+    policy_id: str = POLICY_ID,
 ) -> Dict[str, object]:
     """Assess count floors and applicable ordered-method spacing gates.
 
@@ -322,11 +562,11 @@ def assess_raw_sampling(
         raise ScientificSamplingError("integer_stride must be positive")
     if profile.minimum_frames_per_replica == 0:
         return {
-            "policy_id": POLICY_ID,
+            "policy_id": policy_id,
             "raw_coverage_status": "not_applicable",
             "keep_enabled": True,
             "scientific_interpretation_ready": True,
-            "requirements": profile_contract(profile),
+            "requirements": profile_contract(profile, policy_id=policy_id),
         }
     ids = (
         list(system_ids_per_replica)
@@ -431,7 +671,7 @@ def assess_raw_sampling(
         replica_failures or system_failures or temporal_spacing_failures
     )
     return {
-        "policy_id": POLICY_ID,
+        "policy_id": policy_id,
         "raw_coverage_status": (
             "source_limited_below_standard" if source_limited else
             "meets_standard_raw_floor" if keep else
@@ -477,5 +717,5 @@ def assess_raw_sampling(
             profile.requires_contiguous_frames
             or profile.maximum_uniform_spacing_ns > 0.0
         ),
-        "requirements": profile_contract(profile),
+        "requirements": profile_contract(profile, policy_id=policy_id),
     }
