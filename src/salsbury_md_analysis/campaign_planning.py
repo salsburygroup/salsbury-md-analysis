@@ -1667,6 +1667,41 @@ def plan_and_apply_complete_campaign(
                 memory_policy[key] = float(policy[key])
             for key in scheduler_time_policy:
                 scheduler_time_policy[key] = float(policy[key])
+
+    def annotate_permissive_minimum_request(
+        request: MutableMapping[str, object],
+    ) -> None:
+        """Add workflow-level model and scheduler padding to one request."""
+
+        padding = request.get("padding_factors")
+        if not isinstance(padding, dict):
+            padding = {}
+            request["padding_factors"] = padding
+        padding.update({
+            "modeled_task_time_safety_factor": float(time_safety_factor),
+            "analysis_memory_model_safety_factor": float(
+                execution.get("memory_safety_factor", 1.25)
+            ),
+            "scheduler_walltime_safety_factor_per_job": scheduler_time_policy[
+                "walltime_safety_factor"
+            ],
+            "scheduler_walltime_overhead_minutes_per_job": (
+                scheduler_time_policy["walltime_overhead_minutes"]
+            ),
+            "scheduler_minimum_wall_minutes_per_job": scheduler_time_policy[
+                "minimum_wall_minutes"
+            ],
+            "scheduler_walltime_interpretation": (
+                "per-job timeout allowance; not additional campaign science "
+                "time and therefore not added again to the requested campaign "
+                "wall time"
+            ),
+        })
+
+    def annotate_plan_minimum_request(candidate: Mapping[str, object]) -> None:
+        request = candidate.get("permissive_minimum_resource_request")
+        if isinstance(request, dict):
+            annotate_permissive_minimum_request(request)
     cache_mode = str(execution.get("coordinate_cache", "auto"))
     coordinate_cache_enabled = bool(view_paths) and cache_mode in {"auto", "required"}
     coordinate_cache_input = execution.get("coordinate_cache_input")
@@ -1858,6 +1893,7 @@ def plan_and_apply_complete_campaign(
                 plan = plan_campaign_resource_budget(tasks, **planning_kwargs)
         except ResourcePlanningError as exc:
             raise CampaignPlanningError(str(exc)) from exc
+        annotate_plan_minimum_request(plan)
         if (
             plan["feasibility_status"] != "feasible"
             and bool(execution.get("fail_if_minimum_coverage_unaffordable", True))
@@ -1865,6 +1901,14 @@ def plan_and_apply_complete_campaign(
             recommendation = recommend_scientifically_valid_task_subset(
                 tasks, **planning_kwargs
             )
+            recommended_plan = recommendation.get("recommended_plan")
+            if isinstance(recommended_plan, Mapping):
+                annotate_plan_minimum_request(recommended_plan)
+            protected_request = recommendation.get(
+                "best_protected_subset_minimum_resource_request"
+            )
+            if isinstance(protected_request, dict):
+                annotate_permissive_minimum_request(protected_request)
             plan["method_reduction_recommendation"] = recommendation
             if recommendation["recommendation_status"] == "no_feasible_subset_found":
                 message = (

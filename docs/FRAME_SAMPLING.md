@@ -154,6 +154,15 @@ source-limited failures, is written into `sampling-plan.json` and
 floors in its locked configuration; reducing them changes the scientific
 standard and is not an automatic resource-planning action.
 
+When an overall coordinate-cache stride and a downstream method stride are
+both present, the planner validates their product against the original raw
+trajectory. A method cannot satisfy its contract by meeting a pooled campaign
+count while falling below a per-replica or per-system floor. For example, with
+100,000 raw frames in each of three replicas, a method requiring 200 frames per
+replica and 1,000 pooled frames per system needs at least 334 frames from each
+replica, so its effective raw stride cannot exceed 300. Any candidate whose
+composed stride violates that limit is refined or rejected.
+
 Generate the complete user-editable policy with:
 
 ```bash

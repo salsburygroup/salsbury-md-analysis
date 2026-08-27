@@ -146,7 +146,12 @@ ceiling, the response includes
 counts. If the envelope cannot retain protected preparation and
 structural-integrity checks at their minima, planning returns
 `planning_outcome: no_acceptable_reduced_plan`; it does not propose disabling
-those checks.
+those checks. The response also reports a
+`protected_subset_minimum_request`: padded CPUs, aggregate memory, and whole
+wall hours for the best dependency-closed subset that retains every protected
+module under the supplied CPU and memory caps. This is a permissive execution
+floor, not evidence that the trajectory is converged or scientifically
+adequate; the scientific question may require a larger request.
 
 That prepared directory also contains `prepared/system.json`. Pass that
 manifest to `prepare-unwrapped-cache` when you want to create a reusable,

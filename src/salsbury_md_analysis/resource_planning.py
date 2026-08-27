@@ -131,6 +131,143 @@ def pack_resource_waves(
     return waves
 
 
+def _permissive_minimum_resource_request(
+    *,
+    request_scope: str,
+    minimum_cpu_hours: float,
+    minimum_wall_hours: Optional[float],
+    minimum_stages: Sequence[Mapping[str, object]],
+    maximum_parallel_cpus: int,
+    maximum_wall_hours: float,
+    maximum_memory_gib: float,
+    planning_utilization: float,
+    pilot_budget_fraction: float,
+    finalization_headroom_fraction: float,
+    memory_safety_factor: float,
+    memory_overhead_gib: float,
+    minimum_scheduler_memory_gib: float,
+    minimum_single_task_memory_gib: float,
+) -> Dict[str, object]:
+    """Describe a padded scheduler request for one modeled minimum schedule.
+
+    The request preserves the wave packing produced under the caller's CPU and
+    aggregate-memory caps. It is intentionally a permissive execution floor,
+    not a convergence or scientific-sufficiency claim.
+    """
+
+    science_wall_fraction = (
+        planning_utilization
+        - pilot_budget_fraction
+        - finalization_headroom_fraction
+    )
+    waves = [
+        wave
+        for stage in minimum_stages
+        for wave in (
+            stage.get("resource_waves", [])
+            if isinstance(stage.get("resource_waves"), list) else []
+        )
+        if isinstance(wave, Mapping)
+    ]
+    parallel_cpus = max(
+        (int(wave.get("cpu_slots", 0)) for wave in waves), default=0
+    )
+    aggregate_memory = max(
+        (float(wave.get("memory_gib", 0.0)) for wave in waves), default=0.0
+    )
+    exact_requested_wall = (
+        float(minimum_wall_hours) / science_wall_fraction
+        if minimum_wall_hours is not None and science_wall_fraction > 0.0
+        else None
+    )
+    rounded_requested_wall = (
+        int(math.ceil(exact_requested_wall - 1.0e-12))
+        if exact_requested_wall is not None else None
+    )
+    resource_schedule_available = (
+        minimum_wall_hours is not None
+        and bool(waves)
+        and parallel_cpus <= maximum_parallel_cpus
+        and aggregate_memory <= maximum_memory_gib + 1.0e-12
+        and minimum_single_task_memory_gib <= maximum_memory_gib + 1.0e-12
+    )
+    fits_input_wall_cap = bool(
+        resource_schedule_available
+        and exact_requested_wall is not None
+        and exact_requested_wall <= maximum_wall_hours + 1.0e-12
+    )
+    if not resource_schedule_available:
+        request_status = "unavailable_within_cpu_or_memory_caps"
+    elif fits_input_wall_cap:
+        request_status = "available_within_all_input_caps"
+    else:
+        request_status = "requires_larger_wall_time"
+    return {
+        "request_schema": "salsbury-permissive-minimum-resource-request-v1",
+        "request_scope": request_scope,
+        "status": request_status,
+        "recommended_request": {
+            "parallel_cpus": parallel_cpus if parallel_cpus > 0 else None,
+            "aggregate_memory_gib": (
+                float(math.ceil(aggregate_memory)) if aggregate_memory > 0.0
+                else None
+            ),
+            "wall_hours": rounded_requested_wall,
+        },
+        "unrounded_request": {
+            "aggregate_memory_gib": aggregate_memory or None,
+            "wall_hours": exact_requested_wall,
+        },
+        "modeled_minimum": {
+            "cpu_hours": minimum_cpu_hours,
+            "science_critical_path_hours": minimum_wall_hours,
+            "single_task_memory_floor_gib": minimum_single_task_memory_gib,
+        },
+        "input_caps": {
+            "parallel_cpus": maximum_parallel_cpus,
+            "aggregate_memory_gib": maximum_memory_gib,
+            "wall_hours": maximum_wall_hours,
+        },
+        "fits_input_wall_cap": fits_input_wall_cap,
+        "additional_wall_hours_required": (
+            max(0, int(math.ceil(exact_requested_wall - maximum_wall_hours)))
+            if exact_requested_wall is not None else None
+        ),
+        "padding_factors": {
+            "planning_utilization": planning_utilization,
+            "pilot_budget_fraction": pilot_budget_fraction,
+            "finalization_headroom_fraction": finalization_headroom_fraction,
+            "science_wall_fraction": science_wall_fraction,
+            "scheduler_memory_safety_factor": memory_safety_factor,
+            "scheduler_memory_overhead_gib_per_task": memory_overhead_gib,
+            "scheduler_minimum_memory_gib_per_task": (
+                minimum_scheduler_memory_gib
+            ),
+            "modeled_task_runtime_padding": (
+                "already included in the supplied calibrated task costs; the "
+                "campaign planner does not apply a second time multiplier"
+            ),
+        },
+        "interpretation": (
+            "CPU and memory preserve the modeled minimum resource-wave schedule "
+            "under the supplied caps. Wall time reverses the configured campaign "
+            "utilization and pilot/finalization reserves, then rounds up to a "
+            "whole scheduler hour."
+        ),
+        "warning": {
+            "severity": "warning",
+            "code": "PERMISSIVE_MINIMUM_NOT_SCIENTIFIC_SUFFICIENCY",
+            "message": (
+                "This is a permissive minimum for the reported workflow scope "
+                "and sampling floors. It does not establish adequate "
+                "sampling, convergence, equilibration, or biological validity; "
+                "the scientific question may require more time, memory, CPUs, "
+                "frames, replicas, or enabled methods."
+            ),
+        },
+    }
+
+
 _ALTERNATIVE_CLUSTERING_FIT_PROFILES: Mapping[str, Mapping[str, object]] = {
     "pam": {
         "reference_fit_observation_ceiling": 6_000,
@@ -707,6 +844,34 @@ def plan_campaign_resource_budget(
             retained = [
                 integer_stride_selected_count(value, stride) for value in source
             ]
+            embedded_contract = row.get("scientific_sampling_requirements")
+            profile = (
+                profile_from_contract(embedded_contract)
+                if isinstance(embedded_contract, Mapping) else None
+            )
+            if profile is not None and profile.minimum_frames_per_replica > 0:
+                system_ids = row.get("system_ids_per_replica")
+                intervals = row.get("frame_intervals_ns_per_replica")
+                spans = row.get("source_time_spans_ns_per_replica")
+                assessment = assess_raw_sampling(
+                    profile,
+                    selected_frames_per_replica=retained,
+                    source_frames_per_replica=source,
+                    system_ids_per_replica=(
+                        [str(value) for value in system_ids]
+                        if isinstance(system_ids, list) else None
+                    ),
+                    integer_stride=stride,
+                    frame_intervals_ns_per_replica=(
+                        [float(value) for value in intervals]
+                        if isinstance(intervals, list) else None
+                    ),
+                    source_time_spans_ns_per_replica=(
+                        [float(value) for value in spans]
+                        if isinstance(spans, list) else None
+                    ),
+                )
+                return bool(assessment["keep_enabled"])
             if row["replica_sampling_mode"] == "balanced_pooled":
                 # The declared pilot is a pooled technical minimum.  A single
                 # common stride preserves temporal spacing and each replica's
@@ -720,10 +885,10 @@ def plan_campaign_resource_budget(
                 for minimum in [int(row["minimum_frames_per_replica"])]
             )
 
-        # Refine the common integer stride only until each task's declared
-        # minimum is met at its actual sampling scope.  Pooled methods use the
-        # total retained observation count; replica-resolved methods retain the
-        # historical per-replica gate.
+        # Refine the common integer stride until every registered scientific
+        # method meets both its per-replica and per-system contract. Project-
+        # local preprocessing tasks without a registered profile retain their
+        # declared pooled or replica-resolved technical minimum.
         while stride > 1 and any(
             not minimum_is_satisfied(row, stride) for row in rows
         ):
@@ -1291,7 +1456,10 @@ def plan_campaign_resource_budget(
                 embedded_contract.get("policy_id", POLICY_ID)
             )
         report["scientific_sampling_assessment"] = assessment
-        if not bool(assessment["keep_enabled"]):
+        if (
+            isinstance(embedded_contract, Mapping)
+            and not bool(assessment["keep_enabled"])
+        ):
             scientific_below_standard.append({
                 "task_id": str(report["task_id"]),
                 "module_id": module_id,
@@ -1321,6 +1489,14 @@ def plan_campaign_resource_budget(
                 "planner_estimates_autocorrelation_or_event_rates": False,
             })
 
+    if scientific_below_standard:
+        infeasibility_reasons.append(
+            "enabled tasks fall below their scientific per-replica, per-system, "
+            "or ordered-time sampling floors: "
+            + ", ".join(
+                str(row["task_id"]) for row in scientific_below_standard
+            )
+        )
     if calibration_required:
         feasibility = "pilot_required"
     elif infeasibility_reasons:
@@ -1397,6 +1573,22 @@ def plan_campaign_resource_budget(
                 "concurrently. Extra cores do not shorten this plan."
             ),
         })
+    permissive_minimum_request = _permissive_minimum_resource_request(
+        request_scope="all_currently_enabled_tasks_at_configured_sampling_floors",
+        minimum_cpu_hours=minimum_known_cpu_hours,
+        minimum_wall_hours=minimum_wall,
+        minimum_stages=minimum_stages,
+        maximum_parallel_cpus=maximum_parallel_cpus,
+        maximum_wall_hours=wall_hours,
+        maximum_memory_gib=memory_gib,
+        planning_utilization=utilization,
+        pilot_budget_fraction=pilot_fraction,
+        finalization_headroom_fraction=finalization_fraction,
+        memory_safety_factor=memory_factor,
+        memory_overhead_gib=memory_overhead,
+        minimum_scheduler_memory_gib=minimum_scheduler_memory,
+        minimum_single_task_memory_gib=minimum_required_memory_gib,
+    )
     return {
         "planning_schema": "salsbury-campaign-resource-plan-v1",
         "technical_status": "complete",
@@ -1434,6 +1626,7 @@ def plan_campaign_resource_budget(
         },
         "warning_count": len(resource_warnings),
         "resource_warnings": resource_warnings,
+        "permissive_minimum_resource_request": permissive_minimum_request,
         "workflow_parallel_capacity": {
             "useful_parallel_cpu_ceiling": useful_parallel_cpu_ceiling,
             "coordinate_cache_replica_parallel_cpu_ceiling": max(
@@ -2733,6 +2926,13 @@ def recommend_scientifically_valid_task_subset(
         current_plan = candidate_plan
         current_score = _resource_shortfall_score(current_plan)
     feasible = current_plan["feasibility_status"] == "feasible"
+    protected_minimum_request = deepcopy(
+        current_plan.get("permissive_minimum_resource_request", {})
+    )
+    if isinstance(protected_minimum_request, dict):
+        protected_minimum_request["request_scope"] = (
+            "best_dependency_closed_subset_that_preserves_all_protected_modules"
+        )
     return {
         "recommendation_schema": "salsbury-scientific-method-fit-v1",
         "technical_status": "complete",
@@ -2769,6 +2969,9 @@ def recommend_scientifically_valid_task_subset(
         ),
         "retained_task_ids": sorted(str(row["task_id"]) for row in working),
         "decisions": decisions,
+        "best_protected_subset_minimum_resource_request": (
+            protected_minimum_request
+        ),
         "recommended_plan": current_plan,
         "planner_wall_seconds": time.monotonic() - started,
         "strategy": (
