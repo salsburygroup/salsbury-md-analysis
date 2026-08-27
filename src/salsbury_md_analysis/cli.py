@@ -119,6 +119,11 @@ from .execution_resources import (
 )
 from .execution_adapters import ExecutionAdapterError, run_local_workflow
 from .finding_picker import FindingPickerError, prioritize_findings
+from .slurm_capacity import (
+    SlurmCapacityError,
+    advise_slurm_capacity,
+    render_capacity_markdown,
+)
 
 
 EXTENDED_PROJECT_COMMANDS = {
@@ -1345,6 +1350,58 @@ def build_parser() -> argparse.ArgumentParser:
         "root", type=Path, help="Prepared analysis directory."
     )
 
+    capacity_parser = subparsers.add_parser(
+        "advise-slurm-capacity",
+        help=(
+            "Optionally inspect a prepared campaign and the live Slurm queue "
+            "without submitting or changing any job."
+        ),
+    )
+    capacity_parser.add_argument(
+        "root", type=Path, help="Prepared analysis directory."
+    )
+    capacity_parser.add_argument(
+        "--wall-hours", type=float, required=True,
+        help=(
+            "Campaign duration to model at the maximum useful detected CPU count."
+        ),
+    )
+    capacity_parser.add_argument(
+        "--maximum-memory-gib", type=float,
+        help=(
+            "Optional aggregate ceiling for the sum of simultaneously active, "
+            "safety-adjusted task memory requests; the prepared campaign value "
+            "is used when omitted."
+        ),
+    )
+    capacity_parser.add_argument(
+        "--cpu-ceiling", type=int,
+        help="Optional user policy cap below the detected useful maximum.",
+    )
+    capacity_parser.add_argument(
+        "--slurm-profile", type=Path,
+        help="Override the prepared campaign's slurm-profile.json.",
+    )
+    capacity_parser.add_argument(
+        "--slurm-user",
+        help="Override the current account name used for read-only association checks.",
+    )
+    capacity_parser.add_argument(
+        "--job-id", action="append", default=[],
+        help=(
+            "Pending Slurm job ID for scheduler-projected start reporting; repeat "
+            "for multiple jobs."
+        ),
+    )
+    capacity_parser.add_argument(
+        "--offline", action="store_true",
+        help="Replan from saved evidence without querying Slurm.",
+    )
+    capacity_parser.add_argument(
+        "--format", choices=("json", "markdown"), default="json",
+        help="Output format; JSON is convenient for ChatGPTWork automation.",
+    )
+
     cache_parser = subparsers.add_parser(
         "build-coordinate-cache",
         help=(
@@ -1653,6 +1710,38 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 }],
             }
         print(json.dumps(report, indent=2, sort_keys=True))
+        return 0 if report.get("technical_status") == "complete" else 2
+    if args.command == "advise-slurm-capacity":
+        try:
+            report = advise_slurm_capacity(
+                args.root,
+                wall_hours=args.wall_hours,
+                maximum_memory_gib=args.maximum_memory_gib,
+                cpu_ceiling=args.cpu_ceiling,
+                slurm_profile_path=args.slurm_profile,
+                live=not args.offline,
+                slurm_user=args.slurm_user,
+                job_ids=args.job_id,
+            )
+        except (
+            SlurmCapacityError, ExecutionAdapterError, ResourcePlanningError,
+            OSError, ValueError,
+        ) as exc:
+            report = {
+                "technical_status": "failed",
+                "scientific_status": "not evaluated",
+                "read_only": True,
+                "jobs_submitted": False,
+                "issues": [{
+                    "severity": "error",
+                    "code": "SLURM_CAPACITY_ADVICE_FAILED",
+                    "message": str(exc),
+                }],
+            }
+        if args.format == "markdown" and report.get("technical_status") == "complete":
+            print(render_capacity_markdown(report), end="")
+        else:
+            print(json.dumps(report, indent=2, sort_keys=True))
         return 0 if report.get("technical_status") == "complete" else 2
     if args.command == "build-coordinate-cache":
         report = build_coordinate_cache_safe(

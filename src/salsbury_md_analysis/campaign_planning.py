@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Mapping, MutableMapping, Optional, Sequence
 
 from .automatic_sampling import _apply_campaign_direct_allocations
+from .execution_adapters import load_slurm_profile
 from .frame_sampling import (
     integer_stride_for_budget,
     integer_stride_selected_count,
@@ -56,7 +57,8 @@ def _campaign_infeasibility_detail(plan: Mapping[str, object]) -> str:
         )
         parts.append(
             f"configured memory {configured:.3f} GiB; largest enabled technical "
-            f"minimum requires {required:.3f} GiB; request at least "
+            f"minimum requires a safety-adjusted {required:.3f} GiB request; "
+            f"raise the aggregate campaign limit to at least "
             f"{recommended:.0f} GiB or disable: {module_text}"
         )
     maximum_wall = float(plan["maximum_wall_hours_input"])
@@ -153,20 +155,19 @@ def _apply_measured_resource_calibrations(
                 ) is not False
                 and int(calibration["maximum_measured_observation_count"]) > 0
             ):
-                reference_memory = task.get(
-                    "reference_peak_memory_gib", current_memory
-                )
                 task["measured_memory_cost_model"] = {
                     "calibration_observations": int(
                         calibration["maximum_measured_observation_count"]
                     ),
                     "calibration_memory_gib": max(
-                        float(reference_memory),
+                        float(current_memory),
                         float(calibration["maximum_resident_memory_mib"])
-                        * memory_safety_factor / 1024.0,
+                        * memory_safety_factor
+                        * float(memory_multiplier) / 1024.0,
                     ),
                     "memory_exponent": 0.5,
                     "minimum_observation_scale": 0.1,
+                    "workload_scaling_applied": True,
                 }
         task["measured_resource_calibration"] = {
             "catalog_sha256": calibration["catalog_sha256"],
@@ -1344,10 +1345,54 @@ def plan_and_apply_complete_campaign(
         if filename.startswith("project-") and filename.endswith(".json")
     ]
     context_paths = [root / filename for filename in context_project_files]
+    delegated_context_modules = set()
+    for context_path in context_paths:
+        context_project = load_json(context_path)
+        requested = (
+            context_project.get("requested_modules")
+            if isinstance(context_project, Mapping) else None
+        )
+        if isinstance(requested, list):
+            delegated_context_modules.update(
+                str(module_id) for module_id in requested
+                if str(module_id) in _AUTOMATIC_CONTEXT_MODELS
+            )
+    memory_policy: Dict[str, float] = {
+        "memory_safety_factor": 1.5,
+        "memory_overhead_gib": 1.0,
+        "minimum_memory_gib": 2.0,
+    }
+    scheduler_time_policy: Dict[str, float] = {
+        "walltime_safety_factor": 1.5,
+        "walltime_overhead_minutes": 15.0,
+        "minimum_wall_minutes": 30.0,
+    }
+    if str(execution.get("submission_adapter", "local")) == "slurm":
+        profile_path = execution.get("slurm_profile")
+        if not isinstance(profile_path, str) or not profile_path:
+            raise CampaignPlanningError(
+                "Slurm campaign planning requires execution.slurm_profile"
+            )
+        try:
+            profile = load_slurm_profile(Path(profile_path))
+        except (OSError, ValueError) as exc:
+            raise CampaignPlanningError(str(exc)) from exc
+        policy = profile.get("resource_policy")
+        if isinstance(policy, Mapping):
+            for key in memory_policy:
+                memory_policy[key] = float(policy[key])
+            for key in scheduler_time_policy:
+                scheduler_time_policy[key] = float(policy[key])
     cache_mode = str(execution.get("coordinate_cache", "auto"))
     coordinate_cache_enabled = bool(view_paths) and cache_mode in {"auto", "required"}
     def build_tasks() -> tuple[List[Dict[str, object]], Dict[str, object]]:
-        built = _direct_task_inputs(sampling_plan)
+        built = [
+            row for row in _direct_task_inputs(sampling_plan)
+            if not (
+                row.get("task_scope") == "direct_trajectory_estimator"
+                and str(row.get("module_id")) in delegated_context_modules
+            )
+        ]
         if coordinate_cache_enabled:
             cache_workers = min(
                 int(execution["maximum_parallel_cpus"]), len(source_counts)
@@ -1479,6 +1524,11 @@ def plan_and_apply_complete_campaign(
                 finalization_headroom_fraction=float(
                     execution.get("finalization_headroom_fraction", 0.0)
                 ),
+                memory_safety_factor=memory_policy["memory_safety_factor"],
+                memory_overhead_gib=memory_policy["memory_overhead_gib"],
+                minimum_scheduler_memory_gib=memory_policy[
+                    "minimum_memory_gib"
+                ],
             )
         except ResourcePlanningError as exc:
             raise CampaignPlanningError(str(exc)) from exc
@@ -1624,9 +1674,42 @@ def plan_and_apply_complete_campaign(
             "30,000-physical-frame/60,000-member view campaign"
         ),
         "time_safety_factor": time_safety_factor,
-        "memory_safety_factor": float(
+        "analysis_memory_model_safety_factor": float(
             execution.get("memory_safety_factor", 1.25)
         ),
+        "scheduler_memory_safety_factor": memory_policy[
+            "memory_safety_factor"
+        ],
+        "scheduler_memory_overhead_gib": memory_policy[
+            "memory_overhead_gib"
+        ],
+        "scheduler_minimum_memory_gib": memory_policy[
+            "minimum_memory_gib"
+        ],
+        "resource_safety_margins": {
+            "modeled_task_time_factor": time_safety_factor,
+            "analysis_memory_model_factor": float(
+                execution.get("memory_safety_factor", 1.25)
+            ),
+            "planning_utilization": float(execution["planning_utilization"]),
+            "pilot_budget_fraction": float(execution["pilot_budget_fraction"]),
+            "finalization_headroom_fraction": float(
+                execution.get("finalization_headroom_fraction", 0.0)
+            ),
+            "scheduler_memory_safety_factor": memory_policy[
+                "memory_safety_factor"
+            ],
+            "scheduler_memory_overhead_gib": memory_policy[
+                "memory_overhead_gib"
+            ],
+            "scheduler_minimum_memory_gib": memory_policy[
+                "minimum_memory_gib"
+            ],
+            **scheduler_time_policy,
+            "scheduler_walltime_interpretation": (
+                "per-job timeout allowance; not additional planned science time"
+            ),
+        },
         "censored_timeout_safety_factor": float(
             execution.get("censored_timeout_safety_factor", 1.5)
         ),
