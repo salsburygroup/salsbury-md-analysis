@@ -267,7 +267,10 @@ previously unaffordable method becomes affordable. The exact retained counts
 must satisfy both the total CPU-hour and dependency-stage wall-time limits.
 Each alternative-clustering family receives its own explicit integer
 fit stride according to its scaling profile; PCA projection and fit allocations
-are reapplied until the complete task plan stops changing. Families performed
+are reapplied until every clustering source count exactly matches the final PCA
+projection count. A discrete-stride cycle is resolved by deriving a conservative
+projection ceiling from that replan, not by restoring a saved projection count.
+Families performed
 serially by one view command are accounted as one execution bundle for wall
 time while remaining separate logical allocations. All strides operate over
 each replica-member timeline. Seeded random focal-observation

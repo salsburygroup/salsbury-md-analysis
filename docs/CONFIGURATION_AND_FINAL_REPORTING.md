@@ -83,7 +83,12 @@ within the shared envelope and reports every reduction. Preparation writes
 base tasks, and all enabled conformational-view tasks. Downstream FES,
 clustering, and state methods share the selected physical-frame identities of
 their view PCA; equivalent oligomer members add observations but do not add
-physical frames or replicas. A configured envelope that cannot fund the small
+physical frames or replicas. Every replan regenerates the PCA projection count
+and uses it as the source count for each downstream clustering fit. The planner
+iterates until those counts agree exactly. If discrete stride upgrades alternate
+between two allocations, it derives the componentwise lower projection ceiling
+from that cycle and replans the fits; it never falls back to a saved count.
+A configured envelope that cannot fund the small
 technical minima fails closed by default.
 
 Stride upgrades follow a progressive absolute resource frontier. For an

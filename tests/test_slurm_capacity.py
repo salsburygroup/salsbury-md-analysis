@@ -180,6 +180,11 @@ class SlurmCapacityTests(unittest.TestCase):
         self.assertNotIn("scancel", " ".join(flattened))
         self.assertFalse(any(command[0].endswith("sbatch") for command in runner.commands))
         self.assertFalse(report["jobs_submitted"])
+        self.assertTrue(
+            report["replanned_campaign"]["projection_clustering_coupling"][
+                "converged"
+            ]
+        )
 
     def test_longer_cpu_hour_envelope_recomputes_sampling_and_memory(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -1379,6 +1379,288 @@ def plan_campaign_resource_budget(
     }
 
 
+def plan_projection_coupled_campaign_resource_budget(
+    tasks: Sequence[Mapping[str, object]],
+    *,
+    maximum_parallel_cpus: int,
+    maximum_wall_hours: float,
+    maximum_memory_gib: float,
+    planning_utilization: float = 0.85,
+    pilot_budget_fraction: float = 0.05,
+    finalization_headroom_fraction: float = 0.0,
+    memory_safety_factor: float = 1.0,
+    memory_overhead_gib: float = 0.0,
+    minimum_scheduler_memory_gib: float = 0.0,
+    maximum_coupling_iterations: int = 12,
+) -> Dict[str, object]:
+    """Replan PCA projections and their clustering fits to one fixed point.
+
+    A conformational-view clustering fit consumes the observations selected by
+    its view's ``common_pca`` projection task.  Replanning a saved campaign must
+    therefore replace every fit task's source stream whenever that parent
+    selection changes.  The ordinary budget allocator is rerun until the parent
+    selection and every child source agree exactly; a missing parent or failure
+    to converge is an error rather than permission to use stale observations.
+    """
+
+    if (
+        isinstance(maximum_coupling_iterations, bool)
+        or not isinstance(maximum_coupling_iterations, int)
+        or maximum_coupling_iterations <= 0
+    ):
+        raise ResourcePlanningError(
+            "maximum_coupling_iterations must be a positive integer"
+        )
+    working = []
+    for raw in tasks:
+        row = dict(raw)
+        if (
+            row.get("task_scope") == "conformational_view"
+            and row.get("module_id") == "common_pca"
+            and "projection_declared_maximum_frames_per_replica" in row
+        ):
+            row["maximum_frames_per_replica"] = int(
+                row["projection_declared_maximum_frames_per_replica"]
+            )
+            row.pop("dynamic_coupling_ceiling_per_replica", None)
+        working.append(row)
+    parent_ids: Dict[str, str] = {}
+    child_workflows = set()
+    for row in working:
+        workflow_id = row.get("workflow_id")
+        if row.get("task_scope") == "conformational_view_algorithm_fit":
+            if not isinstance(workflow_id, str) or not workflow_id:
+                raise ResourcePlanningError(
+                    f"clustering task {row.get('task_id')} has no workflow_id"
+                )
+            child_workflows.add(workflow_id)
+        if (
+            row.get("task_scope") == "conformational_view"
+            and row.get("module_id") == "common_pca"
+        ):
+            if not isinstance(workflow_id, str) or not workflow_id:
+                raise ResourcePlanningError(
+                    f"common-PCA task {row.get('task_id')} has no workflow_id"
+                )
+            if workflow_id in parent_ids:
+                raise ResourcePlanningError(
+                    f"workflow {workflow_id} has multiple common-PCA projection tasks"
+                )
+            parent_ids[workflow_id] = str(row.get("task_id"))
+    for workflow_id in sorted(child_workflows):
+        if workflow_id not in parent_ids:
+            raise ResourcePlanningError(
+                f"clustering workflow {workflow_id} has no common-PCA projection task"
+            )
+
+    history = []
+    updated_task_ids = set()
+    cycle_resolutions = []
+    phase_signatures: Dict[object, int] = {}
+    phase_states: list[Dict[str, list[int]]] = []
+    for iteration in range(1, maximum_coupling_iterations + 1):
+        plan = plan_campaign_resource_budget(
+            working,
+            maximum_parallel_cpus=maximum_parallel_cpus,
+            maximum_wall_hours=maximum_wall_hours,
+            maximum_memory_gib=maximum_memory_gib,
+            planning_utilization=planning_utilization,
+            pilot_budget_fraction=pilot_budget_fraction,
+            finalization_headroom_fraction=finalization_headroom_fraction,
+            memory_safety_factor=memory_safety_factor,
+            memory_overhead_gib=memory_overhead_gib,
+            minimum_scheduler_memory_gib=minimum_scheduler_memory_gib,
+        )
+        planned_rows = {
+            str(row["task_id"]): row
+            for row in plan["tasks"]  # type: ignore[union-attr]
+            if isinstance(row, Mapping)
+        }
+        parent_counts = {
+            workflow_id: [
+                int(value) for value in planned_rows[parent_id][
+                    "selected_physical_frames_per_replica"
+                ]
+            ]
+            for workflow_id, parent_id in parent_ids.items()
+        }
+        signature = tuple(
+            (workflow_id, tuple(values))
+            for workflow_id, values in sorted(parent_counts.items())
+        )
+        input_matches_projection = all(
+            [int(value) for value in row["source_frames_per_replica"]]
+            == parent_counts[str(row["workflow_id"])]
+            for row in working
+            if row.get("task_scope") == "conformational_view_algorithm_fit"
+        )
+        stabilized_sources = parent_counts
+        stabilized_projection_ceilings: Dict[str, list[int]] = {}
+        if not input_matches_projection and signature in phase_signatures:
+            cycle_start = phase_signatures[signature]
+            cycle_states = phase_states[cycle_start:] + [parent_counts]
+            stabilized_sources = {
+                workflow_id: [
+                    min(state[workflow_id][index] for state in cycle_states)
+                    for index in range(len(parent_counts[workflow_id]))
+                ]
+                for workflow_id in parent_counts
+            }
+            stabilized_projection_ceilings = {
+                workflow_id: list(values)
+                for workflow_id, values in stabilized_sources.items()
+                if values != parent_counts[workflow_id]
+                or any(
+                    state[workflow_id] != values for state in cycle_states
+                )
+            }
+            cycle_resolutions.append({
+                "detected_at_iteration": iteration,
+                "cycle_start_iteration": cycle_start + 1,
+                "cycle_length": len(cycle_states) - 1,
+                "selected_componentwise_minimum_projection_counts": {
+                    workflow_id: list(values)
+                    for workflow_id, values in sorted(
+                        stabilized_projection_ceilings.items()
+                    )
+                },
+                "resolution": (
+                    "dynamically cap each oscillating projection at the "
+                    "componentwise minimum affordable cycle state, then replan "
+                    "all downstream clustering fits"
+                ),
+            })
+            phase_signatures = {}
+            phase_states = []
+        elif not input_matches_projection:
+            phase_signatures[signature] = len(phase_states)
+            phase_states.append({
+                workflow_id: list(values)
+                for workflow_id, values in parent_counts.items()
+            })
+
+        changed = []
+        parent_caps_changed = []
+        next_working = []
+        for raw in working:
+            row = dict(raw)
+            if (
+                row.get("task_scope") == "conformational_view"
+                and row.get("module_id") == "common_pca"
+                and str(row.get("workflow_id"))
+                in stabilized_projection_ceilings
+            ):
+                workflow_id = str(row["workflow_id"])
+                selected_ceiling = max(stabilized_sources[workflow_id])
+                declared_maximum = int(row.get(
+                    "projection_declared_maximum_frames_per_replica",
+                    row["maximum_frames_per_replica"],
+                ))
+                new_maximum = min(declared_maximum, selected_ceiling)
+                if int(row["maximum_frames_per_replica"]) != new_maximum:
+                    parent_caps_changed.append(str(row["task_id"]))
+                row.update({
+                    "maximum_frames_per_replica": new_maximum,
+                    "projection_declared_maximum_frames_per_replica": (
+                        declared_maximum
+                    ),
+                    "dynamic_coupling_ceiling_per_replica": selected_ceiling,
+                })
+            if row.get("task_scope") == "conformational_view_algorithm_fit":
+                workflow_id = str(row["workflow_id"])
+                selected_counts = stabilized_sources[workflow_id]
+                current_counts = [
+                    int(value) for value in row["source_frames_per_replica"]
+                ]
+                if current_counts != selected_counts:
+                    changed.append(str(row["task_id"]))
+                    updated_task_ids.add(str(row["task_id"]))
+                declared_minimum = int(row.get(
+                    "projection_declared_minimum_frames_per_replica",
+                    row["minimum_frames_per_replica"],
+                ))
+                maximum = max(selected_counts)
+                row.update({
+                    "source_frames_per_replica": list(selected_counts),
+                    "minimum_frames_per_replica": min(
+                        declared_minimum, maximum
+                    ),
+                    "maximum_frames_per_replica": maximum,
+                    "projection_declared_minimum_frames_per_replica": (
+                        declared_minimum
+                    ),
+                    "projection_source_task_id": parent_ids[workflow_id],
+                    "projection_source_counts_iteration_input": list(
+                        selected_counts
+                    ),
+                    "projection_source_limited_below_declared_minimum": (
+                        maximum < declared_minimum
+                    ),
+                })
+            next_working.append(row)
+        history.append({
+            "iteration": iteration,
+            "planned_projection_sources": {
+                workflow_id: list(values)
+                for workflow_id, values in sorted(parent_counts.items())
+            },
+            "stabilized_projection_ceilings": {
+                workflow_id: list(values)
+                for workflow_id, values in sorted(
+                    stabilized_projection_ceilings.items()
+                )
+            },
+            "clustering_fit_tasks_rebuilt": sorted(changed),
+            "projection_tasks_dynamically_capped": sorted(
+                parent_caps_changed
+            ),
+        })
+        if not changed and not parent_caps_changed:
+            for row in plan["tasks"]:  # type: ignore[union-attr]
+                if (
+                    isinstance(row, Mapping)
+                    and row.get("task_scope")
+                    == "conformational_view_algorithm_fit"
+                ):
+                    workflow_id = str(row["workflow_id"])
+                    if list(row["source_frames_per_replica"]) != parent_counts[
+                        workflow_id
+                    ]:
+                        raise ResourcePlanningError(
+                            "projection/clustering coupling verification failed for "
+                            f"{row['task_id']}"
+                        )
+            plan["projection_clustering_coupling"] = {
+                "coupling_schema": (
+                    "salsbury-projection-clustering-coupling-v1"
+                ),
+                "converged": True,
+                "iterations": iteration,
+                "projection_workflow_count": len(parent_ids),
+                "clustering_fit_task_count": sum(
+                    1
+                    for row in plan["tasks"]  # type: ignore[union-attr]
+                    if isinstance(row, Mapping)
+                    and row.get("task_scope")
+                    == "conformational_view_algorithm_fit"
+                ),
+                "rebuilt_clustering_fit_task_count": len(updated_task_ids),
+                "dynamic_cycle_resolution_count": len(cycle_resolutions),
+                "cycle_resolutions": cycle_resolutions,
+                "iteration_history": history,
+                "contract": (
+                    "Every clustering-fit source count equals the final selected "
+                    "physical-frame count of its workflow's common-PCA projection."
+                ),
+            }
+            return plan
+        working = next_working
+    raise ResourcePlanningError(
+        "projection/clustering campaign replanning did not converge within "
+        f"{maximum_coupling_iterations} iterations"
+    )
+
+
 def _fraction(value: object, label: str, *, allow_zero: bool = False) -> float:
     if (
         isinstance(value, bool)

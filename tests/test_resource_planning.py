@@ -7,6 +7,7 @@ from salsbury_md_analysis.resource_planning import (
     calibrate_quadratic_from_benchmarks,
     plan_alternative_clustering_fit_strides,
     plan_campaign_resource_budget,
+    plan_projection_coupled_campaign_resource_budget,
     recommend_frame_budget,
     recommend_quadratic_observation_budget,
     pack_resource_waves,
@@ -14,6 +15,147 @@ from salsbury_md_analysis.resource_planning import (
 
 
 class ResourcePlanningTests(unittest.TestCase):
+    def test_projection_coupled_replanning_rebuilds_clustering_sources(self):
+        tasks = [
+            {
+                "task_id": "view:shared:common_pca",
+                "workflow_id": "shared",
+                "module_id": "common_pca",
+                "task_scope": "conformational_view",
+                "dependency_stage": 1,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [1_000, 1_000],
+                "minimum_frames_per_replica": 100,
+                "maximum_frames_per_replica": 1_000,
+                "cpu_seconds_per_physical_frame": 0.1,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 5.0,
+            },
+            {
+                "task_id": "view:shared:alternative_clustering:pam",
+                "workflow_id": "shared",
+                "module_id": "alternative_clustering",
+                "algorithm_id": "pam",
+                "task_scope": "conformational_view_algorithm_fit",
+                "dependency_stage": 2,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [100, 100],
+                "minimum_frames_per_replica": 10,
+                "maximum_frames_per_replica": 100,
+                "cpu_seconds_per_physical_frame": 0.1,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 1.0,
+            },
+        ]
+        plan = plan_projection_coupled_campaign_resource_budget(
+            tasks,
+            maximum_parallel_cpus=2,
+            maximum_wall_hours=8.0,
+            maximum_memory_gib=8.0,
+        )
+        rows = {row["task_id"]: row for row in plan["tasks"]}
+        parent = rows["view:shared:common_pca"]
+        child = rows["view:shared:alternative_clustering:pam"]
+        self.assertEqual(
+            child["source_frames_per_replica"],
+            parent["selected_physical_frames_per_replica"],
+        )
+        self.assertEqual(child["source_frames_per_replica"], [1_000, 1_000])
+        self.assertEqual(child["maximum_frames_per_replica"], 1_000)
+        self.assertTrue(plan["projection_clustering_coupling"]["converged"])
+        self.assertGreaterEqual(
+            plan["projection_clustering_coupling"]["iterations"], 2
+        )
+
+    def test_projection_coupled_replanning_rejects_orphan_clustering_source(self):
+        task = {
+            "task_id": "view:missing:alternative_clustering:pam",
+            "workflow_id": "missing",
+            "module_id": "alternative_clustering",
+            "algorithm_id": "pam",
+            "task_scope": "conformational_view_algorithm_fit",
+            "dependency_stage": 2,
+            "effective_cpu_cap": 1,
+            "source_frames_per_replica": [100],
+            "minimum_frames_per_replica": 10,
+            "maximum_frames_per_replica": 100,
+            "cpu_seconds_per_physical_frame": 0.1,
+            "estimated_peak_memory_gib": 1.0,
+            "priority_weight": 1.0,
+        }
+        with self.assertRaisesRegex(
+            ResourcePlanningError, "has no common-PCA projection task"
+        ):
+            plan_projection_coupled_campaign_resource_budget(
+                [task],
+                maximum_parallel_cpus=1,
+                maximum_wall_hours=1.0,
+                maximum_memory_gib=4.0,
+            )
+
+    def test_projection_coupled_replanning_stabilizes_discrete_stride_cycle(self):
+        common = {
+            "workflow_id": "shared",
+            "source_frames_per_replica": [1_000],
+            "minimum_frames_per_replica": 100,
+            "maximum_frames_per_replica": 1_000,
+            "cpu_seconds_per_physical_frame": 1.0,
+            "estimated_peak_memory_gib": 1.0,
+            "effective_cpu_cap": 1,
+        }
+        tasks = [
+            {
+                **common,
+                "task_id": "projection",
+                "module_id": "common_pca",
+                "task_scope": "conformational_view",
+                "dependency_stage": 0,
+                "priority_weight": 10.0,
+            },
+            {
+                **common,
+                "task_id": "fit",
+                "module_id": "alternative_clustering",
+                "task_scope": "conformational_view_algorithm_fit",
+                "dependency_stage": 1,
+                "priority_weight": 1.0,
+            },
+        ]
+        plan = plan_projection_coupled_campaign_resource_budget(
+            tasks,
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=0.2,
+            maximum_memory_gib=4.0,
+            planning_utilization=1.0,
+            pilot_budget_fraction=0.0,
+        )
+        rows = {row["task_id"]: row for row in plan["tasks"]}
+        self.assertEqual(
+            rows["projection"]["selected_physical_frames_per_replica"], [334]
+        )
+        self.assertEqual(rows["fit"]["source_frames_per_replica"], [334])
+        coupling = plan["projection_clustering_coupling"]
+        self.assertEqual(coupling["dynamic_cycle_resolution_count"], 1)
+        self.assertEqual(coupling["iterations"], 4)
+        extended = plan_projection_coupled_campaign_resource_budget(
+            plan["tasks"],
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=1.0,
+            maximum_memory_gib=4.0,
+            planning_utilization=1.0,
+            pilot_budget_fraction=0.0,
+        )
+        extended_rows = {row["task_id"]: row for row in extended["tasks"]}
+        self.assertEqual(
+            extended_rows["projection"][
+                "selected_physical_frames_per_replica"
+            ],
+            [1_000],
+        )
+        self.assertEqual(
+            extended_rows["fit"]["source_frames_per_replica"], [1_000]
+        )
+
     def test_alternative_algorithms_receive_distinct_integer_strides(self):
         plan = plan_alternative_clustering_fit_strides(
             [24_700] * 6,

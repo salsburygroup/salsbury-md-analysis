@@ -12,7 +12,7 @@ from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from .execution_adapters import load_slurm_profile
 from .manifests import load_json
-from .resource_planning import plan_campaign_resource_budget
+from .resource_planning import plan_projection_coupled_campaign_resource_budget
 
 
 class SlurmCapacityError(ValueError):
@@ -654,7 +654,7 @@ def advise_slurm_capacity(
     replanning_iterations = 0
     while True:
         replanning_iterations += 1
-        replanned = plan_campaign_resource_budget(
+        replanned = plan_projection_coupled_campaign_resource_budget(
             planning_tasks,
             maximum_parallel_cpus=recommended_cpus,
             maximum_wall_hours=hours,
@@ -757,6 +757,9 @@ def advise_slurm_capacity(
                 "resource_budget_utilization"
             ],
             "allocation_saturation": replanned["allocation_saturation"],
+            "projection_clustering_coupling": replanned[
+                "projection_clustering_coupling"
+            ],
             "maximum_memory_gib": memory,
             "memory_feasibility": replanned["memory_feasibility"],
             "tasks": tasks,
