@@ -4,11 +4,11 @@
 
 ```text
 usage: salsbury-md-analysis [-h] [--version]
-                            {list-modules,validate-manifest,inventory-system,preflight-system,map-common-atoms,compile-context,structural-qc,rmsd-rg,rmsf,dccm,information-correlation,individual-pca,common-pca,tica,pca-fes-basins,cluster-kmeans,representative-frames,cluster-imwkmeans,cluster-hdbscan,markov-models,dihedrals,hydrogen-bonds,observables,sasa,convergence,grouped-ml,integrate,secondary-structure,alternative-clustering,pald-community,information-dynamics,correlation-networks,trajectory-features,state-coordinate-exports,rdf,scalar-distributions,scalar-threshold-states,hydrogen-bond-discovery,water-mediated-hydrogen-bonds,grouped-regularized-classification,nucleic-acid-structure,nucleic-acid-geometry,ion-geometry,ion-atmosphere,compare-hydrogen-bonds,hydrogen-bond-patterns,representative-structures,rmsf-permutation,plan-frame-resources,plan-campaign-resources,plan-automatic-sampling,prepare-analysis,prepare-comparison,run-local-workflow,advise-slurm-capacity,build-coordinate-cache,prepare-unwrapped-cache,write-scientific-minimums-template,summarize-timeseries,run-instrumented,run-coordinate-cache-instrumented,summarize-execution-resources,build-resource-calibration-catalog,prioritize-findings,export-rmsf-visualization,run-regression}
+                            {list-modules,validate-manifest,inventory-system,preflight-system,map-common-atoms,compile-context,structural-qc,rmsd-rg,rmsf,dccm,information-correlation,individual-pca,common-pca,tica,pca-fes-basins,cluster-kmeans,representative-frames,cluster-imwkmeans,cluster-hdbscan,markov-models,dihedrals,hydrogen-bonds,observables,sasa,convergence,grouped-ml,integrate,integrate-comparison-results,secondary-structure,alternative-clustering,pald-community,information-dynamics,correlation-networks,trajectory-features,state-coordinate-exports,rdf,scalar-distributions,scalar-threshold-states,hydrogen-bond-discovery,water-mediated-hydrogen-bonds,grouped-regularized-classification,nucleic-acid-structure,nucleic-acid-geometry,ion-geometry,ion-atmosphere,compare-hydrogen-bonds,hydrogen-bond-patterns,representative-structures,rmsf-permutation,plan-frame-resources,plan-campaign-resources,plan-automatic-sampling,prepare-analysis,prepare-comparison,run-local-workflow,report-plan-matrix,write-planning-report,rmsf-permutation-from-report,advise-slurm-capacity,build-coordinate-cache,prepare-unwrapped-cache,write-scientific-minimums-template,summarize-timeseries,run-instrumented,run-coordinate-cache-instrumented,summarize-execution-resources,build-resource-calibration-catalog,prioritize-findings,export-rmsf-visualization,run-regression}
                             ...
 
 positional arguments:
-  {list-modules,validate-manifest,inventory-system,preflight-system,map-common-atoms,compile-context,structural-qc,rmsd-rg,rmsf,dccm,information-correlation,individual-pca,common-pca,tica,pca-fes-basins,cluster-kmeans,representative-frames,cluster-imwkmeans,cluster-hdbscan,markov-models,dihedrals,hydrogen-bonds,observables,sasa,convergence,grouped-ml,integrate,secondary-structure,alternative-clustering,pald-community,information-dynamics,correlation-networks,trajectory-features,state-coordinate-exports,rdf,scalar-distributions,scalar-threshold-states,hydrogen-bond-discovery,water-mediated-hydrogen-bonds,grouped-regularized-classification,nucleic-acid-structure,nucleic-acid-geometry,ion-geometry,ion-atmosphere,compare-hydrogen-bonds,hydrogen-bond-patterns,representative-structures,rmsf-permutation,plan-frame-resources,plan-campaign-resources,plan-automatic-sampling,prepare-analysis,prepare-comparison,run-local-workflow,advise-slurm-capacity,build-coordinate-cache,prepare-unwrapped-cache,write-scientific-minimums-template,summarize-timeseries,run-instrumented,run-coordinate-cache-instrumented,summarize-execution-resources,build-resource-calibration-catalog,prioritize-findings,export-rmsf-visualization,run-regression}
+  {list-modules,validate-manifest,inventory-system,preflight-system,map-common-atoms,compile-context,structural-qc,rmsd-rg,rmsf,dccm,information-correlation,individual-pca,common-pca,tica,pca-fes-basins,cluster-kmeans,representative-frames,cluster-imwkmeans,cluster-hdbscan,markov-models,dihedrals,hydrogen-bonds,observables,sasa,convergence,grouped-ml,integrate,integrate-comparison-results,secondary-structure,alternative-clustering,pald-community,information-dynamics,correlation-networks,trajectory-features,state-coordinate-exports,rdf,scalar-distributions,scalar-threshold-states,hydrogen-bond-discovery,water-mediated-hydrogen-bonds,grouped-regularized-classification,nucleic-acid-structure,nucleic-acid-geometry,ion-geometry,ion-atmosphere,compare-hydrogen-bonds,hydrogen-bond-patterns,representative-structures,rmsf-permutation,plan-frame-resources,plan-campaign-resources,plan-automatic-sampling,prepare-analysis,prepare-comparison,run-local-workflow,report-plan-matrix,write-planning-report,rmsf-permutation-from-report,advise-slurm-capacity,build-coordinate-cache,prepare-unwrapped-cache,write-scientific-minimums-template,summarize-timeseries,run-instrumented,run-coordinate-cache-instrumented,summarize-execution-resources,build-resource-calibration-catalog,prioritize-findings,export-rmsf-visualization,run-regression}
     list-modules        List registered analyses and honest implementation
                         status.
     validate-manifest   Validate a project, system, output, or publication-
@@ -65,6 +65,9 @@ positional arguments:
                         validation.
     integrate           Assemble prespecified module values without hidden
                         aggregation.
+    integrate-comparison-results
+                        Review and integrate every completed report in a
+                        prepared comparative campaign.
     secondary-structure
                         Run the external mkdssp adapter with executable
                         provenance.
@@ -138,6 +141,14 @@ positional arguments:
                         analysis-input-v1 request.
     run-local-workflow  Execute a prepared workflow without Slurm while
                         enforcing its CPU cap and dependency order.
+    report-plan-matrix  Combine prepared planning-report.json files into an
+                        analysis-family by resource-envelope stride table.
+    write-planning-report
+                        Regenerate the user-facing report for an existing
+                        prepared campaign.
+    rmsf-permutation-from-report
+                        Compare per-replica RMSF profiles between systems
+                        using the prepared comparison policy.
     advise-slurm-capacity
                         Optionally inspect a prepared campaign and the live
                         Slurm queue without submitting or changing any job.

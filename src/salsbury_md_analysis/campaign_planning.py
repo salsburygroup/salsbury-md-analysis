@@ -383,6 +383,11 @@ _BASE_DERIVED_MODELS: Mapping[str, Mapping[str, object]] = {
         "fixed_cpu_hours": 0.005, "memory_gib": 1.0, "stage": 2,
         "priority": 8.0,
     },
+    "rmsf_permutation_inference": {
+        "upstream": "pooled_rmsf", "seconds_per_frame": 0.00002,
+        "fixed_cpu_hours": 0.01, "memory_gib": 1.0, "stage": 2,
+        "priority": 8.0,
+    },
 }
 
 # Retained single-CPU TREX measurements where available.  Rates are per

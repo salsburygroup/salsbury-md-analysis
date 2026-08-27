@@ -17,7 +17,9 @@ project-schema validation. Disabling an upstream module also disables its
 dependent analyses; the resolved config turns off affected conformational
 views before project construction, and `module-coverage.json` records the
 decision. Preflight, provenance, common-atom mapping, and structural-integrity
-QC cannot be disabled. Each topology-derived
+QC cannot be disabled. Comparative preparation additionally protects
+`integrated_comparison`: every comparison campaign must review and account for
+all completed result reports before the finding picker runs. Each topology-derived
 view has its own `enabled` flag and optional per-view `module_options`.
 The complete generated config also gives each module a generated `protected`
 flag, its direct `depends_on` list, and its `turning_off_also_disables` list.
@@ -30,6 +32,14 @@ field is rejected because it would make the config disagree with execution.
 The high-detail common-heavy and interface views are enabled by default.
 `macromolecular_trace` PCA and its state trajectories are off by default but
 can be enabled independently for a deliberately coarse diagnostic.
+
+`hydrogen_bonds` is the optional manual fixed-feature interface. Routine
+campaigns use `hydrogen_bond_discovery`, which infers donor, bonded hydrogen,
+and acceptor candidates from topology connectivity and chemical identity.
+`representative_structures` is likewise an optional coordinate-space
+mean/medoid utility. Routine state workflows use `representative_frames` and
+`state_coordinate_exports`; the former selects observed frames nearest the
+declared cluster center or FES basin root in that analysis feature space.
 
 The `clustering.methods` object lists all eleven conventional partitioning
 methods explicitly:
@@ -208,12 +218,15 @@ feature count and member-observation expansion. Methods driven by projected
 observations rather than raw atoms keep their observation-based model. The
 applied multiplier and reference workload remain in
 `campaign-resource-plan.json`.
-The generated local and Slurm adapters run base stages before conformational stages.
-`execution.submission_adapter` selects `local` or `slurm`; local is the default.
+The generated local, Slurm, and custom-launcher adapters run base stages before
+conformational stages. `execution.submission_adapter` selects `local`, `slurm`,
+or `custom`; local is the default.
 Slurm mode requires a validated `execution.slurm_profile`, which keeps account,
 partition, QoS, environment, command, and storage conventions outside scientific
 configuration. The supplied `profiles/analysis/deac-default.json` selects the
-Salsbury-group DEAC profile. Both adapters run the same workers and output contracts.
+Salsbury-group DEAC profile. Custom mode hands `launcher-contract.json` to the
+executable named by `SALSBURY_MD_ANALYSIS_CUSTOM_LAUNCHER`. All adapters use the
+same workers and output contracts.
 The Slurm adapter records task-specific scheduler requests in
 `scheduler-resource-requests.json` and routes sufficiently large requests through
 the profile's large-memory role. Its canonical launcher submits deterministic
@@ -259,6 +272,7 @@ base and conformational-view stage, verifies all expected reports exist, and
 writes:
 
 - `analysis_resource_and_frame_table.csv`, `.json`, and `.md`;
+- `results/integrated-comparison/report.json` for comparative campaigns;
 - `prioritized_findings.csv`, `.json`, and `.md`;
 - compact finalizer status reports.
 

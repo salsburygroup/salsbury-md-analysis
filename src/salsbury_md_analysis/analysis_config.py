@@ -76,6 +76,7 @@ DEPENDENCIES = {
     "grouped_ml": {"clustering_kmeans"},
     "correlation_networks": {"dccm"},
     "convergence_uncertainty": {"replica_rmsd_rg"},
+    "rmsf_permutation_inference": {"pooled_rmsf"},
 }
 
 PROTECTED_MODULES = {
@@ -147,8 +148,13 @@ def _module_configuration_metadata(
     module_ids: Sequence[str],
     *,
     clustering_feature_space: str = "tica",
+    protected_modules: Sequence[str] | None = None,
 ) -> tuple[Dict[str, object], Dict[str, object]]:
     known = set(module_ids)
+    protected = (
+        set(PROTECTED_MODULES)
+        if protected_modules is None else set(protected_modules)
+    )
     dependencies = {key: set(value) for key, value in DEPENDENCIES.items()}
     clustering_dependency = (
         "time_lagged_independent_component_analysis"
@@ -169,7 +175,7 @@ def _module_configuration_metadata(
         module_rows[module_id] = {
             "enabled": True,
             "options": {},
-            "protected": module_id in PROTECTED_MODULES,
+            "protected": module_id in protected,
             "depends_on": sorted(
                 dependencies.get(module_id, set()).intersection(known)
             ),
@@ -231,9 +237,12 @@ _ALTERNATIVE_METHOD_ORDER = [
 
 
 def default_analysis_config(
-    module_ids: Sequence[str], view_ids: Sequence[str]
+    module_ids: Sequence[str], view_ids: Sequence[str],
+    *, protected_modules: Sequence[str] | None = None,
 ) -> Dict[str, object]:
-    module_rows, module_groups = _module_configuration_metadata(module_ids)
+    module_rows, module_groups = _module_configuration_metadata(
+        module_ids, protected_modules=protected_modules
+    )
     return {
         "config_schema": "salsbury-analysis-config-v1",
         "default_module_policy": "all_applicable",
@@ -337,9 +346,13 @@ def default_analysis_config(
 
 
 def load_analysis_config(
-    path: Path | None, module_ids: Sequence[str], view_ids: Sequence[str]
+    path: Path | None, module_ids: Sequence[str], view_ids: Sequence[str],
+    *, additional_protected_modules: Sequence[str] = (),
 ) -> Dict[str, object]:
-    config = default_analysis_config(module_ids, view_ids)
+    protected_modules = set(PROTECTED_MODULES).union(additional_protected_modules)
+    config = default_analysis_config(
+        module_ids, view_ids, protected_modules=sorted(protected_modules)
+    )
     if path is None:
         return config
     supplied = load_json(Path(path).expanduser().resolve(strict=True))
@@ -381,7 +394,7 @@ def load_analysis_config(
         options = raw.get("options", {})
         if not isinstance(enabled, bool) or not isinstance(options, dict):
             raise AnalysisConfigError(f"module {module_id} has invalid enabled/options values")
-        if module_id in PROTECTED_MODULES and not enabled:
+        if module_id in protected_modules and not enabled:
             raise AnalysisConfigError(
                 f"protected module {module_id} cannot be disabled"
             )
@@ -538,7 +551,9 @@ def load_analysis_config(
             )
         methods[method] = {"enabled": raw["enabled"]}
     resolved_rows, resolved_groups = _module_configuration_metadata(
-        module_ids, clustering_feature_space=str(clustering["feature_space"])
+        module_ids,
+        clustering_feature_space=str(clustering["feature_space"]),
+        protected_modules=sorted(protected_modules),
     )
     if raw_groups is not None and raw_groups != resolved_groups:
         raise AnalysisConfigError(
@@ -753,9 +768,11 @@ def load_analysis_config(
         raise AnalysisConfigError(
             "execution.fail_if_minimum_coverage_unaffordable must be boolean"
         )
-    if execution["submission_adapter"] not in {"unspecified", "local", "slurm"}:
+    if execution["submission_adapter"] not in {
+        "unspecified", "local", "slurm", "custom"
+    }:
         raise AnalysisConfigError(
-            "execution.submission_adapter must be unspecified, local, or slurm"
+            "execution.submission_adapter must be unspecified, local, slurm, or custom"
         )
     if execution["submission_adapter"] == "unspecified":
         # Normalize the legacy placeholder to the safe scheduler-free default.

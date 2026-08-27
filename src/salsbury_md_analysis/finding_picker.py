@@ -55,6 +55,7 @@ _INTERPRETIVE_CONTEXT_MODULES = {
     "trajectory_features",
     "representative_frames",
     "representative_structures",
+    "integrated_comparison",
 }
 
 
@@ -425,25 +426,68 @@ def _ion_atmosphere_candidates(
     rows = report.get("per_ion_inner_shell_persistence")
     if not isinstance(rows, list):
         return []
-    scored = [
-        (float(row["inner_shell_occupancy"]), row)
-        for row in rows if isinstance(row, dict)
-        and _numeric(row.get("inner_shell_occupancy")) is not None
-    ]
-    if not scored:
+    by_system_species: Dict[str, Dict[str, List[float]]] = {}
+    row_by_system_species: Dict[tuple[str, str], Mapping[str, object]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        occupancy = _numeric(row.get("inner_shell_occupancy"))
+        if occupancy is None:
+            continue
+        system_id = str(row.get("system_id"))
+        species = str(row.get("species"))
+        by_system_species.setdefault(system_id, {}).setdefault(species, []).append(
+            occupancy
+        )
+        key = (system_id, species)
+        current = row_by_system_species.get(key)
+        if current is None or occupancy > float(current["inner_shell_occupancy"]):
+            row_by_system_species[key] = row
+    if not by_system_species:
         return []
-    occupancy, row = max(scored, key=lambda item: item[0])
-    system_id = str(row.get("system_id"))
-    return [_candidate(
-        module_id="ion_atmosphere", category="other_physical",
-        statement=(
-            f"Highest observed inner-shell occupancy is {occupancy:.1%} for "
-            f"{row.get('species')} ion {row.get('ion_atom_index')} in {system_id}."
-        ),
-        report_path=path, effect_value=occupancy, systems=(system_id,),
-        evidence_level="descriptive ion-shell persistence",
-        family="ion_atmosphere:inner_shell_occupancy",
-    )]
+    findings = []
+    maxima: Dict[str, Dict[str, float]] = {}
+    for system_id, species_rows in sorted(by_system_species.items()):
+        maxima[system_id] = {
+            species: max(values) for species, values in species_rows.items()
+        }
+        species, occupancy = max(
+            maxima[system_id].items(), key=lambda item: (item[1], item[0])
+        )
+        row = row_by_system_species[(system_id, species)]
+        findings.append(_candidate(
+            module_id="ion_atmosphere", category="other_physical",
+            statement=(
+                f"Highest observed inner-shell occupancy in {system_id} is "
+                f"{occupancy:.1%} for {species} ion {row.get('ion_atom_index')}."
+            ),
+            report_path=path, effect_value=occupancy, systems=(system_id,),
+            evidence_level="descriptive ion-shell persistence",
+            family="ion_atmosphere:inner_shell_occupancy",
+        ))
+    for left, right in itertools.combinations(sorted(maxima), 2):
+        shared_species = set(maxima[left]).intersection(maxima[right])
+        if not shared_species:
+            continue
+        species = max(
+            shared_species,
+            key=lambda value: (
+                abs(maxima[left][value] - maxima[right][value]), value
+            ),
+        )
+        effect = maxima[left][species] - maxima[right][species]
+        findings.append(_candidate(
+            module_id="ion_atmosphere", category="other_physical",
+            statement=(
+                f"Largest descriptive matched-species ion inner-shell difference "
+                f"between {left} and {right} is {species}: {effect:+.1%} "
+                f"({left} minus {right}, comparing each system's most persistent ion)."
+            ),
+            report_path=path, effect_value=effect, systems=(left, right),
+            evidence_level="descriptive matched-species ion-shell persistence",
+            family="ion_atmosphere:pairwise_species_maximum_difference",
+        ))
+    return findings
 
 
 def _rmsd_rg_candidates(
@@ -813,6 +857,127 @@ def _hydrogen_bond_candidates(
             report_path=path, effect_value=effect, systems=(left, right),
             family="hydrogen_bond_discovery:pairwise_occupancy_difference",
         ))
+    return findings
+
+
+def _chemical_atom_key(identity: object) -> tuple[str, str, int, str, str] | None:
+    if not isinstance(identity, dict):
+        return None
+    residue_number = identity.get("residue_number")
+    if isinstance(residue_number, bool) or not isinstance(residue_number, int):
+        return None
+    return (
+        str(identity.get("chain_id", "")),
+        str(identity.get("residue_name", "")),
+        residue_number,
+        str(identity.get("insertion_code", "")),
+        str(identity.get("atom_name", "")),
+    )
+
+
+def _chemical_atom_key_label(key: tuple[str, str, int, str, str]) -> str:
+    chain, residue_name, residue_number, insertion_code, atom_name = key
+    insertion = insertion_code if insertion_code else ""
+    return f"{chain}:{residue_name}{residue_number}{insertion}:{atom_name}"
+
+
+def _hydrogen_bond_chemical_summary(
+    report: Mapping[str, object], system_id: str
+) -> tuple[
+    set[tuple[str, str, int, str, str]],
+    Dict[tuple[tuple[str, str, int, str, str], tuple[str, str, int, str, str]], float],
+]:
+    atoms = report.get("atom_dictionary")
+    candidates = report.get("candidate_dictionary")
+    occupancies = report.get("occupancies")
+    if not all(isinstance(value, list) for value in (atoms, candidates, occupancies)):
+        return set(), {}
+    atom_keys = {
+        int(row["atom_index"]): _chemical_atom_key(row.get("identity"))
+        for row in atoms
+        if isinstance(row, dict) and isinstance(row.get("atom_index"), int)
+    }
+    present_atoms = {value for value in atom_keys.values() if value is not None}
+    endpoints_by_bond = {}
+    for row in candidates:
+        if not isinstance(row, dict) or not isinstance(row.get("bond_id"), str):
+            continue
+        donor = atom_keys.get(row.get("donor_atom_index"))
+        acceptor = atom_keys.get(row.get("acceptor_atom_index"))
+        if donor is not None and acceptor is not None:
+            endpoints_by_bond[str(row["bond_id"])] = (donor, acceptor)
+    values: Dict[
+        tuple[tuple[str, str, int, str, str], tuple[str, str, int, str, str]],
+        List[float],
+    ] = {}
+    for row in occupancies:
+        if not isinstance(row, dict) or str(row.get("system_id")) != system_id:
+            continue
+        key = endpoints_by_bond.get(str(row.get("bond_id")))
+        if key is None:
+            continue
+        occupancy = _numeric(row.get("occupancy_fraction"))
+        if occupancy is None:
+            evaluated = row.get("evaluated_frame_count")
+            present = row.get("present_frame_count")
+            if (
+                isinstance(evaluated, int) and not isinstance(evaluated, bool)
+                and evaluated > 0 and isinstance(present, int)
+                and not isinstance(present, bool)
+            ):
+                occupancy = present / evaluated
+        if occupancy is not None:
+            values.setdefault(key, []).append(occupancy)
+    # Equivalent donor hydrogens map to one donor-heavy/acceptor-heavy event.
+    # The maximum occupancy is a conservative bounded summary when only compact
+    # per-hydrogen occupancy evidence, rather than the frame matrix, is present.
+    return present_atoms, {key: max(rows) for key, rows in values.items()}
+
+
+def _cross_report_hydrogen_bond_candidates(
+    selected: Mapping[str, tuple[int, str, Path, Mapping[str, object]]]
+) -> List[Dict[str, object]]:
+    summaries = {
+        system_id: _hydrogen_bond_chemical_summary(value[3], system_id)
+        for system_id, value in selected.items()
+    }
+    source_paths = sorted({value[2] for value in selected.values()})
+    if not source_paths:
+        return []
+    findings = []
+    for left, right in itertools.combinations(sorted(summaries), 2):
+        left_atoms, left_values = summaries[left]
+        right_atoms, right_values = summaries[right]
+        eligible = {
+            key for key in set(left_values).union(right_values)
+            if key[0] in left_atoms and key[1] in left_atoms
+            and key[0] in right_atoms and key[1] in right_atoms
+        }
+        if not eligible:
+            continue
+        key = max(
+            eligible,
+            key=lambda value: (
+                abs(left_values.get(value, 0.0) - right_values.get(value, 0.0)),
+                value,
+            ),
+        )
+        effect = left_values.get(key, 0.0) - right_values.get(key, 0.0)
+        candidate = _candidate(
+            module_id="hydrogen_bond_discovery", category="other_physical",
+            statement=(
+                "Largest descriptive chemistry-matched direct-hydrogen-bond "
+                f"occupancy difference between {left} and {right} is "
+                f"{_chemical_atom_key_label(key[0])} to "
+                f"{_chemical_atom_key_label(key[1])}: {effect:+.1%} "
+                f"({left} minus {right})."
+            ),
+            report_path=source_paths[0], effect_value=effect,
+            systems=(left, right),
+            family="hydrogen_bond_discovery:chemical_identity_pairwise_difference",
+        )
+        candidate["report_paths"] = [str(value) for value in source_paths]
+        findings.append(candidate)
     return findings
 
 
@@ -1288,6 +1453,8 @@ _CROSS_REPORT_ROWS = {
     "radial_distribution_functions": "feature_reports",
     "dihedral_distributions": "circular_summaries",
     "water_mediated_hydrogen_bond_networks": "bridge_occupancies",
+    "ion_atmosphere": "per_ion_inner_shell_persistence",
+    "hydrogen_bond_discovery": "occupancies",
 }
 
 
@@ -1339,6 +1506,21 @@ def _compact_cross_report(
                     "mean_angle_degrees",
                 )
             }
+        elif module_id == "ion_atmosphere":
+            kept = {
+                key: row.get(key) for key in (
+                    "system_id", "replica_id", "species", "ion_atom_index",
+                    "evaluated_frame_count", "inner_shell_occupancy",
+                )
+            }
+        elif module_id == "hydrogen_bond_discovery":
+            kept = {
+                key: row.get(key) for key in (
+                    "system_id", "replica_id", "bond_id",
+                    "evaluated_frame_count", "present_frame_count",
+                    "occupancy_fraction",
+                )
+            }
         else:
             kept = {
                 key: row.get(key) for key in (
@@ -1370,6 +1552,20 @@ def _compact_cross_report(
                         }
                         for row in source if isinstance(row, dict)
                     ]
+    if module_id == "hydrogen_bond_discovery":
+        for key, fields in (
+            ("candidate_dictionary", (
+                "bond_id", "donor_atom_index", "hydrogen_atom_index",
+                "acceptor_atom_index",
+            )),
+            ("atom_dictionary", ("atom_index", "identity")),
+        ):
+            source = report.get(key)
+            if isinstance(source, list):
+                compact[key] = [
+                    {field: row.get(field) for field in fields}
+                    for row in source if isinstance(row, dict)
+                ]
     return compact
 
 
@@ -1455,6 +1651,9 @@ def _cross_report_candidates(
         source_paths = sorted({value[2] for value in selected.values()})
         if len(selected) < 2 or len(source_paths) < 2:
             continue
+        if module_id == "hydrogen_bond_discovery":
+            findings.extend(_cross_report_hydrogen_bond_candidates(selected))
+            continue
         row_key = _CROSS_REPORT_ROWS[module_id]
         merged: Dict[str, object] = {"module_id": module_id, row_key: []}
         for system_id in sorted(selected):
@@ -1486,6 +1685,8 @@ def _cross_report_candidates(
             candidates = _rdf_candidates(merged, primary)
         elif module_id == "dihedral_distributions":
             candidates = _dihedral_candidates(merged, primary)
+        elif module_id == "ion_atmosphere":
+            candidates = _ion_atmosphere_candidates(merged, primary)
         else:
             candidates = _water_network_candidates(merged, primary)
         for candidate in candidates:
@@ -1495,11 +1696,61 @@ def _cross_report_candidates(
     return findings
 
 
+def _integrated_comparison_candidates(
+    report: Mapping[str, object], path: Path
+) -> List[Dict[str, object]]:
+    raw = report.get("comparison_findings")
+    if not isinstance(raw, list):
+        raise FindingPickerError(
+            "integrated comparison report lacks comparison_findings"
+        )
+    findings = []
+    for index, value in enumerate(raw):
+        if not isinstance(value, dict):
+            raise FindingPickerError(
+                f"integrated comparison finding {index} is not an object"
+            )
+        systems = value.get("system_ids")
+        if not isinstance(systems, list) or len(set(map(str, systems))) < 2:
+            raise FindingPickerError(
+                f"integrated comparison finding {index} lacks two systems"
+            )
+        required = {
+            "module_id", "category", "evidence_level", "statement",
+            "comparison_family", "effect_value", "p_value",
+        }
+        missing = sorted(required.difference(value))
+        if missing:
+            raise FindingPickerError(
+                f"integrated comparison finding {index} is missing: "
+                + ", ".join(missing)
+            )
+        row = dict(value)
+        row.pop("finding_id", None)
+        row["adjusted_p_value"] = None
+        row["statistically_significant"] = None
+        source_paths = row.get("report_paths")
+        if not isinstance(source_paths, list):
+            source_paths = [row.get("report_path")]
+        row["source_report_paths"] = [
+            str(value) for value in source_paths if value
+        ]
+        row["integration_report_path"] = str(path)
+        row["report_path"] = str(path)
+        row["report_paths"] = list(dict.fromkeys([
+            str(path), *row["source_report_paths"],
+        ]))
+        findings.append(row)
+    return findings
+
+
 def _report_candidates(path: Path, report: Mapping[str, object]) -> List[Dict[str, object]]:
     module_id = str(report.get("module_id", path.parent.name))
     findings = _state_differences(report, module_id, path)
     findings.extend(_score_correlations(report, module_id, path))
-    if module_id == "pooled_rmsf":
+    if module_id == "integrated_comparison":
+        findings.extend(_integrated_comparison_candidates(report, path))
+    elif module_id == "pooled_rmsf":
         findings.extend(_rmsf_candidates(report, path))
     elif module_id == "dccm":
         findings.extend(_dccm_candidates(report, path))
@@ -1770,7 +2021,10 @@ def _benjamini_hochberg(findings: List[Dict[str, object]]) -> None:
             row["adjusted_p_value"] = min(1.0, running)
 
 
-def prioritize_findings(root: Path, *, maximum_findings: int | None = None) -> Dict[str, object]:
+def prioritize_findings(
+    root: Path, *, maximum_findings: int | None = None,
+    write_outputs: bool = True,
+) -> Dict[str, object]:
     analysis_root = Path(root).expanduser().resolve(strict=True)
     config_path = analysis_root / "analysis-config.json"
     config = load_json(config_path) if config_path.is_file() else {}
@@ -1790,6 +2044,16 @@ def prioritize_findings(root: Path, *, maximum_findings: int | None = None) -> D
     complete_records = []
     module_reviews = []
     quality_control_records = []
+    integrated_path = (
+        analysis_root / "results" / "integrated-comparison" / "report.json"
+    )
+    integrated_present = integrated_path.is_file()
+    if integrated_present:
+        integrated_report = load_json(integrated_path)
+        if integrated_report.get("technical_status") != "complete":
+            raise FindingPickerError(
+                "integrated comparison exists but is not technically complete"
+            )
     for path in sorted((analysis_root / "results").glob("**/report.json")):
         sidecar_path = Path(str(path) + ".summary.json")
         if sidecar_path.is_file():
@@ -1808,12 +2072,17 @@ def prioritize_findings(root: Path, *, maximum_findings: int | None = None) -> D
             report_candidates = [
                 row for row in evidence["candidates"] if isinstance(row, dict)
             ]
+            if integrated_present:
+                report_candidates = [
+                    row for row in report_candidates
+                    if len(set(map(str, row.get("system_ids", [])))) < 2
+                ]
             findings.extend(report_candidates)
             qc_rows = evidence.get("quality_control_records", [])
             qc_rows = [row for row in qc_rows if isinstance(row, dict)] if isinstance(qc_rows, list) else []
             quality_control_records.extend(qc_rows)
             review = evidence.get("module_review")
-            if isinstance(review, dict):
+            if isinstance(review, dict) and not integrated_present:
                 module_reviews.append(review)
             else:
                 module_reviews.append(_module_review_record(
@@ -1821,7 +2090,7 @@ def prioritize_findings(root: Path, *, maximum_findings: int | None = None) -> D
                     len(report_candidates), len(qc_rows),
                 ))
             compact = evidence.get("cross_report_summary")
-            if isinstance(compact, dict):
+            if isinstance(compact, dict) and not integrated_present:
                 complete_records.append((path, compact))
             continue
         report = load_json(path)
@@ -1832,13 +2101,19 @@ def prioritize_findings(root: Path, *, maximum_findings: int | None = None) -> D
                 if isinstance(compact, dict):
                     complete_records.append((path, compact))
             report_candidates = _report_candidates(path, report)
+            if integrated_present and module_id != "integrated_comparison":
+                report_candidates = [
+                    row for row in report_candidates
+                    if len(set(map(str, row.get("system_ids", [])))) < 2
+                ]
             qc_rows = _quality_control_records(report, path)
             findings.extend(report_candidates)
             quality_control_records.extend(qc_rows)
             module_reviews.append(_module_review_record(
                 module_id, path, len(report_candidates), len(qc_rows)
             ))
-    findings.extend(_cross_report_candidates(complete_records))
+    if not integrated_present:
+        findings.extend(_cross_report_candidates(complete_records))
     if mode == "reference_vs_all" and reference:
         findings = [
             row for row in findings
@@ -1896,6 +2171,8 @@ def prioritize_findings(root: Path, *, maximum_findings: int | None = None) -> D
             "evidence, interpretive context, technical support, or an explicit no-highlight result."
         ),
     }
+    if not write_outputs:
+        return output
     json_path = analysis_root / "prioritized_findings.json"
     json_path.write_text(json.dumps(output, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     csv_path = analysis_root / "prioritized_findings.csv"
