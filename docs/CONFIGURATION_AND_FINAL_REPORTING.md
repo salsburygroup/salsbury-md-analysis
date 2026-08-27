@@ -31,7 +31,12 @@ external-program checks; for example, helical mechanics still requires DSSR
 and a detected duplex, while energetic-network embeddings require an Amber
 PRMTOP/PARM7, CHARMM PSF plus matching parameter files, or a serialized OpenMM
 System XML with one standard `NonbondedForce`. Every route also requires an
-explicit bond graph for cpptraj-style exclusions.
+explicit bond graph for cpptraj-style exclusions. Reweighting remains off at
+planning time without a declared frame-weight file, and allosteric pathways
+remain off without reviewed source and sink nodes. Bridge and hydration-density
+tasks are omitted when the reference topology contains none of their enabled
+particle or mediator species. These decisions are reported as unavailable or
+not applicable while the original configuration intent remains visible.
 Supply a reviewed partial or complete configuration with:
 
 ```bash

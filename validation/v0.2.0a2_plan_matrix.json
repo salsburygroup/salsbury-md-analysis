@@ -1,0 +1,53 @@
+{
+  "validation_schema": "salsbury-experimental-plan-matrix-validation-v1",
+  "candidate_version": "0.2.0a2",
+  "recorded_at": "2026-08-27",
+  "execution_host": "WFU DEAC Apollo head node; plan-only validation",
+  "trajectory_reweighting_enabled": false,
+  "execution_started": false,
+  "jobs_submitted": false,
+  "campaigns": [
+    {
+      "campaign": "TBA",
+      "input_scope": "five existing complete 1-microsecond systems",
+      "maximum_parallel_cpus": 44,
+      "maximum_memory_gib": 185,
+      "outcomes_by_wall_hours": {
+        "8": "feasible",
+        "24": "feasible",
+        "48": "feasible",
+        "168": "feasible"
+      }
+    },
+    {
+      "campaign": "TREX",
+      "input_scope": "hypothetical six-control plus six-lesion 1-microsecond planning fixture",
+      "maximum_parallel_cpus": 88,
+      "maximum_memory_gib": 370,
+      "outcomes_by_wall_hours": {
+        "8": "infeasible",
+        "24": "infeasible",
+        "48": "infeasible",
+        "168": "feasible"
+      }
+    },
+    {
+      "campaign": "thrombin",
+      "input_scope": "hypothetical WT plus 20 variants, three 1-microsecond replicas each, planning fixture",
+      "maximum_parallel_cpus": 176,
+      "maximum_memory_gib": 740,
+      "outcomes_by_wall_hours": {
+        "8": "infeasible",
+        "24": "infeasible",
+        "48": "infeasible",
+        "168": "feasible"
+      }
+    }
+  ],
+  "final_summary_json_sha256": "85890ee8c9de4279428db15bab65dac8329655c5bb189e276f57f20c817d5356",
+  "final_summary_markdown_sha256": "9e307bca3f495598e76d43276927aabba115be44aa7b36b4feef66f321030c8f",
+  "stderr_nonempty_count": 0,
+  "technical_status": "complete",
+  "scientific_status": "not evaluated",
+  "interpretation": "Planning fixtures test resource allocation and applicability gates. They do not execute trajectories or establish scientific validity."
+}

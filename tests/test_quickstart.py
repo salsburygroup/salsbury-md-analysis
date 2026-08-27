@@ -282,7 +282,7 @@ class QuickstartTests(unittest.TestCase):
             source = root / "inputs"
             source.mkdir()
             output = root / "analysis"
-            pdb, psf, trajectories = _write_inputs(source)
+            pdb, psf, trajectories = _write_ion_inputs(source)
             config = root / "experimental.json"
             config.write_text(json.dumps({
                 "config_schema": "salsbury-analysis-config-v1",
@@ -307,7 +307,7 @@ class QuickstartTests(unittest.TestCase):
                     },
                     "multivalent_molecular_bridges": {
                         "options": {
-                            "mediator_residue_names": ["NEO"],
+                            "mediator_residue_names": ["POT"],
                         },
                     },
                     "reactive_path_ensembles": {
@@ -436,7 +436,7 @@ class QuickstartTests(unittest.TestCase):
         self.assertEqual(
             base["definitions"]["multivalent_molecular_bridges"]
             ["mediator_residue_names"],
-            ["NEO"],
+            ["POT"],
         )
         allosteric_sampling = next(
             row for row in sampling["method_plans"]
@@ -457,6 +457,7 @@ class QuickstartTests(unittest.TestCase):
             base["definitions"]["allosteric_pathways"]["network_source"],
             "external_json",
         )
+
         self.assertIn('"perturbation-response"', trace_worker)
         self.assertIn('"trajectory-reweighting"', trace_worker)
         self.assertIn('"reactive-path-ensembles"', reactive_worker)
@@ -525,6 +526,57 @@ class QuickstartTests(unittest.TestCase):
         )
         self.assertEqual(
             reactive_task["maximum_pairwise_dtw_cells"], 20_000_000
+        )
+
+    def test_master_experimental_opt_in_excludes_missing_scientific_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "inputs"
+            source.mkdir()
+            pdb, psf, trajectories = _write_inputs(source)
+            config = root / "experimental.json"
+            config.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "enable_all_experimental_modules": True,
+            }), encoding="utf-8")
+            output = root / "analysis"
+            prepare_standard_analysis(
+                pdb_path=pdb,
+                psf_path=psf,
+                trajectories=trajectories,
+                output_directory=output,
+                project_id="unconfigured-experimental-inputs",
+                frame_interval_ps=10.0,
+                config_path=config,
+            )
+            coverage = json.loads(
+                (output / "module-coverage.json").read_text(encoding="utf-8")
+            )["experimental_planner_coverage"]
+            project = json.loads(
+                (output / "project.json").read_text(encoding="utf-8")
+            )
+        rows = {row["module_id"]: row for row in coverage["modules"]}
+        for module_id in (
+            "trajectory_reweighting",
+            "allosteric_pathways",
+            "multivalent_molecular_bridges",
+            "hydration_density_channels",
+        ):
+            self.assertEqual(rows[module_id]["planner_status"], "not_available")
+            self.assertEqual(rows[module_id]["planner_task_ids"], [])
+            self.assertNotIn(module_id, project["requested_modules"])
+        self.assertIn(
+            "weights_path was not declared",
+            rows["trajectory_reweighting"]["reason"],
+        )
+        self.assertIn("pathway endpoints", rows["allosteric_pathways"]["reason"])
+        self.assertIn(
+            "no enabled ion, water, or declared mediator",
+            rows["multivalent_molecular_bridges"]["reason"],
+        )
+        self.assertIn(
+            "no enabled water, ion, or additional particle",
+            rows["hydration_density_channels"]["reason"],
         )
 
     def test_deac_config_activates_profiled_slurm_launcher(self):

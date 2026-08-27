@@ -137,6 +137,8 @@ failure leaves execution technically complete but sets
 This module consumes weights. It does not derive MBAR free energies, bias
 potentials, or maximum-entropy multipliers, and it does not silently enable the
 biased/enhanced-sampling FES path.
+If the module is enabled without a nonempty `weights_path`, preparation records
+it as unavailable and creates no planner or scheduler task.
 
 ## Trajectory-derived allosteric network
 
@@ -164,6 +166,8 @@ The NEMO experimental fixture enables this mode in
 `tutorials/nemo_zinc_finger/experimental-analysis-config.json`. Its source and
 sink indices identify four fixture-specific cysteine nodes solely as a bounded
 technical test; they are not a general pathway definition or scientific claim.
+When source or sink nodes are absent, preparation records the method as
+unavailable and does not guess biological endpoints.
 
 ## Explicit external-network override
 
