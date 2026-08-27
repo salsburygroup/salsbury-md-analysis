@@ -111,6 +111,7 @@ def run_instrumented_coordinate_cache(
     output_directory: Path,
     *,
     maximum_workers: int,
+    cache_stride: int = 1,
 ) -> Dict[str, object]:
     """Build one coordinate cache and attach whole-job resource measurements."""
 
@@ -122,9 +123,16 @@ def run_instrumented_coordinate_cache(
         or maximum_workers <= 0
     ):
         raise ExecutionResourceError("maximum_workers must be a positive integer")
+    if (
+        isinstance(cache_stride, bool)
+        or not isinstance(cache_stride, int)
+        or cache_stride <= 0
+    ):
+        raise ExecutionResourceError("cache_stride must be a positive integer")
     argv = [
         sys.executable, "-m", "salsbury_md_analysis", "build-coordinate-cache",
         str(source), "--output", str(output), "--workers", str(maximum_workers),
+        "--cache-stride", str(cache_stride),
     ]
     started = time.perf_counter()
     completed = subprocess.run(argv, text=True, capture_output=True, check=False)
@@ -140,12 +148,19 @@ def run_instrumented_coordinate_cache(
     if not isinstance(report, dict):
         raise ExecutionResourceError("coordinate cache JSON must be an object")
     rows = report.get("rows")
-    physical_count = 0
+    decoded_count = 0
+    retained_count = 0
     if isinstance(rows, list):
         for row in rows:
             segments = row.get("segments") if isinstance(row, dict) else None
             if isinstance(segments, list):
-                physical_count += sum(
+                decoded_count += sum(
+                    int(segment.get("decoded_frame_count", segment["frame_count"]))
+                    for segment in segments
+                    if isinstance(segment, dict)
+                    and isinstance(segment.get("frame_count"), int)
+                )
+                retained_count += sum(
                     int(segment["frame_count"])
                     for segment in segments
                     if isinstance(segment, dict)
@@ -156,10 +171,15 @@ def run_instrumented_coordinate_cache(
         "system_manifest_path": str(source),
         "cache_output_directory": str(output),
         "observation_accounting": {
-            "selected_physical_frame_count": physical_count,
-            "symmetry_expanded_observation_count": physical_count,
-            "subsampling_triggered": False,
-            "frame_selection": "all source frames",
+            "decoded_physical_frame_count": decoded_count,
+            "selected_physical_frame_count": retained_count,
+            "symmetry_expanded_observation_count": retained_count,
+            "subsampling_triggered": cache_stride > 1,
+            "frame_selection": {
+                "mode": "integer_stride_per_replica_v1",
+                "stride": cache_stride,
+                "unwrapping_scan": "all source frames",
+            },
         },
         "execution_resources": {
             "measurement_schema": "salsbury-execution-resources-v1",
@@ -198,15 +218,16 @@ def run_instrumented_coordinate_cache(
             "python_executable": sys.executable,
         },
         "frame_coverage": {
-            "estimator_selected_frame_count": physical_count,
-            "symmetry_expanded_observation_count": physical_count,
+            "source_decoded_frame_count": decoded_count,
+            "estimator_selected_frame_count": retained_count,
+            "symmetry_expanded_observation_count": retained_count,
         },
         "resources": {
             "wall_seconds": elapsed,
             "maximum_rss_kib": _maximum_rss_mib(float(usage.ru_maxrss)) * 1024.0,
         },
         "report_size_bytes": len(completed.stdout.encode("utf-8")),
-        "full_assignment_observation_count": physical_count,
+        "full_assignment_observation_count": retained_count,
     }
     return report
 

@@ -1,7 +1,7 @@
 # Default-off experimental methods
 
-The `experimental` branch adds thirteen default-off methods on top of the v0.2 interactive
-dashboard code. They are registered and shown in generated
+The `experimental` branch adds thirteen default-off methods on top of the
+current core package. They are registered and shown in generated
 `analysis-config.json` files, but all thirteen have `enabled: false` by default.
 Turning one or all of them on is always explicit. DFI/DCI, reweighting, and allosteric
 pathways also require scientific inputs that preparation cannot infer safely.
@@ -22,6 +22,13 @@ entries are applied afterward, so an explicit `enabled: false` can leave any
 one out. The switch does not invent required weights or site definitions and
 does not bypass applicability gates. Replace the example paths and zero-based
 node indices before use.
+
+Declaring nonempty DFI/DCI `functional_site_node_indices` automatically enables
+the required `macromolecular_trace` view. Its trajectory export remains off
+unless enabled separately. Explicitly disabling that view while supplying DFI/DCI
+functional-site nodes is a configuration error. With no functional-site nodes,
+the module stays enabled in the resolved configuration but is reported as not
+available; the workflow does not guess a biological site.
 
 ```json
 {
@@ -511,8 +518,9 @@ pathways, or proof of allostery.
 The planner treats this as a direct, quadratic-in-selected-atoms trajectory
 estimator and applies hard atom-pair, pair-frame, kernel-element, and chunk-size
 gates. Available runs receive a task only when the module is enabled. Completed
-pairwise residue rankings feed the finding selector and the interactive
-dashboard as experimental descriptive results.
+pairwise residue rankings feed the finding selector as experimental
+descriptive results. The separate interactive companion can display the
+completed core reports.
 
 ## Reactive-path ensembles from ordinary MD
 

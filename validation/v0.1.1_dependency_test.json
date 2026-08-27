@@ -1,0 +1,32 @@
+{
+  "validation_schema": "salsbury-release-dependency-test-v1",
+  "candidate_version": "0.1.1",
+  "recorded_at": "2026-08-25",
+  "execution_host": "Apple silicon workstation, macOS 15.0",
+  "python": "3.12.13",
+  "dependencies": {
+    "numpy": "2.5.2",
+    "scipy": "1.18.1",
+    "scikit-learn": "1.9.0",
+    "hdbscan": "0.8.44",
+    "openmm": "not installed; one expected optional test skip"
+  },
+  "command": "PYTHONPATH=src PYTHONPYCACHEPREFIX=<isolated> python3.12 -m unittest discover -s tests -p 'test_*.py' -q",
+  "tests_run": 458,
+  "expected_skips": 1,
+  "failures": 0,
+  "errors": 0,
+  "elapsed_seconds": 30.290,
+  "generated_documentation_check": "pass",
+  "nemo_picker_acceptance": "pass; see validation/nemo_zinc_finger_v0.1.1_picker_acceptance.json",
+  "artifact_build_check": {
+    "status": "local pass; exact-head CI remains a separate gate",
+    "wheel_sha256": "1858ff2c41483fb5f492fca8ef7dc92bc56bc59a0f51d38f11f6ec3c1e65628a",
+    "source_archive_sha256": "54a2db859db3fd16ac686fa14f6759cfaf2747ee222e506b3eabf3857a6e789f"
+  },
+  "artifact_install_check": "local pass; clean target install reported version 0.1.1 and 45 registered modules",
+  "github_ci_status": "required external gate if this candidate is published",
+  "technical_status": "local pass; exact-head CI required if this candidate is published",
+  "scientific_status": "not evaluated",
+  "interpretation": "Regression and reporting evidence only. This does not promote experimental modules to supported status or establish scientific validity."
+}

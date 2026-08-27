@@ -8,16 +8,264 @@ execution contract for the same method, system, code, and environment class.
 from __future__ import annotations
 
 import math
+import time
+from copy import deepcopy
 from typing import Dict, Mapping, Optional, Sequence
 
 from .frame_sampling import (
     integer_stride_for_budget,
     integer_stride_selected_count,
 )
+from .scientific_sampling import (
+    POLICY_ID,
+    ScientificSamplingError,
+    assess_raw_sampling,
+    profile_from_contract,
+    scientific_sampling_profile,
+)
 
 
 class ResourcePlanningError(ValueError):
     """Raised when benchmark evidence cannot support a resource estimate."""
+
+
+def workflow_useful_parallel_cpu_ceiling(
+    tasks: Sequence[Mapping[str, object]],
+) -> int:
+    """Return the dependency-stage CPU peak without a user or cluster cap."""
+
+    stages: Dict[int, Dict[str, int]] = {}
+    for row in tasks:
+        stage = int(row.get("dependency_stage", 0))
+        bundle = str(
+            row.get("execution_bundle_id") or row.get("task_id", "task")
+        )
+        cap = max(
+            1,
+            int(row.get("intrinsic_cpu_cap", row.get("effective_cpu_cap", 1))),
+        )
+        stage_bundles = stages.setdefault(stage, {})
+        stage_bundles[bundle] = max(cap, stage_bundles.get(bundle, 0))
+    if not stages:
+        raise ResourcePlanningError("workflow has no tasks for CPU capacity")
+    return max(sum(bundles.values()) for bundles in stages.values())
+
+
+def pack_resource_waves(
+    items: Sequence[Mapping[str, object]],
+    *,
+    maximum_parallel_cpus: int,
+    maximum_parallel_memory_gib: float,
+) -> list[Dict[str, object]]:
+    """Pack independent tasks into deterministic CPU-and-memory bounded waves."""
+
+    if maximum_parallel_cpus <= 0 or maximum_parallel_memory_gib <= 0.0:
+        raise ResourcePlanningError("resource-wave limits must be positive")
+    normalized = []
+    for index, item in enumerate(items):
+        item_id = str(item.get("item_id", f"item-{index}"))
+        cpus = int(item.get("cpu_slots", 1))
+        memory = float(item.get("memory_gib", 0.0))
+        wall = float(item.get("wall_hours", 0.0))
+        if cpus <= 0 or memory <= 0.0 or wall < 0.0:
+            raise ResourcePlanningError(
+                f"resource-wave item {item_id} has invalid resources"
+            )
+        if cpus > maximum_parallel_cpus:
+            raise ResourcePlanningError(
+                f"resource-wave item {item_id} requests {cpus} CPUs, exceeding "
+                f"the campaign limit {maximum_parallel_cpus}"
+            )
+        if memory > maximum_parallel_memory_gib + 1.0e-12:
+            raise ResourcePlanningError(
+                f"resource-wave item {item_id} requests {memory:g} GiB, exceeding "
+                f"the campaign limit {maximum_parallel_memory_gib:g} GiB"
+            )
+        normalized.append({
+            **dict(item),
+            "item_id": item_id,
+            "cpu_slots": cpus,
+            "memory_gib": memory,
+            "wall_hours": wall,
+        })
+    ordered = sorted(
+        normalized,
+        key=lambda row: (
+            -float(row["memory_gib"]),
+            -int(row["cpu_slots"]),
+            -float(row["wall_hours"]),
+            str(row["item_id"]),
+        ),
+    )
+    waves: list[Dict[str, object]] = []
+    for item in ordered:
+        selected_wave: Optional[Dict[str, object]] = None
+        for wave in waves:
+            if (
+                int(wave["cpu_slots"]) + int(item["cpu_slots"])
+                <= maximum_parallel_cpus
+                and float(wave["memory_gib"]) + float(item["memory_gib"])
+                <= maximum_parallel_memory_gib + 1.0e-12
+            ):
+                selected_wave = wave
+                break
+        if selected_wave is None:
+            selected_wave = {
+                "wave_index": len(waves),
+                "cpu_slots": 0,
+                "memory_gib": 0.0,
+                "wall_hours": 0.0,
+                "items": [],
+            }
+            waves.append(selected_wave)
+        selected_wave["cpu_slots"] = (
+            int(selected_wave["cpu_slots"]) + int(item["cpu_slots"])
+        )
+        selected_wave["memory_gib"] = (
+            float(selected_wave["memory_gib"]) + float(item["memory_gib"])
+        )
+        selected_wave["wall_hours"] = max(
+            float(selected_wave["wall_hours"]), float(item["wall_hours"])
+        )
+        selected_wave["items"].append(dict(item))  # type: ignore[union-attr]
+    return waves
+
+
+def _permissive_minimum_resource_request(
+    *,
+    request_scope: str,
+    minimum_cpu_hours: float,
+    minimum_wall_hours: Optional[float],
+    minimum_stages: Sequence[Mapping[str, object]],
+    maximum_parallel_cpus: int,
+    maximum_wall_hours: float,
+    maximum_memory_gib: float,
+    planning_utilization: float,
+    pilot_budget_fraction: float,
+    finalization_headroom_fraction: float,
+    memory_safety_factor: float,
+    memory_overhead_gib: float,
+    minimum_scheduler_memory_gib: float,
+    minimum_single_task_memory_gib: float,
+) -> Dict[str, object]:
+    """Describe a padded scheduler request for one modeled minimum schedule.
+
+    The request preserves the wave packing produced under the caller's CPU and
+    aggregate-memory caps. It is intentionally a permissive execution floor,
+    not a convergence or scientific-sufficiency claim.
+    """
+
+    science_wall_fraction = (
+        planning_utilization
+        - pilot_budget_fraction
+        - finalization_headroom_fraction
+    )
+    waves = [
+        wave
+        for stage in minimum_stages
+        for wave in (
+            stage.get("resource_waves", [])
+            if isinstance(stage.get("resource_waves"), list) else []
+        )
+        if isinstance(wave, Mapping)
+    ]
+    parallel_cpus = max(
+        (int(wave.get("cpu_slots", 0)) for wave in waves), default=0
+    )
+    aggregate_memory = max(
+        (float(wave.get("memory_gib", 0.0)) for wave in waves), default=0.0
+    )
+    exact_requested_wall = (
+        float(minimum_wall_hours) / science_wall_fraction
+        if minimum_wall_hours is not None and science_wall_fraction > 0.0
+        else None
+    )
+    rounded_requested_wall = (
+        int(math.ceil(exact_requested_wall - 1.0e-12))
+        if exact_requested_wall is not None else None
+    )
+    resource_schedule_available = (
+        minimum_wall_hours is not None
+        and bool(waves)
+        and parallel_cpus <= maximum_parallel_cpus
+        and aggregate_memory <= maximum_memory_gib + 1.0e-12
+        and minimum_single_task_memory_gib <= maximum_memory_gib + 1.0e-12
+    )
+    fits_input_wall_cap = bool(
+        resource_schedule_available
+        and exact_requested_wall is not None
+        and exact_requested_wall <= maximum_wall_hours + 1.0e-12
+    )
+    if not resource_schedule_available:
+        request_status = "unavailable_within_cpu_or_memory_caps"
+    elif fits_input_wall_cap:
+        request_status = "available_within_all_input_caps"
+    else:
+        request_status = "requires_larger_wall_time"
+    return {
+        "request_schema": "salsbury-permissive-minimum-resource-request-v1",
+        "request_scope": request_scope,
+        "status": request_status,
+        "recommended_request": {
+            "parallel_cpus": parallel_cpus if parallel_cpus > 0 else None,
+            "aggregate_memory_gib": (
+                float(math.ceil(aggregate_memory)) if aggregate_memory > 0.0
+                else None
+            ),
+            "wall_hours": rounded_requested_wall,
+        },
+        "unrounded_request": {
+            "aggregate_memory_gib": aggregate_memory or None,
+            "wall_hours": exact_requested_wall,
+        },
+        "modeled_minimum": {
+            "cpu_hours": minimum_cpu_hours,
+            "science_critical_path_hours": minimum_wall_hours,
+            "single_task_memory_floor_gib": minimum_single_task_memory_gib,
+        },
+        "input_caps": {
+            "parallel_cpus": maximum_parallel_cpus,
+            "aggregate_memory_gib": maximum_memory_gib,
+            "wall_hours": maximum_wall_hours,
+        },
+        "fits_input_wall_cap": fits_input_wall_cap,
+        "additional_wall_hours_required": (
+            max(0, int(math.ceil(exact_requested_wall - maximum_wall_hours)))
+            if exact_requested_wall is not None else None
+        ),
+        "padding_factors": {
+            "planning_utilization": planning_utilization,
+            "pilot_budget_fraction": pilot_budget_fraction,
+            "finalization_headroom_fraction": finalization_headroom_fraction,
+            "science_wall_fraction": science_wall_fraction,
+            "scheduler_memory_safety_factor": memory_safety_factor,
+            "scheduler_memory_overhead_gib_per_task": memory_overhead_gib,
+            "scheduler_minimum_memory_gib_per_task": (
+                minimum_scheduler_memory_gib
+            ),
+            "modeled_task_runtime_padding": (
+                "already included in the supplied calibrated task costs; the "
+                "campaign planner does not apply a second time multiplier"
+            ),
+        },
+        "interpretation": (
+            "CPU and memory preserve the modeled minimum resource-wave schedule "
+            "under the supplied caps. Wall time reverses the configured campaign "
+            "utilization and pilot/finalization reserves, then rounds up to a "
+            "whole scheduler hour."
+        ),
+        "warning": {
+            "severity": "warning",
+            "code": "PERMISSIVE_MINIMUM_NOT_SCIENTIFIC_SUFFICIENCY",
+            "message": (
+                "This is a permissive minimum for the reported workflow scope "
+                "and sampling floors. It does not establish adequate "
+                "sampling, convergence, equilibration, or biological validity; "
+                "the scientific question may require more time, memory, CPUs, "
+                "frames, replicas, or enabled methods."
+            ),
+        },
+    }
 
 
 _ALTERNATIVE_CLUSTERING_FIT_PROFILES: Mapping[str, Mapping[str, object]] = {
@@ -312,6 +560,9 @@ def plan_campaign_resource_budget(
     planning_utilization: float = 0.85,
     pilot_budget_fraction: float = 0.05,
     finalization_headroom_fraction: float = 0.0,
+    memory_safety_factor: float = 1.0,
+    memory_overhead_gib: float = 0.0,
+    minimum_scheduler_memory_gib: float = 0.0,
 ) -> Dict[str, object]:
     """Allocate one hard CPU/wall envelope across an analysis campaign.
 
@@ -335,6 +586,15 @@ def plan_campaign_resource_budget(
         )
     wall_hours = _positive_number(maximum_wall_hours, "maximum_wall_hours")
     memory_gib = _positive_number(maximum_memory_gib, "maximum_memory_gib")
+    memory_factor = _positive_number(
+        memory_safety_factor, "memory_safety_factor"
+    )
+    memory_overhead = _nonnegative_number(
+        memory_overhead_gib, "memory_overhead_gib"
+    )
+    minimum_scheduler_memory = _nonnegative_number(
+        minimum_scheduler_memory_gib, "minimum_scheduler_memory_gib"
+    )
     utilization = _fraction(planning_utilization, "planning_utilization")
     pilot_fraction = _fraction(
         pilot_budget_fraction, "pilot_budget_fraction", allow_zero=True
@@ -584,6 +844,34 @@ def plan_campaign_resource_budget(
             retained = [
                 integer_stride_selected_count(value, stride) for value in source
             ]
+            embedded_contract = row.get("scientific_sampling_requirements")
+            profile = (
+                profile_from_contract(embedded_contract)
+                if isinstance(embedded_contract, Mapping) else None
+            )
+            if profile is not None and profile.minimum_frames_per_replica > 0:
+                system_ids = row.get("system_ids_per_replica")
+                intervals = row.get("frame_intervals_ns_per_replica")
+                spans = row.get("source_time_spans_ns_per_replica")
+                assessment = assess_raw_sampling(
+                    profile,
+                    selected_frames_per_replica=retained,
+                    source_frames_per_replica=source,
+                    system_ids_per_replica=(
+                        [str(value) for value in system_ids]
+                        if isinstance(system_ids, list) else None
+                    ),
+                    integer_stride=stride,
+                    frame_intervals_ns_per_replica=(
+                        [float(value) for value in intervals]
+                        if isinstance(intervals, list) else None
+                    ),
+                    source_time_spans_ns_per_replica=(
+                        [float(value) for value in spans]
+                        if isinstance(spans, list) else None
+                    ),
+                )
+                return bool(assessment["keep_enabled"])
             if row["replica_sampling_mode"] == "balanced_pooled":
                 # The declared pilot is a pooled technical minimum.  A single
                 # common stride preserves temporal spacing and each replica's
@@ -597,10 +885,10 @@ def plan_campaign_resource_budget(
                 for minimum in [int(row["minimum_frames_per_replica"])]
             )
 
-        # Refine the common integer stride only until each task's declared
-        # minimum is met at its actual sampling scope.  Pooled methods use the
-        # total retained observation count; replica-resolved methods retain the
-        # historical per-replica gate.
+        # Refine the common integer stride until every registered scientific
+        # method meets both its per-replica and per-system contract. Project-
+        # local preprocessing tasks without a registered profile retain their
+        # declared pooled or replica-resolved technical minimum.
         while stride > 1 and any(
             not minimum_is_satisfied(row, stride) for row in rows
         ):
@@ -668,6 +956,16 @@ def plan_campaign_resource_budget(
             )
         return float(row["estimated_peak_memory_gib"])
 
+    def task_scheduler_memory(
+        row: Mapping[str, object], counts: Sequence[int]
+    ) -> float:
+        return max(
+            minimum_scheduler_memory,
+            float(math.ceil(
+                task_memory(row, counts) * memory_factor + memory_overhead
+            )),
+        )
+
     def known_costs(selection: Mapping[str, Sequence[int]]) -> Dict[str, float]:
         costs = {}
         for row in normalized:
@@ -698,10 +996,37 @@ def plan_campaign_resource_budget(
                 )
                 for bundle_id, bundle_rows in bundles.items()
             }
+            bundle_resources = []
+            for bundle_id, bundle_rows in bundles.items():
+                bundle_resources.append({
+                    "item_id": bundle_id,
+                    "cpu_slots": max(
+                        min(maximum_parallel_cpus, int(row["effective_cpu_cap"]))
+                        for row in bundle_rows
+                    ),
+                    "memory_gib": max(
+                        task_scheduler_memory(
+                            row, selection[str(row["task_id"])]
+                        )
+                        for row in bundle_rows
+                    ),
+                    "wall_hours": bundle_walls[bundle_id],
+                })
+            try:
+                resource_waves = pack_resource_waves(
+                    bundle_resources,
+                    maximum_parallel_cpus=maximum_parallel_cpus,
+                    maximum_parallel_memory_gib=memory_gib,
+                )
+            except ResourcePlanningError:
+                return None, []
             longest = max(bundle_walls.values())
             lower_bound = max(
                 stage_cpu_hours / maximum_parallel_cpus,
                 longest,
+            )
+            packed_wall = sum(
+                float(wave["wall_hours"]) for wave in resource_waves
             )
             useful = sum(
                 max(int(row["effective_cpu_cap"]) for row in bundle_rows)
@@ -715,10 +1040,12 @@ def plan_campaign_resource_budget(
                 "maximum_useful_parallel_cpus": useful,
                 "planned_parallel_cpus": min(maximum_parallel_cpus, useful),
                 "estimated_wall_hours_lower_bound": lower_bound,
+                "estimated_wall_hours_with_resource_waves": packed_wall,
+                "resource_waves": resource_waves,
                 "task_ids": [str(row["task_id"]) for row in rows],
                 "execution_bundle_wall_hours": bundle_walls,
             })
-            total_wall += lower_bound
+            total_wall += packed_wall
         return total_wall, stages
 
     calibration_required = sorted(
@@ -771,22 +1098,30 @@ def plan_campaign_resource_budget(
                 "workflow_id": str(row.get("workflow_id", "base")),
                 "task_scope": str(row.get("task_scope", "unspecified")),
                 "configuration_switch": memory_configuration_switch(row),
-                "required_memory_gib": task_memory(
+                "required_working_set_gib": task_memory(
+                    row, selected[str(row["task_id"])]
+                ),
+                "required_memory_gib": task_scheduler_memory(
                     row, selected[str(row["task_id"])]
                 ),
             }
             for row in normalized
         ),
-        key=lambda row: (-float(row["required_memory_gib"]), str(row["task_id"])),
+        key=lambda row: (
+            -float(row["required_memory_gib"]), str(row["task_id"])
+        ),
     )
     minimum_required_memory_gib = max(
-        float(row["required_memory_gib"]) for row in minimum_memory_rows
+        float(row["required_memory_gib"])
+        for row in minimum_memory_rows
     )
     oversized_memory_rows = [
         {
             **row,
             "configured_memory_gib": memory_gib,
-            "shortfall_gib": float(row["required_memory_gib"]) - memory_gib,
+            "shortfall_gib": (
+                float(row["required_memory_gib"]) - memory_gib
+            ),
         }
         for row in minimum_memory_rows
         if float(row["required_memory_gib"]) > memory_gib + 1.0e-12
@@ -827,77 +1162,161 @@ def plan_campaign_resource_budget(
             "and maximum frame constraints for: "
             + ", ".join(stride_maximum_overflows)
         )
-    allocation_order = []
-    if not infeasibility_reasons and not calibration_required:
-        while True:
-            current_costs = known_costs(selected)
-            current_total = sum(current_costs.values())
-            candidates = []
-            for group_id, rows in groups.items():
-                current_budget = group_budgets[group_id]
-                maximum_budget = min(
-                    int(row["maximum_frames_per_replica"]) for row in rows
-                )
-                maximum_budget = min(
-                    maximum_budget,
-                    max(
+    def maximum_group_budget(rows: Sequence[Mapping[str, object]]) -> int:
+        return min(
+            min(int(row["maximum_frames_per_replica"]) for row in rows),
+            max(
+                int(value)
+                for row in rows
+                for value in row["source_frames_per_replica"]  # type: ignore[union-attr]
+            ),
+        )
+
+    def upgrade_candidates() -> tuple[
+        list[Dict[str, object]], list[str], list[str]
+    ]:
+        """Return the next deterministic stride upgrade for every open group.
+
+        ``required_science_wall_hours`` expresses both CPU-hour and packed-wall
+        feasibility on the same absolute wall-time axis.  Ordering upgrades by
+        the earliest resource frontier at which they become possible makes the
+        allocation path independent of the final requested wall limit.  A
+        longer envelope therefore extends the shorter plan instead of replacing
+        inexpensive earlier upgrades with a newly affordable expensive one.
+        """
+
+        current_total = sum(known_costs(selected).values())
+        candidates: list[Dict[str, object]] = []
+        memory_blocked: list[str] = []
+        at_ceiling: list[str] = []
+        for group_id, rows in groups.items():
+            current_budget = group_budgets[group_id]
+            maximum_budget = maximum_group_budget(rows)
+            if current_budget >= maximum_budget:
+                at_ceiling.append(group_id)
+                continue
+            next_budget = min(
+                maximum_budget,
+                max(current_budget + 1, current_budget * 2),
+            )
+            proposed = {key: list(values) for key, values in selected.items()}
+            next_stride, next_group_counts = group_selection(rows, next_budget)
+            gain = 0.0
+            for row in rows:
+                task_id = str(row["task_id"])
+                next_counts = next_group_counts[task_id]
+                gain += float(row["priority_weight"]) * (
+                    sum(next_counts) - sum(selected[task_id])
+                ) / max(
+                    1,
+                    sum(
                         int(value)
-                        for row in rows
                         for value in row["source_frames_per_replica"]  # type: ignore[union-attr]
                     ),
                 )
-                if current_budget >= maximum_budget:
-                    continue
-                next_budget = min(
-                    maximum_budget,
-                    max(current_budget + 1, current_budget * 2),
-                )
-                proposed = {key: list(values) for key, values in selected.items()}
-                next_stride, next_group_counts = group_selection(rows, next_budget)
-                gain = 0.0
-                for row in rows:
-                    task_id = str(row["task_id"])
-                    next_counts = next_group_counts[task_id]
-                    gain += float(row["priority_weight"]) * (
-                        sum(next_counts) - sum(selected[task_id])
-                    ) / max(1, sum(int(value) for value in row["source_frames_per_replica"]))  # type: ignore[union-attr]
-                    proposed[task_id] = next_counts
-                proposed_costs = known_costs(proposed)
-                proposed_total = sum(proposed_costs.values())
-                delta = proposed_total - current_total
-                proposed_wall, _ = schedule_summary(proposed)
-                proposed_memory_fits = all(
-                    task_memory(row, proposed[str(row["task_id"])])
-                    <= memory_gib + 1.0e-12
-                    for row in normalized
-                )
-                if (
-                    delta >= 0.0
-                    and proposed_total <= science_cpu_hours + 1.0e-12
-                    and proposed_wall is not None
-                    and proposed_wall <= science_wall_hours + 1.0e-12
-                    and proposed_memory_fits
-                ):
-                    score = math.inf if delta == 0.0 else gain / delta
-                    candidates.append((
-                        score, gain, group_id, next_budget, next_stride, proposed
-                    ))
-            if not candidates:
-                break
-            _, _, group_id, next_budget, next_stride, proposed = max(
-                candidates, key=lambda row: (row[0], row[1], row[2])
+                proposed[task_id] = next_counts
+            proposed_costs = known_costs(proposed)
+            proposed_total = sum(proposed_costs.values())
+            delta = proposed_total - current_total
+            proposed_wall, _ = schedule_summary(proposed)
+            proposed_memory_fits = all(
+                task_scheduler_memory(row, proposed[str(row["task_id"])])
+                <= memory_gib + 1.0e-12
+                for row in normalized
             )
+            if proposed_wall is None or not proposed_memory_fits:
+                memory_blocked.append(group_id)
+                continue
+            if delta < -1.0e-12:
+                raise ResourcePlanningError(
+                    f"allocation upgrade for {group_id} reduces modeled cost"
+                )
+            score = math.inf if delta <= 1.0e-12 else gain / delta
+            candidates.append({
+                "score": score,
+                "gain": gain,
+                "balance_group": group_id,
+                "next_budget": next_budget,
+                "next_stride": next_stride,
+                "proposed": proposed,
+                "proposed_cpu_hours": proposed_total,
+                "proposed_wall_hours": proposed_wall,
+                "required_science_wall_hours": max(
+                    proposed_total / maximum_parallel_cpus,
+                    proposed_wall,
+                ),
+            })
+        return candidates, memory_blocked, at_ceiling
+
+    allocation_order = []
+    allocation_frontier_wall_hours = max(
+        minimum_known_cpu_hours / maximum_parallel_cpus,
+        0.0 if minimum_wall is None else minimum_wall,
+    )
+    allocation_stop_reason = "allocation_not_attempted"
+    final_upgrade_candidates: list[Dict[str, object]] = []
+    final_memory_blocked_groups: list[str] = []
+    final_groups_at_ceiling: list[str] = []
+    if not infeasibility_reasons and not calibration_required:
+        while True:
+            (
+                candidates,
+                memory_blocked_groups,
+                groups_at_ceiling,
+            ) = upgrade_candidates()
+            final_upgrade_candidates = candidates
+            final_memory_blocked_groups = memory_blocked_groups
+            final_groups_at_ceiling = groups_at_ceiling
+            if not candidates:
+                allocation_stop_reason = (
+                    "memory_ceiling_blocks_remaining_upgrades"
+                    if memory_blocked_groups else
+                    "all_eligible_frame_ceilings_reached"
+                )
+                break
+            next_frontier = min(
+                float(row["required_science_wall_hours"])
+                for row in candidates
+            )
+            allocation_frontier_wall_hours = max(
+                allocation_frontier_wall_hours, next_frontier
+            )
+            if (
+                allocation_frontier_wall_hours
+                > science_wall_hours + 1.0e-12
+            ):
+                allocation_stop_reason = (
+                    "next_stride_upgrade_exceeds_campaign_envelope"
+                )
+                break
+            active = [
+                row for row in candidates
+                if float(row["required_science_wall_hours"])
+                <= allocation_frontier_wall_hours + 1.0e-12
+            ]
+            chosen = max(
+                active,
+                key=lambda row: (
+                    float(row["score"]),
+                    float(row["gain"]),
+                    str(row["balance_group"]),
+                ),
+            )
+            group_id = str(chosen["balance_group"])
             previous_budget = group_budgets[group_id]
             previous_stride = group_strides[group_id]
-            group_budgets[group_id] = next_budget
-            group_strides[group_id] = next_stride
-            selected = proposed
+            group_budgets[group_id] = int(chosen["next_budget"])
+            group_strides[group_id] = int(chosen["next_stride"])
+            selected = chosen["proposed"]  # type: ignore[assignment]
             allocation_order.append({
                 "balance_group": group_id,
                 "previous_maximum_frames_per_replica": previous_budget,
-                "new_maximum_frames_per_replica": next_budget,
+                "new_maximum_frames_per_replica": group_budgets[group_id],
                 "previous_integer_stride": previous_stride,
-                "new_integer_stride": next_stride,
+                "new_integer_stride": group_strides[group_id],
+                "activation_science_wall_hours": float(
+                    chosen["required_science_wall_hours"]
+                ),
             })
 
     final_costs = known_costs(selected)
@@ -912,6 +1331,7 @@ def plan_campaign_resource_budget(
         source_count = sum(source_counts)
         all_frames = counts == source_counts
         selected_memory_gib = task_memory(row, counts)
+        selected_scheduler_memory_gib = task_scheduler_memory(row, counts)
         task_reports.append({
             **row,
             "selected_physical_frames_per_replica": counts,
@@ -943,6 +1363,9 @@ def plan_campaign_resource_budget(
             "estimated_cpu_hours": final_costs.get(task_id),
             "estimated_peak_memory_gib_at_selected_observations": (
                 selected_memory_gib
+            ),
+            "estimated_scheduler_memory_gib_at_selected_observations": (
+                selected_scheduler_memory_gib
             ),
             "estimated_wall_hours_at_effective_cpu_cap": (
                 final_costs[task_id]
@@ -978,12 +1401,201 @@ def plan_campaign_resource_budget(
             "member_observations_are_independent_replicas": False,
         })
 
+    scientific_below_standard = []
+    scientific_postrun_diagnostics = []
+    for report in task_reports:
+        module_id = str(report.get("module_id", ""))
+        try:
+            embedded_contract = report.get("scientific_sampling_requirements")
+            profile = (
+                profile_from_contract(embedded_contract)
+                if isinstance(embedded_contract, Mapping)
+                else scientific_sampling_profile(module_id)
+            )
+        except ScientificSamplingError:
+            # Preprocessing and project-local extension tasks are not analysis
+            # estimators.  Their own explicit task contract remains authoritative.
+            continue
+        if profile.minimum_frames_per_replica == 0:
+            continue
+        system_ids = report.get("system_ids_per_replica")
+        if not isinstance(system_ids, list):
+            system_ids = None
+        assessment = assess_raw_sampling(
+            profile,
+            selected_frames_per_replica=report[
+                "selected_physical_frames_per_replica"
+            ],
+            source_frames_per_replica=report["source_frames_per_replica"],
+            system_ids_per_replica=system_ids,
+            integer_stride=int(report["integer_stride"]),
+            frame_intervals_ns_per_replica=(
+                [
+                    float(value) for value in report[
+                        "frame_intervals_ns_per_replica"
+                    ]
+                ]
+                if isinstance(
+                    report.get("frame_intervals_ns_per_replica"), list
+                ) else None
+            ),
+            source_time_spans_ns_per_replica=(
+                [
+                    float(value) for value in report[
+                        "source_time_spans_ns_per_replica"
+                    ]
+                ]
+                if isinstance(
+                    report.get("source_time_spans_ns_per_replica"), list
+                ) else None
+            ),
+        )
+        if isinstance(embedded_contract, Mapping):
+            assessment["requirements"] = dict(embedded_contract)
+            assessment["policy_id"] = str(
+                embedded_contract.get("policy_id", POLICY_ID)
+            )
+        report["scientific_sampling_assessment"] = assessment
+        if (
+            isinstance(embedded_contract, Mapping)
+            and not bool(assessment["keep_enabled"])
+        ):
+            scientific_below_standard.append({
+                "task_id": str(report["task_id"]),
+                "module_id": module_id,
+                "configuration_switch": memory_configuration_switch(report),
+                "raw_coverage_status": assessment["raw_coverage_status"],
+                "required_frames_per_replica": assessment.get(
+                    "required_frames_per_replica"
+                ),
+                "selected_physical_frames_per_replica": assessment.get(
+                    "selected_physical_frames_per_replica",
+                    report["selected_physical_frames_per_replica"],
+                ),
+            })
+        if (
+            assessment.get("postrun_event_or_transition_diagnostic") is not None
+            or assessment.get("temporal_resolution_validation_required")
+        ):
+            scientific_postrun_diagnostics.append({
+                "task_id": str(report["task_id"]),
+                "module_id": module_id,
+                "minimum_reported_events_or_transitions": assessment.get(
+                    "postrun_event_or_transition_diagnostic"
+                ),
+                "temporal_resolution_validation_required": assessment.get(
+                    "temporal_resolution_validation_required"
+                ),
+                "planner_estimates_autocorrelation_or_event_rates": False,
+            })
+
+    if scientific_below_standard:
+        infeasibility_reasons.append(
+            "enabled tasks fall below their scientific per-replica, per-system, "
+            "or ordered-time sampling floors: "
+            + ", ".join(
+                str(row["task_id"]) for row in scientific_below_standard
+            )
+        )
     if calibration_required:
         feasibility = "pilot_required"
     elif infeasibility_reasons:
         feasibility = "infeasible"
     else:
         feasibility = "feasible"
+    unused_science_cpu_hours = max(
+        0.0, science_cpu_hours - final_known_cpu_hours
+    )
+    science_cpu_hour_fraction = (
+        final_known_cpu_hours / science_cpu_hours
+        if science_cpu_hours > 0.0 else 0.0
+    )
+    science_wall_time_fraction = (
+        final_wall / science_wall_hours
+        if final_wall is not None and science_wall_hours > 0.0 else None
+    )
+    average_parallel_cpus = (
+        final_known_cpu_hours / final_wall
+        if final_wall is not None and final_wall > 0.0 else None
+    )
+    next_upgrade = (
+        min(
+            final_upgrade_candidates,
+            key=lambda row: float(row["required_science_wall_hours"]),
+        )
+        if final_upgrade_candidates else None
+    )
+    if unused_science_cpu_hours <= 1.0e-12:
+        unused_interpretation = "The science CPU-hour budget is fully allocated."
+    elif (
+        science_wall_time_fraction is not None
+        and science_wall_time_fraction >= 0.9
+    ):
+        unused_interpretation = (
+            "The campaign nearly saturates its science wall-time envelope. "
+            "Unused CPU-hours reflect limited task parallelism, dependency stages, "
+            "and per-task CPU caps; they are not omitted required analysis."
+        )
+    elif allocation_stop_reason == "all_eligible_frame_ceilings_reached":
+        unused_interpretation = (
+            "Every eligible task reached its configured frame ceiling. Unused "
+            "CPU-hours reflect finite work and limited parallelism; the planner "
+            "does not manufacture duplicate analysis to occupy idle cores."
+        )
+    elif allocation_stop_reason == "memory_ceiling_blocks_remaining_upgrades":
+        unused_interpretation = (
+            "The remaining stride upgrades exceed the aggregate memory policy. "
+            "Unused CPU-hours cannot be spent without increasing memory or changing "
+            "the enabled-method configuration."
+        )
+    else:
+        unused_interpretation = (
+            "The next deterministic stride upgrade exceeds the remaining campaign "
+            "wall/CPU envelope. Unused CPU-hours are stranded by discrete stride "
+            "steps and available parallelism, not silently discarded work."
+        )
+    useful_parallel_cpu_ceiling = workflow_useful_parallel_cpu_ceiling(
+        normalized
+    )
+    effective_parallel_cpu_cap = min(
+        maximum_parallel_cpus, useful_parallel_cpu_ceiling
+    )
+    resource_warnings = []
+    if maximum_parallel_cpus > useful_parallel_cpu_ceiling:
+        cpu_label = "CPU" if effective_parallel_cpu_cap == 1 else "CPUs"
+        resource_warnings.append({
+            "severity": "warning",
+            "code": "REQUESTED_CPUS_EXCEED_USEFUL_PARALLELISM",
+            "requested_parallel_cpus": maximum_parallel_cpus,
+            "useful_parallel_cpu_ceiling": useful_parallel_cpu_ceiling,
+            "effective_parallel_cpu_cap": effective_parallel_cpu_cap,
+            "excess_parallel_cpus": (
+                maximum_parallel_cpus - useful_parallel_cpu_ceiling
+            ),
+            "message": (
+                f"You requested {maximum_parallel_cpus} concurrent CPUs, but "
+                f"the resolved workflow can use at most "
+                f"{useful_parallel_cpu_ceiling}. The execution cap and generated "
+                f"Slurm submission will be changed to "
+                f"{effective_parallel_cpu_cap} {cpu_label}."
+            ),
+        })
+    permissive_minimum_request = _permissive_minimum_resource_request(
+        request_scope="all_currently_enabled_tasks_at_configured_sampling_floors",
+        minimum_cpu_hours=minimum_known_cpu_hours,
+        minimum_wall_hours=minimum_wall,
+        minimum_stages=minimum_stages,
+        maximum_parallel_cpus=maximum_parallel_cpus,
+        maximum_wall_hours=wall_hours,
+        maximum_memory_gib=memory_gib,
+        planning_utilization=utilization,
+        pilot_budget_fraction=pilot_fraction,
+        finalization_headroom_fraction=finalization_fraction,
+        memory_safety_factor=memory_factor,
+        memory_overhead_gib=memory_overhead,
+        minimum_scheduler_memory_gib=minimum_scheduler_memory,
+        minimum_single_task_memory_gib=minimum_required_memory_gib,
+    )
     return {
         "planning_schema": "salsbury-campaign-resource-plan-v1",
         "technical_status": "complete",
@@ -991,8 +1603,13 @@ def plan_campaign_resource_budget(
         "feasibility_status": feasibility,
         "execution_authorized": feasibility == "feasible",
         "maximum_parallel_cpus_input": maximum_parallel_cpus,
+        "effective_parallel_cpu_cap": effective_parallel_cpu_cap,
         "maximum_wall_hours_input": wall_hours,
         "maximum_memory_gib_input": memory_gib,
+        "maximum_parallel_memory_gib_input": memory_gib,
+        "scheduler_memory_safety_factor": memory_factor,
+        "memory_overhead_gib": memory_overhead,
+        "minimum_scheduler_memory_gib": minimum_scheduler_memory,
         "raw_capacity_cpu_hours": raw_cpu_hours,
         "planning_utilization": utilization,
         "planned_capacity_cpu_hours": planned_cpu_hours,
@@ -1006,14 +1623,92 @@ def plan_campaign_resource_budget(
         "minimum_wall_hours_lower_bound": minimum_wall,
         "estimated_selected_cpu_hours": final_known_cpu_hours,
         "estimated_selected_wall_hours_lower_bound": final_wall,
-        "unused_science_cpu_hours": max(
-            0.0, science_cpu_hours - final_known_cpu_hours
-        ),
+        "unused_science_cpu_hours": unused_science_cpu_hours,
+        "resource_budget_utilization": {
+            "science_cpu_hour_fraction": science_cpu_hour_fraction,
+            "science_wall_time_fraction": science_wall_time_fraction,
+            "average_parallel_cpus_during_selected_schedule": (
+                average_parallel_cpus
+            ),
+            "maximum_parallel_cpus": maximum_parallel_cpus,
+        },
+        "warning_count": len(resource_warnings),
+        "resource_warnings": resource_warnings,
+        "permissive_minimum_resource_request": permissive_minimum_request,
+        "workflow_parallel_capacity": {
+            "requested_parallel_cpu_cap": maximum_parallel_cpus,
+            "useful_parallel_cpu_ceiling": useful_parallel_cpu_ceiling,
+            "effective_parallel_cpu_cap": effective_parallel_cpu_cap,
+            "coordinate_cache_replica_parallel_cpu_ceiling": max(
+                (
+                    int(row.get("intrinsic_cpu_cap", row.get("effective_cpu_cap", 1)))
+                    for row in normalized
+                    if row.get("module_id") == "coordinate_cache"
+                ),
+                default=0,
+            ),
+            "interpretation": (
+                "The useful ceiling is the largest sum of independent execution "
+                "bundle CPU caps in one dependency stage. Aggregate memory, the "
+                "configured CPU envelope, scheduler policy, and queue state may "
+                "reduce the practical request."
+            ),
+        },
+        "allocation_saturation": {
+            "allocation_strategy": (
+                "progressive_absolute_resource_frontier_v1"
+            ),
+            "stop_reason": allocation_stop_reason,
+            "groups_total": len(groups),
+            "groups_at_frame_ceiling": len(final_groups_at_ceiling),
+            "groups_below_frame_ceiling": (
+                len(groups) - len(final_groups_at_ceiling)
+            ),
+            "memory_blocked_groups": sorted(final_memory_blocked_groups),
+            "next_upgrade_balance_group": (
+                str(next_upgrade["balance_group"])
+                if next_upgrade is not None else None
+            ),
+            "next_upgrade_required_science_wall_hours": (
+                float(next_upgrade["required_science_wall_hours"])
+                if next_upgrade is not None else None
+            ),
+            "unused_cpu_hour_interpretation": unused_interpretation,
+            "monotonicity_contract": (
+                "For identical tasks, CPU ceiling, memory ceiling, and planning "
+                "fractions, increasing maximum wall time extends the deterministic "
+                "allocation path and cannot reduce an earlier task's frame coverage."
+            ),
+        },
         "tasks_requiring_project_pilots": calibration_required,
         "infeasibility_reasons": infeasibility_reasons,
+        "scientific_sampling_feasibility": {
+            "policy_id": POLICY_ID,
+            "raw_coverage_status": (
+                "all_enabled_methods_meet_or_exhaust_available_source"
+                if not scientific_below_standard else
+                "one_or_more_enabled_methods_below_standard"
+            ),
+            "below_standard_tasks": scientific_below_standard,
+            "configuration_switches_to_disable_or_replan": sorted({
+                str(row["configuration_switch"])
+                for row in scientific_below_standard
+            }),
+            "postrun_diagnostics": scientific_postrun_diagnostics,
+            "source_limited_policy": (
+                "A complete short source remains eligible for analysis. Source "
+                "duration and selected span are reported as provenance; only "
+                "unmet sample-count or applicable ordered-method resolution "
+                "requirements place a task below the planning floor."
+            ),
+        },
         "memory_feasibility": {
             "configured_memory_gib": memory_gib,
             "minimum_required_memory_gib": minimum_required_memory_gib,
+            "minimum_required_working_set_gib": max(
+                float(row["required_working_set_gib"])
+                for row in minimum_memory_rows
+            ),
             "recommended_memory_gib": float(
                 math.ceil(minimum_required_memory_gib)
             ),
@@ -1035,6 +1730,10 @@ def plan_campaign_resource_budget(
                 if oversized_memory_rows else
                 "All enabled task minima fit the configured memory ceiling."
             ),
+            "memory_limit_semantics": (
+                "maximum simultaneous safety-adjusted scheduler memory across "
+                "all active campaign tasks"
+            ),
         },
         "minimum_stages": minimum_stages,
         "stages": final_stages,
@@ -1042,8 +1741,10 @@ def plan_campaign_resource_budget(
         "tasks": task_reports,
         "execution_contract": (
             "The CPU and wall limits apply to the complete campaign. Enabled tasks "
-            "receive declared minimum physical-frame coverage before additional "
-            "frames are allocated. Infeasible or uncalibrated plans fail closed; "
+            "receive declared standard scientific raw-frame coverage before additional "
+            "frames are allocated. Dependency stages are packed into waves that "
+            "respect both aggregate CPU and safety-adjusted memory ceilings. "
+            "Infeasible or uncalibrated plans fail closed; "
             "no module is silently disabled and no scientific minimum is silently "
             "relaxed."
         ),
@@ -1051,6 +1752,1248 @@ def plan_campaign_resource_budget(
             "Computational affordability and deterministic coverage are not evidence "
             "of equilibration, convergence, metastability, kinetics, causality, or "
             "independent sampling."
+        ),
+    }
+
+
+def plan_projection_coupled_campaign_resource_budget(
+    tasks: Sequence[Mapping[str, object]],
+    *,
+    maximum_parallel_cpus: int,
+    maximum_wall_hours: float,
+    maximum_memory_gib: float,
+    planning_utilization: float = 0.85,
+    pilot_budget_fraction: float = 0.05,
+    finalization_headroom_fraction: float = 0.0,
+    memory_safety_factor: float = 1.0,
+    memory_overhead_gib: float = 0.0,
+    minimum_scheduler_memory_gib: float = 0.0,
+    maximum_coupling_iterations: int = 12,
+) -> Dict[str, object]:
+    """Replan PCA projections and their clustering fits to one fixed point.
+
+    A conformational-view clustering fit consumes the observations selected by
+    its view's ``common_pca`` projection task.  Replanning a saved campaign must
+    therefore replace every fit task's source stream whenever that parent
+    selection changes.  The ordinary budget allocator is rerun until the parent
+    selection and every child source agree exactly; a missing parent or failure
+    to converge is an error rather than permission to use stale observations.
+    """
+
+    if (
+        isinstance(maximum_coupling_iterations, bool)
+        or not isinstance(maximum_coupling_iterations, int)
+        or maximum_coupling_iterations <= 0
+    ):
+        raise ResourcePlanningError(
+            "maximum_coupling_iterations must be a positive integer"
+        )
+    working = []
+    for raw in tasks:
+        row = dict(raw)
+        if (
+            row.get("task_scope") == "conformational_view"
+            and row.get("module_id") == "common_pca"
+            and "projection_declared_maximum_frames_per_replica" in row
+        ):
+            row["maximum_frames_per_replica"] = int(
+                row["projection_declared_maximum_frames_per_replica"]
+            )
+            row.pop("dynamic_coupling_ceiling_per_replica", None)
+        working.append(row)
+    parent_ids: Dict[str, str] = {}
+    child_workflows = set()
+    for row in working:
+        workflow_id = row.get("workflow_id")
+        if row.get("task_scope") == "conformational_view_algorithm_fit":
+            if not isinstance(workflow_id, str) or not workflow_id:
+                raise ResourcePlanningError(
+                    f"clustering task {row.get('task_id')} has no workflow_id"
+                )
+            child_workflows.add(workflow_id)
+        if (
+            row.get("task_scope") == "conformational_view"
+            and row.get("module_id") == "common_pca"
+        ):
+            if not isinstance(workflow_id, str) or not workflow_id:
+                raise ResourcePlanningError(
+                    f"common-PCA task {row.get('task_id')} has no workflow_id"
+                )
+            if workflow_id in parent_ids:
+                raise ResourcePlanningError(
+                    f"workflow {workflow_id} has multiple common-PCA projection tasks"
+                )
+            parent_ids[workflow_id] = str(row.get("task_id"))
+    for workflow_id in sorted(child_workflows):
+        if workflow_id not in parent_ids:
+            raise ResourcePlanningError(
+                f"clustering workflow {workflow_id} has no common-PCA projection task"
+            )
+
+    history = []
+    updated_task_ids = set()
+    cycle_resolutions = []
+    phase_signatures: Dict[object, int] = {}
+    phase_states: list[Dict[str, list[int]]] = []
+    for iteration in range(1, maximum_coupling_iterations + 1):
+        plan = plan_campaign_resource_budget(
+            working,
+            maximum_parallel_cpus=maximum_parallel_cpus,
+            maximum_wall_hours=maximum_wall_hours,
+            maximum_memory_gib=maximum_memory_gib,
+            planning_utilization=planning_utilization,
+            pilot_budget_fraction=pilot_budget_fraction,
+            finalization_headroom_fraction=finalization_headroom_fraction,
+            memory_safety_factor=memory_safety_factor,
+            memory_overhead_gib=memory_overhead_gib,
+            minimum_scheduler_memory_gib=minimum_scheduler_memory_gib,
+        )
+        planned_rows = {
+            str(row["task_id"]): row
+            for row in plan["tasks"]  # type: ignore[union-attr]
+            if isinstance(row, Mapping)
+        }
+        parent_counts = {
+            workflow_id: [
+                int(value) for value in planned_rows[parent_id][
+                    "selected_physical_frames_per_replica"
+                ]
+            ]
+            for workflow_id, parent_id in parent_ids.items()
+        }
+        parent_effective_intervals = {}
+        parent_source_spans = {}
+        for workflow_id, parent_id in parent_ids.items():
+            parent_row = planned_rows[parent_id]
+            raw_intervals = parent_row.get("frame_intervals_ns_per_replica")
+            raw_spans = parent_row.get("source_time_spans_ns_per_replica")
+            if isinstance(raw_intervals, list):
+                parent_effective_intervals[workflow_id] = [
+                    float(value) * int(parent_row["integer_stride"])
+                    for value in raw_intervals
+                ]
+            if isinstance(raw_spans, list):
+                parent_source_spans[workflow_id] = [
+                    float(value) for value in raw_spans
+                ]
+        signature = tuple(
+            (workflow_id, tuple(values))
+            for workflow_id, values in sorted(parent_counts.items())
+        )
+        input_matches_projection = all(
+            [int(value) for value in row["source_frames_per_replica"]]
+            == parent_counts[str(row["workflow_id"])]
+            and (
+                str(row["workflow_id"]) not in parent_effective_intervals
+                or [
+                    float(value) for value in row.get(
+                        "frame_intervals_ns_per_replica", []
+                    )
+                ] == parent_effective_intervals[str(row["workflow_id"])]
+            )
+            for row in working
+            if row.get("task_scope") == "conformational_view_algorithm_fit"
+        )
+        stabilized_sources = parent_counts
+        stabilized_projection_ceilings: Dict[str, list[int]] = {}
+        if not input_matches_projection and signature in phase_signatures:
+            cycle_start = phase_signatures[signature]
+            cycle_states = phase_states[cycle_start:] + [parent_counts]
+            stabilized_sources = {
+                workflow_id: [
+                    min(state[workflow_id][index] for state in cycle_states)
+                    for index in range(len(parent_counts[workflow_id]))
+                ]
+                for workflow_id in parent_counts
+            }
+            stabilized_projection_ceilings = {
+                workflow_id: list(values)
+                for workflow_id, values in stabilized_sources.items()
+                if values != parent_counts[workflow_id]
+                or any(
+                    state[workflow_id] != values for state in cycle_states
+                )
+            }
+            cycle_resolutions.append({
+                "detected_at_iteration": iteration,
+                "cycle_start_iteration": cycle_start + 1,
+                "cycle_length": len(cycle_states) - 1,
+                "selected_componentwise_minimum_projection_counts": {
+                    workflow_id: list(values)
+                    for workflow_id, values in sorted(
+                        stabilized_projection_ceilings.items()
+                    )
+                },
+                "resolution": (
+                    "dynamically cap each oscillating projection at the "
+                    "componentwise minimum affordable cycle state, then replan "
+                    "all downstream clustering fits"
+                ),
+            })
+            phase_signatures = {}
+            phase_states = []
+        elif not input_matches_projection:
+            phase_signatures[signature] = len(phase_states)
+            phase_states.append({
+                workflow_id: list(values)
+                for workflow_id, values in parent_counts.items()
+            })
+
+        changed = []
+        parent_caps_changed = []
+        next_working = []
+        for raw in working:
+            row = dict(raw)
+            if (
+                row.get("task_scope") == "conformational_view"
+                and row.get("module_id") == "common_pca"
+                and str(row.get("workflow_id"))
+                in stabilized_projection_ceilings
+            ):
+                workflow_id = str(row["workflow_id"])
+                selected_ceiling = max(stabilized_sources[workflow_id])
+                declared_maximum = int(row.get(
+                    "projection_declared_maximum_frames_per_replica",
+                    row["maximum_frames_per_replica"],
+                ))
+                new_maximum = min(declared_maximum, selected_ceiling)
+                if int(row["maximum_frames_per_replica"]) != new_maximum:
+                    parent_caps_changed.append(str(row["task_id"]))
+                row.update({
+                    "maximum_frames_per_replica": new_maximum,
+                    "projection_declared_maximum_frames_per_replica": (
+                        declared_maximum
+                    ),
+                    "dynamic_coupling_ceiling_per_replica": selected_ceiling,
+                })
+            if row.get("task_scope") == "conformational_view_algorithm_fit":
+                workflow_id = str(row["workflow_id"])
+                selected_counts = stabilized_sources[workflow_id]
+                current_counts = [
+                    int(value) for value in row["source_frames_per_replica"]
+                ]
+                if current_counts != selected_counts:
+                    changed.append(str(row["task_id"]))
+                    updated_task_ids.add(str(row["task_id"]))
+                declared_minimum = int(row.get(
+                    "projection_declared_minimum_frames_per_replica",
+                    row["minimum_frames_per_replica"],
+                ))
+                maximum = max(selected_counts)
+                row.update({
+                    "source_frames_per_replica": list(selected_counts),
+                    "minimum_frames_per_replica": min(
+                        declared_minimum, maximum
+                    ),
+                    "maximum_frames_per_replica": maximum,
+                    "projection_declared_minimum_frames_per_replica": (
+                        declared_minimum
+                    ),
+                    "projection_source_task_id": parent_ids[workflow_id],
+                    "projection_source_counts_iteration_input": list(
+                        selected_counts
+                    ),
+                    "projection_source_limited_below_declared_minimum": (
+                        maximum < declared_minimum
+                    ),
+                })
+                if workflow_id in parent_effective_intervals:
+                    row["frame_intervals_ns_per_replica"] = list(
+                        parent_effective_intervals[workflow_id]
+                    )
+                if workflow_id in parent_source_spans:
+                    row["source_time_spans_ns_per_replica"] = list(
+                        parent_source_spans[workflow_id]
+                    )
+            next_working.append(row)
+        history.append({
+            "iteration": iteration,
+            "planned_projection_sources": {
+                workflow_id: list(values)
+                for workflow_id, values in sorted(parent_counts.items())
+            },
+            "stabilized_projection_ceilings": {
+                workflow_id: list(values)
+                for workflow_id, values in sorted(
+                    stabilized_projection_ceilings.items()
+                )
+            },
+            "clustering_fit_tasks_rebuilt": sorted(changed),
+            "projection_tasks_dynamically_capped": sorted(
+                parent_caps_changed
+            ),
+        })
+        if not changed and not parent_caps_changed:
+            for row in plan["tasks"]:  # type: ignore[union-attr]
+                if (
+                    isinstance(row, Mapping)
+                    and row.get("task_scope")
+                    == "conformational_view_algorithm_fit"
+                ):
+                    workflow_id = str(row["workflow_id"])
+                    if list(row["source_frames_per_replica"]) != parent_counts[
+                        workflow_id
+                    ]:
+                        raise ResourcePlanningError(
+                            "projection/clustering coupling verification failed for "
+                            f"{row['task_id']}"
+                        )
+            plan["projection_clustering_coupling"] = {
+                "coupling_schema": (
+                    "salsbury-projection-clustering-coupling-v1"
+                ),
+                "converged": True,
+                "iterations": iteration,
+                "projection_workflow_count": len(parent_ids),
+                "clustering_fit_task_count": sum(
+                    1
+                    for row in plan["tasks"]  # type: ignore[union-attr]
+                    if isinstance(row, Mapping)
+                    and row.get("task_scope")
+                    == "conformational_view_algorithm_fit"
+                ),
+                "rebuilt_clustering_fit_task_count": len(updated_task_ids),
+                "dynamic_cycle_resolution_count": len(cycle_resolutions),
+                "cycle_resolutions": cycle_resolutions,
+                "iteration_history": history,
+                "contract": (
+                    "Every clustering-fit source count equals the final selected "
+                    "physical-frame count of its workflow's common-PCA projection."
+                ),
+            }
+            return plan
+        working = next_working
+    raise ResourcePlanningError(
+        "projection/clustering campaign replanning did not converge within "
+        f"{maximum_coupling_iterations} iterations"
+    )
+
+
+def _overall_trajectory_stride_candidates(maximum_stride: int) -> list[int]:
+    """Return the standard interpretable overall-stride pilot grid."""
+
+    if maximum_stride <= 0:
+        raise ResourcePlanningError("maximum overall trajectory stride must be positive")
+    return [
+        stride for stride in (1, 2, 3, 4, 5, 10, 20, 100)
+        if stride <= maximum_stride
+    ]
+
+
+def _overall_trajectory_maximum_stride(
+    source_counts: Sequence[int], minimum_frames_per_replica: int,
+) -> int:
+    """Return the coarsest stride retaining the declared minimum everywhere."""
+
+    if minimum_frames_per_replica <= 0:
+        raise ResourcePlanningError(
+            "minimum retained frames per replica must be positive"
+        )
+    if any(count <= 0 for count in source_counts):
+        raise ResourcePlanningError(
+            "overall-stride source frame counts must be positive"
+        )
+    if min(source_counts) < minimum_frames_per_replica:
+        return 1
+    # ceil(N / stride) >= minimum.  The closed form avoids a long loop for
+    # million-frame local or workstation trajectories.
+    if minimum_frames_per_replica == 1:
+        return max(source_counts)
+    return max(
+        1,
+        min(
+            (count - 1) // (minimum_frames_per_replica - 1)
+            for count in source_counts
+        ),
+    )
+
+
+def _global_plan_information_metrics(
+    plan: Mapping[str, object],
+) -> Dict[str, float]:
+    """Score balanced normalized coverage across distinct analyses.
+
+    Raw observation totals would let a large pooled view dominate the overall
+    stride choice.  Instead, each task contributes the square root of its
+    normalized coverage.  The concave utility rewards additional coverage while
+    giving more value to preserving breadth across different analyses.  Declared
+    priority weights still apply, and technical minima remain hard feasibility
+    gates in the underlying campaign planner.
+    """
+
+    rows = plan.get("tasks")
+    if not isinstance(rows, list):
+        raise ResourcePlanningError("campaign plan has no task rows")
+    weighted_utility = 0.0
+    weight_total = 0.0
+    raw_selected_observations = 0.0
+    normalized_coverages: list[float] = []
+    parent_raw_counts = {
+        str(raw["workflow_id"]): list(
+            raw["global_stride_raw_source_frames_per_replica"]
+        )
+        for raw in rows
+        if isinstance(raw, Mapping)
+        and raw.get("task_scope") == "conformational_view"
+        and raw.get("module_id") == "common_pca"
+        and isinstance(raw.get("workflow_id"), str)
+        and isinstance(
+            raw.get("global_stride_raw_source_frames_per_replica"), list
+        )
+    }
+    for raw in rows:
+        if not isinstance(raw, Mapping) or raw.get("module_id") == "coordinate_cache":
+            continue
+        selected = raw.get("selected_physical_frame_count")
+        weight = raw.get("priority_weight", 1.0)
+        multiplier = raw.get("member_observation_multiplier", 1)
+        if (
+            isinstance(selected, bool)
+            or not isinstance(selected, int)
+            or isinstance(weight, bool)
+            or not isinstance(weight, (int, float))
+            or isinstance(multiplier, bool)
+            or not isinstance(multiplier, int)
+        ):
+            raise ResourcePlanningError(
+                f"task {raw.get('task_id')} cannot be scored for global-stride planning"
+            )
+        raw_counts = (
+            parent_raw_counts.get(str(raw.get("workflow_id")))
+            if raw.get("task_scope") == "conformational_view_algorithm_fit"
+            else raw.get("global_stride_raw_source_frames_per_replica")
+        )
+        if not isinstance(raw_counts, list) or not raw_counts:
+            raw_counts = raw.get("source_frames_per_replica")
+        if (
+            not isinstance(raw_counts, list)
+            or not raw_counts
+            or any(
+                isinstance(value, bool) or not isinstance(value, int) or value <= 0
+                for value in raw_counts
+            )
+        ):
+            raise ResourcePlanningError(
+                f"task {raw.get('task_id')} lacks a valid information denominator"
+            )
+        denominator = float(sum(raw_counts) * multiplier)
+        selected_observations = float(selected * multiplier)
+        coverage = min(1.0, selected_observations / denominator)
+        resolved_weight = float(weight)
+        weighted_utility += resolved_weight * math.sqrt(coverage)
+        weight_total += resolved_weight
+        raw_selected_observations += selected_observations
+        normalized_coverages.append(coverage)
+    if weight_total <= 0.0 or not normalized_coverages:
+        raise ResourcePlanningError("campaign has no downstream analyses to score")
+    return {
+        "balanced_information_utility": weighted_utility / weight_total,
+        "minimum_normalized_analysis_coverage": min(normalized_coverages),
+        "mean_normalized_analysis_coverage": (
+            sum(normalized_coverages) / len(normalized_coverages)
+        ),
+        "selected_observation_count": raw_selected_observations,
+        "scored_analysis_count": float(len(normalized_coverages)),
+    }
+
+
+def _global_stride_information_upper_bound(
+    tasks: Sequence[Mapping[str, object]], stride: int
+) -> float:
+    """Bound the best normalized information possible after an overall stride."""
+
+    parent_counts = {
+        str(row.get("workflow_id")): list(
+            row.get(
+                "global_stride_raw_source_frames_per_replica",
+                row.get("source_frames_per_replica", []),
+            )
+        )
+        for row in tasks
+        if row.get("task_scope") == "conformational_view"
+        and row.get("module_id") == "common_pca"
+    }
+    weighted = 0.0
+    total_weight = 0.0
+    for row in tasks:
+        if row.get("module_id") == "coordinate_cache":
+            continue
+        raw = (
+            parent_counts.get(str(row.get("workflow_id")))
+            if row.get("task_scope") == "conformational_view_algorithm_fit"
+            else row.get(
+                "global_stride_raw_source_frames_per_replica",
+                row.get("source_frames_per_replica"),
+            )
+        )
+        if not isinstance(raw, (list, tuple)) or not raw:
+            coverage = 1.0
+        else:
+            counts = [int(value) for value in raw]
+            coverage = min(
+                1.0,
+                sum(
+                    integer_stride_selected_count(value, stride)
+                    for value in counts
+                ) / sum(counts),
+            )
+        weight = float(row.get("priority_weight", 1.0))
+        weighted += weight * math.sqrt(coverage)
+        total_weight += weight
+    return 1.0 if total_weight <= 0.0 else weighted / total_weight
+
+
+def plan_global_stride_projection_coupled_campaign_resource_budget(
+    tasks: Sequence[Mapping[str, object]],
+    *,
+    maximum_parallel_cpus: int,
+    maximum_wall_hours: float,
+    maximum_memory_gib: float,
+    coordinate_cache_minimum_frames_per_replica: int = 50,
+    coordinate_cache_full_scan_fraction: float = 1.0,
+    overall_stride_candidate_strides: Optional[Sequence[int]] = None,
+    coordinate_cache_candidate_strides: Optional[Sequence[int]] = None,
+    planning_utilization: float = 0.85,
+    pilot_budget_fraction: float = 0.05,
+    finalization_headroom_fraction: float = 0.0,
+    memory_safety_factor: float = 1.0,
+    memory_overhead_gib: float = 0.0,
+    minimum_scheduler_memory_gib: float = 0.0,
+    maximum_coupling_iterations: int = 12,
+) -> Dict[str, object]:
+    """Jointly choose an overall trajectory stride and downstream strides.
+
+    For each deterministic integer overall stride, this planner rebuilds every
+    raw-trajectory source stream, including solvated analyses, the molecular
+    coordinate cache, and every conformational view.  It then replans each PCA
+    projection and rebuilds the algorithm-specific clustering fits.  The
+    selected candidate maximizes balanced normalized coverage across distinct
+    analyses inside one CPU, wall-time, and aggregate-memory envelope; exact
+    information ties retain the finer overall stride.
+
+    ``coordinate_cache_full_scan_fraction`` separates work that must still scan
+    every source frame from work avoided when only retained cache frames are
+    materialized.  A value of one models the current stateful continuous-unwrapping
+    implementation conservatively; zero is an optimistic direct-skip bound.  The
+    parameter is explicit because the existing one-point cache calibration cannot
+    identify this split.  ``overall_stride_candidate_strides`` can restrict a
+    sensitivity study to a declared set.  The default grid includes stride one
+    as the information-preserving reference; callers supplying an explicit grid
+    control the complete evaluated set.  ``coordinate_cache_candidate_strides``
+    is retained as a compatibility spelling for the first local prototype.
+    """
+
+    overall_planning_started = time.monotonic()
+    scan_fraction = _fraction(
+        coordinate_cache_full_scan_fraction,
+        "coordinate_cache_full_scan_fraction",
+        allow_zero=True,
+    )
+    if not tasks:
+        raise ResourcePlanningError(
+            "global-stride campaign planning requires at least one task"
+        )
+    cache_rows = [
+        dict(row) for row in tasks if row.get("module_id") == "coordinate_cache"
+    ]
+    if len(cache_rows) != 1:
+        raise ResourcePlanningError(
+            "global-stride campaign planning currently requires exactly one "
+            "coordinate-cache task"
+        )
+    cache_id = str(cache_rows[0].get("task_id"))
+    cache_source = [
+        int(value) for value in cache_rows[0]["source_frames_per_replica"]
+    ]
+    declared_minimum = coordinate_cache_minimum_frames_per_replica
+    if (
+        isinstance(declared_minimum, bool)
+        or not isinstance(declared_minimum, int)
+        or declared_minimum <= 0
+    ):
+        raise ResourcePlanningError(
+            "coordinate_cache_minimum_frames_per_replica must be a positive integer"
+        )
+
+    base_tasks: list[Dict[str, object]] = []
+    overall_minimum = declared_minimum
+    for original in tasks:
+        row = dict(original)
+        if (
+            row.get("task_scope") != "conformational_view_algorithm_fit"
+            and str(row.get("task_id")) != cache_id
+        ):
+            raw_counts = row.get(
+                "global_stride_raw_source_frames_per_replica",
+                row.get("source_frames_per_replica"),
+            )
+            if not isinstance(raw_counts, (list, tuple)) or not raw_counts:
+                raise ResourcePlanningError(
+                    f"task {row.get('task_id')} lacks raw trajectory-source counts"
+                )
+            row["global_stride_raw_source_frames_per_replica"] = [
+                int(value) for value in raw_counts
+            ]
+            row["global_stride_declared_minimum_frames_per_replica"] = int(
+                row.get("minimum_frames_per_replica", 1)
+            )
+            row["global_stride_declared_maximum_frames_per_replica"] = int(
+                row.get(
+                    "maximum_frames_per_replica",
+                    max(int(value) for value in raw_counts),
+                )
+            )
+            overall_minimum = max(
+                overall_minimum,
+                int(row["global_stride_declared_minimum_frames_per_replica"]),
+            )
+        base_tasks.append(row)
+    declared_minimum = overall_minimum
+    maximum_stride = _overall_trajectory_maximum_stride(
+        cache_source, declared_minimum
+    )
+    if (
+        overall_stride_candidate_strides is not None
+        and coordinate_cache_candidate_strides is not None
+    ):
+        raise ResourcePlanningError(
+            "declare overall_stride_candidate_strides, not both candidate-stride "
+            "spellings"
+        )
+    declared_candidates = (
+        overall_stride_candidate_strides
+        if overall_stride_candidate_strides is not None
+        else coordinate_cache_candidate_strides
+    )
+    if declared_candidates is None:
+        candidates = _overall_trajectory_stride_candidates(maximum_stride)
+        requested_candidate_values = list(candidates)
+        scientifically_pruned_candidates: list[int] = []
+    else:
+        requested_candidates: set[int] = set()
+        for value in declared_candidates:
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ResourcePlanningError(
+                    "overall_stride_candidate_strides must contain only "
+                    "positive integers"
+                )
+            requested_candidates.add(value)
+        if not requested_candidates:
+            raise ResourcePlanningError(
+                "overall_stride_candidate_strides must not be empty"
+            )
+        requested_candidate_values = sorted(requested_candidates)
+        candidates = [
+            value for value in requested_candidate_values
+            if value <= maximum_stride
+        ]
+        scientifically_pruned_candidates = [
+            value for value in requested_candidate_values
+            if value > maximum_stride
+        ]
+        if not candidates:
+            raise ResourcePlanningError(
+                "every requested overall trajectory candidate stride exceeds "
+                "the maximum scientifically allowed stride "
+                f"{maximum_stride}"
+            )
+
+    evaluated_candidates: list[int] = []
+    early_terminated_candidates: list[int] = []
+
+    evaluations: list[Dict[str, object]] = []
+    feasible: list[
+        tuple[tuple[float, float, float, int, float], Dict[str, object]]
+    ] = []
+    best_feasible_information = -math.inf
+    for candidate_index, cache_stride in enumerate(candidates):
+        evaluated_candidates.append(cache_stride)
+        candidate_started = time.monotonic()
+        candidate_tasks: list[Dict[str, object]] = []
+        for original in base_tasks:
+            row = dict(original)
+            if str(row.get("task_id")) == cache_id:
+                rate = row.get("coordinate_cache_full_rate_seconds_per_frame")
+                if rate is None:
+                    rate = row.get("cpu_seconds_per_physical_frame")
+                if (
+                    isinstance(rate, bool)
+                    or not isinstance(rate, (int, float))
+                    or float(rate) < 0.0
+                ):
+                    raise ResourcePlanningError(
+                        "coordinate-cache task lacks a nonnegative frame-cost rate"
+                    )
+                original_fixed = float(
+                    row.get("coordinate_cache_original_fixed_cpu_hours", row.get(
+                        "fixed_cpu_hours", 0.0
+                    ))
+                )
+                selected_counts = [
+                    integer_stride_selected_count(count, cache_stride)
+                    for count in cache_source
+                ]
+                selected_ceiling = max(selected_counts)
+                row.update({
+                    "task_scope": "planner_selected_coordinate_preprocessing",
+                    "source_frames_per_replica": list(cache_source),
+                    "minimum_frames_per_replica": selected_ceiling,
+                    "maximum_frames_per_replica": selected_ceiling,
+                    "cpu_seconds_per_physical_frame": (
+                        float(rate) * (1.0 - scan_fraction)
+                    ),
+                    "fixed_cpu_hours": (
+                        original_fixed
+                        + float(rate) * sum(cache_source) * scan_fraction / 3600.0
+                    ),
+                    "coordinate_cache_full_rate_seconds_per_frame": float(rate),
+                    "coordinate_cache_original_fixed_cpu_hours": original_fixed,
+                    "coordinate_cache_full_scan_fraction": scan_fraction,
+                    "coordinate_cache_candidate_stride": cache_stride,
+                    "coordinate_cache_raw_source_frames_per_replica": list(
+                        cache_source
+                    ),
+                    "coordinate_cache_candidate_selected_frames_per_replica": (
+                        selected_counts
+                    ),
+                    "minimum_frame_role": (
+                        "fixed candidate working-cache coverage"
+                    ),
+                    "maximum_frame_role": (
+                        "fixed candidate working-cache coverage"
+                    ),
+                    "priority_weight": 1.0,
+                })
+            elif row.get("task_scope") != "conformational_view_algorithm_fit":
+                raw_counts = [
+                    int(value) for value in row[
+                        "global_stride_raw_source_frames_per_replica"
+                    ]
+                ]
+                overall_counts = [
+                    integer_stride_selected_count(count, cache_stride)
+                    for count in raw_counts
+                ]
+                declared_task_minimum = int(row.get(
+                    "global_stride_declared_minimum_frames_per_replica",
+                    row["minimum_frames_per_replica"],
+                ))
+                declared_task_maximum = int(row.get(
+                    "global_stride_declared_maximum_frames_per_replica",
+                    row["maximum_frames_per_replica"],
+                ))
+                candidate_maximum = min(
+                    declared_task_maximum, max(overall_counts)
+                )
+                if max(raw_counts) < declared_task_minimum:
+                    # The real supplied trajectory is already shorter than the
+                    # standard floor. Preserve that source-limited declaration;
+                    # do not confuse it with resource-induced subsampling.
+                    candidate_maximum = max(
+                        candidate_maximum, declared_task_minimum
+                    )
+                row.update({
+                    "source_frames_per_replica": overall_counts,
+                    "minimum_frames_per_replica": declared_task_minimum,
+                    "maximum_frames_per_replica": candidate_maximum,
+                    "overall_trajectory_integer_stride": cache_stride,
+                })
+                raw_intervals = row.get("frame_intervals_ns_per_replica")
+                if isinstance(raw_intervals, list):
+                    row["global_stride_raw_frame_intervals_ns_per_replica"] = [
+                        float(value) for value in raw_intervals
+                    ]
+                    row["frame_intervals_ns_per_replica"] = [
+                        float(value) * cache_stride for value in raw_intervals
+                    ]
+                if (
+                    row.get("task_scope") == "conformational_view"
+                    and row.get("module_id") == "common_pca"
+                ):
+                    row["projection_declared_maximum_frames_per_replica"] = (
+                        candidate_maximum
+                    )
+                    row.pop("dynamic_coupling_ceiling_per_replica", None)
+            candidate_tasks.append(row)
+        invalid_minimum_tasks = sorted(
+            str(row.get("task_id"))
+            for row in candidate_tasks
+            if row.get("task_scope") != "conformational_view_algorithm_fit"
+            and int(row["maximum_frames_per_replica"])
+            < int(row["minimum_frames_per_replica"])
+        )
+        if invalid_minimum_tasks:
+            evaluations.append({
+                "overall_trajectory_integer_stride": cache_stride,
+                "coordinate_cache_integer_stride": cache_stride,
+                "feasibility_status": "scientific_minimum_pruned",
+                "invalid_minimum_task_ids": invalid_minimum_tasks,
+                "balanced_information_upper_bound": (
+                    _global_stride_information_upper_bound(
+                        base_tasks, cache_stride
+                    )
+                ),
+                "planner_evaluation_wall_seconds": (
+                    time.monotonic() - candidate_started
+                ),
+            })
+            continue
+        plan = plan_projection_coupled_campaign_resource_budget(
+            candidate_tasks,
+            maximum_parallel_cpus=maximum_parallel_cpus,
+            maximum_wall_hours=maximum_wall_hours,
+            maximum_memory_gib=maximum_memory_gib,
+            planning_utilization=planning_utilization,
+            pilot_budget_fraction=pilot_budget_fraction,
+            finalization_headroom_fraction=finalization_headroom_fraction,
+            memory_safety_factor=memory_safety_factor,
+            memory_overhead_gib=memory_overhead_gib,
+            minimum_scheduler_memory_gib=minimum_scheduler_memory_gib,
+            maximum_coupling_iterations=maximum_coupling_iterations,
+        )
+        information = _global_plan_information_metrics(plan)
+        evaluation = {
+            "overall_trajectory_integer_stride": cache_stride,
+            "coordinate_cache_integer_stride": cache_stride,
+            "feasibility_status": plan["feasibility_status"],
+            **information,
+            "estimated_selected_cpu_hours": plan[
+                "estimated_selected_cpu_hours"
+            ],
+            "estimated_selected_wall_hours_lower_bound": plan[
+                "estimated_selected_wall_hours_lower_bound"
+            ],
+            "planner_evaluation_wall_seconds": (
+                time.monotonic() - candidate_started
+            ),
+        }
+        evaluations.append(evaluation)
+        if plan["feasibility_status"] == "feasible":
+            # Balanced breadth and normalized coverage win before raw counts.
+            # Exact information ties retain the finer overall stride; remaining
+            # ties prefer the shorter modeled critical path.
+            feasible.append((
+                (
+                    information["balanced_information_utility"],
+                    information["minimum_normalized_analysis_coverage"],
+                    information["selected_observation_count"],
+                    -cache_stride,
+                    -float(plan["estimated_selected_wall_hours_lower_bound"]),
+                ),
+                plan,
+            ))
+            best_feasible_information = max(
+                best_feasible_information,
+                information["balanced_information_utility"],
+            )
+        remaining = candidates[candidate_index + 1:]
+        if remaining and math.isfinite(best_feasible_information):
+            remaining_upper = max(
+                _global_stride_information_upper_bound(base_tasks, value)
+                for value in remaining
+            )
+            if best_feasible_information > remaining_upper + 1.0e-12:
+                early_terminated_candidates = list(remaining)
+                break
+    if not feasible:
+        # Return the finest candidate's fail-closed diagnostic rather than
+        # obscuring the actual technical minimum or memory shortfall.
+        result = plan_projection_coupled_campaign_resource_budget(
+            base_tasks,
+            maximum_parallel_cpus=maximum_parallel_cpus,
+            maximum_wall_hours=maximum_wall_hours,
+            maximum_memory_gib=maximum_memory_gib,
+            planning_utilization=planning_utilization,
+            pilot_budget_fraction=pilot_budget_fraction,
+            finalization_headroom_fraction=finalization_headroom_fraction,
+            memory_safety_factor=memory_safety_factor,
+            memory_overhead_gib=memory_overhead_gib,
+            minimum_scheduler_memory_gib=minimum_scheduler_memory_gib,
+            maximum_coupling_iterations=maximum_coupling_iterations,
+        )
+        result["coordinate_cache_coupling"] = {
+            "converged": False,
+            "selected_overall_trajectory_integer_stride": None,
+            "selected_coordinate_cache_integer_stride": None,
+            "candidate_evaluations": evaluations,
+            "planner_total_wall_seconds": (
+                time.monotonic() - overall_planning_started
+            ),
+            "reason": "no candidate satisfies the complete campaign envelope",
+        }
+        result["global_stride_coupling"] = result["coordinate_cache_coupling"]
+        return result
+
+    _, result = max(feasible, key=lambda item: item[0])
+    result_rows = {
+        str(row["task_id"]): row
+        for row in result["tasks"]
+        if isinstance(row, Mapping)
+    }
+    cache_report = result_rows[cache_id]
+    selected_stride = int(cache_report["coordinate_cache_candidate_stride"])
+    parent_strides = {
+        str(row["workflow_id"]): int(row["integer_stride"])
+        for row in result_rows.values()
+        if row.get("task_scope") == "conformational_view"
+        and row.get("module_id") == "common_pca"
+    }
+    effective_rows = []
+    for row in result["tasks"]:
+        if not isinstance(row, dict):
+            continue
+        if (
+            row.get("task_scope") != "conformational_view_algorithm_fit"
+            and row.get("module_id") != "coordinate_cache"
+        ):
+            local_stride = int(row["integer_stride"])
+            row["overall_trajectory_integer_stride"] = selected_stride
+            row["coordinate_cache_integer_stride"] = selected_stride
+            row["effective_raw_integer_stride"] = selected_stride * local_stride
+            effective_rows.append({
+                "task_id": str(row["task_id"]),
+                "cache_stride": selected_stride,
+                "downstream_stride": local_stride,
+                "effective_raw_stride": selected_stride * local_stride,
+            })
+        elif row.get("task_scope") == "conformational_view_algorithm_fit":
+            projection_stride = parent_strides[str(row["workflow_id"])]
+            fit_stride = int(row["integer_stride"])
+            row["coordinate_cache_integer_stride"] = selected_stride
+            row["overall_trajectory_integer_stride"] = selected_stride
+            row["projection_integer_stride"] = projection_stride
+            row["effective_raw_integer_stride"] = (
+                selected_stride * projection_stride * fit_stride
+            )
+            effective_rows.append({
+                "task_id": str(row["task_id"]),
+                "cache_stride": selected_stride,
+                "projection_stride": projection_stride,
+                "fit_stride": fit_stride,
+                "effective_raw_stride": (
+                    selected_stride * projection_stride * fit_stride
+                ),
+            })
+    coupling_report = {
+        "coupling_schema": "salsbury-global-stride-coupling-v1",
+        "converged": True,
+        "selected_overall_trajectory_integer_stride": selected_stride,
+        "selected_coordinate_cache_integer_stride": selected_stride,
+        "minimum_retained_frames_per_replica": declared_minimum,
+        "minimum_cached_frames_per_replica": declared_minimum,
+        "maximum_candidate_stride": maximum_stride,
+        "coordinate_cache_full_scan_fraction": scan_fraction,
+        "requested_candidate_strides": requested_candidate_values,
+        "scientifically_pruned_candidate_strides": (
+            scientifically_pruned_candidates
+        ),
+        "evaluated_candidate_strides": evaluated_candidates,
+        "early_terminated_candidate_strides": early_terminated_candidates,
+        "candidate_count": len(evaluated_candidates),
+        "candidate_evaluations": evaluations,
+        "planner_total_wall_seconds": time.monotonic() - overall_planning_started,
+        "candidate_policy": (
+            "Evaluate each declared exact integer overall stride on every raw "
+            "trajectory consumer, including solvated analyses, then replan "
+            "method-specific and projection-derived strides. The cache scan "
+            "fraction charges sequential connectivity reconstruction to all raw "
+            "frames and the remaining materialization cost to retained frames."
+        ),
+        "effective_stride_rows": effective_rows,
+        "execution_ready": True,
+        "execution_boundary": (
+            "Every source frame is decoded for continuous unwrapping. The "
+            "selected cache stride controls only materialization; cached timing "
+            "and sample axes preserve physical spacing, downstream cache strides "
+            "compose multiplicatively, and lagged analyses retain segment-safe "
+            "physical-time metadata."
+        ),
+        "calibration_boundary": (
+            "The cache scan/write cost split is a sensitivity parameter because "
+            "the current one-point calibration cannot identify it."
+        ),
+    }
+    result["global_stride_coupling"] = coupling_report
+    # Compatibility key for local callers of the first prototype.
+    result["coordinate_cache_coupling"] = coupling_report
+    return result
+
+
+def plan_cache_projection_coupled_campaign_resource_budget(
+    tasks: Sequence[Mapping[str, object]],
+    **kwargs: object,
+) -> Dict[str, object]:
+    """Compatibility alias for global overall-stride campaign planning."""
+
+    return plan_global_stride_projection_coupled_campaign_resource_budget(
+        tasks, **kwargs
+    )
+
+
+def _configuration_switch_for_task(task: Mapping[str, object]) -> str:
+    module_id = str(task.get("module_id", task.get("task_id", "unknown")))
+    if module_id == "coordinate_cache":
+        return "execution.coordinate_cache"
+    if module_id == "alternative_clustering" and task.get("algorithm_id"):
+        names = {
+            "mwpam": "minkowski_weighted_pam",
+        }
+        algorithm = names.get(
+            str(task["algorithm_id"]), str(task["algorithm_id"])
+        )
+        return f"clustering.methods.{algorithm}.enabled"
+    dedicated = {
+        "clustering_kmeans": "kmeans",
+        "clustering_hdbscan": "hdbscan",
+        "clustering_imwkmeans": "intelligent_minkowski_weighted_kmeans",
+    }
+    if module_id in dedicated:
+        return f"clustering.methods.{dedicated[module_id]}.enabled"
+    if module_id == "pald_community_analysis":
+        return "community_analysis.pald.enabled"
+    return f"modules.{module_id}.enabled"
+
+
+def _resource_shortfall_score(plan: Mapping[str, object]) -> float:
+    """Return a normalized deterministic infeasibility score."""
+
+    science_cpu = max(1.0e-12, float(plan["science_budget_cpu_hours"]))
+    science_wall = max(1.0e-12, float(plan["science_budget_wall_hours"]))
+    minimum_wall = plan.get("minimum_wall_hours_lower_bound")
+    memory = plan["memory_feasibility"]
+    assert isinstance(memory, Mapping)
+    score = max(
+        0.0, float(plan["minimum_known_cpu_hours"]) / science_cpu - 1.0
+    )
+    if isinstance(minimum_wall, (int, float)) and not isinstance(
+        minimum_wall, bool
+    ):
+        score += max(0.0, float(minimum_wall) / science_wall - 1.0)
+    score += max(
+        0.0,
+        float(memory["minimum_required_memory_gib"])
+        / max(1.0e-12, float(memory["configured_memory_gib"]))
+        - 1.0,
+    )
+    calibration = plan.get("tasks_requiring_project_pilots", [])
+    if isinstance(calibration, list):
+        score += float(len(calibration))
+    return score
+
+
+def recommend_scientifically_valid_task_subset(
+    tasks: Sequence[Mapping[str, object]],
+    *,
+    maximum_parallel_cpus: int,
+    maximum_wall_hours: float,
+    maximum_memory_gib: float,
+    planning_utilization: float = 0.85,
+    pilot_budget_fraction: float = 0.05,
+    finalization_headroom_fraction: float = 0.0,
+    memory_safety_factor: float = 1.0,
+    memory_overhead_gib: float = 0.0,
+    minimum_scheduler_memory_gib: float = 0.0,
+    protected_module_ids: Sequence[str] = (
+        "coordinate_cache", "provenance_manifest", "preflight_inventory",
+        "common_atom_mapping", "structural_integrity_qc",
+    ),
+) -> Dict[str, object]:
+    """Propose the broadest scientifically valid task subset for an envelope.
+
+    The recommendation never mutates a requested configuration.  It prices the
+    standard scientific minimum first, removes the configuration bundle with
+    the greatest normalized bottleneck relief per unit of lost scientific
+    priority, closes downstream dependencies, and replans after every decision.
+    Extra sampling is never sacrificed below a method's standard floor merely
+    to keep the method nominally enabled.
+    """
+
+    from .analysis_config import DEPENDENCIES, PROTECTED_MODULES
+
+    started = time.monotonic()
+    planner_kwargs = {
+        "maximum_parallel_cpus": maximum_parallel_cpus,
+        "maximum_wall_hours": maximum_wall_hours,
+        "maximum_memory_gib": maximum_memory_gib,
+        "planning_utilization": planning_utilization,
+        "pilot_budget_fraction": pilot_budget_fraction,
+        "finalization_headroom_fraction": finalization_headroom_fraction,
+        "memory_safety_factor": memory_safety_factor,
+        "memory_overhead_gib": memory_overhead_gib,
+        "minimum_scheduler_memory_gib": minimum_scheduler_memory_gib,
+    }
+    working = [deepcopy(dict(task)) for task in tasks]
+    if not working:
+        raise ResourcePlanningError("task-subset recommendation requires tasks")
+    protected = (
+        set(str(value) for value in protected_module_ids)
+        | set(PROTECTED_MODULES)
+        | {"coordinate_cache"}
+    )
+    protected_task_ids = {
+        str(row["task_id"])
+        for row in working
+        if str(row.get("module_id")) in protected
+    }
+    disabled_switches: list[str] = []
+    decisions: list[Dict[str, object]] = []
+
+    def task_ids_for_switch(
+        rows: Sequence[Mapping[str, object]], switch: str
+    ) -> set[str]:
+        removed = {
+            str(row["task_id"])
+            for row in rows
+            if _configuration_switch_for_task(row) == switch
+        }
+        changed = True
+        while changed:
+            changed = False
+            modules_present = {
+                str(row.get("module_id"))
+                for row in rows if str(row["task_id"]) not in removed
+            }
+            for row in rows:
+                task_id = str(row["task_id"])
+                module_id = str(row.get("module_id"))
+                if task_id in removed:
+                    continue
+                dependencies = DEPENDENCIES.get(module_id, set())
+                if any(dependency not in modules_present for dependency in dependencies):
+                    removed.add(task_id)
+                    changed = True
+        remaining_conformational = any(
+            str(row["task_id"]) not in removed
+            and str(row.get("task_scope", "")).startswith("conformational_view")
+            for row in rows
+        )
+        if not remaining_conformational:
+            removed.update(
+                str(row["task_id"])
+                for row in rows if row.get("module_id") == "coordinate_cache"
+            )
+        return removed
+
+    current_plan = plan_campaign_resource_budget(working, **planner_kwargs)
+    current_score = _resource_shortfall_score(current_plan)
+    while current_plan["feasibility_status"] != "feasible":
+        switches = sorted({
+            _configuration_switch_for_task(row)
+            for row in working
+            if str(row.get("module_id")) not in protected
+        })
+        candidates = []
+        for switch in switches:
+            removed_ids = task_ids_for_switch(working, switch)
+            if removed_ids.intersection(protected_task_ids):
+                continue
+            candidate_tasks = [
+                row for row in working if str(row["task_id"]) not in removed_ids
+            ]
+            if not candidate_tasks:
+                continue
+            candidate_plan = plan_campaign_resource_budget(
+                candidate_tasks, **planner_kwargs
+            )
+            candidate_score = _resource_shortfall_score(candidate_plan)
+            relief = current_score - candidate_score
+            if relief <= 1.0e-12:
+                continue
+            removed_rows = [
+                row for row in working if str(row["task_id"]) in removed_ids
+            ]
+            priority_loss = sum(
+                float(row.get("priority_weight", 1.0)) for row in removed_rows
+            )
+            candidates.append((
+                relief / max(1.0e-12, priority_loss),
+                relief,
+                -priority_loss,
+                switch,
+                candidate_tasks,
+                candidate_plan,
+                sorted(removed_ids),
+            ))
+        if not candidates:
+            break
+        (
+            _, relief, negative_priority, switch, candidate_tasks,
+            candidate_plan, removed_ids,
+        ) = max(candidates, key=lambda value: value[:4])
+        decisions.append({
+            "iteration": len(decisions) + 1,
+            "disabled_configuration_switch": switch,
+            "removed_task_ids": removed_ids,
+            "normalized_shortfall_before": current_score,
+            "normalized_shortfall_after": _resource_shortfall_score(
+                candidate_plan
+            ),
+            "shortfall_relief": relief,
+            "scientific_priority_removed": -negative_priority,
+        })
+        disabled_switches.append(switch)
+        working = candidate_tasks
+        current_plan = candidate_plan
+        current_score = _resource_shortfall_score(current_plan)
+    feasible = current_plan["feasibility_status"] == "feasible"
+    protected_minimum_request = deepcopy(
+        current_plan.get("permissive_minimum_resource_request", {})
+    )
+    if isinstance(protected_minimum_request, dict):
+        protected_minimum_request["request_scope"] = (
+            "best_dependency_closed_subset_that_preserves_all_protected_modules"
+        )
+    return {
+        "recommendation_schema": "salsbury-scientific-method-fit-v1",
+        "technical_status": "complete",
+        "recommendation_status": (
+            "feasible_subset_found" if feasible else "no_feasible_subset_found"
+        ),
+        "recommendation_message": (
+            "A reduced configuration can meet the envelope while retaining every "
+            "protected module. Review and apply the proposed switches explicitly."
+            if feasible else
+            "No acceptable reduced plan: the envelope cannot retain every "
+            "protected module at its scientific minimum. Increase the resource "
+            "envelope; protected checks will not be disabled."
+        ),
+        "automatic_changes_applied": False,
+        "protected_module_ids": sorted(protected),
+        "protected_task_ids": sorted(protected_task_ids),
+        "protected_set_preserved": not any(
+            task_id not in {str(row["task_id"]) for row in working}
+            for task_id in protected_task_ids
+        ),
+        "disabled_configuration_switches": disabled_switches if feasible else [],
+        "attempted_configuration_switches": (
+            [] if feasible else disabled_switches
+        ),
+        "configuration_patch": (
+            {
+                switch: (
+                    "off" if switch == "execution.coordinate_cache" else False
+                )
+                for switch in disabled_switches
+            }
+            if feasible else {}
+        ),
+        "retained_task_ids": sorted(str(row["task_id"]) for row in working),
+        "decisions": decisions,
+        "best_protected_subset_minimum_resource_request": (
+            protected_minimum_request
+        ),
+        "recommended_plan": current_plan,
+        "planner_wall_seconds": time.monotonic() - started,
+        "strategy": (
+            "deterministic dependency-closed removal by normalized CPU, wall, "
+            "and memory shortfall relief per lost scientific-priority weight"
+        ),
+        "scientific_boundary": (
+            "This is a proposed configuration. Apply and rerun planning explicitly; "
+            "a disabled method is absent, not a low-sample scientific result."
+            if feasible else
+            "No configuration change is proposed. Diagnostic removals did not make "
+            "the protected workflow feasible, so the resource envelope must change."
         ),
     }
 

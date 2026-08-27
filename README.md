@@ -9,9 +9,8 @@ write local and Slurm launchers. It will not modify the simulation inputs.
 
 ## Status
 
-Version 0.1.0 is the first cleaned **experimental toolkit release**. The current
-experimental branch contains 58 registered MD, core, and reporting modules.
-Every registered module has an
+Version 0.2.0a2 is an **experimental branch candidate**. It contains
+58 registered MD, core, and reporting modules. Every registered module has an
 implementation and automated tests, but none is yet marked `supported` for
 unreviewed production or publication use. Technical completion and scientific
 validity are reported separately.
@@ -130,6 +129,8 @@ PYTHONPATH=src python -m salsbury_md_analysis preflight-system path/to/system.js
 PYTHONPATH=src python -m salsbury_md_analysis structural-qc path/to/project.json --hash-content
 PYTHONPATH=src python -m salsbury_md_analysis common-pca path/to/project.json --hash-content
 PYTHONPATH=src python -m salsbury_md_analysis build-coordinate-cache path/to/system.json --output path/to/new-cache
+PYTHONPATH=src python -m salsbury_md_analysis prepare-unwrapped-cache path/to/system.json --output path/to/lossless-cache
+PYTHONPATH=src python -m salsbury_md_analysis write-scientific-minimums-template --output scientific-minimums.json
 PYTHONPATH=src python -m salsbury_md_analysis compare-hydrogen-bonds path/to/comparison-request.json
 PYTHONPATH=src python -m salsbury_md_analysis plan-automatic-sampling path/to/system.json --simulation-kind unbiased_md
 PYTHONPATH=src python -m salsbury_md_analysis plan-frame-resources pilot-100.json pilot-500.json --total-source-frames 30000 --replica-count 3
@@ -150,6 +151,38 @@ cd my-study-analysis
 ./run-local.sh
 ```
 
+Add `--plan-only` to `prepare-analysis` or `prepare-comparison` when you want
+the complete resource and sampling plan before deciding whether to run it. The
+command validates inputs and writes the prepared directory, but it does not
+start local workers or submit scheduler jobs. Its JSON response includes the
+full `campaign-resource-plan.json`, a compact `planning_summary`, and the
+reviewed command that would run the prepared campaign. The prepared directory's
+`planning-report.md` gives the quicker human review: one row per analysis family,
+effective raw strides over the original trajectories, and distinct `Off`,
+`Deferred`, and `Not applicable` states. `planning-report.json` retains exact
+per-task and per-replica details. Several plans can be combined with
+`report-plan-matrix` into an 8-hour/24-hour/48-hour/168-hour-style comparison.
+
+If the requested CPU count is above the dependency graph's useful parallel
+ceiling, the response includes
+`REQUESTED_CPUS_EXCEED_USEFUL_PARALLELISM` with the useful and excess core
+counts. The planning record keeps the requested count, but the generated local,
+custom, and Slurm launchers use the smaller effective count; Slurm array widths
+and multiprocess worker requests are capped accordingly. If the envelope cannot
+retain protected preparation and structural-integrity checks at their minima,
+planning returns
+`planning_outcome: no_acceptable_reduced_plan`; it does not propose disabling
+those checks. The response also reports a
+`protected_subset_minimum_request`: padded CPUs, aggregate memory, and whole
+wall hours for the best dependency-closed subset that retains every protected
+module under the supplied CPU and memory caps. This is a permissive execution
+floor, not evidence that the trajectory is converged or scientifically
+adequate; the scientific question may require a larger request.
+
+That prepared directory also contains `prepared/system.json`. Pass that
+manifest to `prepare-unwrapped-cache` when you want to create a reusable,
+stride-1 continuously unwrapped cache before running any analyses.
+
 Supported compositions, input-format boundaries, automatic chemistry routing,
 and the behavior for RNA, oligomers, ligands/cofactors, ions, water, membranes,
 and unknown polymers are summarized in
@@ -161,12 +194,18 @@ For work on WFU's DEAC cluster, add
 `profiles/slurm/deac.json` cluster profile. Other groups can copy
 `profiles/slurm/generic-template.json` and set their account, Unix group, QoS,
 partitions, scheduler commands, Python/environment setup, and storage paths.
-The active choice is recorded in `execution-adapter.json`; local and Slurm modes
-execute the same worker scripts, dependency order, frame selections, atomic
+The active choice is recorded in `execution-adapter.json`; local, Slurm, and
+custom-launcher modes execute the same worker scripts, dependency order, frame selections, atomic
 outputs, hashes, and resource instrumentation. Local execution enforces the
 configured aggregate CPU and memory caps; Slurm requests are derived from the same
 planner estimates and retained in `scheduler-resource-requests.json`. See
 [`docs/EXECUTION_ADAPTERS.md`](docs/EXECUTION_ADAPTERS.md).
+
+On a Slurm login node, the optional `advise-slurm-capacity` command can inspect
+a prepared campaign before submission. It reports the cluster ceiling, the
+smaller workflow-useful CPU maximum, sampling and memory estimates for a supplied
+duration, current node fit, and queue pressure. It never runs during normal
+preparation and never submits, cancels, or changes a job.
 
 `--connectivity` is an equivalent, clearer spelling of `--psf` and also accepts
 portable `salsbury-bonds-v1` JSON plus Amber PRMTOP/PARM7 inputs. This allows a
@@ -217,14 +256,24 @@ may expand the observation set but are never relabeled as replicas. The same
 config supports all-pairs or reference-versus-all reporting for panels such as
 20 variants.
 
+Comparative preparation also schedules RMSF permutation inference automatically
+when that module is enabled. Each declared simulation replica contributes one
+exchangeable RMSF profile. Frames, time blocks, and symmetry-equivalent oligomer
+members are not promoted to independent units. A pair with fewer than two
+replicas per system is reported as insufficient rather than tested with
+pseudoreplicated frames.
+
 The default preparation target is one campaign envelope of 16 parallel CPUs
 for 24 wall hours. `execution.maximum_parallel_cpus` and
 `execution.maximum_hours_per_cpu` in `analysis-config.json` configure that
 envelope; `--target-wall-hours` is a command-line override for the latter. It
 is not a separate allowance for every method. The estimate includes a 1.5
-timing safety factor. The generated `campaign-resource-plan.json` applies that
-one limit across base trajectory estimators, inherited base analyses, and every
-enabled PCA/FES/clustering/state view. `sampling-plan.json` records the applied
+timing safety factor. Only 85% of the raw CPU-hour envelope is normally planned,
+with separate pilot and finalization reserves removed before scientific work is
+allocated. Slurm's additional per-job time margin is a timeout threshold, not
+extra planned science time. The generated `campaign-resource-plan.json` applies
+the campaign limits across base trajectory estimators, inherited base analyses,
+and every enabled PCA/FES/clustering/state view. `sampling-plan.json` records the applied
 direct-method selections, while each view project records its shared upstream
 selection. Both files report selected frame counts, coverage, and any
 subsampling.
@@ -243,9 +292,19 @@ their measured observation coverage with a square-root relationship and the
 same 10% floor. This avoids charging a tiny solute or short run the unchanged
 allowance of a large, long calibration while retaining substantial headroom.
 
+`execution.maximum_memory_gib` is the maximum simultaneous memory request for
+the complete campaign, not an allowance for every job. The planner first turns
+each estimated working set into a safety-adjusted scheduler request. With the
+DEAC profile this is `ceil(1.5 × working set + 1 GiB)`, with a 2 GiB minimum.
+It then packs independent tasks into dependency waves whose summed CPU and
+memory requests stay within the configured campaign caps. A lower memory cap
+can therefore increase the integer strides or serialize work even when every
+individual task fits. The local executor and the generated `submit.sh` enforce
+the same limits.
+
 For an insufficient memory cap, `campaign-resource-plan.json` and
 `memory-feasibility-report.json` state (1) the largest enabled technical-minimum
-memory estimate, (2) the rounded-up memory request that would retain all enabled
+working-set estimate, (2) the safety-adjusted memory request that would retain all enabled
 work, and (3) every module or clustering-method switch that cannot fit.
 Preparation remains fail-closed by
 default. If the user explicitly accepts a reduced campaign, add
@@ -260,16 +319,33 @@ Trajectory execution subsampling is never random: it is deterministic,
 replica-balanced, and spread over the full time range. Every production
 trajectory selector receives one exact integer stride over each concatenated
 replica timeline; frame zero is retained and segment boundaries do not restart
-the stride. The campaign planner iterates those integer strides until the exact
-retained counts satisfy both the total CPU-hour and dependency-stage wall-time
-limits. Each alternative-clustering family receives its own explicit integer
+the stride. Each method must meet its fixed minimum samples per replica/system.
+Order-dependent methods also enforce a method-specific maximum physical-time
+separation between retained frames; thermodynamic estimators do not. Runtime pilots calibrate resource cost only; the planner does not infer
+autocorrelation times or event rates. The campaign planner advances stride upgrades through an absolute
+CPU-and-wall resource frontier. Replanning the same tasks with a longer wall
+limit extends that allocation path, so no task loses frames merely because a
+previously unaffordable method becomes affordable. The exact retained counts
+must satisfy both the total CPU-hour and dependency-stage wall-time limits.
+Each alternative-clustering family receives its own explicit integer
 fit stride according to its scaling profile; PCA projection and fit allocations
-are reapplied until the complete task plan stops changing. Families performed
+are reapplied until every clustering source count exactly matches the final PCA
+projection count. A discrete-stride cycle is resolved by deriving a conservative
+projection ceiling from that replan, not by restoring a saved projection count.
+Families performed
 serially by one view command are accounted as one execution bundle for wall
 time while remaining separate logical allocations. All strides operate over
 each replica-member timeline. Seeded random focal-observation
 sampling is reserved for bounded silhouette estimates against the full fitted
 partition.
+
+`resource_budget_utilization` reports CPU-hour and wall-time use separately.
+A campaign can nearly exhaust its wall-time allowance while leaving many raw
+CPU-hours unused when dependency stages or serial methods cannot use all cores.
+`allocation_saturation` records whether every frame ceiling was reached, memory
+blocked the remaining work, or the next deterministic stride step would exceed
+the campaign envelope. The planner does not duplicate analyses just to occupy
+idle cores.
 
 Preparation also classifies the reference chemistry and creates complementary
 conformational projects automatically. Protein–nucleic-acid complexes declare
@@ -339,6 +415,10 @@ controlled independently. For example:
 That master opt-in enables all thirteen default-off experimental methods. Explicit
 `modules.<module_id>.enabled: false` entries take precedence, and normal input,
 applicability, and external-tool gates still apply.
+If DFI/DCI functional-site nodes are supplied, its required macromolecular-trace
+view is enabled automatically while trace-defined trajectory export remains off.
+Without those nodes, DFI/DCI is reported as unavailable rather than guessing a
+biological functional site.
 
 Individual controls can be combined with the other configuration sections:
 
@@ -384,35 +464,49 @@ prepared campaign writes the complete resolved configuration to
 `analysis-config.json` and records every enabled, disabled, or deferred module
 in `module-coverage.json`. Disabling an upstream module also disables analyses
 that depend on it; required preflight, provenance, and atom-mapping checks
-cannot be turned off. The full set of module, view, comparison, export,
+cannot be turned off, and neither can structural-integrity QC. Each complete
+module row includes a generated `protected` flag, `depends_on`, and
+`turning_off_also_disables`, while `module_groups` arranges the switches as
+infrastructure, quality/motion, conformational bases, states/kinetics,
+internal geometry, interactions/solvent/ions, and integration. This metadata
+is generated from the workflow graph and cannot be edited independently of the
+module switches. The full set of module, view, comparison, export,
 inference, execution, and reporting controls is described in
 [`docs/CONFIGURATION_AND_FINAL_REPORTING.md`](docs/CONFIGURATION_AND_FINAL_REPORTING.md).
 
-The default remains all automatically applicable established modules and
-high-detail conformational views. DFI/DCI, trajectory reweighting, allosteric
-pathways, multivalent molecular bridges, reactive paths, interaction
-fingerprints, spatial interaction superfeatures, protein residue interaction-
-energy embeddings, interaction persistence,
-duplex helical mechanics, aligned hydration/ion density, ensemble pocket
-dynamics, and random-feature nonlinear kinetics are
-visible but off until explicitly enabled and
-their site, weight, endpoint, mediator, force-field-parameter, source-report,
-DSSR-duplex, grid, or pocket-geometry contracts are supplied. See
-[`docs/EXPERIMENTAL_METHODS.md`](docs/EXPERIMENTAL_METHODS.md). Each instrumented result includes measured CPU,
+Sampling floors live in a separate file so module choices and scientific
+minimums are not mixed together. Generate a complete editable copy with:
+
+```bash
+salsbury-md-analysis write-scientific-minimums-template \
+  --output scientific-minimums.json
+```
+
+Every method lists `minimum_frames_per_replica`,
+`minimum_frames_overall_per_system` (pooled across that system's replicas), and
+`maximum_time_gap_between_retained_frames_ns`. Point
+`sampling.scientific_minimums_file` at the reviewed file. Values may be kept or
+made stricter; the public workflow refuses a lower frame floor or a looser
+positive time-gap gate.
+
+The default remains all automatically applicable modules and high-detail
+conformational views. Each instrumented result includes measured CPU,
 wall-time, memory, host, job, physical-frame, and symmetry-expanded observation
 evidence. A final dependent job writes the consolidated resource/frame table
-and transparent prioritized-finding report. In the 0.2 development version it
-also writes `interactive-report/index.html`: an offline results browser that
-shows QC and ranked findings first, then FES/clustering/RMSF/DCCM figures,
-representative molecular structures, all module reports, resources, sampling,
-configuration, and provenance. The browser is a presentation layer; linked JSON,
-CSV, structures, and trajectories remain the source record. See
-[`docs/INTERACTIVE_REPORT.md`](docs/INTERACTIVE_REPORT.md).
-
-The picker can compare completed
+and transparent prioritized-finding report. The picker accounts for every
+completed report as a ranked scientific-candidate source, QC evidence,
+interpretive context, technical support, or a reviewed report with an explicit
+reason that no automatic highlight was produced. It can compare completed
 per-system reports as well as combined multi-system reports, keeps the selected
 evidence paths visible, and never labels descriptive extrema as statistically
-significant.
+significant. See [`docs/FINDING_PICKER.md`](docs/FINDING_PICKER.md).
+
+Interactive browsing is provided separately by
+[`salsbury-md-analysis-interactive`](https://github.com/salsburygroup/salsbury-md-analysis-interactive).
+The core package does not install or invoke the viewer. Install the companion
+only when you want to turn a completed campaign into a self-contained offline
+HTML report; the JSON, CSV, Markdown, structures, and method reports produced
+here remain the scientific record.
 
 The generated workflow is safely resumable. A technically complete method
 report is validated and reused on resubmission only after the freshly rehashed
@@ -430,7 +524,13 @@ Large solvated campaigns can build one connectivity-aware, unaligned
 `molecular_payload` cache and reuse it for solute-only conformational work.
 The cache retains protein, nucleic acid, hydrogens, ligands, cofactors, and
 ions, while water-dependent analyses continue to read the immutable solvated
-source. Cache construction is atomic and fail-if-present. See
+source. `prepare-unwrapped-cache` is the explicit preprocessing-only mode: it
+continuously reconstructs every source frame, saves a stride-1 payload, and
+stops. Set `execution.coordinate_cache_input` to that cache directory in later
+analysis configs. Reuse validates the source manifest, topology, connectivity,
+trajectory path/size/modification identity, complete report, and all-frame
+retention before planning; water-dependent methods still use the original
+solvated inputs. Cache construction is atomic and fail-if-present. See
 [`docs/COORDINATE_CACHE.md`](docs/COORDINATE_CACHE.md).
 
 Inexpensive streaming modules use every frame when `frame_stride` is one.

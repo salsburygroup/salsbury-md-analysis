@@ -37,6 +37,39 @@ _PRIORITY = {
 }
 
 
+_TECHNICAL_SUPPORT_MODULES = {
+    "provenance_manifest",
+    "preflight_inventory",
+    "common_atom_mapping",
+    "coordinate_cache",
+}
+
+_QUALITY_CONTROL_MODULES = {
+    "structural_integrity_qc",
+    "convergence_uncertainty",
+}
+
+_INTERPRETIVE_CONTEXT_MODULES = {
+    "individual_pca",
+    "common_pca",
+    "time_lagged_independent_component_analysis",
+    "trajectory_features",
+    "representative_frames",
+    "representative_structures",
+    "integrated_comparison",
+}
+
+
+def _module_review_role(module_id: str) -> str:
+    if module_id in _TECHNICAL_SUPPORT_MODULES:
+        return "technical_support"
+    if module_id in _QUALITY_CONTROL_MODULES:
+        return "quality_control"
+    if module_id in _INTERPRETIVE_CONTEXT_MODULES:
+        return "interpretive_context"
+    return "scientific_result"
+
+
 def _candidate(
     *, module_id: str, category: str, statement: str, report_path: Path,
     effect_value: float | None = None, p_value: float | None = None,
@@ -145,6 +178,418 @@ def _score_correlations(
                 report_path=path, effect_value=value,
                 systems=(str(pair.get("system_id")),),
                 family=f"{module_id}:oligomer_score_correlation",
+            ))
+    return findings
+
+
+def _numeric(value: object) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        number = float(value)
+        return number if math.isfinite(number) else None
+    return None
+
+
+def _matrix_extreme(
+    matrix: object, *, directed: bool = False
+) -> tuple[int, int, float] | None:
+    if not isinstance(matrix, list):
+        return None
+    best: tuple[int, int, float] | None = None
+    for row_index, row in enumerate(matrix):
+        if not isinstance(row, list):
+            continue
+        for column_index, raw in enumerate(row):
+            if row_index == column_index:
+                continue
+            if not directed and column_index < row_index:
+                continue
+            value = _numeric(raw)
+            if value is None:
+                continue
+            if best is None or abs(value) > abs(best[2]):
+                best = (row_index, column_index, value)
+    return best
+
+
+def _alternative_clustering_candidates(
+    report: Mapping[str, object], path: Path
+) -> List[Dict[str, object]]:
+    rows = report.get("algorithm_results")
+    if not isinstance(rows, list):
+        return []
+    scored = [
+        (float(row["silhouette"]), row)
+        for row in rows if isinstance(row, dict)
+        and _numeric(row.get("silhouette")) is not None
+    ]
+    if not scored:
+        return []
+    silhouette, selected = max(scored, key=lambda item: (item[0], str(item[1].get("algorithm"))))
+    cluster_sizes = selected.get("full_cluster_sizes", selected.get("cluster_sizes"))
+    cluster_count = len(cluster_sizes) if isinstance(cluster_sizes, list) else None
+    return [_candidate(
+        module_id="alternative_clustering", category="clustering",
+        statement=(
+            f"Best alternative-clustering result is {selected.get('algorithm')}"
+            f" with silhouette {silhouette:.3f}"
+            f"{f' and {cluster_count} clusters' if cluster_count is not None else ''}."
+        ),
+        report_path=path, effect_value=silhouette,
+        evidence_level="descriptive geometric validation",
+        family="alternative_clustering:model_selection",
+    )]
+
+
+def _pca_context_candidates(
+    report: Mapping[str, object], module_id: str, path: Path
+) -> List[Dict[str, object]]:
+    component_sets: List[tuple[str, Mapping[str, object]]] = []
+    if module_id == "common_pca":
+        basis = report.get("basis")
+        pca = basis.get("pca") if isinstance(basis, dict) else None
+        components = pca.get("components") if isinstance(pca, dict) else None
+        if isinstance(components, list) and components and isinstance(components[0], dict):
+            component_sets.append(("shared basis", components[0]))
+    else:
+        systems = report.get("systems")
+        if isinstance(systems, list):
+            for system in systems:
+                if not isinstance(system, dict):
+                    continue
+                for replica in system.get("replicas", []):
+                    if not isinstance(replica, dict):
+                        continue
+                    pca = replica.get("pca")
+                    components = pca.get("components") if isinstance(pca, dict) else None
+                    if isinstance(components, list) and components and isinstance(components[0], dict):
+                        label = f"{system.get('system_id')}/{replica.get('replica_id')}"
+                        component_sets.append((label, components[0]))
+    findings = []
+    for label, component in component_sets:
+        variance = _numeric(component.get("explained_variance_fraction"))
+        if variance is None:
+            continue
+        findings.append(_candidate(
+            module_id=module_id, category="other_physical",
+            statement=f"PC1 explains {variance:.1%} of coordinate variance for {label}.",
+            report_path=path, effect_value=variance,
+            evidence_level="interpretive context",
+            family=f"{module_id}:variance_accounting",
+        ))
+    return findings
+
+
+def _tica_context_candidates(
+    report: Mapping[str, object], path: Path
+) -> List[Dict[str, object]]:
+    components = report.get("components")
+    if not isinstance(components, list) or not components or not isinstance(components[0], dict):
+        return []
+    first = components[0]
+    eigenvalue = _numeric(first.get("eigenvalue"))
+    timescale = _numeric(first.get("implied_timescale"))
+    if eigenvalue is None:
+        return []
+    suffix = (
+        f" and an implied timescale of {timescale:.3g} {first.get('time_unit', report.get('time_unit', ''))}"
+        if timescale is not None else ""
+    )
+    return [_candidate(
+        module_id="time_lagged_independent_component_analysis",
+        category="other_physical",
+        statement=f"Leading tICA component has eigenvalue {eigenvalue:.3f}{suffix}.",
+        report_path=path, effect_value=eigenvalue,
+        evidence_level="interpretive context",
+        family="time_lagged_independent_component_analysis:leading_component",
+    )]
+
+
+def _information_correlation_candidates(
+    report: Mapping[str, object], path: Path
+) -> List[Dict[str, object]]:
+    findings = []
+    systems = report.get("systems")
+    if not isinstance(systems, list):
+        return findings
+    for system in systems:
+        if not isinstance(system, dict):
+            continue
+        system_id = str(system.get("system_id"))
+        for field, label in (
+            ("generalized_correlation", "generalized correlation"),
+            ("normalized_mutual_information", "normalized mutual information"),
+        ):
+            extreme = _matrix_extreme(system.get(field))
+            if extreme is None:
+                continue
+            left, right, value = extreme
+            findings.append(_candidate(
+                module_id="generalized_correlation_and_information",
+                category="coupled_interaction",
+                statement=(
+                    f"Strongest {label} in {system_id} is feature {left + 1} with "
+                    f"feature {right + 1}: {value:.3f}."
+                ),
+                report_path=path, effect_value=value, systems=(system_id,),
+                evidence_level="descriptive nonlinear dependence",
+                family=f"generalized_correlation_and_information:{field}",
+            ))
+    return findings
+
+
+def _information_dynamics_candidates(
+    report: Mapping[str, object], path: Path
+) -> List[Dict[str, object]]:
+    analyses = report.get("analyses")
+    if not isinstance(analyses, dict):
+        return []
+    findings = []
+    for analysis_id, matrix_key, label, directed in (
+        ("transfer_entropy", "transfer_entropy_nats", "transfer entropy", True),
+        ("lagged_cross_correlation", "lagged_cross_correlation", "lagged cross-correlation", True),
+    ):
+        analysis = analyses.get(analysis_id)
+        matrix = analysis.get(matrix_key) if isinstance(analysis, dict) else None
+        extreme = _matrix_extreme(matrix, directed=directed)
+        if extreme is None:
+            continue
+        source, target, value = extreme
+        findings.append(_candidate(
+            module_id="information_dynamics", category="coupled_interaction",
+            statement=(
+                f"Largest absolute {label} is feature {source + 1} at t to feature "
+                f"{target + 1} at the declared lag: {value:.3g}."
+            ),
+            report_path=path, effect_value=value,
+            evidence_level="exploratory directional dependence",
+            family=f"information_dynamics:{analysis_id}",
+        ))
+    return findings
+
+
+def _correlation_network_candidates(
+    report: Mapping[str, object], path: Path
+) -> List[Dict[str, object]]:
+    findings = []
+    systems = report.get("systems")
+    if not isinstance(systems, list):
+        return findings
+    for system in systems:
+        if not isinstance(system, dict):
+            continue
+        system_id = str(system.get("system_id"))
+        matrices = system.get("matrices")
+        if not isinstance(matrices, list):
+            continue
+        for matrix in matrices:
+            network = matrix.get("network") if isinstance(matrix, dict) else None
+            strengths = network.get("node_absolute_strengths") if isinstance(network, dict) else None
+            if not isinstance(strengths, list):
+                continue
+            finite = [(float(value), index) for index, value in enumerate(strengths) if _numeric(value) is not None]
+            if not finite:
+                continue
+            strength, index = max(finite)
+            findings.append(_candidate(
+                module_id="correlation_networks", category="coupled_interaction",
+                statement=(
+                    f"Highest absolute network strength in {system_id}/"
+                    f"{matrix.get('matrix_kind')} is node {index}: {strength:.3f}."
+                ),
+                report_path=path, effect_value=strength, systems=(system_id,),
+                evidence_level="descriptive thresholded network",
+                family=f"correlation_networks:{matrix.get('matrix_kind')}",
+            ))
+    return findings
+
+
+def _grouped_ml_candidates(
+    report: Mapping[str, object], path: Path
+) -> List[Dict[str, object]]:
+    metrics = report.get("pooled_held_out_metrics")
+    if not isinstance(metrics, dict):
+        return []
+    macro_f1 = _numeric(metrics.get("macro_f1"))
+    if macro_f1 is None:
+        return []
+    return [_candidate(
+        module_id="grouped_ml", category="other_physical",
+        statement=f"Grouped held-out classification has macro-F1 {macro_f1:.3f}.",
+        report_path=path, effect_value=macro_f1,
+        evidence_level="held-out predictive diagnostic",
+        family="grouped_ml:held_out_macro_f1",
+    )]
+
+
+def _ion_atmosphere_candidates(
+    report: Mapping[str, object], path: Path
+) -> List[Dict[str, object]]:
+    rows = report.get("per_ion_inner_shell_persistence")
+    if not isinstance(rows, list):
+        return []
+    by_system_species: Dict[str, Dict[str, List[float]]] = {}
+    row_by_system_species: Dict[tuple[str, str], Mapping[str, object]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        occupancy = _numeric(row.get("inner_shell_occupancy"))
+        if occupancy is None:
+            continue
+        system_id = str(row.get("system_id"))
+        species = str(row.get("species"))
+        by_system_species.setdefault(system_id, {}).setdefault(species, []).append(
+            occupancy
+        )
+        key = (system_id, species)
+        current = row_by_system_species.get(key)
+        if current is None or occupancy > float(current["inner_shell_occupancy"]):
+            row_by_system_species[key] = row
+    if not by_system_species:
+        return []
+    findings = []
+    maxima: Dict[str, Dict[str, float]] = {}
+    for system_id, species_rows in sorted(by_system_species.items()):
+        maxima[system_id] = {
+            species: max(values) for species, values in species_rows.items()
+        }
+        species, occupancy = max(
+            maxima[system_id].items(), key=lambda item: (item[1], item[0])
+        )
+        row = row_by_system_species[(system_id, species)]
+        findings.append(_candidate(
+            module_id="ion_atmosphere", category="other_physical",
+            statement=(
+                f"Highest observed inner-shell occupancy in {system_id} is "
+                f"{occupancy:.1%} for {species} ion {row.get('ion_atom_index')}."
+            ),
+            report_path=path, effect_value=occupancy, systems=(system_id,),
+            evidence_level="descriptive ion-shell persistence",
+            family="ion_atmosphere:inner_shell_occupancy",
+        ))
+    for left, right in itertools.combinations(sorted(maxima), 2):
+        shared_species = set(maxima[left]).intersection(maxima[right])
+        if not shared_species:
+            continue
+        species = max(
+            shared_species,
+            key=lambda value: (
+                abs(maxima[left][value] - maxima[right][value]), value
+            ),
+        )
+        effect = maxima[left][species] - maxima[right][species]
+        findings.append(_candidate(
+            module_id="ion_atmosphere", category="other_physical",
+            statement=(
+                f"Largest descriptive matched-species ion inner-shell difference "
+                f"between {left} and {right} is {species}: {effect:+.1%} "
+                f"({left} minus {right}, comparing each system's most persistent ion)."
+            ),
+            report_path=path, effect_value=effect, systems=(left, right),
+            evidence_level="descriptive matched-species ion-shell persistence",
+            family="ion_atmosphere:pairwise_species_maximum_difference",
+        ))
+    return findings
+
+
+def _rmsd_rg_candidates(
+    report: Mapping[str, object], path: Path
+) -> List[Dict[str, object]]:
+    findings = []
+    systems = report.get("systems")
+    if not isinstance(systems, list):
+        return findings
+    for system in systems:
+        if not isinstance(system, dict):
+            continue
+        system_id = str(system.get("system_id"))
+        for replica in system.get("replicas", []):
+            if not isinstance(replica, dict):
+                continue
+            for segment in replica.get("segments", []):
+                summary = segment.get("summary") if isinstance(segment, dict) else None
+                if not isinstance(summary, dict):
+                    continue
+                for metric, label in (
+                    ("rmsd_angstrom", "mean RMSD"),
+                    ("radius_of_gyration_angstrom", "mean radius of gyration"),
+                ):
+                    metric_summary = summary.get(metric)
+                    mean = _numeric(metric_summary.get("mean")) if isinstance(metric_summary, dict) else None
+                    if mean is None:
+                        continue
+                    findings.append(_candidate(
+                        module_id="replica_rmsd_rg", category="other_physical",
+                        statement=(
+                            f"{label} for {system_id}/{replica.get('replica_id')}/"
+                            f"{segment.get('segment_id')} is {mean:.3f} angstrom."
+                        ),
+                        report_path=path, effect_value=mean, systems=(system_id,),
+                        evidence_level="descriptive stability metric",
+                        family=f"replica_rmsd_rg:{metric}",
+                    ))
+    return findings
+
+
+def _scalar_distribution_candidates(
+    report: Mapping[str, object], path: Path
+) -> List[Dict[str, object]]:
+    findings = []
+    rows = report.get("distribution_reports")
+    if not isinstance(rows, list):
+        return findings
+    for row in rows:
+        histogram = row.get("histogram") if isinstance(row, dict) else None
+        bins = [value for value in histogram or [] if isinstance(value, dict) and _numeric(value.get("fraction")) is not None]
+        if not bins:
+            continue
+        modal = max(bins, key=lambda value: float(value["fraction"]))
+        fraction = float(modal["fraction"])
+        findings.append(_candidate(
+            module_id="scalar_feature_distributions", category="other_physical",
+            statement=(
+                f"Modal bin for {row.get('feature_id')} is centered at "
+                f"{modal.get('center')} with frame fraction {fraction:.1%}."
+            ),
+            report_path=path, effect_value=fraction,
+            evidence_level="descriptive histogram",
+            family=f"scalar_feature_distributions:{row.get('distribution_id')}",
+        ))
+    return findings
+
+
+def _scalar_threshold_candidates(
+    report: Mapping[str, object], path: Path
+) -> List[Dict[str, object]]:
+    findings = []
+    rows = report.get("state_reports")
+    if not isinstance(rows, list):
+        return findings
+    for row in rows:
+        comparison = row.get("state_population_comparison") if isinstance(row, dict) else None
+        systems = comparison.get("system_populations") if isinstance(comparison, dict) else None
+        dictionary = row.get("state_dictionary") if isinstance(row, dict) else None
+        labels = {
+            value.get("state_id"): value.get("state_label")
+            for value in dictionary or [] if isinstance(value, dict)
+        }
+        for system in systems or []:
+            populations = system.get("state_populations") if isinstance(system, dict) else None
+            valid = [value for value in populations or [] if isinstance(value, dict) and _numeric(value.get("fraction_of_all_evaluated")) is not None]
+            if not valid:
+                continue
+            dominant = max(valid, key=lambda value: float(value["fraction_of_all_evaluated"]))
+            fraction = float(dominant["fraction_of_all_evaluated"])
+            system_id = str(system.get("system_id"))
+            state_id = dominant.get("state_id")
+            findings.append(_candidate(
+                module_id="scalar_threshold_states", category="other_physical",
+                statement=(
+                    f"Dominant {row.get('feature_id')} threshold state in {system_id} is "
+                    f"{labels.get(state_id, state_id)} at {fraction:.1%} of evaluated frames."
+                ),
+                report_path=path, effect_value=fraction, systems=(system_id,),
+                evidence_level="descriptive threshold-state population",
+                family=f"scalar_threshold_states:{row.get('state_analysis_id')}",
             ))
     return findings
 
@@ -413,6 +858,127 @@ def _hydrogen_bond_candidates(
             report_path=path, effect_value=effect, systems=(left, right),
             family="hydrogen_bond_discovery:pairwise_occupancy_difference",
         ))
+    return findings
+
+
+def _chemical_atom_key(identity: object) -> tuple[str, str, int, str, str] | None:
+    if not isinstance(identity, dict):
+        return None
+    residue_number = identity.get("residue_number")
+    if isinstance(residue_number, bool) or not isinstance(residue_number, int):
+        return None
+    return (
+        str(identity.get("chain_id", "")),
+        str(identity.get("residue_name", "")),
+        residue_number,
+        str(identity.get("insertion_code", "")),
+        str(identity.get("atom_name", "")),
+    )
+
+
+def _chemical_atom_key_label(key: tuple[str, str, int, str, str]) -> str:
+    chain, residue_name, residue_number, insertion_code, atom_name = key
+    insertion = insertion_code if insertion_code else ""
+    return f"{chain}:{residue_name}{residue_number}{insertion}:{atom_name}"
+
+
+def _hydrogen_bond_chemical_summary(
+    report: Mapping[str, object], system_id: str
+) -> tuple[
+    set[tuple[str, str, int, str, str]],
+    Dict[tuple[tuple[str, str, int, str, str], tuple[str, str, int, str, str]], float],
+]:
+    atoms = report.get("atom_dictionary")
+    candidates = report.get("candidate_dictionary")
+    occupancies = report.get("occupancies")
+    if not all(isinstance(value, list) for value in (atoms, candidates, occupancies)):
+        return set(), {}
+    atom_keys = {
+        int(row["atom_index"]): _chemical_atom_key(row.get("identity"))
+        for row in atoms
+        if isinstance(row, dict) and isinstance(row.get("atom_index"), int)
+    }
+    present_atoms = {value for value in atom_keys.values() if value is not None}
+    endpoints_by_bond = {}
+    for row in candidates:
+        if not isinstance(row, dict) or not isinstance(row.get("bond_id"), str):
+            continue
+        donor = atom_keys.get(row.get("donor_atom_index"))
+        acceptor = atom_keys.get(row.get("acceptor_atom_index"))
+        if donor is not None and acceptor is not None:
+            endpoints_by_bond[str(row["bond_id"])] = (donor, acceptor)
+    values: Dict[
+        tuple[tuple[str, str, int, str, str], tuple[str, str, int, str, str]],
+        List[float],
+    ] = {}
+    for row in occupancies:
+        if not isinstance(row, dict) or str(row.get("system_id")) != system_id:
+            continue
+        key = endpoints_by_bond.get(str(row.get("bond_id")))
+        if key is None:
+            continue
+        occupancy = _numeric(row.get("occupancy_fraction"))
+        if occupancy is None:
+            evaluated = row.get("evaluated_frame_count")
+            present = row.get("present_frame_count")
+            if (
+                isinstance(evaluated, int) and not isinstance(evaluated, bool)
+                and evaluated > 0 and isinstance(present, int)
+                and not isinstance(present, bool)
+            ):
+                occupancy = present / evaluated
+        if occupancy is not None:
+            values.setdefault(key, []).append(occupancy)
+    # Equivalent donor hydrogens map to one donor-heavy/acceptor-heavy event.
+    # The maximum occupancy is a conservative bounded summary when only compact
+    # per-hydrogen occupancy evidence, rather than the frame matrix, is present.
+    return present_atoms, {key: max(rows) for key, rows in values.items()}
+
+
+def _cross_report_hydrogen_bond_candidates(
+    selected: Mapping[str, tuple[int, str, Path, Mapping[str, object]]]
+) -> List[Dict[str, object]]:
+    summaries = {
+        system_id: _hydrogen_bond_chemical_summary(value[3], system_id)
+        for system_id, value in selected.items()
+    }
+    source_paths = sorted({value[2] for value in selected.values()})
+    if not source_paths:
+        return []
+    findings = []
+    for left, right in itertools.combinations(sorted(summaries), 2):
+        left_atoms, left_values = summaries[left]
+        right_atoms, right_values = summaries[right]
+        eligible = {
+            key for key in set(left_values).union(right_values)
+            if key[0] in left_atoms and key[1] in left_atoms
+            and key[0] in right_atoms and key[1] in right_atoms
+        }
+        if not eligible:
+            continue
+        key = max(
+            eligible,
+            key=lambda value: (
+                abs(left_values.get(value, 0.0) - right_values.get(value, 0.0)),
+                value,
+            ),
+        )
+        effect = left_values.get(key, 0.0) - right_values.get(key, 0.0)
+        candidate = _candidate(
+            module_id="hydrogen_bond_discovery", category="other_physical",
+            statement=(
+                "Largest descriptive chemistry-matched direct-hydrogen-bond "
+                f"occupancy difference between {left} and {right} is "
+                f"{_chemical_atom_key_label(key[0])} to "
+                f"{_chemical_atom_key_label(key[1])}: {effect:+.1%} "
+                f"({left} minus {right})."
+            ),
+            report_path=source_paths[0], effect_value=effect,
+            systems=(left, right),
+            family="hydrogen_bond_discovery:chemical_identity_pairwise_difference",
+        )
+        candidate["report_paths"] = [str(value) for value in source_paths]
+        findings.append(candidate)
     return findings
 
 
@@ -888,6 +1454,8 @@ _CROSS_REPORT_ROWS = {
     "radial_distribution_functions": "feature_reports",
     "dihedral_distributions": "circular_summaries",
     "water_mediated_hydrogen_bond_networks": "bridge_occupancies",
+    "ion_atmosphere": "per_ion_inner_shell_persistence",
+    "hydrogen_bond_discovery": "occupancies",
 }
 
 
@@ -939,6 +1507,21 @@ def _compact_cross_report(
                     "mean_angle_degrees",
                 )
             }
+        elif module_id == "ion_atmosphere":
+            kept = {
+                key: row.get(key) for key in (
+                    "system_id", "replica_id", "species", "ion_atom_index",
+                    "evaluated_frame_count", "inner_shell_occupancy",
+                )
+            }
+        elif module_id == "hydrogen_bond_discovery":
+            kept = {
+                key: row.get(key) for key in (
+                    "system_id", "replica_id", "bond_id",
+                    "evaluated_frame_count", "present_frame_count",
+                    "occupancy_fraction",
+                )
+            }
         else:
             kept = {
                 key: row.get(key) for key in (
@@ -970,6 +1553,20 @@ def _compact_cross_report(
                         }
                         for row in source if isinstance(row, dict)
                     ]
+    if module_id == "hydrogen_bond_discovery":
+        for key, fields in (
+            ("candidate_dictionary", (
+                "bond_id", "donor_atom_index", "hydrogen_atom_index",
+                "acceptor_atom_index",
+            )),
+            ("atom_dictionary", ("atom_index", "identity")),
+        ):
+            source = report.get(key)
+            if isinstance(source, list):
+                compact[key] = [
+                    {field: row.get(field) for field in fields}
+                    for row in source if isinstance(row, dict)
+                ]
     return compact
 
 
@@ -980,12 +1577,18 @@ def finding_sidecar_evidence(
 
     path = Path(report_path).expanduser().resolve(strict=False)
     module_id = str(report.get("module_id", path.parent.name))
+    candidates = _report_candidates(path, report)
+    quality_control = _quality_control_records(report, path)
     return {
         "finding_evidence_schema": "salsbury-finding-evidence-v1",
         "module_id": module_id,
         "report_path": str(path),
-        "candidates": _report_candidates(path, report),
+        "candidates": candidates,
         "cross_report_summary": _compact_cross_report(report, module_id),
+        "module_review": _module_review_record(
+            module_id, path, len(candidates), len(quality_control)
+        ),
+        "quality_control_records": quality_control,
     }
 
 
@@ -1049,6 +1652,9 @@ def _cross_report_candidates(
         source_paths = sorted({value[2] for value in selected.values()})
         if len(selected) < 2 or len(source_paths) < 2:
             continue
+        if module_id == "hydrogen_bond_discovery":
+            findings.extend(_cross_report_hydrogen_bond_candidates(selected))
+            continue
         row_key = _CROSS_REPORT_ROWS[module_id]
         merged: Dict[str, object] = {"module_id": module_id, row_key: []}
         for system_id in sorted(selected):
@@ -1080,6 +1686,8 @@ def _cross_report_candidates(
             candidates = _rdf_candidates(merged, primary)
         elif module_id == "dihedral_distributions":
             candidates = _dihedral_candidates(merged, primary)
+        elif module_id == "ion_atmosphere":
+            candidates = _ion_atmosphere_candidates(merged, primary)
         else:
             candidates = _water_network_candidates(merged, primary)
         for candidate in candidates:
@@ -1089,10 +1697,58 @@ def _cross_report_candidates(
     return findings
 
 
+def _integrated_comparison_candidates(
+    report: Mapping[str, object], path: Path
+) -> List[Dict[str, object]]:
+    raw = report.get("comparison_findings")
+    if not isinstance(raw, list):
+        raise FindingPickerError(
+            "integrated comparison report lacks comparison_findings"
+        )
+    findings = []
+    for index, value in enumerate(raw):
+        if not isinstance(value, dict):
+            raise FindingPickerError(
+                f"integrated comparison finding {index} is not an object"
+            )
+        systems = value.get("system_ids")
+        if not isinstance(systems, list) or len(set(map(str, systems))) < 2:
+            raise FindingPickerError(
+                f"integrated comparison finding {index} lacks two systems"
+            )
+        required = {
+            "module_id", "category", "evidence_level", "statement",
+            "comparison_family", "effect_value", "p_value",
+        }
+        missing = sorted(required.difference(value))
+        if missing:
+            raise FindingPickerError(
+                f"integrated comparison finding {index} is missing: "
+                + ", ".join(missing)
+            )
+        row = dict(value)
+        row.pop("finding_id", None)
+        row["adjusted_p_value"] = None
+        row["statistically_significant"] = None
+        source_paths = row.get("report_paths")
+        if not isinstance(source_paths, list):
+            source_paths = [row.get("report_path")]
+        row["source_report_paths"] = [
+            str(value) for value in source_paths if value
+        ]
+        row["integration_report_path"] = str(path)
+        row["report_path"] = str(path)
+        row["report_paths"] = list(dict.fromkeys([
+            str(path), *row["source_report_paths"],
+        ]))
+        findings.append(row)
+    return findings
+
+
 def _experimental_method_candidates(
     report: Mapping[str, object], module_id: str, path: Path
 ) -> List[Dict[str, object]]:
-    """Surface bounded descriptive evidence from default-off method reports."""
+    """Extract bounded, method-aware highlights from default-off methods."""
 
     findings: List[Dict[str, object]] = []
     systems = report.get("systems")
@@ -1101,23 +1757,21 @@ def _experimental_method_candidates(
             if not isinstance(system, dict):
                 continue
             values = system.get("dci") or system.get("dfi")
-            metric = "DCI" if isinstance(system.get("dci"), list) and system.get("dci") else "DFI"
-            if not isinstance(values, list):
-                continue
+            metric = "DCI" if system.get("dci") else "DFI"
             numeric = [
-                (index, float(value)) for index, value in enumerate(values)
-                if isinstance(value, (int, float)) and not isinstance(value, bool)
-                and math.isfinite(float(value))
-            ]
+                (index, value) for index, raw in enumerate(values or [])
+                if (value := _numeric(raw)) is not None
+            ] if isinstance(values, list) else []
             if numeric:
                 index, value = max(numeric, key=lambda row: (row[1], -row[0]))
                 system_id = str(system.get("system_id"))
                 findings.append(_candidate(
                     module_id=module_id, category="coupled_interaction",
                     statement=(
-                        f"Largest descriptive {metric} value in {system_id} is node "
-                        f"{index}: {value:.4g}."
-                    ), report_path=path, effect_value=value, systems=(system_id,),
+                        f"Largest descriptive {metric} value in {system_id} is "
+                        f"node {index}: {value:.4g}."
+                    ),
+                    report_path=path, effect_value=value, systems=(system_id,),
                     family=f"{module_id}:within_system_{metric.lower()}_maximum",
                 ))
     elif module_id == "trajectory_reweighting" and isinstance(systems, list):
@@ -1125,18 +1779,21 @@ def _experimental_method_candidates(
             diagnostics = system.get("diagnostics") if isinstance(system, dict) else None
             if not isinstance(diagnostics, dict):
                 continue
-            ratio = diagnostics.get("kish_effective_sample_size_ratio")
-            if not isinstance(ratio, (int, float)) or isinstance(ratio, bool):
-                ratio = diagnostics.get("kish_ratio")
-            if isinstance(ratio, (int, float)) and not isinstance(ratio, bool):
+            ratio = _numeric(diagnostics.get("kish_effective_sample_size_ratio"))
+            if ratio is None:
+                ratio = _numeric(diagnostics.get("kish_ratio"))
+            if ratio is not None:
                 system_id = str(system.get("system_id"))
-                status = str(diagnostics.get("reweighting_validity_status", "not evaluated"))
+                status = str(diagnostics.get(
+                    "reweighting_validity_status", "not evaluated"
+                ))
                 findings.append(_candidate(
                     module_id=module_id, category="other_physical",
                     statement=(
-                        f"Frame-weight concentration gate for {system_id} is {status}; "
-                        f"the Kish effective-sample ratio is {float(ratio):.1%}."
-                    ), report_path=path, effect_value=float(ratio), systems=(system_id,),
+                        f"Frame-weight concentration gate for {system_id} is "
+                        f"{status}; the Kish effective-sample ratio is {ratio:.1%}."
+                    ),
+                    report_path=path, effect_value=ratio, systems=(system_id,),
                     family=f"{module_id}:weight_reliability",
                 ))
     elif module_id == "allosteric_pathways" and isinstance(systems, list):
@@ -1151,13 +1808,16 @@ def _experimental_method_candidates(
                 values = network.get("weighted_betweenness_centrality")
                 metric = "weighted betweenness"
             numeric = [
-                (index, float(value)) for index, value in enumerate(values or [])
-                if isinstance(value, (int, float)) and not isinstance(value, bool)
-            ]
+                (index, value) for index, raw in enumerate(values or [])
+                if (value := _numeric(raw)) is not None
+            ] if isinstance(values, list) else []
             if numeric:
                 index, value = max(numeric, key=lambda row: (row[1], -row[0]))
                 label = str(index)
-                if isinstance(nodes, list) and index < len(nodes) and isinstance(nodes[index], dict):
+                if (
+                    isinstance(nodes, list) and index < len(nodes)
+                    and isinstance(nodes[index], dict)
+                ):
                     label = str(nodes[index].get("node_id", index))
                 system_id = str(system.get("system_id"))
                 findings.append(_candidate(
@@ -1165,21 +1825,18 @@ def _experimental_method_candidates(
                     statement=(
                         f"Highest descriptive pathway {metric} in {system_id} is "
                         f"{label}: {value:.4g}."
-                    ), report_path=path, effect_value=value, systems=(system_id,),
+                    ),
+                    report_path=path, effect_value=value, systems=(system_id,),
                     family=f"{module_id}:within_system_node_priority",
                 ))
-    elif (
-        module_id == "energetic_network_embeddings"
-        and report.get("availability_status") == "available"
-    ):
+    elif module_id == "energetic_network_embeddings":
         comparisons = report.get("pairwise_system_comparisons")
         if isinstance(comparisons, list):
             for comparison in comparisons:
                 rows = comparison.get("residue_distances") if isinstance(comparison, dict) else None
                 choices = [
                     row for row in rows or [] if isinstance(row, dict)
-                    and isinstance(row.get("summed_wasserstein_distance"), (int, float))
-                    and not isinstance(row.get("summed_wasserstein_distance"), bool)
+                    and _numeric(row.get("summed_wasserstein_distance")) is not None
                 ] if isinstance(rows, list) else []
                 if not choices:
                     continue
@@ -1187,128 +1844,96 @@ def _experimental_method_candidates(
                     choices,
                     key=lambda value: float(value["summed_wasserstein_distance"]),
                 )
-                value = float(row["summed_wasserstein_distance"])
-                system_ids = (
+                effect = float(row["summed_wasserstein_distance"])
+                pair = (
                     str(comparison.get("system_i")),
                     str(comparison.get("system_j")),
                 )
                 findings.append(_candidate(
                     module_id=module_id, category="coupled_interaction",
                     statement=(
-                        "Largest descriptive protein-only energetic-network "
-                        f"embedding shift between {system_ids[0]} and {system_ids[1]} "
-                        f"is {row.get('node_id')}: summed marginal Wasserstein "
-                        f"distance {value:.4g}."
-                    ), report_path=path, effect_value=value, systems=system_ids,
+                        f"Largest descriptive energetic-network shift between "
+                        f"{pair[0]} and {pair[1]} is {row.get('node_id')}: "
+                        f"summed marginal Wasserstein distance {effect:.4g}."
+                    ),
+                    report_path=path, effect_value=effect, systems=pair,
                     family=f"{module_id}:residue_wasserstein",
                 ))
     elif module_id == "multivalent_molecular_bridges":
         rows = report.get("mediator_type_summaries")
         if isinstance(rows, list):
-            for system_id in sorted({str(row.get("system_id")) for row in rows if isinstance(row, dict)}):
+            system_ids = sorted({
+                str(row.get("system_id")) for row in rows if isinstance(row, dict)
+            })
+            for system_id in system_ids:
                 choices = [
                     row for row in rows if isinstance(row, dict)
                     and str(row.get("system_id")) == system_id
-                    and isinstance(row.get("bridge_occupancy"), (int, float))
+                    and _numeric(row.get("bridge_occupancy")) is not None
                 ]
                 if choices:
                     row = max(choices, key=lambda value: float(value["bridge_occupancy"]))
-                    occupancy = float(row["bridge_occupancy"])
+                    effect = float(row["bridge_occupancy"])
                     findings.append(_candidate(
                         module_id=module_id, category="other_physical",
                         statement=(
-                            f"Most occupied multivalent mediator type in {system_id} is "
-                            f"{row.get('mediator_type')} at {occupancy:.1%} of evaluated mediator-frames."
-                        ), report_path=path, effect_value=occupancy, systems=(system_id,),
-                        family=f"{module_id}:within_system_mediator_occupancy",
+                            f"Most occupied multivalent mediator type in {system_id} "
+                            f"is {row.get('mediator_type')} at {effect:.1%}."
+                        ),
+                        report_path=path, effect_value=effect, systems=(system_id,),
+                        family=f"{module_id}:mediator_occupancy",
                     ))
-    elif module_id == "reactive_path_ensembles":
-        count = report.get("complete_path_count")
-        if isinstance(count, int) and not isinstance(count, bool):
-            status = str(report.get("transition_sufficiency_status", "not evaluated"))
-            findings.append(_candidate(
-                module_id=module_id, category="other_physical",
-                statement=(
-                    f"Reactive-path extraction found {count} complete paths; the "
-                    f"transition-sufficiency gate is {status}."
-                ), report_path=path, effect_value=float(count),
-                family=f"{module_id}:path_sufficiency",
-            ))
     elif module_id == "interaction_fingerprints":
-        occupancies = report.get("feature_occupancies")
-        if isinstance(occupancies, list):
-            choices = [
-                row for row in occupancies if isinstance(row, dict)
-                and isinstance(row.get("occupancy_fraction"), (int, float))
-            ]
-            if choices:
-                row = max(choices, key=lambda value: float(value["occupancy_fraction"]))
-                value = float(row["occupancy_fraction"])
-                findings.append(_candidate(
-                    module_id=module_id, category="coupled_interaction",
-                    statement=(
-                        f"Most occupied retained interaction-fingerprint feature is "
-                        f"{row.get('feature_id')} at {value:.1%} of its source-observed frames."
-                    ), report_path=path, effect_value=value,
-                    family=f"{module_id}:feature_occupancy",
-                ))
-    elif module_id == "spatial_interaction_ensembles":
-        comparisons = report.get("pairwise_system_spatial_differences")
+        rows = report.get("feature_occupancies")
         choices = [
-            row for row in comparisons if isinstance(row, dict)
-            and isinstance(row.get("centroid_displacement_angstrom"), (int, float))
-            and not isinstance(row.get("centroid_displacement_angstrom"), bool)
-        ] if isinstance(comparisons, list) else []
+            row for row in rows or [] if isinstance(row, dict)
+            and _numeric(row.get("occupancy_fraction")) is not None
+        ] if isinstance(rows, list) else []
+        if choices:
+            row = max(choices, key=lambda value: float(value["occupancy_fraction"]))
+            effect = float(row["occupancy_fraction"])
+            findings.append(_candidate(
+                module_id=module_id, category="coupled_interaction",
+                statement=(
+                    f"Most occupied typed interaction is {row.get('feature_id')} "
+                    f"at {effect:.1%} of source-observed frames."
+                ),
+                report_path=path, effect_value=effect,
+                family=f"{module_id}:feature_occupancy",
+            ))
+    elif module_id == "spatial_interaction_ensembles":
+        rows = report.get("pairwise_system_spatial_differences")
+        choices = [
+            row for row in rows or [] if isinstance(row, dict)
+            and _numeric(row.get("centroid_displacement_angstrom")) is not None
+        ] if isinstance(rows, list) else []
         if choices:
             row = max(
                 choices,
                 key=lambda value: float(value["centroid_displacement_angstrom"]),
             )
-            displacement = float(row["centroid_displacement_angstrom"])
-            systems = (str(row.get("system_i")), str(row.get("system_j")))
+            effect = float(row["centroid_displacement_angstrom"])
+            pair = (str(row.get("system_i")), str(row.get("system_j")))
             findings.append(_candidate(
                 module_id=module_id, category="coupled_interaction",
                 statement=(
-                    "Largest gated descriptive interaction-cloud centroid shift is "
-                    f"{row.get('superfeature_id')} between {systems[0]} and "
-                    f"{systems[1]}: {displacement:.4g} Å."
+                    f"Largest gated interaction-cloud centroid shift is "
+                    f"{row.get('superfeature_id')} between {pair[0]} and {pair[1]}: "
+                    f"{effect:.4g} Å."
                 ),
-                report_path=path, effect_value=displacement, systems=systems,
+                report_path=path, effect_value=effect, systems=pair,
                 family=f"{module_id}:centroid_displacement",
             ))
-        else:
-            selected = report.get("selected_spatial_mode_candidates")
-            mode_rows = [
-                row for row in selected if isinstance(row, dict)
-                and isinstance(row.get("silhouette"), (int, float))
-                and not isinstance(row.get("silhouette"), bool)
-            ] if isinstance(selected, list) else []
-            if mode_rows:
-                row = max(mode_rows, key=lambda value: float(value["silhouette"]))
-                score = float(row["silhouette"])
-                system_id = str(row.get("system_id"))
-                findings.append(_candidate(
-                    module_id=module_id, category="coupled_interaction",
-                    statement=(
-                        f"Gated spatial mode candidate for {row.get('superfeature_id')} "
-                        f"in {system_id} has k={row.get('k')} and exact silhouette "
-                        f"{score:.4g}; it is not a binding-state assignment."
-                    ),
-                    report_path=path, effect_value=score, systems=(system_id,),
-                    family=f"{module_id}:gated_spatial_mode",
-                ))
     elif module_id == "interaction_persistence":
-        summaries = report.get("feature_persistence_summaries")
+        rows = report.get("feature_persistence_summaries")
         choices = [
-            row for row in summaries if isinstance(row, dict)
+            row for row in rows or [] if isinstance(row, dict)
             and row.get("gap_tolerance_observations") == 0
             and row.get("persistence_summary_gate") == "passed"
             and isinstance(row.get("complete_event_duration_summary"), dict)
-            and isinstance(
-                row["complete_event_duration_summary"].get("median"),
-                (int, float),
-            )
-        ] if isinstance(summaries, list) else []
+            and _numeric(row["complete_event_duration_summary"].get("median"))
+            is not None
+        ] if isinstance(rows, list) else []
         if choices:
             row = max(
                 choices,
@@ -1316,80 +1941,65 @@ def _experimental_method_candidates(
                     value["complete_event_duration_summary"]["median"]
                 ),
             )
-            duration = float(
-                row["complete_event_duration_summary"]["median"]
-            )
+            effect = float(row["complete_event_duration_summary"]["median"])
+            system_id = str(row.get("system_id"))
             findings.append(_candidate(
                 module_id=module_id, category="coupled_interaction",
                 statement=(
-                    "Longest gated primary zero-gap fingerprint persistence is "
-                    f"{row.get('feature_id')} in {row.get('system_id')}: median "
-                    f"complete-event duration {duration:.4g} {row.get('time_unit')} "
-                    f"across {row.get('complete_event_count')} complete events."
+                    f"Longest gated zero-gap interaction persistence is "
+                    f"{row.get('feature_id')} in {system_id}: median complete-event "
+                    f"duration {effect:.4g} {row.get('time_unit')}."
                 ),
-                report_path=path, effect_value=duration,
-                systems=(str(row.get("system_id")),),
+                report_path=path, effect_value=effect, systems=(system_id,),
                 family=f"{module_id}:complete_event_duration",
             ))
-        elif report.get("persistence_readiness_status") == "insufficient_complete_events":
+    elif module_id == "helical_mechanics":
+        rows = report.get("neighbor_step_couplings")
+        choices = [
+            row for row in rows or [] if isinstance(row, dict)
+            and _numeric(row.get("mutual_information_bits")) is not None
+        ] if isinstance(rows, list) else []
+        if choices:
+            row = max(choices, key=lambda value: float(value["mutual_information_bits"]))
+            effect = float(row["mutual_information_bits"])
+            system_id = str(row.get("system_id"))
             findings.append(_candidate(
                 module_id=module_id, category="coupled_interaction",
                 statement=(
-                    "Interaction-persistence analysis withheld duration ranking: "
-                    "no zero-gap feature/system series passed the configured "
-                    "complete-event gate."
+                    f"Largest adjacent-step mutual information in {system_id} is "
+                    f"steps {row.get('step_i')}–{row.get('step_j')}: {effect:.4g} bits."
                 ),
-                report_path=path, effect_value=0.0,
-                family=f"{module_id}:complete_event_gate",
+                report_path=path, effect_value=effect, systems=(system_id,),
+                family=f"{module_id}:adjacent_step_mutual_information",
             ))
     elif module_id == "random_feature_koopman":
         selected = report.get("selected_hyperparameters")
-        if isinstance(selected, dict) and isinstance(
-            selected.get("selection_score"), (int, float)
-        ):
-            score = float(selected["selection_score"])
+        score = _numeric(selected.get("selection_score")) if isinstance(selected, dict) else None
+        if score is not None:
             findings.append(_candidate(
                 module_id=module_id, category="other_physical",
                 statement=(
-                    "Seed-stable nonlinear kinetic sensitivity selected "
+                    f"Seed-stable nonlinear kinetics selected "
                     f"{selected.get('random_feature_count')} random features at "
-                    f"bandwidth scale {selected.get('bandwidth_scale')}, with "
-                    f"mean held-out VAMP-E {score:.4g} across the prespecified seeds."
+                    f"bandwidth scale {selected.get('bandwidth_scale')}; mean held-out "
+                    f"VAMP-E is {score:.4g}."
                 ),
                 report_path=path, effect_value=score,
                 family=f"{module_id}:stable_candidate",
             ))
-        elif report.get("selection_status") == "no_stable_candidate":
+    elif module_id == "reactive_path_ensembles":
+        count = report.get("complete_path_count")
+        if isinstance(count, int) and not isinstance(count, bool):
             findings.append(_candidate(
                 module_id=module_id, category="other_physical",
                 statement=(
-                    "Random-feature nonlinear kinetics withheld model selection: "
-                    "no feature-count/bandwidth candidate passed both prespecified "
-                    "feature-map-seed stability gates."
+                    f"Reactive-path extraction found {count} complete paths; "
+                    f"transition sufficiency is "
+                    f"{report.get('transition_sufficiency_status', 'not evaluated')}."
                 ),
-                report_path=path, effect_value=0.0,
-                family=f"{module_id}:seed_stability_gate",
+                report_path=path, effect_value=float(count),
+                family=f"{module_id}:path_sufficiency",
             ))
-    elif module_id == "helical_mechanics" and report.get("availability_status") == "available":
-        couplings = report.get("neighbor_step_couplings")
-        if isinstance(couplings, list):
-            choices = [
-                row for row in couplings if isinstance(row, dict)
-                and isinstance(row.get("mutual_information_bits"), (int, float))
-            ]
-            if choices:
-                row = max(choices, key=lambda value: float(value["mutual_information_bits"]))
-                value = float(row["mutual_information_bits"])
-                system_id = str(row.get("system_id"))
-                findings.append(_candidate(
-                    module_id=module_id, category="coupled_interaction",
-                    statement=(
-                        f"Largest descriptive adjacent-step state mutual information in "
-                        f"{system_id} is steps {row.get('step_i')}–{row.get('step_j')}: "
-                        f"{value:.4g} bits."
-                    ), report_path=path, effect_value=value, systems=(system_id,),
-                    family=f"{module_id}:adjacent_step_mutual_information",
-                ))
     return findings
 
 
@@ -1397,7 +2007,9 @@ def _report_candidates(path: Path, report: Mapping[str, object]) -> List[Dict[st
     module_id = str(report.get("module_id", path.parent.name))
     findings = _state_differences(report, module_id, path)
     findings.extend(_score_correlations(report, module_id, path))
-    if module_id == "pooled_rmsf":
+    if module_id == "integrated_comparison":
+        findings.extend(_integrated_comparison_candidates(report, path))
+    elif module_id == "pooled_rmsf":
         findings.extend(_rmsf_candidates(report, path))
     elif module_id == "dccm":
         findings.extend(_dccm_candidates(report, path))
@@ -1417,6 +2029,28 @@ def _report_candidates(path: Path, report: Mapping[str, object]) -> List[Dict[st
         findings.extend(_water_network_candidates(report, path))
     elif module_id == "pald_community_analysis":
         findings.extend(_pald_community_candidates(report, path))
+    elif module_id == "alternative_clustering":
+        findings.extend(_alternative_clustering_candidates(report, path))
+    elif module_id in {"individual_pca", "common_pca"}:
+        findings.extend(_pca_context_candidates(report, module_id, path))
+    elif module_id == "time_lagged_independent_component_analysis":
+        findings.extend(_tica_context_candidates(report, path))
+    elif module_id == "generalized_correlation_and_information":
+        findings.extend(_information_correlation_candidates(report, path))
+    elif module_id == "information_dynamics":
+        findings.extend(_information_dynamics_candidates(report, path))
+    elif module_id == "correlation_networks":
+        findings.extend(_correlation_network_candidates(report, path))
+    elif module_id == "grouped_ml":
+        findings.extend(_grouped_ml_candidates(report, path))
+    elif module_id == "ion_atmosphere":
+        findings.extend(_ion_atmosphere_candidates(report, path))
+    elif module_id == "replica_rmsd_rg":
+        findings.extend(_rmsd_rg_candidates(report, path))
+    elif module_id == "scalar_feature_distributions":
+        findings.extend(_scalar_distribution_candidates(report, path))
+    elif module_id == "scalar_threshold_states":
+        findings.extend(_scalar_threshold_candidates(report, path))
     if module_id in DEFAULT_DISABLED_MODULES:
         findings.extend(_experimental_method_candidates(report, module_id, path))
     if module_id == "pca_fes_basins":
@@ -1518,6 +2152,137 @@ def _report_candidates(path: Path, report: Mapping[str, object]) -> List[Dict[st
     return findings
 
 
+def _quality_control_records(
+    report: Mapping[str, object], path: Path
+) -> List[Dict[str, object]]:
+    module_id = str(report.get("module_id", path.parent.name))
+    records: List[Dict[str, object]] = []
+    if module_id == "structural_integrity_qc":
+        status = str(report.get("qc_status", "not reported"))
+        records.append({
+            "module_id": module_id,
+            "severity": "warning" if status not in {"passed", "no_findings_observed"} else "information",
+            "status": status,
+            "statement": (
+                f"Structural-integrity QC status is {status}; "
+                f"{report.get('qc_finding_count', 0)} QC findings were recorded."
+            ),
+            "report_path": str(path),
+        })
+    if module_id == "convergence_uncertainty":
+        status = str(report.get("population_validity_status", "not reported"))
+        records.append({
+            "module_id": module_id,
+            "severity": "information" if status == "passed" else "warning",
+            "status": status,
+            "statement": f"Population-validity status is {status}.",
+            "report_path": str(path),
+        })
+    issues = report.get("issues")
+    if isinstance(issues, list):
+        for issue in issues:
+            if not isinstance(issue, dict):
+                continue
+            severity = str(issue.get("severity", "information")).lower()
+            if severity not in {"warning", "error"}:
+                continue
+            records.append({
+                "module_id": module_id,
+                "severity": severity,
+                "status": str(issue.get("code", "reported_issue")),
+                "statement": str(issue.get("message", issue.get("code", "Reported issue"))),
+                "report_path": str(path),
+            })
+    return records
+
+
+def _module_review_record(
+    module_id: str, path: Path, candidate_count: int, quality_control_count: int
+) -> Dict[str, object]:
+    role = _module_review_role(module_id)
+    if candidate_count:
+        disposition = "ranked_candidates"
+        reason = "The report produced automated candidates for deterministic ranking."
+    elif quality_control_count or role == "quality_control":
+        disposition = "quality_control"
+        reason = "The report is presented in the separate QC and interpretation channel."
+    elif role == "technical_support":
+        disposition = "technical_support"
+        reason = "The report establishes execution or provenance context rather than a scientific result."
+    elif role == "interpretive_context":
+        disposition = "interpretive_context"
+        reason = "The report supplies analysis context or source artifacts and produced no additional ranked result."
+    else:
+        disposition = "reviewed_no_automatic_highlight"
+        reason = (
+            "The scientific report was reviewed by the picker, but its completed output "
+            "did not satisfy a declared automatic highlight rule; review the linked report."
+        )
+    return {
+        "module_id": module_id,
+        "report_path": str(path),
+        "review_role": role,
+        "candidate_count": candidate_count,
+        "quality_control_record_count": quality_control_count,
+        "disposition": disposition,
+        "reason": reason,
+    }
+
+
+def _aggregate_module_accounting(
+    reviews: Sequence[Mapping[str, object]], findings: Sequence[Mapping[str, object]],
+    selected: Sequence[Mapping[str, object]],
+) -> List[Dict[str, object]]:
+    by_module: Dict[str, Dict[str, object]] = {}
+    for review in reviews:
+        module_id = str(review.get("module_id"))
+        row = by_module.setdefault(module_id, {
+            "module_id": module_id,
+            "review_role": review.get("review_role", _module_review_role(module_id)),
+            "report_count": 0,
+            "report_paths": [],
+            "quality_control_record_count": 0,
+        })
+        row["report_count"] = int(row["report_count"]) + 1
+        row["report_paths"].append(str(review.get("report_path")))
+        row["quality_control_record_count"] = (
+            int(row["quality_control_record_count"])
+            + int(review.get("quality_control_record_count", 0))
+        )
+    candidate_counts: Dict[str, int] = {}
+    selected_counts: Dict[str, int] = {}
+    for finding in findings:
+        module_id = str(finding.get("module_id"))
+        candidate_counts[module_id] = candidate_counts.get(module_id, 0) + 1
+    for finding in selected:
+        module_id = str(finding.get("module_id"))
+        selected_counts[module_id] = selected_counts.get(module_id, 0) + 1
+    for module_id, row in by_module.items():
+        row["candidate_count"] = candidate_counts.get(module_id, 0)
+        row["reported_finding_count"] = selected_counts.get(module_id, 0)
+        role = str(row["review_role"])
+        if row["candidate_count"]:
+            row["disposition"] = "ranked_candidates"
+            row["reason"] = "The module produced automated candidates for deterministic ranking."
+        elif int(row["quality_control_record_count"]) or role == "quality_control":
+            row["disposition"] = "quality_control"
+            row["reason"] = "The module is represented in the separate QC and interpretation channel."
+        elif role == "technical_support":
+            row["disposition"] = "technical_support"
+            row["reason"] = "The module establishes execution or provenance context rather than a scientific result."
+        elif role == "interpretive_context":
+            row["disposition"] = "interpretive_context"
+            row["reason"] = "The module supplies analysis context or source artifacts without an additional ranked result."
+        else:
+            row["disposition"] = "reviewed_no_automatic_highlight"
+            row["reason"] = (
+                "The completed scientific report produced no candidate under a declared automatic "
+                "highlight rule; the linked raw report remains available for review."
+            )
+        row["report_paths"] = sorted(set(row["report_paths"]))
+    return [by_module[module_id] for module_id in sorted(by_module)]
+
+
 def _benjamini_hochberg(findings: List[Dict[str, object]]) -> None:
     by_family: Dict[str, List[Dict[str, object]]] = {}
     for row in findings:
@@ -1532,7 +2297,10 @@ def _benjamini_hochberg(findings: List[Dict[str, object]]) -> None:
             row["adjusted_p_value"] = min(1.0, running)
 
 
-def prioritize_findings(root: Path, *, maximum_findings: int | None = None) -> Dict[str, object]:
+def prioritize_findings(
+    root: Path, *, maximum_findings: int | None = None,
+    write_outputs: bool = True,
+) -> Dict[str, object]:
     analysis_root = Path(root).expanduser().resolve(strict=True)
     config_path = analysis_root / "analysis-config.json"
     config = load_json(config_path) if config_path.is_file() else {}
@@ -1550,16 +2318,19 @@ def prioritize_findings(root: Path, *, maximum_findings: int | None = None) -> D
     reference = comparison_config.get("reference_system_id")
     findings = []
     complete_records = []
-    method_evidence_coverage = []
-    report_paths = {
-        *(
-            (analysis_root / "results").glob("**/report.json")
-            if (analysis_root / "results").is_dir() else ()
-        ),
-        *analysis_root.glob("*-availability.json"),
-    }
-    for path in sorted(report_paths):
-        candidate_count_before = len(findings)
+    module_reviews = []
+    quality_control_records = []
+    integrated_path = (
+        analysis_root / "results" / "integrated-comparison" / "report.json"
+    )
+    integrated_present = integrated_path.is_file()
+    if integrated_present:
+        integrated_report = load_json(integrated_path)
+        if integrated_report.get("technical_status") != "complete":
+            raise FindingPickerError(
+                "integrated comparison exists but is not technically complete"
+            )
+    for path in sorted((analysis_root / "results").glob("**/report.json")):
         sidecar_path = Path(str(path) + ".summary.json")
         if sidecar_path.is_file():
             sidecar = load_json(sidecar_path)
@@ -1574,21 +2345,29 @@ def prioritize_findings(root: Path, *, maximum_findings: int | None = None) -> D
             evidence = sidecar.get("finding_evidence")
             if not isinstance(evidence, dict) or not isinstance(evidence.get("candidates"), list):
                 raise FindingPickerError(f"analysis sidecar lacks finding evidence: {sidecar_path}")
-            findings.extend(
+            report_candidates = [
                 row for row in evidence["candidates"] if isinstance(row, dict)
-            )
+            ]
+            if integrated_present:
+                report_candidates = [
+                    row for row in report_candidates
+                    if len(set(map(str, row.get("system_ids", [])))) < 2
+                ]
+            findings.extend(report_candidates)
+            qc_rows = evidence.get("quality_control_records", [])
+            qc_rows = [row for row in qc_rows if isinstance(row, dict)] if isinstance(qc_rows, list) else []
+            quality_control_records.extend(qc_rows)
+            review = evidence.get("module_review")
+            if isinstance(review, dict) and not integrated_present:
+                module_reviews.append(review)
+            else:
+                module_reviews.append(_module_review_record(
+                    str(sidecar.get("module_id", path.parent.name)), path,
+                    len(report_candidates), len(qc_rows),
+                ))
             compact = evidence.get("cross_report_summary")
-            if isinstance(compact, dict):
+            if isinstance(compact, dict) and not integrated_present:
                 complete_records.append((path, compact))
-            method_evidence_coverage.append({
-                "module_id": str(sidecar.get("module_id", path.parent.name)),
-                "technical_status": str(sidecar.get("technical_status", "unknown")),
-                "availability_status": str(
-                    sidecar.get("availability_status", "available")
-                ),
-                "candidate_count": len(findings) - candidate_count_before,
-                "report_path": str(path),
-            })
             continue
         report = load_json(path)
         if report.get("technical_status") == "complete":
@@ -1597,17 +2376,20 @@ def prioritize_findings(root: Path, *, maximum_findings: int | None = None) -> D
                 compact = _compact_cross_report(report, module_id)
                 if isinstance(compact, dict):
                     complete_records.append((path, compact))
-            findings.extend(_report_candidates(path, report))
-        method_evidence_coverage.append({
-            "module_id": str(report.get("module_id", path.parent.name)),
-            "technical_status": str(report.get("technical_status", "unknown")),
-            "availability_status": str(
-                report.get("availability_status", "available")
-            ),
-            "candidate_count": len(findings) - candidate_count_before,
-            "report_path": str(path),
-        })
-    findings.extend(_cross_report_candidates(complete_records))
+            report_candidates = _report_candidates(path, report)
+            if integrated_present and module_id != "integrated_comparison":
+                report_candidates = [
+                    row for row in report_candidates
+                    if len(set(map(str, row.get("system_ids", [])))) < 2
+                ]
+            qc_rows = _quality_control_records(report, path)
+            findings.extend(report_candidates)
+            quality_control_records.extend(qc_rows)
+            module_reviews.append(_module_review_record(
+                module_id, path, len(report_candidates), len(qc_rows)
+            ))
+    if not integrated_present:
+        findings.extend(_cross_report_candidates(complete_records))
     if mode == "reference_vs_all" and reference:
         findings = [
             row for row in findings
@@ -1629,17 +2411,26 @@ def prioritize_findings(root: Path, *, maximum_findings: int | None = None) -> D
     for index, row in enumerate(findings, start=1):
         row["finding_id"] = f"finding-{index:06d}"
     selected = findings[:maximum_findings]
+    module_accounting = _aggregate_module_accounting(
+        module_reviews, findings, selected
+    )
     output = {
         "finding_schema": "salsbury-prioritized-findings-v1",
         "technical_status": "complete",
         "scientific_status": "not evaluated",
         "candidate_count": len(findings),
         "reported_count": len(selected),
+        "unreported_candidate_count": len(findings) - len(selected),
+        "reviewed_report_count": len(module_reviews),
+        "reviewed_module_count": len(module_accounting),
+        "silent_omission_count": 0,
+        "quality_control_record_count": len(quality_control_records),
         "comparison_mode": mode,
         "multiple_testing": "benjamini_hochberg",
         "alpha": alpha,
         "findings": selected,
-        "method_evidence_coverage": method_evidence_coverage,
+        "module_accounting": module_accounting,
+        "quality_control_records": quality_control_records,
         "ranking_contract": (
             "scientific presentation category, then declared inferential significance, "
             "then adjusted p value, then absolute effect; no opaque composite score"
@@ -1651,9 +2442,13 @@ def prioritize_findings(root: Path, *, maximum_findings: int | None = None) -> D
         ),
         "interpretation": (
             "Only findings with adjusted p values are labeled statistically significant. "
-            "All other ranked differences and correlations remain descriptive or exploratory."
+            "All other ranked differences and correlations remain descriptive or exploratory. "
+            "Every completed report is accounted for as a ranked candidate source, quality-control "
+            "evidence, interpretive context, technical support, or an explicit no-highlight result."
         ),
     }
+    if not write_outputs:
+        return output
     json_path = analysis_root / "prioritized_findings.json"
     json_path.write_text(json.dumps(output, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     csv_path = analysis_root / "prioritized_findings.csv"
@@ -1684,6 +2479,26 @@ def prioritize_findings(root: Path, *, maximum_findings: int | None = None) -> D
             str(row["evidence_level"])
         )
         lines.append(f"{rank}. {row['statement']} ({qualifier}; `{row['module_id']}`)")
+    lines.extend([
+        "", "## Module accounting", "",
+        "Every completed report is represented here even when it produced no ranked finding.", "",
+        "| Module | Role | Reports | Candidates | Reported | Disposition |",
+        "|---|---|---:|---:|---:|---|",
+    ])
+    for row in module_accounting:
+        lines.append(
+            f"| `{row['module_id']}` | {row['review_role']} | {row['report_count']} | "
+            f"{row['candidate_count']} | {row['reported_finding_count']} | "
+            f"{row['disposition']} |"
+        )
+    lines.extend(["", "## Quality-control and interpretation records", ""])
+    if quality_control_records:
+        for row in quality_control_records:
+            lines.append(
+                f"- **{row['severity']}** — {row['statement']} (`{row['module_id']}`)"
+            )
+    else:
+        lines.append("No separate QC or interpretation records were reported.")
     markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {
         **output,

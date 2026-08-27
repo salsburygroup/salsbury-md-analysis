@@ -7,7 +7,7 @@ import hashlib
 import json
 import sys
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 from . import __version__
 from .atom_mapping import (
@@ -45,7 +45,10 @@ from .grouped_ml import grouped_ml_project_safe
 from .grouped_regularized_classification import (
     grouped_regularized_classification_project_safe,
 )
-from .integrated import integrated_comparison_project_safe
+from .integrated import (
+    integrated_comparison_project_safe,
+    integrated_comparison_results_safe,
+)
 from .information import generalized_correlation_and_information_project_safe
 from .information_dynamics import information_dynamics_project_safe
 from .perturbation_response import perturbation_response_dynamics_project_safe
@@ -72,7 +75,11 @@ from .representative_structures import (
     RepresentativeStructureError,
     representative_structures,
 )
-from .rmsf_inference import RMSFInferenceError, rmsf_permutation_test
+from .rmsf_inference import (
+    RMSFInferenceError,
+    rmsf_permutation_test,
+    rmsf_replica_permutation_comparisons,
+)
 from .manifests import (
     MANIFEST_KINDS,
     ManifestValidationError,
@@ -83,9 +90,15 @@ from .manifests import (
 from .msm import markov_state_models_project_safe
 from .observables import optional_observables_project_safe
 from .preflight import preflight_system
+from .planning_report import (
+    PlanningReportError,
+    write_plan_matrix,
+    write_planning_report,
+)
 from .quickstart import (
     QuickstartError,
     QuickstartMemoryError,
+    QuickstartPlanningError,
     prepare_standard_analysis,
     prepare_standard_analysis_memory_fit,
 )
@@ -110,7 +123,10 @@ from .regression import run_regression_case_safe
 from .resource_planning import (
     ResourcePlanningError,
     calibrate_from_benchmarks,
+    plan_campaign_resource_budget,
+    plan_global_stride_projection_coupled_campaign_resource_budget,
     recommend_frame_budget,
+    recommend_scientifically_valid_task_subset,
 )
 from .resource_calibrations import (
     ResourceCalibrationError, build_resource_calibration_catalog,
@@ -121,6 +137,7 @@ from .rmsf import pooled_rmsf_project_safe
 from .rmsf_visualization import RMSFVisualizationError, export_rmsf_visualization
 from .secondary_structure import secondary_structure_project_safe
 from .sasa import solvent_accessible_surface_area_project_safe
+from .scientific_sampling import scientific_minimums_document
 from .structural_qc import structural_qc_project_safe
 from .tica import time_lagged_independent_component_analysis_project_safe
 from .execution_resources import (
@@ -132,9 +149,10 @@ from .execution_resources import (
 )
 from .execution_adapters import ExecutionAdapterError, run_local_workflow
 from .finding_picker import FindingPickerError, prioritize_findings
-from .interactive_report import (
-    InteractiveReportError,
-    build_interactive_report,
+from .slurm_capacity import (
+    SlurmCapacityError,
+    advise_slurm_capacity,
+    render_capacity_markdown,
 )
 
 
@@ -452,6 +470,12 @@ def _integrated_command(path: Path, hash_content: bool) -> int:
     return 0 if report["technical_status"] == "complete" else 2
 
 
+def _integrated_results_command(root: Path) -> int:
+    report = integrated_comparison_results_safe(root)
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report["technical_status"] == "complete" else 2
+
+
 def _secondary_structure_command(path: Path, hash_content: bool) -> int:
     report = secondary_structure_project_safe(path, hash_content=hash_content)
     print(json.dumps(report, indent=2, sort_keys=True))
@@ -523,6 +547,63 @@ def _plan_frame_resources_command(
     return 0 if report["technical_status"] == "complete" else 2
 
 
+def _plan_campaign_resources_command(
+    path: Path,
+    *,
+    maximum_parallel_cpus: int,
+    maximum_memory_gib: float,
+    maximum_wall_hours: float,
+    recommend_method_reduction: bool,
+) -> int:
+    try:
+        payload = load_json(path)
+        tasks = payload.get("tasks") if isinstance(payload, dict) else payload
+        if not isinstance(tasks, list) or not tasks or not all(
+            isinstance(row, dict) for row in tasks
+        ):
+            raise ResourcePlanningError(
+                "campaign planner input must be a task list or an object with tasks"
+            )
+        kwargs = {
+            "maximum_parallel_cpus": maximum_parallel_cpus,
+            "maximum_wall_hours": maximum_wall_hours,
+            "maximum_memory_gib": maximum_memory_gib,
+        }
+        if sum(
+            row.get("module_id") == "coordinate_cache" for row in tasks
+        ) == 1:
+            report = (
+                plan_global_stride_projection_coupled_campaign_resource_budget(
+                    tasks,
+                    coordinate_cache_full_scan_fraction=1.0,
+                    **kwargs,
+                )
+            )
+        else:
+            report = plan_campaign_resource_budget(tasks, **kwargs)
+        report["planning_mode"] = "resources_to_sampling"
+        if (
+            recommend_method_reduction
+            and report["feasibility_status"] != "feasible"
+        ):
+            report["method_reduction_recommendation"] = (
+                recommend_scientifically_valid_task_subset(tasks, **kwargs)
+            )
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+    except (OSError, ResourcePlanningError, ValueError) as exc:
+        print(json.dumps({
+            "technical_status": "failed",
+            "planning_mode": "resources_to_sampling",
+            "issues": [{
+                "severity": "error",
+                "code": "CAMPAIGN_RESOURCE_PLANNING_FAILED",
+                "message": str(exc),
+            }],
+        }, indent=2, sort_keys=True))
+        return 2
+
+
 def _plan_automatic_sampling_command(
     path: Path,
     simulation_kind: str,
@@ -588,6 +669,71 @@ def _build_resource_calibration_catalog_command(
     return 0 if result["technical_status"] == "complete" else 2
 
 
+def _campaign_plan_terminal_summary(
+    plan: Mapping[str, object],
+) -> dict[str, object]:
+    """Return the bounded fields a person needs before reading the full plan."""
+
+    capacity = plan.get("workflow_parallel_capacity")
+    capacity = capacity if isinstance(capacity, Mapping) else {}
+    recommendation = plan.get("method_reduction_recommendation")
+    recommendation = recommendation if isinstance(recommendation, Mapping) else {}
+    reduced_plan = recommendation.get("recommended_plan")
+    reduced_plan = reduced_plan if isinstance(reduced_plan, Mapping) else {}
+    protected_request = recommendation.get(
+        "best_protected_subset_minimum_resource_request"
+    )
+    if not isinstance(protected_request, Mapping):
+        protected_request = plan.get("permissive_minimum_resource_request")
+    protected_request = (
+        protected_request if isinstance(protected_request, Mapping) else {}
+    )
+    return {
+        "requested_parallel_cpus": plan.get("maximum_parallel_cpus_input"),
+        "requested_memory_gib": plan.get("maximum_memory_gib_input"),
+        "requested_wall_hours": plan.get("maximum_wall_hours_input"),
+        "science_wall_hours": plan.get("science_budget_wall_hours"),
+        "useful_parallel_cpu_ceiling": capacity.get(
+            "useful_parallel_cpu_ceiling"
+        ),
+        "effective_parallel_cpu_cap": plan.get(
+            "effective_parallel_cpu_cap"
+        ),
+        "requested_plan_feasibility": plan.get("feasibility_status"),
+        "requested_plan_minimum_critical_path_hours": plan.get(
+            "minimum_wall_hours_lower_bound"
+        ),
+        "reduction_status": recommendation.get("recommendation_status"),
+        "reduction_message": recommendation.get("recommendation_message"),
+        "protected_module_ids": recommendation.get("protected_module_ids", []),
+        "protected_subset_minimum_critical_path_hours": reduced_plan.get(
+            "minimum_wall_hours_lower_bound"
+        ),
+        "protected_subset_minimum_request_status": protected_request.get(
+            "status"
+        ),
+        "protected_subset_minimum_request_fits_input_wall_cap": (
+            protected_request.get("fits_input_wall_cap")
+        ),
+        "protected_subset_additional_wall_hours_required": (
+            protected_request.get("additional_wall_hours_required")
+        ),
+        "protected_subset_minimum_request_scope": protected_request.get(
+            "request_scope"
+        ),
+        "protected_subset_minimum_request": protected_request.get(
+            "recommended_request", {}
+        ),
+        "protected_subset_minimum_request_padding": protected_request.get(
+            "padding_factors", {}
+        ),
+        "protected_subset_minimum_request_warning": protected_request.get(
+            "warning", {}
+        ),
+        "configuration_patch": recommendation.get("configuration_patch", {}),
+    }
+
+
 def _prepare_analysis_command(
     pdb: Path,
     psf: Optional[Path],
@@ -607,6 +753,7 @@ def _prepare_analysis_command(
     energetic_openmm_system_xml: Optional[Path],
     energetic_gromacs_tpr: Optional[Path],
     auto_disable_to_fit_memory: bool,
+    plan_only: bool,
 ) -> int:
     try:
         prepare = (
@@ -632,6 +779,22 @@ def _prepare_analysis_command(
             energetic_openmm_system_xml=energetic_openmm_system_xml,
             energetic_gromacs_tpr=energetic_gromacs_tpr,
         )
+        if plan_only and report.get("technical_status") == "complete":
+            plan_path = output_directory.expanduser().resolve(strict=True) / (
+                "campaign-resource-plan.json"
+            )
+            campaign_plan = load_json(plan_path)
+            report = {
+                **report,
+                "planning_mode": "plan_only",
+                "execution_started": False,
+                "jobs_submitted": False,
+                "warning_count": int(campaign_plan.get("warning_count", 0)),
+                "resource_warnings": campaign_plan.get("resource_warnings", []),
+                "planning_summary": _campaign_plan_terminal_summary(campaign_plan),
+                "campaign_resource_plan": campaign_plan,
+                "review_then_run": report.get("next_command"),
+            }
     except (QuickstartError, OSError, ValueError) as exc:
         report = {
             "technical_status": "failed",
@@ -642,11 +805,33 @@ def _prepare_analysis_command(
                 "message": str(exc),
             }],
         }
+        if isinstance(exc, QuickstartPlanningError):
+            recommendation = exc.plan.get("method_reduction_recommendation")
+            recommendation_status = (
+                recommendation.get("recommendation_status")
+                if isinstance(recommendation, Mapping) else None
+            )
+            report.update({
+                "planning_mode": "plan_only" if plan_only else "preparation",
+                "planning_outcome": (
+                    "no_acceptable_reduced_plan"
+                    if recommendation_status == "no_feasible_subset_found"
+                    else "infeasible_requested_plan"
+                ),
+                "execution_started": False,
+                "jobs_submitted": False,
+                "warning_count": int(exc.plan.get("warning_count", 0)),
+                "resource_warnings": exc.plan.get("resource_warnings", []),
+                "planning_summary": _campaign_plan_terminal_summary(exc.plan),
+                "campaign_resource_plan": exc.plan,
+                "partial_output_directory": str(exc.output_directory),
+            })
+            if recommendation_status == "no_feasible_subset_found":
+                report["issues"][0]["code"] = "NO_ACCEPTABLE_REDUCED_PLAN"
         if isinstance(exc, QuickstartMemoryError):
             report["memory_feasibility"] = exc.plan.get(
                 "memory_feasibility"
             )
-            report["partial_output_directory"] = str(exc.output_directory)
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["technical_status"] == "complete" else 2
 
@@ -661,6 +846,7 @@ def _prepare_comparison_command(
     dssr_executable: Optional[str],
     config_path: Optional[Path],
     auto_disable_to_fit_memory: bool,
+    plan_only: bool,
 ) -> int:
     try:
         prepare = (
@@ -677,6 +863,22 @@ def _prepare_comparison_command(
             dssr_executable=dssr_executable,
             config_path=config_path,
         )
+        if plan_only and report.get("technical_status") == "complete":
+            plan_path = output_directory.expanduser().resolve(strict=True) / (
+                "campaign-resource-plan.json"
+            )
+            campaign_plan = load_json(plan_path)
+            report = {
+                **report,
+                "planning_mode": "plan_only",
+                "execution_started": False,
+                "jobs_submitted": False,
+                "warning_count": int(campaign_plan.get("warning_count", 0)),
+                "resource_warnings": campaign_plan.get("resource_warnings", []),
+                "planning_summary": _campaign_plan_terminal_summary(campaign_plan),
+                "campaign_resource_plan": campaign_plan,
+                "review_then_run": report.get("next_command"),
+            }
     except (QuickstartError, OSError, ValueError) as exc:
         report = {
             "technical_status": "failed",
@@ -687,11 +889,33 @@ def _prepare_comparison_command(
                 "message": str(exc),
             }],
         }
+        if isinstance(exc, QuickstartPlanningError):
+            recommendation = exc.plan.get("method_reduction_recommendation")
+            recommendation_status = (
+                recommendation.get("recommendation_status")
+                if isinstance(recommendation, Mapping) else None
+            )
+            report.update({
+                "planning_mode": "plan_only" if plan_only else "preparation",
+                "planning_outcome": (
+                    "no_acceptable_reduced_plan"
+                    if recommendation_status == "no_feasible_subset_found"
+                    else "infeasible_requested_plan"
+                ),
+                "execution_started": False,
+                "jobs_submitted": False,
+                "warning_count": int(exc.plan.get("warning_count", 0)),
+                "resource_warnings": exc.plan.get("resource_warnings", []),
+                "planning_summary": _campaign_plan_terminal_summary(exc.plan),
+                "campaign_resource_plan": exc.plan,
+                "partial_output_directory": str(exc.output_directory),
+            })
+            if recommendation_status == "no_feasible_subset_found":
+                report["issues"][0]["code"] = "NO_ACCEPTABLE_REDUCED_PLAN"
         if isinstance(exc, QuickstartMemoryError):
             report["memory_feasibility"] = exc.plan.get(
                 "memory_feasibility"
             )
-            report["partial_output_directory"] = str(exc.output_directory)
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["technical_status"] == "complete" else 2
 
@@ -804,12 +1028,13 @@ def _run_instrumented_coordinate_cache_command(
     path: Path,
     output: Path,
     workers: int,
+    cache_stride: int,
     summary_sidecar: Path,
     installed_report_path: Path,
 ) -> int:
     try:
         report = run_instrumented_coordinate_cache(
-            path, output, maximum_workers=workers
+            path, output, maximum_workers=workers, cache_stride=cache_stride
         )
     except (ExecutionResourceError, OSError, ValueError) as exc:
         report = {
@@ -866,23 +1091,6 @@ def _prioritize_findings_command(root: Path, maximum_findings: Optional[int]) ->
             "technical_status": "failed",
             "issues": [{
                 "severity": "error", "code": "FINDING_PICKER_FAILED",
-                "message": str(exc),
-            }],
-        }
-    print(json.dumps(report, indent=2, sort_keys=True))
-    return 0 if report.get("technical_status") == "complete" else 2
-
-
-def _build_interactive_report_command(root: Path, output_name: str) -> int:
-    try:
-        report = build_interactive_report(root, output_name=output_name)
-    except (InteractiveReportError, OSError, ValueError) as exc:
-        report = {
-            "technical_status": "failed",
-            "scientific_status": "not evaluated",
-            "issues": [{
-                "severity": "error",
-                "code": "INTERACTIVE_REPORT_FAILED",
                 "message": str(exc),
             }],
         }
@@ -1212,6 +1420,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--hash-content", action="store_true",
         help="Also stream SHA-256 hashes for every declared input file.",
     )
+    integrated_results_parser = subparsers.add_parser(
+        "integrate-comparison-results",
+        help=(
+            "Review and integrate every completed report in a prepared "
+            "comparative campaign."
+        ),
+    )
+    integrated_results_parser.add_argument(
+        "root", type=Path, help="Prepared comparative analysis root."
+    )
 
     secondary_parser = subparsers.add_parser(
         "secondary-structure",
@@ -1297,6 +1515,32 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     resource_parser.add_argument("--calibration-id")
+
+    campaign_resource_parser = subparsers.add_parser(
+        "plan-campaign-resources",
+        help="Plan sampling from a CPU, memory, and time envelope.",
+    )
+    campaign_resource_parser.add_argument(
+        "path", type=Path,
+        help="JSON task list or campaign plan containing a tasks list.",
+    )
+    campaign_resource_parser.add_argument(
+        "--maximum-parallel-cpus", type=int, required=True
+    )
+    campaign_resource_parser.add_argument(
+        "--maximum-memory-gib", type=float, required=True
+    )
+    campaign_resource_parser.add_argument(
+        "--maximum-wall-hours", type=float, default=24.0,
+        help="Campaign wall-time limit.",
+    )
+    campaign_resource_parser.add_argument(
+        "--recommend-method-reduction", action="store_true",
+        help=(
+            "When minima do not fit, report a dependency-closed on/off config "
+            "proposal without applying it."
+        ),
+    )
 
     automatic_parser = subparsers.add_parser(
         "plan-automatic-sampling",
@@ -1413,6 +1657,13 @@ def build_parser() -> argparse.ArgumentParser:
             "config. Without this flag preparation fails closed."
         ),
     )
+    prepare_parser.add_argument(
+        "--plan-only", action="store_true",
+        help=(
+            "Prepare and return the complete campaign resource plan without "
+            "starting local execution or submitting scheduler jobs."
+        ),
+    )
 
     comparison_parser = subparsers.add_parser(
         "prepare-comparison",
@@ -1444,6 +1695,90 @@ def build_parser() -> argparse.ArgumentParser:
         "root", type=Path, help="Prepared analysis directory."
     )
 
+    plan_matrix_parser = subparsers.add_parser(
+        "report-plan-matrix",
+        help=(
+            "Combine prepared planning-report.json files into an analysis-family "
+            "by resource-envelope stride table."
+        ),
+    )
+    plan_matrix_parser.add_argument(
+        "--plan", action="append", required=True, metavar="LABEL=PATH",
+        help="Scenario label and planning-report.json path; repeat for each plan.",
+    )
+    plan_matrix_parser.add_argument(
+        "--output", type=Path, required=True,
+        help="Destination .md or .json file.",
+    )
+
+    planning_report_parser = subparsers.add_parser(
+        "write-planning-report",
+        help="Regenerate the user-facing report for an existing prepared campaign.",
+    )
+    planning_report_parser.add_argument("root", type=Path)
+
+    rmsf_comparison_parser = subparsers.add_parser(
+        "rmsf-permutation-from-report",
+        help=(
+            "Compare per-replica RMSF profiles between systems using the "
+            "prepared comparison policy."
+        ),
+    )
+    rmsf_comparison_parser.add_argument("report", type=Path)
+    rmsf_comparison_parser.add_argument("analysis_config", type=Path)
+
+    capacity_parser = subparsers.add_parser(
+        "advise-slurm-capacity",
+        help=(
+            "Optionally inspect a prepared campaign and the live Slurm queue "
+            "without submitting or changing any job."
+        ),
+    )
+    capacity_parser.add_argument(
+        "root", type=Path, help="Prepared analysis directory."
+    )
+    capacity_parser.add_argument(
+        "--wall-hours", type=float, required=True,
+        help=(
+            "Campaign duration to model at the maximum useful detected CPU count."
+        ),
+    )
+    capacity_parser.add_argument(
+        "--maximum-memory-gib", type=float,
+        help=(
+            "Optional aggregate ceiling for the sum of simultaneously active, "
+            "safety-adjusted task memory requests; the prepared campaign value "
+            "is used when omitted."
+        ),
+    )
+    capacity_parser.add_argument(
+        "--cpu-ceiling", type=int,
+        help="Optional user policy cap below the detected useful maximum.",
+    )
+    capacity_parser.add_argument(
+        "--slurm-profile", type=Path,
+        help="Override the prepared campaign's slurm-profile.json.",
+    )
+    capacity_parser.add_argument(
+        "--slurm-user",
+        help="Override the current account name used for read-only association checks.",
+    )
+    capacity_parser.add_argument(
+        "--job-id", action="append", default=[],
+        help=(
+            "Pending Slurm job ID for scheduler-projected start reporting; repeat "
+            "for multiple jobs."
+        ),
+    )
+    capacity_parser.add_argument(
+        "--offline", action="store_true",
+        help="Replan from saved evidence without querying Slurm.",
+    )
+    capacity_parser.add_argument(
+        "--format", choices=("json", "markdown"), default="json",
+        help="Output format; JSON is convenient for ChatGPTWork automation.",
+    )
+
     cache_parser = subparsers.add_parser(
         "build-coordinate-cache",
         help=(
@@ -1462,6 +1797,13 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Maximum replica-parallel worker processes. Each worker streams one "
             "replica; the final cache is assembled and published atomically."
+        ),
+    )
+    cache_parser.add_argument(
+        "--cache-stride", type=int, default=1,
+        help=(
+            "Decode and continuously unwrap every frame, but materialize only "
+            "global replica indices 0, stride, 2*stride, ... ."
         ),
     )
     comparison_parser.add_argument("--dssp-executable")
@@ -1487,6 +1829,45 @@ def build_parser() -> argparse.ArgumentParser:
             "memory-incompatible switches and dependents, replan, and write "
             "the resolved on/off config. Without this flag preparation fails closed."
         ),
+    )
+    comparison_parser.add_argument(
+        "--plan-only", action="store_true",
+        help=(
+            "Prepare and return the complete comparison plan without starting "
+            "local execution or submitting scheduler jobs."
+        ),
+    )
+
+    unwrap_cache_parser = subparsers.add_parser(
+        "prepare-unwrapped-cache",
+        help=(
+            "Continuously unwrap every source frame once and write a reusable "
+            "lossless molecular-payload cache."
+        ),
+    )
+    unwrap_cache_parser.add_argument(
+        "path", type=Path, help="System manifest path."
+    )
+    unwrap_cache_parser.add_argument("--output", type=Path, required=True)
+    unwrap_cache_parser.add_argument(
+        "--hash-source-content", action="store_true",
+        help="Hash each source trajectory while recording cache provenance.",
+    )
+    unwrap_cache_parser.add_argument(
+        "--workers", type=int, default=1,
+        help="Maximum replica-parallel workers; every replica retains stride 1.",
+    )
+
+    minimums_parser = subparsers.add_parser(
+        "write-scientific-minimums-template",
+        help=(
+            "Write the editable per-replica, pooled-per-system, and ordered-method "
+            "time-gap minima used by campaign planning."
+        ),
+    )
+    minimums_parser.add_argument(
+        "--output", type=Path, required=True,
+        help="New JSON path; an existing file is never overwritten.",
     )
 
     timeseries_parser = subparsers.add_parser(
@@ -1523,6 +1904,7 @@ def build_parser() -> argparse.ArgumentParser:
     cache_instrument_parser.add_argument("path", type=Path)
     cache_instrument_parser.add_argument("--output", type=Path, required=True)
     cache_instrument_parser.add_argument("--workers", type=int, default=1)
+    cache_instrument_parser.add_argument("--cache-stride", type=int, default=1)
     cache_instrument_parser.add_argument(
         "--summary-sidecar", type=Path, required=True
     )
@@ -1572,21 +1954,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     finding_parser.add_argument("root", type=Path, help="Generated analysis root.")
     finding_parser.add_argument("--maximum-findings", type=int)
-
-    interactive_parser = subparsers.add_parser(
-        "build-interactive-report",
-        help=(
-            "Build a self-contained offline results browser with ranked findings, "
-            "figures, QC, resources, raw-report links, and molecular structures."
-        ),
-    )
-    interactive_parser.add_argument(
-        "root", type=Path, help="Completed generated analysis root."
-    )
-    interactive_parser.add_argument(
-        "--output-name", default="interactive-report",
-        help="Safe output-directory name inside the analysis root.",
-    )
 
     rmsf_export_parser = subparsers.add_parser(
         "export-rmsf-visualization",
@@ -1703,6 +2070,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _grouped_ml_command(args.path, args.hash_content)
     if args.command == "integrate":
         return _integrated_command(args.path, args.hash_content)
+    if args.command == "integrate-comparison-results":
+        return _integrated_results_command(args.root)
     if args.command == "secondary-structure":
         return _secondary_structure_command(args.path, args.hash_content)
     if args.command in EXTENDED_PROJECT_COMMANDS:
@@ -1722,6 +2091,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.minimum_frames_per_replica,
             args.sensitivity_check_policy,
             args.calibration_id,
+        )
+    if args.command == "plan-campaign-resources":
+        return _plan_campaign_resources_command(
+            args.path,
+            maximum_parallel_cpus=args.maximum_parallel_cpus,
+            maximum_memory_gib=args.maximum_memory_gib,
+            maximum_wall_hours=args.maximum_wall_hours,
+            recommend_method_reduction=args.recommend_method_reduction,
         )
     if args.command == "plan-automatic-sampling":
         return _plan_automatic_sampling_command(
@@ -1753,6 +2130,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.energetic_openmm_system_xml,
             args.energetic_gromacs_tpr,
             args.auto_disable_to_fit_memory,
+            args.plan_only,
         )
     if args.command == "prepare-comparison":
         return _prepare_comparison_command(
@@ -1765,6 +2143,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.dssr_executable,
             args.config,
             args.auto_disable_to_fit_memory,
+            args.plan_only,
         )
     if args.command == "run-local-workflow":
         try:
@@ -1781,13 +2160,158 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             }
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0 if report.get("technical_status") == "complete" else 2
+    if args.command == "report-plan-matrix":
+        try:
+            scenarios = []
+            for value in args.plan:
+                label, separator, path = value.partition("=")
+                if not separator or not label.strip() or not path.strip():
+                    raise PlanningReportError(
+                        "each --plan must use the form LABEL=/path/planning-report.json"
+                    )
+                scenarios.append((label.strip(), Path(path).expanduser().resolve()))
+            output = args.output.expanduser().resolve(strict=False)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            write_plan_matrix(scenarios, output)
+            report = {
+                "technical_status": "complete",
+                "scenario_count": len(scenarios),
+                "output": str(output),
+            }
+        except (PlanningReportError, OSError, ValueError) as exc:
+            report = {
+                "technical_status": "failed",
+                "issues": [{
+                    "severity": "error",
+                    "code": "PLAN_MATRIX_FAILED",
+                    "message": str(exc),
+                }],
+            }
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0 if report.get("technical_status") == "complete" else 2
+    if args.command == "write-planning-report":
+        try:
+            root = args.root.expanduser().resolve(strict=True)
+            files = write_planning_report(root)
+            report = {
+                "technical_status": "complete",
+                "output_directory": str(root),
+                "generated_files": files,
+            }
+        except (PlanningReportError, OSError, ValueError) as exc:
+            report = {
+                "technical_status": "failed",
+                "issues": [{
+                    "severity": "error",
+                    "code": "PLANNING_REPORT_FAILED",
+                    "message": str(exc),
+                }],
+            }
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0 if report.get("technical_status") == "complete" else 2
+    if args.command == "rmsf-permutation-from-report":
+        try:
+            rmsf_report = load_json(args.report)
+            config = load_json(args.analysis_config)
+            comparisons = config.get("comparisons") if isinstance(config, dict) else None
+            if not isinstance(rmsf_report, dict) or not isinstance(comparisons, dict):
+                raise RMSFInferenceError(
+                    "RMSF report and analysis comparison policy must be JSON objects"
+                )
+            report = rmsf_replica_permutation_comparisons(
+                rmsf_report, comparisons
+            )
+        except (RMSFInferenceError, OSError, ValueError) as exc:
+            report = {
+                "module_id": "rmsf_permutation_inference",
+                "technical_status": "failed",
+                "scientific_status": "not evaluated",
+                "error_count": 1,
+                "warning_count": 0,
+                "issues": [{
+                    "severity": "error",
+                    "code": "RMSF_PERMUTATION_COMPARISON_FAILED",
+                    "message": str(exc),
+                }],
+            }
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0 if report.get("technical_status") == "complete" else 2
+    if args.command == "advise-slurm-capacity":
+        try:
+            report = advise_slurm_capacity(
+                args.root,
+                wall_hours=args.wall_hours,
+                maximum_memory_gib=args.maximum_memory_gib,
+                cpu_ceiling=args.cpu_ceiling,
+                slurm_profile_path=args.slurm_profile,
+                live=not args.offline,
+                slurm_user=args.slurm_user,
+                job_ids=args.job_id,
+            )
+        except (
+            SlurmCapacityError, ExecutionAdapterError, ResourcePlanningError,
+            OSError, ValueError,
+        ) as exc:
+            report = {
+                "technical_status": "failed",
+                "scientific_status": "not evaluated",
+                "read_only": True,
+                "jobs_submitted": False,
+                "issues": [{
+                    "severity": "error",
+                    "code": "SLURM_CAPACITY_ADVICE_FAILED",
+                    "message": str(exc),
+                }],
+            }
+        if args.format == "markdown" and report.get("technical_status") == "complete":
+            print(render_capacity_markdown(report), end="")
+        else:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        return 0 if report.get("technical_status") == "complete" else 2
     if args.command == "build-coordinate-cache":
         report = build_coordinate_cache_safe(
             args.path, args.output, hash_source_content=args.hash_source_content,
-            maximum_workers=args.workers,
+            maximum_workers=args.workers, cache_stride=args.cache_stride,
         )
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0 if report["technical_status"] == "complete" else 2
+    if args.command == "prepare-unwrapped-cache":
+        report = build_coordinate_cache_safe(
+            args.path, args.output,
+            hash_source_content=args.hash_source_content,
+            maximum_workers=args.workers,
+            cache_stride=1,
+        )
+        report["preparation_mode"] = "lossless_continuous_unwrap_only"
+        report["reusable_input"] = (
+            f"Set execution.coordinate_cache_input to {args.output} in a "
+            "future analysis config."
+        )
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0 if report["technical_status"] == "complete" else 2
+    if args.command == "write-scientific-minimums-template":
+        destination = args.output.expanduser().resolve(strict=False)
+        if destination.exists():
+            print(json.dumps({
+                "technical_status": "failed",
+                "issues": [{
+                    "severity": "error",
+                    "code": "SCIENTIFIC_MINIMUMS_OUTPUT_EXISTS",
+                    "message": f"output already exists: {destination}",
+                }],
+            }, indent=2, sort_keys=True))
+            return 2
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            json.dumps(scientific_minimums_document(), indent=2, sort_keys=True)
+            + "\n",
+            encoding="utf-8",
+        )
+        print(json.dumps({
+            "technical_status": "complete",
+            "scientific_minimums_file": str(destination),
+        }, indent=2, sort_keys=True))
+        return 0
     if args.command == "summarize-timeseries":
         return _summarize_timeseries_command(args.path)
     if args.command == "run-instrumented":
@@ -1800,6 +2324,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.path,
             args.output,
             args.workers,
+            args.cache_stride,
             args.summary_sidecar,
             args.installed_report_path,
         )
@@ -1812,8 +2337,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
     if args.command == "prioritize-findings":
         return _prioritize_findings_command(args.root, args.maximum_findings)
-    if args.command == "build-interactive-report":
-        return _build_interactive_report_command(args.root, args.output_name)
     if args.command == "export-rmsf-visualization":
         return _export_rmsf_visualization_command(
             args.report,

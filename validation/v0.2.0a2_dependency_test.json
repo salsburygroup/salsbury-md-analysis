@@ -1,0 +1,26 @@
+{
+  "validation_schema": "salsbury-public-alpha-dependency-test-v1",
+  "candidate_version": "0.2.0a2",
+  "recorded_at": "2026-08-27",
+  "execution_host": "Apple silicon workstation, macOS; temporary dependency-equipped environment",
+  "python": "3.12.13",
+  "dependencies": {
+    "numpy": "2.5.2",
+    "scipy": "1.18.1",
+    "scikit-learn": "1.9.0",
+    "hdbscan": "0.8.44",
+    "openmm": "not installed; one expected optional test skip"
+  },
+  "command": "<isolated-python> -m unittest discover -s tests -q",
+  "tests_run": 612,
+  "expected_skips": 1,
+  "failures": 0,
+  "errors": 0,
+  "elapsed_seconds": 14.512,
+  "generated_documentation_check": "pass via the dependency-equipped suite",
+  "artifact_build_check": "pass; sdist sha256 bbfeee5e07e1b14d8ca7e133ecde70e3a5c1ca7e6a315f29ac8e41e09c155f1c; wheel sha256 b0f753e219cbfa3f7bb746850983f890360910c4604e6746924a14e38285d0b5; no embedded interactive-report module",
+  "github_ci_status": "not submitted; unreleased experimental branch candidate",
+  "technical_status": "local dependency-equipped regression, generated-document, and artifact-build pass",
+  "scientific_status": "not evaluated",
+  "interpretation": "Dependency-equipped regression evidence only. This does not establish scientific validity, promote experimental modules, or constitute a release decision."
+}

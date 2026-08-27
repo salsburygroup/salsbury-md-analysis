@@ -46,6 +46,7 @@ from .conformational_views import plan_conformational_views
 from .coordinate_cache import (
     coordinate_cache_prefix,
     coordinate_cache_system_manifest_filename,
+    validate_reusable_coordinate_cache,
 )
 from .geometry import distance3
 from .hydrogen_bond_chemistry import NUCLEIC_RESIDUES, PROTEIN_RESIDUES
@@ -61,6 +62,7 @@ from .openmm_connectivity import (
 from .preflight import (
     FileProbeError, probe_connectivity, probe_topology, probe_trajectory,
 )
+from .planning_report import PlanningReportError, write_planning_report
 from .periodic import (
     PeriodicReconstructionError,
     load_connectivity,
@@ -76,8 +78,8 @@ class QuickstartError(ValueError):
     """Raised when a safe runnable project cannot be prepared."""
 
 
-class QuickstartMemoryError(QuickstartError):
-    """Raised with a complete plan when enabled minima exceed the memory cap."""
+class QuickstartPlanningError(QuickstartError):
+    """Raised with a complete plan when an execution envelope is infeasible."""
 
     def __init__(
         self, message: str, *, plan: Mapping[str, object],
@@ -87,6 +89,10 @@ class QuickstartMemoryError(QuickstartError):
         self.plan = deepcopy(dict(plan))
         self.analysis_config = deepcopy(dict(analysis_config))
         self.output_directory = output_directory
+
+
+class QuickstartMemoryError(QuickstartPlanningError):
+    """Raised with a complete plan when enabled minima exceed the memory cap."""
 
 
 def _experimental_planner_coverage(
@@ -158,19 +164,80 @@ def _experimental_planner_coverage(
     }
 
 
+def _record_conformational_experimental_exclusions(
+    root: Path,
+    view_project_files: Sequence[str],
+    exclusions: Dict[str, str],
+    analysis_config: Optional[Mapping[str, object]] = None,
+) -> None:
+    """Record method contracts that make an enabled view method inapplicable."""
+
+    requested_modules = set()
+    for filename in view_project_files:
+        project = load_json(root / filename)
+        requested = project.get("requested_modules")
+        if isinstance(requested, list):
+            requested_modules.update(str(value) for value in requested)
+    modules = (
+        analysis_config.get("modules")
+        if isinstance(analysis_config, Mapping) else None
+    )
+    perturbation = (
+        modules.get("perturbation_response_dynamics")
+        if isinstance(modules, Mapping) else None
+    )
+    options = (
+        perturbation.get("options")
+        if isinstance(perturbation, Mapping) else None
+    )
+    functional_sites = (
+        options.get("functional_site_node_indices")
+        if isinstance(options, Mapping) else None
+    )
+    if (
+        "perturbation_response_dynamics" not in requested_modules
+        and analysis_config is not None
+        and (not isinstance(functional_sites, list) or not functional_sites)
+    ):
+        exclusions.setdefault(
+            "perturbation_response_dynamics",
+            (
+                "not available: functional_site_node_indices were not declared; "
+                "the generic workflow does not guess a biological functional site"
+            ),
+        )
+    elif "perturbation_response_dynamics" not in requested_modules:
+        exclusions.setdefault(
+            "perturbation_response_dynamics",
+            (
+                "not applicable: the current DFI/DCI contract requires an enabled "
+                "macromolecular-trace view with one node per residue; no such view "
+                "was generated for this system"
+            ),
+        )
+
+
 def _force_field_parameter_spec(
     *, charmm_parameter_files: Sequence[Path] = (),
     openmm_system_xml: Optional[Path] = None,
     gromacs_tpr: Optional[Path] = None,
 ) -> Optional[Dict[str, object]]:
-    modes = sum((bool(charmm_parameter_files), openmm_system_xml is not None, gromacs_tpr is not None))
+    """Normalize one explicit force-field source for energetic analyses."""
+
+    modes = sum((
+        bool(charmm_parameter_files), openmm_system_xml is not None,
+        gromacs_tpr is not None,
+    ))
     if modes > 1:
         raise QuickstartError(
             "choose only one energetic parameter source: CHARMM parameter files, "
             "OpenMM System XML, or GROMACS TPR"
         )
     if charmm_parameter_files:
-        files = [Path(path).expanduser().resolve(strict=True) for path in charmm_parameter_files]
+        files = [
+            Path(path).expanduser().resolve(strict=True)
+            for path in charmm_parameter_files
+        ]
         unsupported = [
             str(path) for path in files
             if path.suffix.lower() not in {".prm", ".par", ".str", ".inp"}
@@ -1274,9 +1341,17 @@ def _coordinate_cache_enabled(
 def _configure_coordinate_cache_views(
     root: Path,
     view_ids: Sequence[str],
+    *,
+    cache_stride: int,
+    cache_directory: Optional[Path] = None,
 ) -> list[str]:
-    """Point only conformational views at the future lossless solute cache."""
+    """Point conformational views at the future unwrapped working cache."""
 
+    external = cache_directory is not None
+    cache_root = (
+        Path(cache_directory).expanduser().resolve(strict=True)
+        if external else root / "coordinate-cache"
+    )
     records = []
     for view_id in view_ids:
         project_path = root / f"project-{view_id}.json"
@@ -1319,9 +1394,18 @@ def _configure_coordinate_cache_views(
                 f"view {view_id} has an unsupported cache manifest scope"
             )
         project.update({
-            "system_manifest": f"coordinate-cache/{cache_manifest_name}",
-            "reference_structure": f"coordinate-cache/{prefix}.pdb",
-            "reference_connectivity": f"coordinate-cache/{prefix}.bonds.json",
+            "system_manifest": (
+                str(cache_root / cache_manifest_name)
+                if external else f"coordinate-cache/{cache_manifest_name}"
+            ),
+            "reference_structure": (
+                str(cache_root / f"{prefix}.pdb")
+                if external else f"coordinate-cache/{prefix}.pdb"
+            ),
+            "reference_connectivity": (
+                str(cache_root / f"{prefix}.bonds.json")
+                if external else f"coordinate-cache/{prefix}.bonds.json"
+            ),
         })
         _json_write(project_path, project)
         validate_project(project, source_path=project_path, check_paths=False)
@@ -1337,10 +1421,15 @@ def _configure_coordinate_cache_views(
         })
     contract = {
         "cache_contract_schema": "salsbury-coordinate-cache-workflow-v1",
-        "technical_status": "planned",
-        "cache_output_directory": "coordinate-cache",
+        "technical_status": "reused" if external else "planned",
+        "cache_output_directory": str(cache_root),
         "source_system_manifest": "system.json",
-        "coordinate_representation": "made_whole_unaligned_molecular_payload_v1",
+        "coordinate_representation": (
+            "continuous_unwrap_strided_molecular_payload_v2"
+        ),
+        "source_frame_scan": "all_frames_continuous_unwrap",
+        "cache_stride": cache_stride,
+        "external_cache_reused": external,
         "base_workflow_uses_original_solvated_trajectories": True,
         "conformational_views_use_cache": True,
         "alignment_is_performed_downstream_per_view": True,
@@ -1374,6 +1463,17 @@ def _conformational_view_projects(
     assert isinstance(views, list)
     base_definitions = base_project["definitions"]
     assert isinstance(base_definitions, dict)
+    if "common_pca" not in base_definitions:
+        for view in views:
+            assert isinstance(view, dict)
+            view["execution"] = (
+                "not generated because common_pca is disabled by analysis config"
+            )
+        plan["workflow_scope"] = workflow_scope
+        plan["workflow_prefix"] = workflow_prefix
+        plan["workflow_system_id"] = workflow_system_id
+        _json_write(root / plan_filename, plan)
+        return [], [plan_filename]
     view_definition_ids = {
         "common_pca", "generalized_correlation_and_information",
         "information_dynamics", "perturbation_response_dynamics",
@@ -1934,17 +2034,50 @@ rm "$TMP" "$SUMMARY_TMP"
     return generated
 
 
+def _effective_parallel_cpu_cap(
+    campaign_resource_plan: Mapping[str, object],
+) -> int:
+    """Return the resolved launcher cap while retaining the user's request."""
+
+    requested = int(campaign_resource_plan["maximum_parallel_cpus_input"])
+    value = campaign_resource_plan.get("effective_parallel_cpu_cap", requested)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise QuickstartError(
+            "campaign resource plan has an invalid effective parallel CPU cap"
+        )
+    if value > requested:
+        raise QuickstartError(
+            "campaign resource plan cannot raise the requested parallel CPU cap"
+        )
+    return value
+
+
+def _execution_config_for_parallel_cpu_cap(
+    analysis_config: Mapping[str, object], effective_parallel_cpu_cap: int,
+) -> Dict[str, object]:
+    """Copy a user config and apply only its resolved execution CPU cap."""
+
+    resolved = deepcopy(dict(analysis_config))
+    execution = resolved.get("execution")
+    if not isinstance(execution, dict):
+        raise QuickstartError("analysis config lacks an execution object")
+    execution["maximum_parallel_cpus"] = effective_parallel_cpu_cap
+    return resolved
+
+
 def _slurm_files(
     root: Path, project_id: str, commands: Sequence[str], *, target_wall_hours: float,
     python_executable: str, package_root: str,
     conformational_view_ids: Sequence[str] = (),
     resource_table_enabled: bool = True,
     finding_picker_enabled: bool = True,
-    interactive_report_enabled: bool = True,
     maximum_parallel_cpus: int = 1,
     coordinate_cache_enabled: bool = False,
     coordinate_cache_workers: int = 1,
+    coordinate_cache_stride: int = 1,
     automatic_context_stage_counts: Optional[Mapping[int, int]] = None,
+    rmsf_permutation_enabled: bool = False,
+    integrated_comparison_enabled: bool = False,
 ) -> list[str]:
     stage_members = _GENERIC_STAGE_COMMANDS
     stages = {
@@ -1977,6 +2110,12 @@ def _slurm_files(
             raise QuickstartError(
                 "coordinate cache worker count must be within the CPU envelope"
             )
+        if (
+            isinstance(coordinate_cache_stride, bool)
+            or not isinstance(coordinate_cache_stride, int)
+            or coordinate_cache_stride <= 0
+        ):
+            raise QuickstartError("coordinate cache stride must be a positive integer")
         campaign_plan = load_json(root / "campaign-resource-plan.json")
         cache_tasks = [
             row for row in campaign_plan.get("tasks", [])
@@ -2025,6 +2164,8 @@ summary = json.load(open(summary_path, encoding='utf-8'))
 digest = hashlib.sha256(open(report_path, 'rb').read()).hexdigest()
 if report.get('technical_status') != 'complete':
     raise SystemExit('existing coordinate-cache report is incomplete')
+if report.get('cache_stride') != {coordinate_cache_stride}:
+    raise SystemExit('existing coordinate-cache stride does not match the plan')
 if summary.get('technical_status') != 'complete' or summary.get('report_sha256') != digest:
     raise SystemExit('existing coordinate-cache sidecar is incomplete or hash-mismatched')
 cached = json.load(open(manifest_path, encoding='utf-8'))
@@ -2042,7 +2183,8 @@ TMP="$FINAL.tmp.$SLURM_JOB_ID"
 SUMMARY_TMP="$TMP.summary.json"
 "$PYTHON" -m salsbury_md_analysis run-coordinate-cache-instrumented \
   "$ROOT/system.json" --output "$ROOT/coordinate-cache" \
-  --workers {coordinate_cache_workers} --summary-sidecar "$SUMMARY_TMP" \
+  --workers {coordinate_cache_workers} --cache-stride {coordinate_cache_stride} \
+  --summary-sidecar "$SUMMARY_TMP" \
   --installed-report-path "$FINAL" > "$TMP"
 "$PYTHON" - "$TMP" "$SUMMARY_TMP" "$ROOT/coordinate-cache/system-cache.json" <<'PY'
 import hashlib, json, sys
@@ -2052,6 +2194,8 @@ summary = json.load(open(summary_path, encoding='utf-8'))
 digest = hashlib.sha256(open(report_path, 'rb').read()).hexdigest()
 if report.get('technical_status') != 'complete':
     raise SystemExit('coordinate-cache report did not complete')
+if report.get('cache_stride') != {coordinate_cache_stride}:
+    raise SystemExit('coordinate-cache report stride does not match the plan')
 if summary.get('technical_status') != 'complete' or summary.get('report_sha256') != digest:
     raise SystemExit('coordinate-cache sidecar is incomplete or hash-mismatched')
 cached = json.load(open(manifest_path, encoding='utf-8'))
@@ -2263,6 +2407,51 @@ rm "$TMP"
         ]) if conformational_view_ids else ""
     )
     reporting_commands = []
+    if rmsf_permutation_enabled:
+        reporting_commands.append("""RMSF_INFERENCE_DIR="$ROOT/results/rmsf-permutation-inference"
+mkdir -p "$RMSF_INFERENCE_DIR"
+RMSF_INFERENCE_TMP="$RMSF_INFERENCE_DIR/report.json.tmp.$SLURM_JOB_ID"
+RMSF_INFERENCE_FINAL="$RMSF_INFERENCE_DIR/report.json"
+if [[ -e "$RMSF_INFERENCE_FINAL" ]]; then
+  printf 'RMSF permutation report already exists; refusing overwrite: %s\n' "$RMSF_INFERENCE_FINAL" >&2
+  exit 1
+fi
+"$PYTHON" -m salsbury_md_analysis rmsf-permutation-from-report \
+  "$ROOT/results/rmsf/report.json" "$ROOT/analysis-config.json" > "$RMSF_INFERENCE_TMP"
+"$PYTHON" - "$RMSF_INFERENCE_TMP" <<'PY'
+import json, sys
+report = json.load(open(sys.argv[1], encoding='utf-8'))
+if report.get('technical_status') != 'complete':
+    raise SystemExit('RMSF permutation inference did not complete')
+PY
+ln "$RMSF_INFERENCE_TMP" "$RMSF_INFERENCE_FINAL"
+rm "$RMSF_INFERENCE_TMP"
+""")
+    if integrated_comparison_enabled:
+        reporting_commands.append("""INTEGRATED_DIR="$ROOT/results/integrated-comparison"
+mkdir -p "$INTEGRATED_DIR"
+INTEGRATED_TMP="$INTEGRATED_DIR/report.json.tmp.$SLURM_JOB_ID"
+INTEGRATED_FINAL="$INTEGRATED_DIR/report.json"
+if [[ -e "$INTEGRATED_FINAL" ]]; then
+  printf 'Integrated comparison report already exists; refusing overwrite: %s\n' "$INTEGRATED_FINAL" >&2
+  exit 1
+fi
+"$PYTHON" -m salsbury_md_analysis integrate-comparison-results \
+  "$ROOT" > "$INTEGRATED_TMP"
+"$PYTHON" - "$INTEGRATED_TMP" <<'PY'
+import json, sys
+report = json.load(open(sys.argv[1], encoding='utf-8'))
+contract = report.get('integration_contract', {})
+if report.get('technical_status') != 'complete':
+    raise SystemExit('integrated comparison did not complete')
+if report.get('unreviewed_complete_report_count') != 0:
+    raise SystemExit('integrated comparison silently omitted a completed report')
+if contract.get('all_completed_reports_reviewed') is not True:
+    raise SystemExit('integrated comparison lacks all-report review evidence')
+PY
+ln "$INTEGRATED_TMP" "$INTEGRATED_FINAL"
+rm "$INTEGRATED_TMP"
+""")
     if resource_table_enabled:
         reporting_commands.append("""RESOURCE_TMP="$ROOT/final-resource-summary.json.tmp.$SLURM_JOB_ID"
 RESOURCE_FINAL="$ROOT/final-resource-summary.json"
@@ -2299,31 +2488,6 @@ ln "$FINDING_TMP" "$FINDING_FINAL"
 rm "$FINDING_TMP"
 """
         )
-    if interactive_report_enabled:
-        reporting_commands.append("""INTERACTIVE_TMP="$ROOT/final-interactive-report-summary.json.tmp.$SLURM_JOB_ID"
-INTERACTIVE_FINAL="$ROOT/final-interactive-report-summary.json"
-if [[ -e "$INTERACTIVE_FINAL" ]]; then
-  printf 'Final interactive-report summary already exists; refusing overwrite: %s\\n' "$INTERACTIVE_FINAL" >&2
-  exit 1
-fi
-"$PYTHON" -m salsbury_md_analysis build-interactive-report "$ROOT" > "$INTERACTIVE_TMP"
-"$PYTHON" - "$INTERACTIVE_TMP" "$ROOT/interactive-report/manifest.json" <<'PY'
-import hashlib, json, pathlib, sys
-summary_path, manifest_path = map(pathlib.Path, sys.argv[1:])
-summary = json.load(summary_path.open(encoding='utf-8'))
-manifest = json.load(manifest_path.open(encoding='utf-8'))
-index_path = manifest_path.parent / 'index.html'
-digest = hashlib.sha256(index_path.read_bytes()).hexdigest()
-if summary.get('technical_status') != 'complete':
-    raise SystemExit('interactive-report command did not complete')
-if manifest.get('technical_status') != 'complete' or manifest.get('index_sha256') != digest:
-    raise SystemExit('interactive-report manifest is incomplete or hash-mismatched')
-if manifest.get('scientific_status') != 'not evaluated':
-    raise SystemExit('interactive report lacks the required scientific-status boundary')
-PY
-ln "$INTERACTIVE_TMP" "$INTERACTIVE_FINAL"
-rm "$INTERACTIVE_TMP"
-""")
     reporting_command_text = "\n".join(reporting_commands) or (
         "printf '{\"technical_status\":\"complete\",\"scientific_status\":\"not evaluated\",\"reporting_disabled\":true}\\n' "
         '"> \"$ROOT/final-reporting-disabled.json\"'
@@ -2647,6 +2811,17 @@ def prepare_standard_analysis(
     energetic_parameter_available = (
         energetic_parameter_probe.get("availability_status") == "available"
     )
+    execution_config = analysis_config["execution"]
+    assert isinstance(execution_config, dict)
+    coordinate_cache_input = execution_config.get("coordinate_cache_input")
+    if coordinate_cache_input is not None:
+        try:
+            cache_reuse = validate_reusable_coordinate_cache(
+                Path(str(coordinate_cache_input)), system_path
+            )
+        except (OSError, ValueError) as exc:
+            raise QuickstartError(str(exc)) from exc
+        _json_write(root / "coordinate-cache-reuse.json", cache_reuse)
     dssp = _discover_dssp_executable(dssp_executable)
     sampling_plan = automatic_sampling_plan(
         system_path,
@@ -2907,7 +3082,18 @@ def prepare_standard_analysis(
                     str(exc), plan=exc.plan, analysis_config=analysis_config,
                     output_directory=root,
                 ) from exc
+            raise QuickstartPlanningError(
+                str(exc), plan=exc.plan, analysis_config=analysis_config,
+                output_directory=root,
+            ) from exc
         raise QuickstartError(str(exc)) from exc
+    _record_conformational_experimental_exclusions(
+        root, view_project_files, exclusions, analysis_config
+    )
+    # Preserve the complete plan even if the coverage audit itself detects an
+    # integration defect. This makes the failure diagnosable without rerunning
+    # input discovery.
+    _json_write(root / "campaign-resource-plan.json", campaign_resource_plan)
     experimental_planner_coverage = _experimental_planner_coverage(
         analysis_config, campaign_resource_plan, exclusions
     )
@@ -2916,15 +3102,37 @@ def prepare_standard_analysis(
     )
     _json_write(root / "sampling-plan.json", sampling_plan)
     _json_write(root / "campaign-resource-plan.json", campaign_resource_plan)
+    effective_parallel_cpu_cap = _effective_parallel_cpu_cap(
+        campaign_resource_plan
+    )
     coordinate_cache_enabled = _coordinate_cache_enabled(
         analysis_config, view_ids
     )
+    coordinate_cache_build_required = (
+        coordinate_cache_enabled and coordinate_cache_input is None
+    )
+    cache_coupling = campaign_resource_plan.get("global_stride_coupling")
+    coordinate_cache_stride = (
+        int(cache_coupling["selected_coordinate_cache_integer_stride"])
+        if coordinate_cache_enabled
+        and isinstance(cache_coupling, dict)
+        and isinstance(
+            cache_coupling.get("selected_coordinate_cache_integer_stride"), int
+        )
+        else 1
+    )
     coordinate_cache_files = (
-        _configure_coordinate_cache_views(root, view_ids)
+        _configure_coordinate_cache_views(
+            root, view_ids, cache_stride=coordinate_cache_stride,
+            cache_directory=(
+                Path(str(coordinate_cache_input))
+                if coordinate_cache_input is not None else None
+            ),
+        )
         if coordinate_cache_enabled else []
     )
     coordinate_cache_workers = min(
-        int(analysis_config["execution"]["maximum_parallel_cpus"]),  # type: ignore[index]
+        effective_parallel_cpu_cap,
         len(trajectory_paths),
     )
     deferred = {
@@ -2933,12 +3141,18 @@ def prepare_standard_analysis(
         "trajectory_features": "requires a declared scientific feature rather than an arbitrary atom pair",
         "scalar_feature_distributions": "runs after a question-linked scalar trajectory feature is declared",
         "scalar_threshold_states": "requires a physically justified threshold and sensitivity range",
-        "hydrogen_bonds": "requires explicitly indexed bonds; automatic chemistry discovery is the zero-input default",
+        "hydrogen_bonds": (
+            "optional manual fixed-feature override; automatic chemistry-backed "
+            "donor-hydrogen-acceptor discovery is the production default"
+        ),
         "hydrogen_bond_comparison": "requires at least two chemically mapped conditions",
         "hydrogen_bond_patterns": "runs after a direct-hydrogen-bond report has defined frame patterns",
         "grouped_regularized_classification": "requires at least two conditions and discovered hydrogen-bond features",
         "state_coordinate_exports": "runs after the user accepts a fitted FES or clustering state definition",
-        "representative_structures": "runs after a state membership or coordinate ensemble has been selected",
+        "representative_structures": (
+            "optional coordinate-space mean/medoid utility; observed state-centered "
+            "representative frames and coordinate exports are automatic"
+        ),
         "optional_observables": "requires a residue- or question-specific definition; deliberately deferred",
         "radial_distribution_functions": "requires explicit chemically meaningful atom groups",
         "nucleic_acid_geometry": "automatic ring and stacking definition generation is not yet enabled in the generic initializer",
@@ -2991,9 +3205,7 @@ def prepare_standard_analysis(
         ),
         python_executable=_active_python_executable(),
         package_root=str(Path(__file__).resolve(strict=True).parents[1]),
-        maximum_parallel_cpus=int(
-            analysis_config["execution"]["maximum_parallel_cpus"]  # type: ignore[index]
-        ),
+        maximum_parallel_cpus=effective_parallel_cpu_cap,
     )
     slurm_files = _slurm_files(
         root, project_id, commands,
@@ -3005,33 +3217,44 @@ def prepare_standard_analysis(
         conformational_view_ids=view_ids,
         resource_table_enabled=bool(analysis_config["reporting"]["resource_table_enabled"]),  # type: ignore[index]
         finding_picker_enabled=bool(analysis_config["reporting"]["finding_picker_enabled"]),  # type: ignore[index]
-        interactive_report_enabled=bool(analysis_config["reporting"]["interactive_report_enabled"]),  # type: ignore[index]
-        maximum_parallel_cpus=int(
-            analysis_config["execution"]["maximum_parallel_cpus"]  # type: ignore[index]
-        ),
-        coordinate_cache_enabled=coordinate_cache_enabled,
+        maximum_parallel_cpus=effective_parallel_cpu_cap,
+        coordinate_cache_enabled=coordinate_cache_build_required,
         coordinate_cache_workers=coordinate_cache_workers,
+        coordinate_cache_stride=coordinate_cache_stride,
     )
     try:
-        execution_artifacts = prepare_execution_artifacts(root, analysis_config)
-    except (ExecutionAdapterError, OSError) as exc:
+        execution_artifacts = prepare_execution_artifacts(
+            root,
+            _execution_config_for_parallel_cpu_cap(
+                analysis_config, effective_parallel_cpu_cap
+            ),
+        )
+        planning_report_files = write_planning_report(root)
+    except (ExecutionAdapterError, PlanningReportError, OSError) as exc:
         raise QuickstartError(str(exc)) from exc
     active_launcher = (
         "submit.sh" if execution_artifacts["adapter"] == "slurm"
+        else "run-custom.sh" if execution_artifacts["adapter"] == "custom"
         else "run-local.sh"
     )
     adapter_description = (
         f"Slurm profile `{execution_artifacts['slurm_profile_id']}`"
         if execution_artifacts["adapter"] == "slurm"
-        else "local dependency-aware executor"
+        else (
+            "external launcher contract"
+            if execution_artifacts["adapter"] == "custom"
+            else "local dependency-aware executor"
+        )
     )
     readme = f"""# {project_id}: generated Salsbury MD analysis
 
 Inputs were inspected read-only. The PDB, connectivity, and {len(trajectory_paths)} DCD files are
 referenced by absolute path and are not copied or modified.
 
-Review `campaign-resource-plan.json` and `sampling-plan.json`, especially every estimated
-wall time and sampling decision. The configured whole-campaign envelope is
+Review `planning-report.md` first. It lists every analysis family, the effective raw
+stride over the original trajectory, and every explicitly disabled, deferred, or
+inapplicable capability. Exact decisions remain in `planning-report.json`,
+`campaign-resource-plan.json`, and `sampling-plan.json`. The configured whole-campaign envelope is
 {analysis_config['execution']['maximum_parallel_cpus']} CPUs for at most
 {analysis_config['execution']['maximum_hours_per_cpu']:g} wall hours with a 1.5 timing
 safety factor. Then submit:
@@ -3042,8 +3265,8 @@ cd {root}
 ```
 
 The active execution adapter is the {adapter_description}. Change
-`execution.submission_adapter` in the preparation config to `local` or `slurm`;
-Slurm mode also requires `execution.slurm_profile`. Both adapters execute the same
+`execution.submission_adapter` in the preparation config to `local`, `slurm`, or
+`custom`; Slurm mode also requires `execution.slurm_profile`. All adapters execute the same
 worker scripts and therefore retain the same dependencies, atomic reports, hashes,
 frame selections, and scientific definitions. `execution-adapter.json` records the
 choice and `local-execution-plan.json` records the workstation dependency plan.
@@ -3086,15 +3309,15 @@ override them with `SALSBURY_MD_ANALYSIS_PYTHON` and
         "generated_files": [
             "system.json", "project.json", "sampling-plan.json",
             "campaign-resource-plan.json", "module-coverage.json",
+            *(["coordinate-cache-reuse.json"] if coordinate_cache_input is not None else []),
             *(
                 [str(generated_connectivity_file.relative_to(root))]
                 if generated_connectivity_file is not None else []
             ),
             *view_project_files, *coordinate_cache_files, *view_slurm_files,
             "analysis-config.json", *slurm_files,
-            *([helical_availability_file] if helical_availability_file else []),
-            *([energetic_availability_file] if energetic_availability_file else []),
-            *execution_artifacts["generated_files"], "README.md",
+            *execution_artifacts["generated_files"], *planning_report_files,
+            "README.md",
         ],
         "execution_adapter": execution_artifacts["adapter"],
         "slurm_profile_id": execution_artifacts["slurm_profile_id"],

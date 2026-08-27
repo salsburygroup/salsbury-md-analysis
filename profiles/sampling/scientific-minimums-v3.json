@@ -1,0 +1,237 @@
+{
+  "base_policy_id": "scientific-sampling-standard-v3",
+  "interpretation": {
+    "maximum_time_gap_between_retained_frames_ns": "Largest allowed time gap between retained frames for an ordered method. Zero means the method is treated as a static ensemble estimator and has no time-gap gate.",
+    "minimum_frames_overall_per_system": "Minimum retained physical frames pooled across replicas of one system; this is not a multi-system campaign total.",
+    "minimum_frames_per_replica": "Minimum retained physical frames in each simulation replica."
+  },
+  "methods": {
+    "alternative_clustering": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 250
+    },
+    "clustering_hdbscan": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 250
+    },
+    "clustering_imwkmeans": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 250
+    },
+    "clustering_kmeans": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 250
+    },
+    "common_atom_mapping": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 0,
+      "minimum_frames_per_replica": 0
+    },
+    "common_pca": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 250
+    },
+    "convergence_uncertainty": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 250,
+      "minimum_frames_per_replica": 250
+    },
+    "correlation_networks": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 250
+    },
+    "dccm": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 250
+    },
+    "dihedral_distributions": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 200
+    },
+    "generalized_correlation_and_information": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 250
+    },
+    "grouped_ml": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 250
+    },
+    "grouped_regularized_classification": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 200
+    },
+    "hydrogen_bond_comparison": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 200
+    },
+    "hydrogen_bond_discovery": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 200
+    },
+    "hydrogen_bond_patterns": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 200
+    },
+    "hydrogen_bonds": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 200
+    },
+    "individual_pca": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 250
+    },
+    "information_dynamics": {
+      "maximum_time_gap_between_retained_frames_ns": 0.5,
+      "minimum_frames_overall_per_system": 2000,
+      "minimum_frames_per_replica": 500
+    },
+    "integrated_comparison": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 0,
+      "minimum_frames_per_replica": 0
+    },
+    "ion_atmosphere": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 200
+    },
+    "ion_coordination_geometry": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 200
+    },
+    "markov_state_models": {
+      "maximum_time_gap_between_retained_frames_ns": 0.5,
+      "minimum_frames_overall_per_system": 2000,
+      "minimum_frames_per_replica": 500
+    },
+    "nucleic_acid_geometry": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 200
+    },
+    "nucleic_acid_structure": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 500,
+      "minimum_frames_per_replica": 100
+    },
+    "optional_observables": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 200
+    },
+    "pald_community_analysis": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 100,
+      "minimum_frames_per_replica": 20
+    },
+    "pca_fes_basins": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 250
+    },
+    "pooled_rmsf": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 200
+    },
+    "preflight_inventory": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 0,
+      "minimum_frames_per_replica": 0
+    },
+    "provenance_manifest": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 0,
+      "minimum_frames_per_replica": 0
+    },
+    "radial_distribution_functions": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 200
+    },
+    "replica_rmsd_rg": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 100,
+      "minimum_frames_per_replica": 100
+    },
+    "representative_frames": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 250
+    },
+    "representative_structures": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 250
+    },
+    "rmsf_permutation_inference": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 200
+    },
+    "scalar_feature_distributions": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 200
+    },
+    "scalar_threshold_states": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 250
+    },
+    "secondary_structure": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 500,
+      "minimum_frames_per_replica": 100
+    },
+    "solvent_accessible_surface_area": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 500,
+      "minimum_frames_per_replica": 100
+    },
+    "state_coordinate_exports": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 250
+    },
+    "structural_integrity_qc": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 500,
+      "minimum_frames_per_replica": 100
+    },
+    "time_lagged_independent_component_analysis": {
+      "maximum_time_gap_between_retained_frames_ns": 0.5,
+      "minimum_frames_overall_per_system": 2000,
+      "minimum_frames_per_replica": 500
+    },
+    "trajectory_features": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 1000,
+      "minimum_frames_per_replica": 200
+    },
+    "water_mediated_hydrogen_bond_networks": {
+      "maximum_time_gap_between_retained_frames_ns": 0.0,
+      "minimum_frames_overall_per_system": 500,
+      "minimum_frames_per_replica": 100
+    }
+  },
+  "minimums_schema": "salsbury-scientific-minimums-v1",
+  "override_policy": "Values may keep or strengthen the packaged standard. Frame minima may increase. A positive time-gap maximum may decrease; a method with no packaged time-gap gate may be given a positive one."
+}

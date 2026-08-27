@@ -4,11 +4,11 @@
 
 ```text
 usage: salsbury-md-analysis [-h] [--version]
-                            {list-modules,validate-manifest,inventory-system,preflight-system,map-common-atoms,compile-context,structural-qc,rmsd-rg,rmsf,dccm,information-correlation,individual-pca,common-pca,tica,pca-fes-basins,cluster-kmeans,representative-frames,cluster-imwkmeans,cluster-hdbscan,markov-models,dihedrals,hydrogen-bonds,observables,sasa,convergence,grouped-ml,integrate,secondary-structure,alternative-clustering,pald-community,information-dynamics,perturbation-response,trajectory-reweighting,allosteric-pathways,energetic-network-embeddings,multivalent-bridges,hydration-density-channels,ensemble-pocket-dynamics,interaction-fingerprints,spatial-interaction-ensembles,interaction-persistence,random-feature-koopman,helical-mechanics,reactive-path-ensembles,correlation-networks,trajectory-features,state-coordinate-exports,rdf,scalar-distributions,scalar-threshold-states,hydrogen-bond-discovery,water-mediated-hydrogen-bonds,grouped-regularized-classification,nucleic-acid-structure,nucleic-acid-geometry,ion-geometry,ion-atmosphere,compare-hydrogen-bonds,hydrogen-bond-patterns,representative-structures,rmsf-permutation,plan-frame-resources,plan-automatic-sampling,prepare-analysis,prepare-comparison,run-local-workflow,build-coordinate-cache,summarize-timeseries,run-instrumented,run-coordinate-cache-instrumented,summarize-execution-resources,build-resource-calibration-catalog,prioritize-findings,build-interactive-report,export-rmsf-visualization,run-regression}
+                            {list-modules,validate-manifest,inventory-system,preflight-system,map-common-atoms,compile-context,structural-qc,rmsd-rg,rmsf,dccm,information-correlation,individual-pca,common-pca,tica,pca-fes-basins,cluster-kmeans,representative-frames,cluster-imwkmeans,cluster-hdbscan,markov-models,dihedrals,hydrogen-bonds,observables,sasa,convergence,grouped-ml,integrate,integrate-comparison-results,secondary-structure,alternative-clustering,pald-community,information-dynamics,perturbation-response,trajectory-reweighting,allosteric-pathways,energetic-network-embeddings,multivalent-bridges,hydration-density-channels,ensemble-pocket-dynamics,interaction-fingerprints,spatial-interaction-ensembles,interaction-persistence,random-feature-koopman,helical-mechanics,reactive-path-ensembles,correlation-networks,trajectory-features,state-coordinate-exports,rdf,scalar-distributions,scalar-threshold-states,hydrogen-bond-discovery,water-mediated-hydrogen-bonds,grouped-regularized-classification,nucleic-acid-structure,nucleic-acid-geometry,ion-geometry,ion-atmosphere,compare-hydrogen-bonds,hydrogen-bond-patterns,representative-structures,rmsf-permutation,plan-frame-resources,plan-campaign-resources,plan-automatic-sampling,prepare-analysis,prepare-comparison,run-local-workflow,report-plan-matrix,write-planning-report,rmsf-permutation-from-report,advise-slurm-capacity,build-coordinate-cache,prepare-unwrapped-cache,write-scientific-minimums-template,summarize-timeseries,run-instrumented,run-coordinate-cache-instrumented,summarize-execution-resources,build-resource-calibration-catalog,prioritize-findings,export-rmsf-visualization,run-regression}
                             ...
 
 positional arguments:
-  {list-modules,validate-manifest,inventory-system,preflight-system,map-common-atoms,compile-context,structural-qc,rmsd-rg,rmsf,dccm,information-correlation,individual-pca,common-pca,tica,pca-fes-basins,cluster-kmeans,representative-frames,cluster-imwkmeans,cluster-hdbscan,markov-models,dihedrals,hydrogen-bonds,observables,sasa,convergence,grouped-ml,integrate,secondary-structure,alternative-clustering,pald-community,information-dynamics,perturbation-response,trajectory-reweighting,allosteric-pathways,energetic-network-embeddings,multivalent-bridges,hydration-density-channels,ensemble-pocket-dynamics,interaction-fingerprints,spatial-interaction-ensembles,interaction-persistence,random-feature-koopman,helical-mechanics,reactive-path-ensembles,correlation-networks,trajectory-features,state-coordinate-exports,rdf,scalar-distributions,scalar-threshold-states,hydrogen-bond-discovery,water-mediated-hydrogen-bonds,grouped-regularized-classification,nucleic-acid-structure,nucleic-acid-geometry,ion-geometry,ion-atmosphere,compare-hydrogen-bonds,hydrogen-bond-patterns,representative-structures,rmsf-permutation,plan-frame-resources,plan-automatic-sampling,prepare-analysis,prepare-comparison,run-local-workflow,build-coordinate-cache,summarize-timeseries,run-instrumented,run-coordinate-cache-instrumented,summarize-execution-resources,build-resource-calibration-catalog,prioritize-findings,build-interactive-report,export-rmsf-visualization,run-regression}
+  {list-modules,validate-manifest,inventory-system,preflight-system,map-common-atoms,compile-context,structural-qc,rmsd-rg,rmsf,dccm,information-correlation,individual-pca,common-pca,tica,pca-fes-basins,cluster-kmeans,representative-frames,cluster-imwkmeans,cluster-hdbscan,markov-models,dihedrals,hydrogen-bonds,observables,sasa,convergence,grouped-ml,integrate,integrate-comparison-results,secondary-structure,alternative-clustering,pald-community,information-dynamics,perturbation-response,trajectory-reweighting,allosteric-pathways,energetic-network-embeddings,multivalent-bridges,hydration-density-channels,ensemble-pocket-dynamics,interaction-fingerprints,spatial-interaction-ensembles,interaction-persistence,random-feature-koopman,helical-mechanics,reactive-path-ensembles,correlation-networks,trajectory-features,state-coordinate-exports,rdf,scalar-distributions,scalar-threshold-states,hydrogen-bond-discovery,water-mediated-hydrogen-bonds,grouped-regularized-classification,nucleic-acid-structure,nucleic-acid-geometry,ion-geometry,ion-atmosphere,compare-hydrogen-bonds,hydrogen-bond-patterns,representative-structures,rmsf-permutation,plan-frame-resources,plan-campaign-resources,plan-automatic-sampling,prepare-analysis,prepare-comparison,run-local-workflow,report-plan-matrix,write-planning-report,rmsf-permutation-from-report,advise-slurm-capacity,build-coordinate-cache,prepare-unwrapped-cache,write-scientific-minimums-template,summarize-timeseries,run-instrumented,run-coordinate-cache-instrumented,summarize-execution-resources,build-resource-calibration-catalog,prioritize-findings,export-rmsf-visualization,run-regression}
     list-modules        List registered analyses and honest implementation
                         status.
     validate-manifest   Validate a project, system, output, or publication-
@@ -65,6 +65,9 @@ positional arguments:
                         validation.
     integrate           Assemble prespecified module values without hidden
                         aggregation.
+    integrate-comparison-results
+                        Review and integrate every completed report in a
+                        prepared comparative campaign.
     secondary-structure
                         Run the external mkdssp adapter with executable
                         provenance.
@@ -162,6 +165,8 @@ positional arguments:
     plan-frame-resources
                         Estimate all-frame feasibility or balanced subsampling
                         from retained pilots.
+    plan-campaign-resources
+                        Plan sampling from a CPU, memory, and time envelope.
     plan-automatic-sampling
                         Inspect a system manifest, estimate per-method wall
                         time, and assign method-, size-, trajectory-, and
@@ -175,9 +180,27 @@ positional arguments:
                         analysis-input-v1 request.
     run-local-workflow  Execute a prepared workflow without Slurm while
                         enforcing its CPU cap and dependency order.
+    report-plan-matrix  Combine prepared planning-report.json files into an
+                        analysis-family by resource-envelope stride table.
+    write-planning-report
+                        Regenerate the user-facing report for an existing
+                        prepared campaign.
+    rmsf-permutation-from-report
+                        Compare per-replica RMSF profiles between systems
+                        using the prepared comparison policy.
+    advise-slurm-capacity
+                        Optionally inspect a prepared campaign and the live
+                        Slurm queue without submitting or changing any job.
     build-coordinate-cache
                         Write an atomic made-whole, unaligned molecular-
                         payload DCD cache for non-water trajectory analyses.
+    prepare-unwrapped-cache
+                        Continuously unwrap every source frame once and write
+                        a reusable lossless molecular-payload cache.
+    write-scientific-minimums-template
+                        Write the editable per-replica, pooled-per-system, and
+                        ordered-method time-gap minima used by campaign
+                        planning.
     summarize-timeseries
                         Apply Scott-histogram-first reporting to generic non-
                         RMSD scalar series.
@@ -196,10 +219,6 @@ positional arguments:
     prioritize-findings
                         Rank transparent single- and multi-system findings
                         without an opaque score.
-    build-interactive-report
-                        Build a self-contained offline results browser with
-                        ranked findings, figures, QC, resources, raw-report
-                        links, and molecular structures.
     export-rmsf-visualization
                         Export RMSF as PDB B factors and a VMD NewCartoon/Beta
                         script.

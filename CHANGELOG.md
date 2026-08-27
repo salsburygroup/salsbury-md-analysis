@@ -1,39 +1,45 @@
 # Changelog
 
-## 0.2.0a1 - unreleased
+## Unreleased
 
-- Add default-off temporal interaction-fingerprint persistence with exact
-  source-observation missingness, physical-time regularity checks, zero-gap and
-  gap-tolerant event definitions, segment-boundary censoring, and complete-event
-  gates.
-- Add a default-off random-Fourier-feature nonlinear Koopman/TICA sensitivity
-  using only NumPy and the existing TICA solver; scan feature-count and
-  bandwidth grids across several prespecified seeds and withhold selection
-  unless held-out VAMP-E and slow-subspace stability gates both pass.
-- Integrate both new experimental modules into generated configuration, the
-  master experimental switch, campaign planning, finding triage, the offline
-  interactive dashboard, schema validation, and the NEMO acceptance workflow.
-- Make deterministic `strat_all` and `strat_reduced` Stratified NANI the
-  default KMeans initializers for newly prepared projects, without adding the
-  MDANCE or PyTorch dependency chain; preserve seeded KMeans++ compatibility
-  and full initializer provenance and sensitivity reporting.
-- Estimate otherwise intractable KMeans silhouette scores over several
-  prespecified random samples and fail closed unless every sample selects the
-  same winning state count; record the unused seeds even for exact silhouettes.
-- Add a self-contained, offline interactive result browser to normal local and
-  Slurm finalization, enabled by default and independently configurable.
-- Present QC and transparent ranked findings first while retaining a searchable
-  complete module explorer, raw evidence links, resource/frame accounting,
-  resolved configuration, chemical context, and provenance.
-- Render retained FES smoothing levels and per-system surfaces, clustering
-  populations and silhouettes, residue RMSF, affordable DCCM matrices, and
-  pre-rendered figures without an external JavaScript or network dependency.
-- Add an interactive representative-PDB viewer with element/chain/B-factor
-  coloring and explicit visual-trace limitations; multi-frame trajectories are
-  not embedded.
-- Hash-bind the generated HTML and every indexed report, fail closed on altered
-  existing output, and use compact sidecars rather than loading JSON reports
-  larger than 128 MB into finalization memory.
+- Rebase the default-off experimental method suite onto the current core,
+  including dependency-aware configuration, exhaustive scientific sampling
+  policies, resource-planner and scheduler accounting, integrated comparison,
+  and method-aware finding highlights.
+- Keep the interactive results browser in its separate companion repository;
+  the core package produces the complete machine-readable evidence it consumes.
+
+- Regenerate each shared or per-system PCA projection allocation during resource
+  replanning and feed its exact selected counts into every downstream clustering
+  fit. Coupling now iterates to equality, stabilizes discrete stride cycles with
+  a dynamically derived conservative projection ceiling, and fails closed on a
+  missing parent or unresolved mismatch.
+
+- Make campaign stride allocation monotonic across longer wall-time envelopes
+  and report whether residual CPU-hours come from frame ceilings, memory, the
+  next discrete stride step, or limited dependency/task parallelism.
+
+- Split mixed-resource Slurm arrays into resource-matched submissions so only
+  the tasks that need large memory reserve it, while preserving the original
+  CPU cap, dependency graph, planner requests, and scientific sampling.
+- Record submitted array indices, tier-specific memory and time, selected
+  partition, concurrency allocation, and dependency wave in
+  `scheduler-resource-requests.json`.
+
+## 0.1.1 - 2026-08-25
+
+- Account for every completed module report in the prioritized-finding output,
+  including reports that produce QC evidence, interpretive context, technical
+  support, or no automatic highlight.
+- Add transparent highlights for alternative clustering, PCA/TICA context,
+  nonlinear dependence, information dynamics, correlation networks, grouped
+  prediction, ion atmosphere, RMSD/Rg, and scalar distribution/state results.
+- Keep QC and convergence records out of the scientific ranking and report
+  candidate-list truncation explicitly.
+- Keep the core installation non-interactive and document the independently
+  installable `salsbury-md-analysis-interactive` companion.
+- Make the low-memory fallback regression independent of whether `mkdssp` is
+  installed beside the active Python interpreter.
 
 ## 0.1.0 - 2026-08-20
 

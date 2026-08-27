@@ -12,6 +12,36 @@ PYTHONPATH=src python -m salsbury_md_analysis build-coordinate-cache \
   path/to/system.json --output path/to/new-cache
 ```
 
+For preprocessing without any downstream analysis, use the lossless mode:
+
+```bash
+salsbury-md-analysis prepare-unwrapped-cache path/to/system.json \
+  --output path/to/lossless-cache --workers 8
+```
+
+If you are starting from PDB, topology, and trajectory arguments rather than an
+existing system manifest, run `prepare-analysis --plan-only` first and pass the
+generated `prepared/system.json` to `prepare-unwrapped-cache`.
+
+This mode decodes, continuously unwraps, and retains every frame at stride 1.
+It stops after writing the cache. A later analysis config can reuse it:
+
+```json
+{
+  "config_schema": "salsbury-analysis-config-v1",
+  "execution": {
+    "coordinate_cache": "required",
+    "coordinate_cache_input": "path/to/lossless-cache"
+  }
+}
+```
+
+The relative path is resolved from the analysis-config file. Preparation
+checks that the cache is complete and stride 1, that every decoded source frame
+was retained, and that system/replica/segment identities and source topology,
+connectivity, and trajectory identities still match. If a recorded content
+hash exists it is checked as well. A mismatch fails before the cache is used.
+
 The output directory must not already exist. It is assembled under a temporary
 sibling directory and installed with one atomic rename only after every frame,
 topology, connectivity file, manifest, and report has been written and
@@ -27,6 +57,13 @@ never edits the source manifest, topology, connectivity, or trajectory.
 - an explicit subset bond graph with source-connectivity provenance;
 - SHA-256 hashes for every generated DCD, topology, connectivity file, and
   cache manifest.
+
+The lossless cache builder can use one worker per replica. For example, 21
+systems with three replicas each expose 63 useful unwrapping workers. More
+CPUs do not speed that phase unless the input has more independently streamable
+replicas; available memory and storage bandwidth may require a lower worker
+count. The campaign plan reports both this replica-parallel ceiling and the
+full workflow's dependency-stage CPU ceiling.
 
 The cache is deliberately unaligned. Each scientific view must still apply its
 own declared protein, nucleic-acid, interface, or oligomer-member alignment.
