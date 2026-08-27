@@ -228,6 +228,7 @@ def _write_cache_metadata(
     cached_systems: Sequence[Mapping[str, object]],
     report_rows: Sequence[Mapping[str, object]],
     maximum_workers: int,
+    cache_stride: int,
 ) -> Dict[str, object]:
     cached_manifest = {"systems": list(cached_systems)}
     manifest_path = temporary / "system-cache.json"
@@ -252,7 +253,7 @@ def _write_cache_metadata(
             "sha256": sha256_file(path),
         }
     report = {
-        "cache_schema": "salsbury-coordinate-cache-v1",
+        "cache_schema": "salsbury-coordinate-cache-v2",
         "technical_status": "complete",
         "scientific_status": "not evaluated",
         "source_system_manifest": str(source),
@@ -260,16 +261,27 @@ def _write_cache_metadata(
         "cached_system_manifest": "system-cache.json",
         "cached_system_manifest_sha256": sha256_file(manifest_path),
         "cached_per_system_manifests": per_system_manifests,
-        "coordinate_representation": "made_whole_unaligned",
+        "coordinate_representation": "continuous_unwrap_unaligned_strided",
         "selection": "molecular_payload",
         "bulk_solvent_included": False,
         "maximum_workers_used": maximum_workers,
-        "frame_identity_policy": "original system/replica/segment/frame index preserved",
+        "cache_stride": cache_stride,
+        "source_frame_scan": "all source frames decoded in order",
+        "materialization_policy": (
+            "retain global replica indices 0, stride, 2*stride, ...; do not force "
+            "the final frame"
+        ),
+        "frame_identity_policy": (
+            "original system/replica/segment identity plus per-segment first "
+            "retained source index and exact integer cache stride preserved"
+        ),
         "rows": list(report_rows),
         "limitations": [
             "The cache is a computational representation, not scientific validation.",
             "Water-dependent analyses must use the original solvated trajectories.",
             "Alignment is intentionally deferred to each downstream analysis view.",
+            "Every source frame updates the continuous-unwrapping state even when "
+            "only a strided subset is materialized.",
         ],
     }
     report_path = temporary / "coordinate-cache-report.json"
@@ -305,8 +317,13 @@ def _absolute_replica(
     return replica
 
 
-def _coordinate_cache_worker(arguments: tuple[str, str, bool, float, float]) -> None:
-    manifest, output, hash_content, maximum_bond, cycle_tolerance = arguments
+def _coordinate_cache_worker(
+    arguments: tuple[str, str, bool, float, float, int]
+) -> None:
+    (
+        manifest, output, hash_content, maximum_bond, cycle_tolerance,
+        cache_stride,
+    ) = arguments
     build_coordinate_cache(
         Path(manifest),
         Path(output),
@@ -314,6 +331,7 @@ def _coordinate_cache_worker(arguments: tuple[str, str, bool, float, float]) -> 
         maximum_bond_length_angstrom=maximum_bond,
         cycle_closure_tolerance_angstrom=cycle_tolerance,
         maximum_workers=1,
+        cache_stride=cache_stride,
     )
 
 
@@ -326,12 +344,13 @@ def _build_coordinate_cache_parallel(
     maximum_bond_length_angstrom: float,
     cycle_closure_tolerance_angstrom: float,
     maximum_workers: int,
+    cache_stride: int,
 ) -> Dict[str, object]:
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent))
     worker_root = temporary / ".replica-workers"
     worker_root.mkdir()
-    tasks: list[tuple[str, str, bool, float, float]] = []
+    tasks: list[tuple[str, str, bool, float, float, int]] = []
     replica_order: list[tuple[str, str, Path]] = []
     try:
         raw_systems = system["systems"]
@@ -362,6 +381,7 @@ def _build_coordinate_cache_parallel(
                     str(manifest_path), str(worker_output), hash_source_content,
                     maximum_bond_length_angstrom,
                     cycle_closure_tolerance_angstrom,
+                    cache_stride,
                 ))
                 replica_order.append((system_id, replica_id, worker_output))
                 worker_index += 1
@@ -418,8 +438,10 @@ def _build_coordinate_cache_parallel(
                 "system_id": system_id,
                 "metadata": {
                     **deepcopy(raw_system.get("metadata", {})),
-                    "coordinate_cache": "made_whole_unaligned_molecular_payload_v1",
+                    "coordinate_cache": "continuous_unwrap_strided_molecular_payload_v2",
                     "source_system_manifest": str(source),
+                    "source_frame_scan": "all_frames_continuous_unwrap",
+                    "cache_stride": cache_stride,
                 },
                 "replicas": replicas_by_system[system_id],
             })
@@ -432,6 +454,7 @@ def _build_coordinate_cache_parallel(
             cached_systems=cached_systems,
             report_rows=report_rows,
             maximum_workers=min(maximum_workers, len(tasks)),
+            cache_stride=cache_stride,
         )
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
@@ -446,8 +469,15 @@ def build_coordinate_cache(
     maximum_bond_length_angstrom: float = 4.0,
     cycle_closure_tolerance_angstrom: float = 0.05,
     maximum_workers: int = 1,
+    cache_stride: int = 1,
 ) -> Dict[str, object]:
-    """Write a new made-whole, unaligned molecular-payload cache atomically."""
+    """Write an atomic continuously unwrapped, strided working cache.
+
+    Every source frame is decoded and passed through the stateful periodic
+    reconstruction.  ``cache_stride`` controls only which reconstructed frames
+    are materialized, so a coarse working cache never breaks continuity across
+    a periodic boundary.
+    """
 
     source = Path(system_manifest_path).expanduser().resolve(strict=True)
     system = load_json(source)
@@ -463,6 +493,12 @@ def build_coordinate_cache(
         or maximum_workers <= 0
     ):
         raise CoordinateCacheError("maximum_workers must be a positive integer")
+    if (
+        isinstance(cache_stride, bool)
+        or not isinstance(cache_stride, int)
+        or cache_stride <= 0
+    ):
+        raise CoordinateCacheError("cache_stride must be a positive integer")
     output = Path(output_directory).expanduser().resolve(strict=False)
     if output.exists():
         raise CoordinateCacheError(f"cache output already exists: {output}")
@@ -480,6 +516,7 @@ def build_coordinate_cache(
             maximum_bond_length_angstrom=maximum_bond_length_angstrom,
             cycle_closure_tolerance_angstrom=cycle_closure_tolerance_angstrom,
             maximum_workers=maximum_workers,
+            cache_stride=cache_stride,
         )
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent))
@@ -539,6 +576,7 @@ def build_coordinate_cache(
                 )
                 cached_segments = []
                 segment_reports = []
+                replica_source_offset = 0
                 for segment_index, segment in enumerate(raw_replica["segments"]):
                     assert isinstance(segment, dict)
                     segment_id = str(segment["segment_id"])
@@ -555,50 +593,118 @@ def build_coordinate_cache(
                     processor.begin_segment(
                         bool(segment.get("continuous_with_previous", False))
                     )
-                    frames = iter_coordinate_frames(trajectory, "angstrom")
-                    try:
-                        first_raw = next(frames)
-                    except StopIteration as exc:
-                        raise CoordinateCacheError(f"trajectory contains no frames: {trajectory}") from exc
-                    first = processor.process(
-                        first_raw,
-                        f"{system_id}/{replica_id}/{segment_id}/frame-0",
-                        atom_indices,
+                    first_selected_local = (-replica_source_offset) % cache_stride
+                    retained = (
+                        0 if first_selected_local >= declared else
+                        (declared - 1 - first_selected_local) // cache_stride + 1
                     )
-                    cached_trajectory = temporary / f"{prefix}-segment-{segment_index:02d}.dcd"
-                    writer = _DCDWriter(
-                        cached_trajectory,
-                        atom_count=len(atom_indices),
-                        frame_count=declared,
-                        starting_step=int(probe.get("starting_step", 0)),
-                        save_interval=int(probe.get("save_interval_steps", 1)),
-                        unit_cell_present=first.periodic_cell_present,
+                    cached_trajectory = (
+                        temporary / f"{prefix}-segment-{segment_index:02d}.dcd"
                     )
+                    writer = None
+                    decoded = 0
                     try:
-                        writer.write(first, atom_indices)
-                        for raw_frame in frames:
+                        for local_index, raw_frame in enumerate(
+                            iter_coordinate_frames(trajectory, "angstrom")
+                        ):
                             frame = processor.process(
                                 raw_frame,
                                 f"{system_id}/{replica_id}/{segment_id}/"
                                 f"frame-{raw_frame.frame_index}",
                                 atom_indices,
                             )
+                            decoded += 1
+                            if (
+                                (replica_source_offset + local_index)
+                                % cache_stride != 0
+                            ):
+                                continue
+                            if writer is None:
+                                source_interval = int(
+                                    probe.get("save_interval_steps", 1)
+                                )
+                                writer = _DCDWriter(
+                                    cached_trajectory,
+                                    atom_count=len(atom_indices),
+                                    frame_count=retained,
+                                    starting_step=(
+                                        int(probe.get("starting_step", 0))
+                                        + local_index * source_interval
+                                    ),
+                                    save_interval=source_interval * cache_stride,
+                                    unit_cell_present=frame.periodic_cell_present,
+                                )
                             writer.write(frame, atom_indices)
-                        writer.close()
+                        if decoded != declared:
+                            raise CoordinateCacheError(
+                                f"{system_id}/{replica_id}/{segment_id} decoded "
+                                f"{decoded} frames; header declared {declared}"
+                            )
+                        if retained > 0:
+                            if writer is None:
+                                raise CoordinateCacheError(
+                                    "cache retained-frame accounting is inconsistent"
+                                )
+                            writer.close()
                     except Exception:
-                        writer.handle.close()
+                        if writer is not None and not writer.handle.closed:
+                            writer.handle.close()
                         raise
+                    replica_source_offset += declared
+                    if retained == 0:
+                        segment_reports.append({
+                            "segment_id": segment_id,
+                            "source_frame_count": declared,
+                            "decoded_frame_count": decoded,
+                            "retained_frame_count": 0,
+                            "first_retained_source_frame_index": None,
+                            "cache_stride": cache_stride,
+                            "source": _source_identity(
+                                trajectory, hash_source_content
+                            ),
+                            "cache": None,
+                        })
+                        continue
                     cached_segment = {
                         "segment_id": segment_id,
                         "trajectory": cached_trajectory.name,
                     }
-                    for field in ("timing", "sample_axis", "continuous_with_previous"):
-                        if field in segment:
-                            cached_segment[field] = segment[field]
+                    if "timing" in segment:
+                        timing = deepcopy(segment["timing"])
+                        timing["first_frame_time"] = (
+                            float(timing["first_frame_time"])
+                            + first_selected_local * float(timing["frame_interval"])
+                        )
+                        timing["frame_interval"] = (
+                            float(timing["frame_interval"]) * cache_stride
+                        )
+                        cached_segment["timing"] = timing
+                    elif "sample_axis" in segment:
+                        sample_axis = deepcopy(segment["sample_axis"])
+                        sample_axis["first_sample_index"] = (
+                            int(sample_axis["first_sample_index"])
+                            + first_selected_local
+                            * int(sample_axis["sample_interval"])
+                        )
+                        sample_axis["sample_interval"] = (
+                            int(sample_axis["sample_interval"]) * cache_stride
+                        )
+                        cached_segment["sample_axis"] = sample_axis
+                    if "continuous_with_previous" in segment:
+                        cached_segment["continuous_with_previous"] = segment[
+                            "continuous_with_previous"
+                        ]
                     cached_segments.append(cached_segment)
                     segment_reports.append({
                         "segment_id": segment_id,
-                        "frame_count": declared,
+                        "source_frame_count": declared,
+                        "decoded_frame_count": decoded,
+                        "retained_frame_count": retained,
+                        "frame_count": retained,
+                        "first_retained_source_frame_index": (
+                            first_selected_local
+                        ),
+                        "cache_stride": cache_stride,
                         "source": _source_identity(trajectory, hash_source_content),
                         "cache": {
                             "path": cached_trajectory.name,
@@ -618,6 +724,19 @@ def build_coordinate_cache(
                     "source_atom_count": len(atoms),
                     "cached_atom_count": len(atom_indices),
                     "selection": "molecular_payload",
+                    "cache_stride": cache_stride,
+                    "source_frame_count": sum(
+                        int(row["source_frame_count"])
+                        for row in segment_reports
+                    ),
+                    "decoded_frame_count": sum(
+                        int(row["decoded_frame_count"])
+                        for row in segment_reports
+                    ),
+                    "retained_frame_count": sum(
+                        int(row["retained_frame_count"])
+                        for row in segment_reports
+                    ),
                     "topology_sha256": sha256_file(cached_topology),
                     "connectivity_sha256": sha256_file(cached_connectivity),
                     "periodic_reconstruction": processor.report(),
@@ -626,8 +745,11 @@ def build_coordinate_cache(
             cached_systems.append({
                 "system_id": system_id,
                 "metadata": {
-                    "coordinate_cache": "made_whole_unaligned_molecular_payload_v1",
+                    **deepcopy(raw_system.get("metadata", {})),
+                    "coordinate_cache": "continuous_unwrap_strided_molecular_payload_v2",
                     "source_system_manifest": str(source),
+                    "source_frame_scan": "all_frames_continuous_unwrap",
+                    "cache_stride": cache_stride,
                 },
                 "replicas": cached_replicas,
             })
@@ -638,6 +760,7 @@ def build_coordinate_cache(
             cached_systems=cached_systems,
             report_rows=report_rows,
             maximum_workers=1,
+            cache_stride=cache_stride,
         )
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
@@ -650,6 +773,7 @@ def build_coordinate_cache_safe(
     *,
     hash_source_content: bool = False,
     maximum_workers: int = 1,
+    cache_stride: int = 1,
 ) -> Dict[str, object]:
     try:
         return build_coordinate_cache(
@@ -657,13 +781,14 @@ def build_coordinate_cache_safe(
             output_directory,
             hash_source_content=hash_source_content,
             maximum_workers=maximum_workers,
+            cache_stride=cache_stride,
         )
     except (
         CoordinateCacheError, ManifestValidationError, PeriodicReconstructionError,
         AtomMappingError, FileProbeError, OSError, ValueError,
     ) as exc:
         return {
-            "cache_schema": "salsbury-coordinate-cache-v1",
+            "cache_schema": "salsbury-coordinate-cache-v2",
             "technical_status": "failed",
             "scientific_status": "not evaluated",
             "issues": [{

@@ -934,8 +934,20 @@ def prepare_comparative_analysis(
     coordinate_cache_enabled = _coordinate_cache_enabled(
         analysis_config, view_ids
     )
+    cache_coupling = campaign_resource_plan.get("global_stride_coupling")
+    coordinate_cache_stride = (
+        int(cache_coupling["selected_coordinate_cache_integer_stride"])
+        if coordinate_cache_enabled
+        and isinstance(cache_coupling, dict)
+        and isinstance(
+            cache_coupling.get("selected_coordinate_cache_integer_stride"), int
+        )
+        else 1
+    )
     coordinate_cache_files = (
-        _configure_coordinate_cache_views(root, view_ids)
+        _configure_coordinate_cache_views(
+            root, view_ids, cache_stride=coordinate_cache_stride
+        )
         if coordinate_cache_enabled else []
     )
     coordinate_cache_workers = min(
@@ -1030,6 +1042,7 @@ def prepare_comparative_analysis(
         ),
         coordinate_cache_enabled=coordinate_cache_enabled,
         coordinate_cache_workers=coordinate_cache_workers,
+        coordinate_cache_stride=coordinate_cache_stride,
         automatic_context_stage_counts=context_stage_counts,
     )
     try:

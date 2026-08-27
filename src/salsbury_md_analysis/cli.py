@@ -97,7 +97,11 @@ from .regression import run_regression_case_safe
 from .resource_planning import (
     ResourcePlanningError,
     calibrate_from_benchmarks,
+    estimate_analysis_level_resource_requirements,
+    plan_campaign_resource_budget,
+    plan_global_stride_projection_coupled_campaign_resource_budget,
     recommend_frame_budget,
+    recommend_scientifically_valid_task_subset,
 )
 from .resource_calibrations import (
     ResourceCalibrationError, build_resource_calibration_catalog,
@@ -498,6 +502,71 @@ def _plan_frame_resources_command(
     return 0 if report["technical_status"] == "complete" else 2
 
 
+def _plan_campaign_resources_command(
+    path: Path,
+    *,
+    mode: str,
+    maximum_parallel_cpus: int,
+    maximum_memory_gib: float,
+    maximum_wall_hours: float,
+    recommend_method_reduction: bool,
+) -> int:
+    try:
+        payload = load_json(path)
+        tasks = payload.get("tasks") if isinstance(payload, dict) else payload
+        if not isinstance(tasks, list) or not tasks or not all(
+            isinstance(row, dict) for row in tasks
+        ):
+            raise ResourcePlanningError(
+                "campaign planner input must be a task list or an object with tasks"
+            )
+        if mode == "analysis-levels":
+            report = estimate_analysis_level_resource_requirements(
+                tasks,
+                maximum_parallel_cpus=maximum_parallel_cpus,
+                maximum_memory_gib=maximum_memory_gib,
+            )
+        else:
+            kwargs = {
+                "maximum_parallel_cpus": maximum_parallel_cpus,
+                "maximum_wall_hours": maximum_wall_hours,
+                "maximum_memory_gib": maximum_memory_gib,
+            }
+            if sum(
+                row.get("module_id") == "coordinate_cache" for row in tasks
+            ) == 1:
+                report = (
+                    plan_global_stride_projection_coupled_campaign_resource_budget(
+                        tasks,
+                        coordinate_cache_full_scan_fraction=1.0,
+                        **kwargs,
+                    )
+                )
+            else:
+                report = plan_campaign_resource_budget(tasks, **kwargs)
+            report["planning_mode"] = "resources_to_sampling"
+            if (
+                recommend_method_reduction
+                and report["feasibility_status"] != "feasible"
+            ):
+                report["method_reduction_recommendation"] = (
+                    recommend_scientifically_valid_task_subset(tasks, **kwargs)
+                )
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+    except (OSError, ResourcePlanningError, ValueError) as exc:
+        print(json.dumps({
+            "technical_status": "failed",
+            "planning_mode": mode,
+            "issues": [{
+                "severity": "error",
+                "code": "CAMPAIGN_RESOURCE_PLANNING_FAILED",
+                "message": str(exc),
+            }],
+        }, indent=2, sort_keys=True))
+        return 2
+
+
 def _plan_automatic_sampling_command(
     path: Path,
     simulation_kind: str,
@@ -769,12 +838,13 @@ def _run_instrumented_coordinate_cache_command(
     path: Path,
     output: Path,
     workers: int,
+    cache_stride: int,
     summary_sidecar: Path,
     installed_report_path: Path,
 ) -> int:
     try:
         report = run_instrumented_coordinate_cache(
-            path, output, maximum_workers=workers
+            path, output, maximum_workers=workers, cache_stride=cache_stride
         )
     except (ExecutionResourceError, OSError, ValueError) as exc:
         report = {
@@ -1233,6 +1303,39 @@ def build_parser() -> argparse.ArgumentParser:
     )
     resource_parser.add_argument("--calibration-id")
 
+    campaign_resource_parser = subparsers.add_parser(
+        "plan-campaign-resources",
+        help=(
+            "Plan sampling from a CPU/memory/time envelope, or estimate the "
+            "resources required for named analysis levels."
+        ),
+    )
+    campaign_resource_parser.add_argument(
+        "path", type=Path,
+        help="JSON task list or campaign plan containing a tasks list.",
+    )
+    campaign_resource_parser.add_argument(
+        "--mode", choices=("resource-envelope", "analysis-levels"),
+        default="resource-envelope",
+    )
+    campaign_resource_parser.add_argument(
+        "--maximum-parallel-cpus", type=int, required=True
+    )
+    campaign_resource_parser.add_argument(
+        "--maximum-memory-gib", type=float, required=True
+    )
+    campaign_resource_parser.add_argument(
+        "--maximum-wall-hours", type=float, default=24.0,
+        help="Campaign wall limit for resource-envelope mode.",
+    )
+    campaign_resource_parser.add_argument(
+        "--recommend-method-reduction", action="store_true",
+        help=(
+            "When minima do not fit, report a dependency-closed on/off config "
+            "proposal without applying it."
+        ),
+    )
+
     automatic_parser = subparsers.add_parser(
         "plan-automatic-sampling",
         help=(
@@ -1422,6 +1525,13 @@ def build_parser() -> argparse.ArgumentParser:
             "replica; the final cache is assembled and published atomically."
         ),
     )
+    cache_parser.add_argument(
+        "--cache-stride", type=int, default=1,
+        help=(
+            "Decode and continuously unwrap every frame, but materialize only "
+            "global replica indices 0, stride, 2*stride, ... ."
+        ),
+    )
     comparison_parser.add_argument("--dssp-executable")
     comparison_parser.add_argument(
         "--config", type=Path,
@@ -1473,6 +1583,7 @@ def build_parser() -> argparse.ArgumentParser:
     cache_instrument_parser.add_argument("path", type=Path)
     cache_instrument_parser.add_argument("--output", type=Path, required=True)
     cache_instrument_parser.add_argument("--workers", type=int, default=1)
+    cache_instrument_parser.add_argument("--cache-stride", type=int, default=1)
     cache_instrument_parser.add_argument(
         "--summary-sidecar", type=Path, required=True
     )
@@ -1658,6 +1769,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.sensitivity_check_policy,
             args.calibration_id,
         )
+    if args.command == "plan-campaign-resources":
+        return _plan_campaign_resources_command(
+            args.path,
+            mode=args.mode,
+            maximum_parallel_cpus=args.maximum_parallel_cpus,
+            maximum_memory_gib=args.maximum_memory_gib,
+            maximum_wall_hours=args.maximum_wall_hours,
+            recommend_method_reduction=args.recommend_method_reduction,
+        )
     if args.command == "plan-automatic-sampling":
         return _plan_automatic_sampling_command(
             args.path,
@@ -1746,7 +1866,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.command == "build-coordinate-cache":
         report = build_coordinate_cache_safe(
             args.path, args.output, hash_source_content=args.hash_source_content,
-            maximum_workers=args.workers,
+            maximum_workers=args.workers, cache_stride=args.cache_stride,
         )
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0 if report["technical_status"] == "complete" else 2
@@ -1762,6 +1882,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.path,
             args.output,
             args.workers,
+            args.cache_stride,
             args.summary_sidecar,
             args.installed_report_path,
         )

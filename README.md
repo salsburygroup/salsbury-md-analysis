@@ -260,7 +260,10 @@ Trajectory execution subsampling is never random: it is deterministic,
 replica-balanced, and spread over the full time range. Every production
 trajectory selector receives one exact integer stride over each concatenated
 replica timeline; frame zero is retained and segment boundaries do not restart
-the stride. The campaign planner advances stride upgrades through an absolute
+the stride. Each method must meet its fixed minimum samples per replica/system.
+Order-dependent methods also enforce a method-specific maximum physical-time
+separation between retained frames; thermodynamic estimators do not. Runtime pilots calibrate resource cost only; the planner does not infer
+autocorrelation times or event rates. The campaign planner advances stride upgrades through an absolute
 CPU-and-wall resource frontier. Replanning the same tasks with a longer wall
 limit extends that allocation path, so no task loses frames merely because a
 previously unaffordable method becomes affordable. The exact retained counts

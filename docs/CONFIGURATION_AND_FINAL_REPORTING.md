@@ -77,8 +77,11 @@ estimators receive small method-specific runtime pilots (normally 10--100
 frames per replica at the TREX reference size and fewer for substantially
 larger systems). Those pilots calibrate cost and memory only; they are not
 scientific minima, convergence thresholds, or production recommendations.
-The planner then allocates additional deterministic, full-timespan samples
-within the shared envelope and reports every reduction. Preparation writes
+The planner does not estimate autocorrelation times or event rates. It enforces
+each method's fixed minimum sample count and, for order-dependent methods only,
+the maximum retained-frame temporal separation using the declared frame
+interval before allocating additional
+deterministic full-timespan samples within the shared envelope. Preparation writes
 `campaign-resource-plan.json`, which inventories base direct tasks, inherited
 base tasks, and all enabled conformational-view tasks. Downstream FES,
 clustering, and state methods share the selected physical-frame identities of

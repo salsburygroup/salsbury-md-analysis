@@ -21,7 +21,7 @@ def record(payload: bytes) -> bytes:
 def write_dcd(path: Path) -> None:
     header = bytearray(84)
     header[:4] = b"CORD"
-    struct.pack_into("<3i", header, 4, 2, 0, 1)
+    struct.pack_into("<3i", header, 4, 3, 0, 1)
     struct.pack_into("<i", header, 44, 1)
     struct.pack_into("<i", header, 80, 24)
     payload = record(bytes(header))
@@ -32,6 +32,7 @@ def write_dcd(path: Path) -> None:
         # The ligand crosses x=10 between saved frames.  Its cached image must
         # remain continuous at 10.2/11.2 rather than jumping to 0.2/1.2.
         ((0.2, 1.2, 5.0, 5.5, 8.0), (0.0,) * 5, (0.0,) * 5),
+        ((0.7, 1.7, 5.0, 5.5, 8.0), (0.0,) * 5, (0.0,) * 5),
     )
     for axes in frames:
         payload += record(struct.pack("<6d", 10.0, 90.0, 10.0, 90.0, 90.0, 10.0))
@@ -96,7 +97,7 @@ class CoordinateCacheTests(unittest.TestCase):
             trajectory = output / replica["segments"][0]["trajectory"]
             self.assertEqual(probe_trajectory(trajectory)["atom_count"], 3)
             frames = list(iter_coordinate_frames(trajectory, "angstrom"))
-            self.assertEqual(len(frames), 2)
+            self.assertEqual(len(frames), 3)
             self.assertTrue(all(
                 frame.coordinate_representation
                 == "made_whole_molecular_payload_cache"
@@ -115,6 +116,27 @@ class CoordinateCacheTests(unittest.TestCase):
             self.assertTrue((output / per_system["path"]).is_file())
             failed = build_coordinate_cache_safe(manifest, output)
             self.assertEqual(failed["technical_status"], "failed")
+
+            strided_output = root / "strided-cache"
+            strided = build_coordinate_cache(
+                manifest, strided_output, cache_stride=2
+            )
+            self.assertEqual(strided["cache_stride"], 2)
+            self.assertEqual(strided["source_frame_scan"], "all source frames decoded in order")
+            strided_row = strided["rows"][0]
+            self.assertEqual(strided_row["decoded_frame_count"], 3)
+            self.assertEqual(strided_row["retained_frame_count"], 2)
+            strided_manifest = load_json(strided_output / "system-cache.json")
+            strided_replica = strided_manifest["systems"][0]["replicas"][0]
+            strided_segment = strided_replica["segments"][0]
+            self.assertEqual(strided_segment["timing"]["frame_interval"], 2.0)
+            strided_frames = list(iter_coordinate_frames(
+                strided_output / strided_segment["trajectory"], "angstrom"
+            ))
+            self.assertEqual(len(strided_frames), 2)
+            self.assertAlmostEqual(
+                strided_frames[1].coordinates_angstrom[0][0], 10.7, places=5
+            )
 
             second_replica = json.loads(json.dumps(
                 system["systems"][0]["replicas"][0]
