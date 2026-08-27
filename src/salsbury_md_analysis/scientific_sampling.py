@@ -40,7 +40,7 @@ class ScientificSamplingProfile:
     maximum_uniform_spacing_ns: float
     requires_contiguous_frames: bool
     temporal_resolution_rule: str
-    minimum_events_or_transitions: int = 0
+    minimum_reported_events_or_transitions: int = 0
     minimum_independent_units_per_group: int = 0
     inherited_from: Optional[str] = None
     insufficiency_action: str = "disable_or_increase_resources"
@@ -70,7 +70,7 @@ def _profile(
         maximum_uniform_spacing_ns=maximum_spacing_ns,
         requires_contiguous_frames=contiguous,
         temporal_resolution_rule=temporal_rule,
-        minimum_events_or_transitions=events,
+        minimum_reported_events_or_transitions=events,
         minimum_independent_units_per_group=independent_units,
         inherited_from=inherited_from,
         insufficiency_action=action,
@@ -441,7 +441,6 @@ def assess_raw_sampling(
         "scientific_interpretation_ready": (
             keep
             and not source_limited
-            and profile.minimum_events_or_transitions == 0
             and not profile.requires_contiguous_frames
         ),
         "required_frames_per_replica": required_per_replica,
@@ -470,9 +469,9 @@ def assess_raw_sampling(
             source_temporal_resolution_failures
         ),
         "planner_estimates_autocorrelation_or_event_rates": False,
-        "postrun_event_or_transition_gate": (
-            profile.minimum_events_or_transitions
-            if profile.minimum_events_or_transitions else None
+        "postrun_event_or_transition_diagnostic": (
+            profile.minimum_reported_events_or_transitions
+            if profile.minimum_reported_events_or_transitions else None
         ),
         "temporal_resolution_validation_required": (
             profile.requires_contiguous_frames

@@ -1530,7 +1530,7 @@ def automatic_sampling_plan(
             "scientific_sampling_assessment": {
                 "raw_coverage_status": "inherited_from_upstream",
                 "upstream_module_id": INHERITED_FRAME_SOURCES[module_id],
-                "postrun_gates_remain_required": True,
+                "postrun_diagnostics_and_temporal_validation_remain": True,
             },
         }
         for module_id in requested if module_id in INHERITED_FRAME_SOURCES

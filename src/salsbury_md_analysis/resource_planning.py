@@ -1214,7 +1214,7 @@ def plan_campaign_resource_budget(
         })
 
     scientific_below_standard = []
-    scientific_postrun_gates = []
+    scientific_postrun_diagnostics = []
     for report in task_reports:
         module_id = str(report.get("module_id", ""))
         try:
@@ -1273,14 +1273,14 @@ def plan_campaign_resource_budget(
                 ),
             })
         if (
-            assessment.get("postrun_event_or_transition_gate") is not None
+            assessment.get("postrun_event_or_transition_diagnostic") is not None
             or assessment.get("temporal_resolution_validation_required")
         ):
-            scientific_postrun_gates.append({
+            scientific_postrun_diagnostics.append({
                 "task_id": str(report["task_id"]),
                 "module_id": module_id,
-                "minimum_events_or_transitions": assessment.get(
-                    "postrun_event_or_transition_gate"
+                "minimum_reported_events_or_transitions": assessment.get(
+                    "postrun_event_or_transition_diagnostic"
                 ),
                 "temporal_resolution_validation_required": assessment.get(
                     "temporal_resolution_validation_required"
@@ -1420,7 +1420,7 @@ def plan_campaign_resource_budget(
                 str(row["configuration_switch"])
                 for row in scientific_below_standard
             }),
-            "postrun_gates": scientific_postrun_gates,
+            "postrun_diagnostics": scientific_postrun_diagnostics,
             "source_limited_policy": (
                 "A complete short source remains eligible for analysis. Source "
                 "duration and selected span are reported as provenance; only "

@@ -98,6 +98,19 @@ class ScientificSamplingTests(unittest.TestCase):
         self.assertFalse(hasattr(contract, "minimum_time_span_fraction"))
         self.assertFalse(hasattr(contract, "minimum_physical_span_ns"))
 
+    def test_observed_event_count_is_a_diagnostic_not_a_planning_gate(self):
+        assessment = assess_raw_sampling(
+            scientific_sampling_profile("hydrogen_bonds"),
+            selected_frames_per_replica=[1_000],
+            source_frames_per_replica=[1_000],
+            system_ids_per_replica=["system"],
+        )
+        self.assertTrue(assessment["keep_enabled"])
+        self.assertTrue(assessment["scientific_interpretation_ready"])
+        self.assertEqual(
+            assessment["postrun_event_or_transition_diagnostic"], 20
+        )
+
     def test_temporal_method_converts_maximum_spacing_to_frame_floor(self):
         profile = scientific_sampling_profile("information_dynamics")
         required = required_frames_per_replica(
