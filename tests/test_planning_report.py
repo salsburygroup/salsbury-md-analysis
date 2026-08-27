@@ -36,6 +36,14 @@ class PlanningReportTests(unittest.TestCase):
                 "technical_status": "complete", "feasibility_status": "complete",
                 "execution_authorized": True,
                 "maximum_parallel_cpus_input": 8,
+                "effective_parallel_cpu_cap": 3,
+                "resource_warnings": [{
+                    "code": "REQUESTED_CPUS_EXCEED_USEFUL_PARALLELISM",
+                    "message": (
+                        "You requested 8 concurrent CPUs; the generated Slurm "
+                        "submission will use 3 CPUs."
+                    ),
+                }],
                 "maximum_parallel_memory_gib_input": 64,
                 "maximum_wall_hours_input": 24,
                 "tasks": [{
@@ -97,6 +105,15 @@ class PlanningReportTests(unittest.TestCase):
                 "optional_manual_utility",
             )
             markdown = (root / "planning-report.md").read_text(encoding="utf-8")
+            self.assertEqual(
+                report["resource_envelope"]["requested_maximum_parallel_cpus"], 8
+            )
+            self.assertEqual(
+                report["resource_envelope"]["effective_maximum_parallel_cpus"], 3
+            )
+            self.assertIn("- Requested CPU cap: `8`", markdown)
+            self.assertIn("- Effective launcher CPU cap: `3`", markdown)
+            self.assertIn("## Resource warnings", markdown)
             self.assertIn("| RMSF and DCCM | 30 |", markdown)
             self.assertIn("| Structural-integrity QC | Off |", markdown)
 

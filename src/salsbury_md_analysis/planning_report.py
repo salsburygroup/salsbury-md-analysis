@@ -511,7 +511,17 @@ def build_planning_report(root: Path) -> Dict[str, object]:
         "execution_authorized": resources.get("execution_authorized"),
         "feasibility_status": resources.get("feasibility_status"),
         "resource_envelope": {
-            "maximum_parallel_cpus": resources.get("maximum_parallel_cpus_input"),
+            "maximum_parallel_cpus": resources.get(
+                "effective_parallel_cpu_cap",
+                resources.get("maximum_parallel_cpus_input"),
+            ),
+            "requested_maximum_parallel_cpus": resources.get(
+                "maximum_parallel_cpus_input"
+            ),
+            "effective_maximum_parallel_cpus": resources.get(
+                "effective_parallel_cpu_cap",
+                resources.get("maximum_parallel_cpus_input"),
+            ),
             "maximum_parallel_memory_gib": resources.get(
                 "maximum_parallel_memory_gib_input"
             ),
@@ -522,6 +532,7 @@ def build_planning_report(root: Path) -> Dict[str, object]:
             "estimated_selected_wall_hours_lower_bound": resources.get(
                 "estimated_selected_wall_hours_lower_bound"
             ),
+            "resource_warnings": resources.get("resource_warnings", []),
         },
         "sampling": {
             "task_count": len(rows),
@@ -587,7 +598,9 @@ def render_planning_report_markdown(report: Mapping[str, object]) -> str:
         "",
         f"- Feasibility: `{report.get('feasibility_status')}`",
         f"- Execution authorized by planner: `{report.get('execution_authorized')}`",
-        f"- CPU cap: `{envelope.get('maximum_parallel_cpus')}`",
+        f"- Requested CPU cap: `{envelope.get('requested_maximum_parallel_cpus')}`",
+        "- Effective launcher CPU cap: "
+        f"`{envelope.get('effective_maximum_parallel_cpus')}`",
         f"- Aggregate memory cap: `{envelope.get('maximum_parallel_memory_gib')} GiB`",
         f"- Campaign wall-time cap: `{envelope.get('maximum_wall_hours')} hours`",
         f"- Planned sampling tasks: `{sampling.get('task_count')}`",
@@ -656,6 +669,17 @@ def render_planning_report_markdown(report: Mapping[str, object]) -> str:
         "## Explicitly turned off",
         "",
     ]
+    warnings = [
+        _mapping(value) for value in _sequence(envelope.get("resource_warnings"))
+    ]
+    if warnings:
+        warning_position = lines.index("## How to read the strides")
+        lines[warning_position:warning_position] = [
+            "## Resource warnings",
+            "",
+            *[f"- {warning.get('message')}" for warning in warnings],
+            "",
+        ]
     disabled = [_mapping(value) for value in _sequence(features.get("explicitly_disabled"))]
     lines.append(
         _markdown_table(

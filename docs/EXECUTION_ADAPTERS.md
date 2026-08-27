@@ -34,6 +34,10 @@ to `prepare-analysis` or `prepare-comparison`. Preparation still validates and
 writes the campaign artifacts. It reports `execution_started: false` and
 `jobs_submitted: false`, returns the complete plan, and leaves the local or
 Slurm launch command for a separate reviewed step.
+If the requested CPU cap exceeds the resolved workflow's useful concurrent
+width, this output includes `REQUESTED_CPUS_EXCEED_USEFUL_PARALLELISM` and the
+effective cap. Generated launchers use the effective cap, including Slurm array
+concurrency and any multiprocess coordinate-cache request.
 
 ## Local desktop or workstation
 

@@ -51,6 +51,8 @@ from .quickstart import (
     _coordinate_cache_enabled,
     _discover_dssp_executable,
     _exclude_conformational_views_from_base_workflow,
+    _effective_parallel_cpu_cap,
+    _execution_config_for_parallel_cpu_cap,
     _generic_definitions,
     _json_write,
     _require_new_directory,
@@ -961,6 +963,9 @@ def prepare_comparative_analysis(
         raise QuickstartError(str(exc)) from exc
     _json_write(root / "sampling-plan.json", sampling_plan)
     _json_write(root / "campaign-resource-plan.json", campaign_resource_plan)
+    effective_parallel_cpu_cap = _effective_parallel_cpu_cap(
+        campaign_resource_plan
+    )
     coordinate_cache_enabled = _coordinate_cache_enabled(
         analysis_config, view_ids
     )
@@ -988,7 +993,7 @@ def prepare_comparative_analysis(
         if coordinate_cache_enabled else []
     )
     coordinate_cache_workers = min(
-        int(analysis_config["execution"]["maximum_parallel_cpus"]),  # type: ignore[index]
+        effective_parallel_cpu_cap,
         len(frame_counts),
     )
     deferred = _deferred_modules(exclusions, disabled)
@@ -1058,9 +1063,7 @@ def prepare_comparative_analysis(
         ),
         python_executable=_active_python_executable(),
         package_root=str(Path(__file__).resolve(strict=True).parents[1]),
-        maximum_parallel_cpus=int(
-            analysis_config["execution"]["maximum_parallel_cpus"]  # type: ignore[index]
-        ),
+        maximum_parallel_cpus=effective_parallel_cpu_cap,
     )
     slurm_files = _slurm_files(
         root,
@@ -1074,9 +1077,7 @@ def prepare_comparative_analysis(
         conformational_view_ids=view_ids,
         resource_table_enabled=bool(analysis_config["reporting"]["resource_table_enabled"]),  # type: ignore[index]
         finding_picker_enabled=bool(analysis_config["reporting"]["finding_picker_enabled"]),  # type: ignore[index]
-        maximum_parallel_cpus=int(
-            analysis_config["execution"]["maximum_parallel_cpus"]  # type: ignore[index]
-        ),
+        maximum_parallel_cpus=effective_parallel_cpu_cap,
         coordinate_cache_enabled=coordinate_cache_build_required,
         coordinate_cache_workers=coordinate_cache_workers,
         coordinate_cache_stride=coordinate_cache_stride,
@@ -1085,7 +1086,12 @@ def prepare_comparative_analysis(
         integrated_comparison_enabled=True,
     )
     try:
-        execution_artifacts = prepare_execution_artifacts(root, analysis_config)
+        execution_artifacts = prepare_execution_artifacts(
+            root,
+            _execution_config_for_parallel_cpu_cap(
+                analysis_config, effective_parallel_cpu_cap
+            ),
+        )
         planning_report_files = write_planning_report(root)
     except (ExecutionAdapterError, PlanningReportError, OSError) as exc:
         raise QuickstartError(str(exc)) from exc

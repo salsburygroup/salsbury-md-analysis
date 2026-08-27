@@ -157,8 +157,10 @@ stride upgrade. No duplicate calculation is added merely to consume the raw
 CPU-hour envelope.
 When `maximum_parallel_cpus` exceeds the largest concurrently useful stage,
 `resource_warnings` reports `REQUESTED_CPUS_EXCEED_USEFUL_PARALLELISM`, the
-useful ceiling, and the excess requested cores. The limit remains a user input;
-the warning explains why the extra cores cannot shorten that plan.
+useful ceiling, and the excess requested cores. The requested value remains in
+the provenance record. The resolved execution cap is reduced to the useful
+ceiling, and generated local, custom, and Slurm launchers use that effective
+value. The warning states both counts before execution.
 That failure includes the minimum calibrated critical path, the science wall
 and CPU allowances after reserves, the configured campaign ceiling, and the
 smallest calculated `--target-wall-hours` retry bound. The number is guidance,

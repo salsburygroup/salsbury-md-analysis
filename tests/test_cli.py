@@ -27,6 +27,7 @@ class CliTests(unittest.TestCase):
         }
         summary = _campaign_plan_terminal_summary({
             "maximum_parallel_cpus_input": 8,
+            "effective_parallel_cpu_cap": 3,
             "maximum_memory_gib_input": 32.0,
             "maximum_wall_hours_input": 48.0,
             "method_reduction_recommendation": {
@@ -35,6 +36,8 @@ class CliTests(unittest.TestCase):
                 "recommended_plan": {"minimum_wall_hours_lower_bound": 54.1},
             },
         })
+        self.assertEqual(summary["requested_parallel_cpus"], 8)
+        self.assertEqual(summary["effective_parallel_cpu_cap"], 3)
         self.assertEqual(summary["protected_subset_minimum_request"], {
             "parallel_cpus": 4,
             "aggregate_memory_gib": 12.0,

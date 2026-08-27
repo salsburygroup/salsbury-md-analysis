@@ -148,8 +148,11 @@ per-task and per-replica details. Several plans can be combined with
 If the requested CPU count is above the dependency graph's useful parallel
 ceiling, the response includes
 `REQUESTED_CPUS_EXCEED_USEFUL_PARALLELISM` with the useful and excess core
-counts. If the envelope cannot retain protected preparation and
-structural-integrity checks at their minima, planning returns
+counts. The planning record keeps the requested count, but the generated local,
+custom, and Slurm launchers use the smaller effective count; Slurm array widths
+and multiprocess worker requests are capped accordingly. If the envelope cannot
+retain protected preparation and structural-integrity checks at their minima,
+planning returns
 `planning_outcome: no_acceptable_reduced_plan`; it does not propose disabling
 those checks. The response also reports a
 `protected_subset_minimum_request`: padded CPUs, aggregate memory, and whole

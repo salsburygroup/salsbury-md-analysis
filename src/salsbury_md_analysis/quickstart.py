@@ -1543,6 +1543,37 @@ rm "$TMP" "$SUMMARY_TMP"
     return generated
 
 
+def _effective_parallel_cpu_cap(
+    campaign_resource_plan: Mapping[str, object],
+) -> int:
+    """Return the resolved launcher cap while retaining the user's request."""
+
+    requested = int(campaign_resource_plan["maximum_parallel_cpus_input"])
+    value = campaign_resource_plan.get("effective_parallel_cpu_cap", requested)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise QuickstartError(
+            "campaign resource plan has an invalid effective parallel CPU cap"
+        )
+    if value > requested:
+        raise QuickstartError(
+            "campaign resource plan cannot raise the requested parallel CPU cap"
+        )
+    return value
+
+
+def _execution_config_for_parallel_cpu_cap(
+    analysis_config: Mapping[str, object], effective_parallel_cpu_cap: int,
+) -> Dict[str, object]:
+    """Copy a user config and apply only its resolved execution CPU cap."""
+
+    resolved = deepcopy(dict(analysis_config))
+    execution = resolved.get("execution")
+    if not isinstance(execution, dict):
+        raise QuickstartError("analysis config lacks an execution object")
+    execution["maximum_parallel_cpus"] = effective_parallel_cpu_cap
+    return resolved
+
+
 def _slurm_files(
     root: Path, project_id: str, commands: Sequence[str], *, target_wall_hours: float,
     python_executable: str, package_root: str,
@@ -2431,6 +2462,9 @@ def prepare_standard_analysis(
         raise QuickstartError(str(exc)) from exc
     _json_write(root / "sampling-plan.json", sampling_plan)
     _json_write(root / "campaign-resource-plan.json", campaign_resource_plan)
+    effective_parallel_cpu_cap = _effective_parallel_cpu_cap(
+        campaign_resource_plan
+    )
     coordinate_cache_enabled = _coordinate_cache_enabled(
         analysis_config, view_ids
     )
@@ -2458,7 +2492,7 @@ def prepare_standard_analysis(
         if coordinate_cache_enabled else []
     )
     coordinate_cache_workers = min(
-        int(analysis_config["execution"]["maximum_parallel_cpus"]),  # type: ignore[index]
+        effective_parallel_cpu_cap,
         len(trajectory_paths),
     )
     deferred = {
@@ -2530,9 +2564,7 @@ def prepare_standard_analysis(
         ),
         python_executable=_active_python_executable(),
         package_root=str(Path(__file__).resolve(strict=True).parents[1]),
-        maximum_parallel_cpus=int(
-            analysis_config["execution"]["maximum_parallel_cpus"]  # type: ignore[index]
-        ),
+        maximum_parallel_cpus=effective_parallel_cpu_cap,
     )
     slurm_files = _slurm_files(
         root, project_id, commands,
@@ -2544,15 +2576,18 @@ def prepare_standard_analysis(
         conformational_view_ids=view_ids,
         resource_table_enabled=bool(analysis_config["reporting"]["resource_table_enabled"]),  # type: ignore[index]
         finding_picker_enabled=bool(analysis_config["reporting"]["finding_picker_enabled"]),  # type: ignore[index]
-        maximum_parallel_cpus=int(
-            analysis_config["execution"]["maximum_parallel_cpus"]  # type: ignore[index]
-        ),
+        maximum_parallel_cpus=effective_parallel_cpu_cap,
         coordinate_cache_enabled=coordinate_cache_build_required,
         coordinate_cache_workers=coordinate_cache_workers,
         coordinate_cache_stride=coordinate_cache_stride,
     )
     try:
-        execution_artifacts = prepare_execution_artifacts(root, analysis_config)
+        execution_artifacts = prepare_execution_artifacts(
+            root,
+            _execution_config_for_parallel_cpu_cap(
+                analysis_config, effective_parallel_cpu_cap
+            ),
+        )
         planning_report_files = write_planning_report(root)
     except (ExecutionAdapterError, PlanningReportError, OSError) as exc:
         raise QuickstartError(str(exc)) from exc
