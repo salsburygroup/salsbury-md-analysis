@@ -19,9 +19,16 @@ from .resource_planning import (
     ResourcePlanningError,
     alternative_clustering_fit_profiles,
     plan_campaign_resource_budget,
+    plan_global_stride_projection_coupled_campaign_resource_budget,
+    recommend_scientifically_valid_task_subset,
 )
 from .resource_calibrations import (
     ResourceCalibrationError, load_resource_calibration_catalog,
+)
+from .scientific_sampling import (
+    profile_contract,
+    required_frames_per_replica,
+    scientific_sampling_profile,
 )
 
 
@@ -33,6 +40,52 @@ class CampaignPlanningError(ValueError):
     ) -> None:
         super().__init__(message)
         self.plan = deepcopy(dict(plan)) if plan is not None else None
+
+
+def _scientific_task_contract(
+    module_id: str,
+    source_counts: Sequence[int],
+    *,
+    system_ids_per_replica: Optional[Sequence[str]] = None,
+    frame_intervals_ns_per_replica: Optional[Sequence[float]] = None,
+    source_time_spans_ns_per_replica: Optional[Sequence[float]] = None,
+) -> Dict[str, object]:
+    """Return an attainable task minimum plus the unabridged standard gate."""
+
+    profile = scientific_sampling_profile(module_id)
+    required = required_frames_per_replica(
+        profile,
+        system_ids_per_replica=system_ids_per_replica,
+        replica_count=(
+            None if system_ids_per_replica is not None else len(source_counts)
+        ),
+        source_frames_per_replica=(
+            source_counts if frame_intervals_ns_per_replica is not None else None
+        ),
+        frame_intervals_ns_per_replica=frame_intervals_ns_per_replica,
+        source_time_spans_ns_per_replica=source_time_spans_ns_per_replica,
+    )
+    attainable = min(required, max(int(value) for value in source_counts))
+    return {
+        "scientific_sampling_requirements": profile_contract(profile),
+        "scientific_minimum_frames_per_replica": required,
+        "attainable_scientific_minimum_frames_per_replica": attainable,
+        "minimum_frame_role": "standard_scientific_raw_coverage",
+        "minimum_frame_interpretation": (
+            "Method-specific sample-count floor plus any applicable configured "
+            "lag-pair or temporal-resolution requirement; trajectory duration "
+            "is provenance, and the planner does not estimate autocorrelation "
+            "times or event rates."
+        ),
+        **({
+            "frame_intervals_ns_per_replica": [
+                float(value) for value in frame_intervals_ns_per_replica
+            ],
+            "source_time_spans_ns_per_replica": [
+                float(value) for value in source_time_spans_ns_per_replica or ()
+            ],
+        } if frame_intervals_ns_per_replica is not None else {}),
+    }
 
 
 def _campaign_infeasibility_detail(plan: Mapping[str, object]) -> str:
@@ -386,6 +439,8 @@ def _automatic_context_tasks(
     source_counts: Sequence[int],
     *,
     time_safety_factor: float,
+    frame_intervals_ns_per_replica: Optional[Sequence[float]] = None,
+    source_time_spans_ns_per_replica: Optional[Sequence[float]] = None,
     context_id: Optional[str] = None,
     task_namespace: Optional[str] = None,
     task_scope: str = "automatic_chemical_context",
@@ -427,6 +482,11 @@ def _automatic_context_tasks(
             }
             else f"automatic_context:{module}:shared_frames"
         )
+        scientific = _scientific_task_contract(
+            module, source_counts,
+            frame_intervals_ns_per_replica=frame_intervals_ns_per_replica,
+            source_time_spans_ns_per_replica=source_time_spans_ns_per_replica,
+        )
         tasks.append({
             "task_id": f"{resolved_task_namespace}:{module}",
             "workflow_id": resolved_context_id,
@@ -435,8 +495,10 @@ def _automatic_context_tasks(
             "dependency_stage": int(model["stage"]),
             "effective_cpu_cap": 1,
             "source_frames_per_replica": list(source_counts),
-            "minimum_frames_per_replica": min(100, maximum),
-            "minimum_frame_role": "balanced topology-local chemistry pilot",
+            "minimum_frames_per_replica": int(
+                scientific["attainable_scientific_minimum_frames_per_replica"]
+            ),
+            **scientific,
             "maximum_frames_per_replica": maximum,
             "maximum_frame_role": "all source frames subject to campaign resources",
             "cpu_seconds_per_physical_frame": (
@@ -486,6 +548,9 @@ def _view_pca_task(
     view_id: str,
     project: Mapping[str, object],
     source_counts: Sequence[int],
+    system_ids_per_replica: Optional[Sequence[str]] = None,
+    frame_intervals_ns_per_replica: Optional[Sequence[float]] = None,
+    source_time_spans_ns_per_replica: Optional[Sequence[float]] = None,
     time_safety_factor: float,
 ) -> Dict[str, object]:
     definitions = project.get("definitions")
@@ -510,7 +575,19 @@ def _view_pca_task(
     # Cartesian features, and two canonical member observations per frame.
     feature_factor = max(0.1, (features / 5_616.0) ** 0.75)
     rate = (11_640.163299 / 30_000.0) * feature_factor * (multiplier / 2.0)
-    pilot = max(5, min(50, math.ceil(50 / feature_factor)))
+    technical_pilot = max(5, min(50, math.ceil(50 / feature_factor)))
+    scientific = _scientific_task_contract(
+        "common_pca", source_counts,
+        system_ids_per_replica=system_ids_per_replica,
+        frame_intervals_ns_per_replica=frame_intervals_ns_per_replica,
+        source_time_spans_ns_per_replica=source_time_spans_ns_per_replica,
+    )
+    minimum = max(
+        technical_pilot,
+        int(scientific[
+            "attainable_scientific_minimum_frames_per_replica"
+        ]),
+    )
     return {
         "task_id": f"view:{view_id}:common_pca",
         "workflow_id": view_id,
@@ -519,14 +596,15 @@ def _view_pca_task(
         "dependency_stage": 3,
         "effective_cpu_cap": 1,
         "source_frames_per_replica": list(source_counts),
-        "minimum_frames_per_replica": pilot,
-        "minimum_frame_role": "technical_runtime_pilot",
+        "minimum_frames_per_replica": minimum,
+        "technical_pilot_frames_per_replica": technical_pilot,
+        **scientific,
         # Do not impose an arbitrary 100,000-frame campaign ceiling here.  The
         # PCA basis sample has its own feature/memory gate in the project
         # definition; this task models the fitted projection and downstream
         # observation set, which may use every source frame when the declared
         # CPU, wall-time, and memory envelope can afford it.
-        "maximum_frames_per_replica": max(pilot, max(source_counts)),
+        "maximum_frames_per_replica": max(minimum, max(source_counts)),
         "maximum_frame_role": "all_source_frames_subject_to_campaign_resources",
         "cpu_seconds_per_physical_frame": rate * time_safety_factor,
         "fixed_cpu_hours": 0.0,
@@ -587,6 +665,8 @@ def _view_tasks(
     maximum_atom_count: int,
     *,
     time_safety_factor: float,
+    frame_intervals_ns_per_replica: Optional[Sequence[float]] = None,
+    source_time_spans_ns_per_replica: Optional[Sequence[float]] = None,
 ) -> List[Dict[str, object]]:
     project = load_json(project_path)
     if not isinstance(project, dict):
@@ -595,10 +675,30 @@ def _view_tasks(
     requested = project.get("requested_modules")
     if not isinstance(requested, list) or "common_pca" not in requested:
         return []
+    system_manifest_value = project.get("system_manifest")
+    system_ids_per_replica: Optional[list[str]] = None
+    if isinstance(system_manifest_value, str):
+        manifest_path = (project_path.parent / system_manifest_value).resolve(
+            strict=False
+        )
+        if manifest_path.is_file():
+            manifest = load_json(manifest_path)
+            raw_systems = manifest.get("systems") if isinstance(manifest, dict) else None
+            if isinstance(raw_systems, list):
+                inferred_ids = [
+                    str(system["system_id"])
+                    for system in raw_systems if isinstance(system, dict)
+                    for _ in system.get("replicas", [])
+                ]
+                if len(inferred_ids) == len(source_counts):
+                    system_ids_per_replica = inferred_ids
     pca_task = _view_pca_task(
         view_id=view_id,
         project=project,
         source_counts=source_counts,
+        system_ids_per_replica=system_ids_per_replica,
+        frame_intervals_ns_per_replica=frame_intervals_ns_per_replica,
+        source_time_spans_ns_per_replica=source_time_spans_ns_per_replica,
         time_safety_factor=time_safety_factor,
     )
     multiplier = int(pca_task["member_observation_multiplier"])
@@ -617,8 +717,15 @@ def _view_tasks(
             else "provisional_complexity_model"
         )
         method_specific: Dict[str, object] = {}
-        minimum_frames_per_replica = int(
-            pca_task["minimum_frames_per_replica"]
+        scientific = _scientific_task_contract(
+            module_id, source_counts,
+            system_ids_per_replica=system_ids_per_replica,
+            frame_intervals_ns_per_replica=frame_intervals_ns_per_replica,
+            source_time_spans_ns_per_replica=source_time_spans_ns_per_replica,
+        )
+        minimum_frames_per_replica = max(
+            int(pca_task["minimum_frames_per_replica"]),
+            int(scientific["attainable_scientific_minimum_frames_per_replica"]),
         )
         if module_id == "information_dynamics":
             definitions = project.get("definitions")
@@ -686,6 +793,121 @@ def _view_tasks(
                         "replica-and-member-segment-safe projected sequences"
                     ),
                 }
+        elif module_id == "time_lagged_independent_component_analysis":
+            definitions = project.get("definitions")
+            definition = (
+                definitions.get(module_id)
+                if isinstance(definitions, dict) else None
+            )
+            if not isinstance(definition, dict):
+                raise CampaignPlanningError(
+                    f"view {view_id} has no tICA definition"
+                )
+            lag_frames = definition.get("lag_frames")
+            minimum_pairs = definition.get("minimum_pairs_per_segment")
+            if (
+                isinstance(lag_frames, bool)
+                or not isinstance(lag_frames, int)
+                or lag_frames <= 0
+                or isinstance(minimum_pairs, bool)
+                or not isinstance(minimum_pairs, int)
+                or minimum_pairs <= 0
+            ):
+                raise CampaignPlanningError(
+                    f"view {view_id} tICA lag/pair settings are invalid"
+                )
+            required_per_replica = lag_frames + minimum_pairs
+            insufficient = [
+                index for index, count in enumerate(projected_counts)
+                if count < required_per_replica
+            ]
+            if insufficient:
+                raise CampaignPlanningError(
+                    f"view {view_id} tICA requires at least "
+                    f"{required_per_replica} projected frames in every physical "
+                    "replica for the configured lag and minimum pairs per "
+                    f"segment; insufficient replicas are {insufficient}"
+                )
+            available_pairs = multiplier * sum(
+                max(0, count - lag_frames) for count in projected_counts
+            )
+            minimum_frames_per_replica = max(
+                minimum_frames_per_replica, required_per_replica
+            )
+            method_specific = {
+                "lag_frames": lag_frames,
+                "minimum_lag_pairs_per_segment": minimum_pairs,
+                "minimum_frames_per_replica_for_lag_pairs": (
+                    required_per_replica
+                ),
+                "maximum_available_lag_pairs": available_pairs,
+                "lag_pair_count_basis": (
+                    "each replica-and-member segment independently satisfies "
+                    "the configured lag-pair minimum"
+                ),
+            }
+        elif module_id == "markov_state_models":
+            definitions = project.get("definitions")
+            definition = (
+                definitions.get(module_id)
+                if isinstance(definitions, dict) else None
+            )
+            if not isinstance(definition, dict):
+                raise CampaignPlanningError(
+                    f"view {view_id} has no MSM definition"
+                )
+            lag_values = definition.get("lag_frames")
+            minimum_transitions = definition.get("minimum_transition_count")
+            if (
+                not isinstance(lag_values, list)
+                or not lag_values
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or value <= 0
+                    for value in lag_values
+                )
+                or isinstance(minimum_transitions, bool)
+                or not isinstance(minimum_transitions, int)
+                or minimum_transitions <= 0
+            ):
+                raise CampaignPlanningError(
+                    f"view {view_id} MSM lag/transition settings are invalid"
+                )
+            maximum_lag = max(int(value) for value in lag_values)
+            available_pairs = multiplier * sum(
+                max(0, count - maximum_lag) for count in projected_counts
+            )
+            required_per_replica = maximum_lag + math.ceil(
+                minimum_transitions
+                / (len(projected_counts) * multiplier)
+            )
+            if available_pairs < minimum_transitions:
+                raise CampaignPlanningError(
+                    f"view {view_id} markov_state_models can provide only "
+                    f"{available_pairs} segment-safe transition pairs at its "
+                    f"largest configured lag; minimum_transition_count is "
+                    f"{minimum_transitions}. At least {required_per_replica} "
+                    "frames per physical replica are required for the current "
+                    "lag set, replica count, and member multiplier"
+                )
+            minimum_frames_per_replica = max(
+                minimum_frames_per_replica, required_per_replica
+            )
+            method_specific = {
+                "lag_frames": sorted(int(value) for value in lag_values),
+                "largest_configured_lag_frames": maximum_lag,
+                "minimum_transition_count": minimum_transitions,
+                "minimum_frames_per_replica_for_transition_pairs": (
+                    required_per_replica
+                ),
+                "maximum_available_transition_pairs_at_largest_lag": (
+                    available_pairs
+                ),
+                "transition_pair_count_basis": (
+                    "replica-and-member-segment-safe projected state sequences"
+                ),
+            }
         elif module_id == "grouped_ml":
             definitions = project.get("definitions")
             definition = (
@@ -773,7 +995,9 @@ def _view_tasks(
                     )
                 )
                 minimum_per_replica = max(
-                    1,
+                    int(scientific[
+                        "attainable_scientific_minimum_frames_per_replica"
+                    ]),
                     math.ceil(
                         minimum_observations
                         / (len(projected_counts) * multiplier)
@@ -792,6 +1016,7 @@ def _view_tasks(
                     "execution_bundle_id": bundle_id,
                     "source_frames_per_replica": list(projected_counts),
                     "minimum_frames_per_replica": minimum_per_replica,
+                    **scientific,
                     "minimum_frame_role": (
                         "full_observation_fit_or_skip" if full_fit_only
                         else "algorithm_specific_technical_fit_minimum"
@@ -874,7 +1099,7 @@ def _view_tasks(
             "effective_cpu_cap": 1,
             "source_frames_per_replica": list(source_counts),
             "minimum_frames_per_replica": minimum_frames_per_replica,
-            "minimum_frame_role": "inherited_view_observations",
+            **scientific,
             "maximum_frames_per_replica": int(pca_task["maximum_frames_per_replica"]),
             "cpu_seconds_per_physical_frame": (
                 measured_rate * (multiplier / 2.0) * time_safety_factor
@@ -944,6 +1169,36 @@ def _base_derived_tasks(
             raise CampaignPlanningError(
                 f"base module {module_id} has no planned upstream task"
             )
+        source_counts = [
+            int(value) for value in upstream["source_frames_per_replica"]
+        ]
+        raw_ids = upstream.get("system_ids_per_replica")
+        system_ids = (
+            [str(value) for value in raw_ids]
+            if isinstance(raw_ids, list) and len(raw_ids) == len(source_counts)
+            else None
+        )
+        raw_intervals = upstream.get("frame_intervals_ns_per_replica")
+        raw_spans = upstream.get("source_time_spans_ns_per_replica")
+        intervals = (
+            [float(value) for value in raw_intervals]
+            if isinstance(raw_intervals, list)
+            and len(raw_intervals) == len(source_counts) else None
+        )
+        spans = (
+            [float(value) for value in raw_spans]
+            if isinstance(raw_spans, list)
+            and len(raw_spans) == len(source_counts) else None
+        )
+        scientific = _scientific_task_contract(
+            module_id, source_counts, system_ids_per_replica=system_ids,
+            frame_intervals_ns_per_replica=intervals,
+            source_time_spans_ns_per_replica=spans,
+        )
+        minimum = max(
+            int(upstream["minimum_frames_per_replica"]),
+            int(scientific["attainable_scientific_minimum_frames_per_replica"]),
+        )
         tasks.append({
             "task_id": f"base:{module_id}",
             "workflow_id": "base",
@@ -951,13 +1206,9 @@ def _base_derived_tasks(
             "task_scope": "base_derived_analysis",
             "dependency_stage": int(model["stage"]),
             "effective_cpu_cap": 1,
-            "source_frames_per_replica": deepcopy(
-                upstream["source_frames_per_replica"]
-            ),
-            "minimum_frames_per_replica": int(
-                upstream["minimum_frames_per_replica"]
-            ),
-            "minimum_frame_role": "inherited_upstream_observations",
+            "source_frames_per_replica": source_counts,
+            "minimum_frames_per_replica": minimum,
+            **scientific,
             "maximum_frames_per_replica": int(
                 upstream["maximum_frames_per_replica"]
             ),
@@ -1328,6 +1579,27 @@ def plan_and_apply_complete_campaign(
     if not isinstance(replicas, list) or not replicas:
         raise CampaignPlanningError("sampling dimensions contain no replicas")
     source_counts = [int(row["source_frame_count"]) for row in replicas]
+    base_timing_available = all(
+        isinstance(row, Mapping)
+        and row.get("maximum_frame_interval_ns") is not None
+        and row.get("source_time_span_ns") is not None
+        for row in replicas
+    )
+    base_frame_intervals_ns = (
+        [float(row["maximum_frame_interval_ns"]) for row in replicas]
+        if base_timing_available else None
+    )
+    base_source_time_spans_ns = (
+        [float(row["source_time_span_ns"]) for row in replicas]
+        if base_timing_available else None
+    )
+
+    def timing_for_counts(
+        counts: Sequence[int],
+    ) -> tuple[Optional[list[float]], Optional[list[float]]]:
+        if list(counts) != source_counts:
+            return None, None
+        return base_frame_intervals_ns, base_source_time_spans_ns
     execution = analysis_config.get("execution")
     if not isinstance(execution, dict):
         raise CampaignPlanningError("analysis execution configuration is unavailable")
@@ -1385,6 +1657,9 @@ def plan_and_apply_complete_campaign(
                 scheduler_time_policy[key] = float(policy[key])
     cache_mode = str(execution.get("coordinate_cache", "auto"))
     coordinate_cache_enabled = bool(view_paths) and cache_mode in {"auto", "required"}
+    cache_materialization = str(
+        execution.get("coordinate_cache_materialization", "planned_strided")
+    )
     def build_tasks() -> tuple[List[Dict[str, object]], Dict[str, object]]:
         built = [
             row for row in _direct_task_inputs(sampling_plan)
@@ -1404,16 +1679,14 @@ def plan_and_apply_complete_campaign(
                 "task_id": "preprocessing:coordinate_cache",
                 "workflow_id": "coordinate_cache",
                 "module_id": "coordinate_cache",
-                "task_scope": "lossless_coordinate_preprocessing",
+                "task_scope": "continuous_unwrap_working_cache",
                 "dependency_stage": 0,
                 "effective_cpu_cap": cache_workers,
                 "source_frames_per_replica": list(source_counts),
                 "minimum_frames_per_replica": max(source_counts),
-                "minimum_frame_role": (
-                    "all source frames required for a reusable cache"
-                ),
+                "minimum_frame_role": "planner-selected working-cache coverage",
                 "maximum_frames_per_replica": max(source_counts),
-                "maximum_frame_role": "all source frames required; never subsampled",
+                "maximum_frame_role": "lossless materialization when affordable",
                 "cpu_seconds_per_physical_frame": (
                     (232.39 / 700.0) * cache_atom_multiplier * time_safety_factor
                 ),
@@ -1455,6 +1728,8 @@ def plan_and_apply_complete_campaign(
             base_project_path,
             source_counts,
             time_safety_factor=time_safety_factor,
+            frame_intervals_ns_per_replica=base_frame_intervals_ns,
+            source_time_spans_ns_per_replica=base_source_time_spans_ns,
             context_id="base",
             task_namespace="base",
             task_scope="base_automatic_chemistry",
@@ -1475,6 +1750,12 @@ def plan_and_apply_complete_campaign(
                 path,
                 context_source_counts,
                 time_safety_factor=time_safety_factor,
+                frame_intervals_ns_per_replica=timing_for_counts(
+                    context_source_counts
+                )[0],
+                source_time_spans_ns_per_replica=timing_for_counts(
+                    context_source_counts
+                )[1],
             ))
         for path in view_paths:
             view_id = path.name[len("project-") : -len(".json")]
@@ -1489,6 +1770,12 @@ def plan_and_apply_complete_campaign(
                 view_source_counts,
                 int(dimensions["maximum_atom_count"]),
                 time_safety_factor=time_safety_factor,
+                frame_intervals_ns_per_replica=timing_for_counts(
+                    view_source_counts
+                )[0],
+                source_time_spans_ns_per_replica=timing_for_counts(
+                    view_source_counts
+                )[1],
             ))
         _apply_system_memory_scaling(
             built, int(dimensions["maximum_atom_count"])
@@ -1514,28 +1801,49 @@ def plan_and_apply_complete_campaign(
                 "the prepared campaign contains no executable tasks"
             )
         try:
-            plan = plan_campaign_resource_budget(
-                tasks,
-                maximum_parallel_cpus=int(execution["maximum_parallel_cpus"]),
-                maximum_wall_hours=float(execution["maximum_hours_per_cpu"]),
-                maximum_memory_gib=float(execution["maximum_memory_gib"]),
-                planning_utilization=float(execution["planning_utilization"]),
-                pilot_budget_fraction=float(execution["pilot_budget_fraction"]),
-                finalization_headroom_fraction=float(
+            planning_kwargs = {
+                "maximum_parallel_cpus": int(execution["maximum_parallel_cpus"]),
+                "maximum_wall_hours": float(execution["maximum_hours_per_cpu"]),
+                "maximum_memory_gib": float(execution["maximum_memory_gib"]),
+                "planning_utilization": float(execution["planning_utilization"]),
+                "pilot_budget_fraction": float(execution["pilot_budget_fraction"]),
+                "finalization_headroom_fraction": float(
                     execution.get("finalization_headroom_fraction", 0.0)
                 ),
-                memory_safety_factor=memory_policy["memory_safety_factor"],
-                memory_overhead_gib=memory_policy["memory_overhead_gib"],
-                minimum_scheduler_memory_gib=memory_policy[
+                "memory_safety_factor": memory_policy["memory_safety_factor"],
+                "memory_overhead_gib": memory_policy["memory_overhead_gib"],
+                "minimum_scheduler_memory_gib": memory_policy[
                     "minimum_memory_gib"
                 ],
-            )
+            }
+            if coordinate_cache_enabled and cache_materialization == "planned_strided":
+                plan = plan_global_stride_projection_coupled_campaign_resource_budget(
+                    tasks,
+                    coordinate_cache_minimum_frames_per_replica=1,
+                    coordinate_cache_full_scan_fraction=float(
+                        execution.get("coordinate_cache_full_scan_fraction", 1.0)
+                    ),
+                    overall_stride_candidate_strides=list(
+                        execution.get(
+                            "overall_stride_candidates",
+                            [1, 2, 3, 4, 5, 10, 20, 100],
+                        )
+                    ),
+                    **planning_kwargs,
+                )
+            else:
+                plan = plan_campaign_resource_budget(tasks, **planning_kwargs)
         except ResourcePlanningError as exc:
             raise CampaignPlanningError(str(exc)) from exc
         if (
             plan["feasibility_status"] != "feasible"
             and bool(execution.get("fail_if_minimum_coverage_unaffordable", True))
         ):
+            plan["method_reduction_recommendation"] = (
+                recommend_scientifically_valid_task_subset(
+                    tasks, **planning_kwargs
+                )
+            )
             raise CampaignPlanningError(
                 "configured whole-campaign envelope cannot fund the declared "
                 f"technical minima: {_campaign_infeasibility_detail(plan)}",
@@ -1649,9 +1957,11 @@ def plan_and_apply_complete_campaign(
         "generated_view_count": len(view_paths),
         "generated_automatic_context_project_count": len(context_paths),
         "coordinate_cache_mode": cache_mode,
+        "coordinate_cache_materialization": cache_materialization,
         "coordinate_cache_enabled": coordinate_cache_enabled,
         "coordinate_cache_scope": (
-            "all source frames, made whole and stripped only of bulk solvent; "
+            "all source frames scanned for continuous unwrapping; the planned "
+            "integer-stride working set is materialized without bulk solvent; "
             "base water-dependent analyses retain original solvated trajectories"
             if coordinate_cache_enabled else "disabled"
         ),

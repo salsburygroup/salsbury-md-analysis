@@ -863,8 +863,10 @@ def _coordinate_cache_enabled(
 def _configure_coordinate_cache_views(
     root: Path,
     view_ids: Sequence[str],
+    *,
+    cache_stride: int,
 ) -> list[str]:
-    """Point only conformational views at the future lossless solute cache."""
+    """Point conformational views at the future unwrapped working cache."""
 
     records = []
     for view_id in view_ids:
@@ -929,7 +931,11 @@ def _configure_coordinate_cache_views(
         "technical_status": "planned",
         "cache_output_directory": "coordinate-cache",
         "source_system_manifest": "system.json",
-        "coordinate_representation": "made_whole_unaligned_molecular_payload_v1",
+        "coordinate_representation": (
+            "continuous_unwrap_strided_molecular_payload_v2"
+        ),
+        "source_frame_scan": "all_frames_continuous_unwrap",
+        "cache_stride": cache_stride,
         "base_workflow_uses_original_solvated_trajectories": True,
         "conformational_views_use_cache": True,
         "alignment_is_performed_downstream_per_view": True,
@@ -1513,6 +1519,7 @@ def _slurm_files(
     maximum_parallel_cpus: int = 1,
     coordinate_cache_enabled: bool = False,
     coordinate_cache_workers: int = 1,
+    coordinate_cache_stride: int = 1,
     automatic_context_stage_counts: Optional[Mapping[int, int]] = None,
 ) -> list[str]:
     stage_members = _GENERIC_STAGE_COMMANDS
@@ -1546,6 +1553,12 @@ def _slurm_files(
             raise QuickstartError(
                 "coordinate cache worker count must be within the CPU envelope"
             )
+        if (
+            isinstance(coordinate_cache_stride, bool)
+            or not isinstance(coordinate_cache_stride, int)
+            or coordinate_cache_stride <= 0
+        ):
+            raise QuickstartError("coordinate cache stride must be a positive integer")
         campaign_plan = load_json(root / "campaign-resource-plan.json")
         cache_tasks = [
             row for row in campaign_plan.get("tasks", [])
@@ -1594,6 +1607,8 @@ summary = json.load(open(summary_path, encoding='utf-8'))
 digest = hashlib.sha256(open(report_path, 'rb').read()).hexdigest()
 if report.get('technical_status') != 'complete':
     raise SystemExit('existing coordinate-cache report is incomplete')
+if report.get('cache_stride') != {coordinate_cache_stride}:
+    raise SystemExit('existing coordinate-cache stride does not match the plan')
 if summary.get('technical_status') != 'complete' or summary.get('report_sha256') != digest:
     raise SystemExit('existing coordinate-cache sidecar is incomplete or hash-mismatched')
 cached = json.load(open(manifest_path, encoding='utf-8'))
@@ -1611,7 +1626,8 @@ TMP="$FINAL.tmp.$SLURM_JOB_ID"
 SUMMARY_TMP="$TMP.summary.json"
 "$PYTHON" -m salsbury_md_analysis run-coordinate-cache-instrumented \
   "$ROOT/system.json" --output "$ROOT/coordinate-cache" \
-  --workers {coordinate_cache_workers} --summary-sidecar "$SUMMARY_TMP" \
+  --workers {coordinate_cache_workers} --cache-stride {coordinate_cache_stride} \
+  --summary-sidecar "$SUMMARY_TMP" \
   --installed-report-path "$FINAL" > "$TMP"
 "$PYTHON" - "$TMP" "$SUMMARY_TMP" "$ROOT/coordinate-cache/system-cache.json" <<'PY'
 import hashlib, json, sys
@@ -1621,6 +1637,8 @@ summary = json.load(open(summary_path, encoding='utf-8'))
 digest = hashlib.sha256(open(report_path, 'rb').read()).hexdigest()
 if report.get('technical_status') != 'complete':
     raise SystemExit('coordinate-cache report did not complete')
+if report.get('cache_stride') != {coordinate_cache_stride}:
+    raise SystemExit('coordinate-cache report stride does not match the plan')
 if summary.get('technical_status') != 'complete' or summary.get('report_sha256') != digest:
     raise SystemExit('coordinate-cache sidecar is incomplete or hash-mismatched')
 cached = json.load(open(manifest_path, encoding='utf-8'))
@@ -2321,8 +2339,20 @@ def prepare_standard_analysis(
     coordinate_cache_enabled = _coordinate_cache_enabled(
         analysis_config, view_ids
     )
+    cache_coupling = campaign_resource_plan.get("global_stride_coupling")
+    coordinate_cache_stride = (
+        int(cache_coupling["selected_coordinate_cache_integer_stride"])
+        if coordinate_cache_enabled
+        and isinstance(cache_coupling, dict)
+        and isinstance(
+            cache_coupling.get("selected_coordinate_cache_integer_stride"), int
+        )
+        else 1
+    )
     coordinate_cache_files = (
-        _configure_coordinate_cache_views(root, view_ids)
+        _configure_coordinate_cache_views(
+            root, view_ids, cache_stride=coordinate_cache_stride
+        )
         if coordinate_cache_enabled else []
     )
     coordinate_cache_workers = min(
@@ -2411,6 +2441,7 @@ def prepare_standard_analysis(
         ),
         coordinate_cache_enabled=coordinate_cache_enabled,
         coordinate_cache_workers=coordinate_cache_workers,
+        coordinate_cache_stride=coordinate_cache_stride,
     )
     try:
         execution_artifacts = prepare_execution_artifacts(root, analysis_config)

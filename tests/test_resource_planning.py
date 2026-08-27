@@ -6,15 +6,210 @@ from salsbury_md_analysis.resource_planning import (
     calibrate_from_benchmarks,
     calibrate_quadratic_from_benchmarks,
     plan_alternative_clustering_fit_strides,
+    plan_global_stride_projection_coupled_campaign_resource_budget,
     plan_campaign_resource_budget,
     plan_projection_coupled_campaign_resource_budget,
     recommend_frame_budget,
+    recommend_scientifically_valid_task_subset,
     recommend_quadratic_observation_budget,
     pack_resource_waves,
 )
 
 
 class ResourcePlanningTests(unittest.TestCase):
+    @staticmethod
+    def _cache_coupling_tasks():
+        common = {
+            "effective_cpu_cap": 1,
+            "estimated_peak_memory_gib": 1.0,
+            "source_frames_per_replica": [1_000, 1_000],
+            "minimum_frames_per_replica": 50,
+            "maximum_frames_per_replica": 1_000,
+            "fixed_cpu_hours": 0.0,
+        }
+        return [
+            {
+                **common,
+                "task_id": "cache",
+                "workflow_id": "cache",
+                "module_id": "coordinate_cache",
+                "task_scope": "lossless_coordinate_preprocessing",
+                "dependency_stage": 0,
+                "cpu_seconds_per_physical_frame": 1.0,
+                "priority_weight": 100.0,
+                "replica_sampling_mode": "independent_all_available",
+            },
+            {
+                **common,
+                "task_id": "projection",
+                "workflow_id": "shared",
+                "module_id": "common_pca",
+                "task_scope": "conformational_view",
+                "dependency_stage": 1,
+                "cpu_seconds_per_physical_frame": 1.0,
+                "priority_weight": 10.0,
+            },
+            {
+                **common,
+                "task_id": "fit",
+                "workflow_id": "shared",
+                "module_id": "alternative_clustering",
+                "task_scope": "conformational_view_algorithm_fit",
+                "dependency_stage": 2,
+                "cpu_seconds_per_physical_frame": 2.0,
+                "priority_weight": 1.0,
+            },
+        ]
+
+    def test_cache_coupling_keeps_lossless_cache_when_full_scan_dominates(self):
+        plan = plan_global_stride_projection_coupled_campaign_resource_budget(
+            self._cache_coupling_tasks(),
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=1.0,
+            maximum_memory_gib=8.0,
+            coordinate_cache_full_scan_fraction=1.0,
+            planning_utilization=1.0,
+            pilot_budget_fraction=0.0,
+        )
+        coupling = plan["coordinate_cache_coupling"]
+        self.assertEqual(
+            coupling["selected_coordinate_cache_integer_stride"], 1
+        )
+        self.assertTrue(coupling["execution_ready"])
+        self.assertEqual(
+            coupling["evaluated_candidate_strides"],
+            [1, 2, 3],
+        )
+        self.assertEqual(
+            coupling["early_terminated_candidate_strides"],
+            [4, 5, 10, 20],
+        )
+
+    def test_default_overall_stride_grid_includes_one_through_one_hundred(self):
+        tasks = self._cache_coupling_tasks()
+        for row in tasks:
+            row["source_frames_per_replica"] = [10_000, 10_000]
+            row["maximum_frames_per_replica"] = 10_000
+        plan = plan_global_stride_projection_coupled_campaign_resource_budget(
+            tasks,
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=24.0,
+            maximum_memory_gib=8.0,
+            coordinate_cache_full_scan_fraction=1.0,
+            planning_utilization=1.0,
+            pilot_budget_fraction=0.0,
+        )
+        self.assertEqual(
+            plan["global_stride_coupling"]["requested_candidate_strides"],
+            [1, 2, 3, 4, 5, 10, 20, 100],
+        )
+
+    def test_cache_coupling_rebuilds_projection_and_fit_with_raw_strides(self):
+        plan = plan_global_stride_projection_coupled_campaign_resource_budget(
+            self._cache_coupling_tasks(),
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=1.0,
+            maximum_memory_gib=8.0,
+            coordinate_cache_full_scan_fraction=0.0,
+            overall_stride_candidate_strides=[1, 2],
+            planning_utilization=1.0,
+            pilot_budget_fraction=0.0,
+        )
+        rows = {row["task_id"]: row for row in plan["tasks"]}
+        coupling = plan["coordinate_cache_coupling"]
+        self.assertEqual(
+            coupling["selected_coordinate_cache_integer_stride"], 2
+        )
+        self.assertTrue(coupling["execution_ready"])
+        self.assertEqual(
+            rows["fit"]["source_frames_per_replica"],
+            rows["projection"]["selected_physical_frames_per_replica"],
+        )
+        self.assertEqual(rows["projection"]["effective_raw_integer_stride"], 2)
+        self.assertEqual(rows["fit"]["effective_raw_integer_stride"], 4)
+        self.assertEqual(rows["fit"]["projection_integer_stride"], 1)
+        self.assertEqual(coupling["evaluated_candidate_strides"], [1, 2])
+
+    def test_overall_stride_also_applies_to_solvated_trajectory_analysis(self):
+        tasks = self._cache_coupling_tasks()
+        tasks.append({
+            **tasks[1],
+            "task_id": "solvated-water-analysis",
+            "workflow_id": "solvated-water-analysis",
+            "module_id": "water_analysis",
+            "task_scope": "direct_trajectory_estimator",
+            "dependency_stage": 1,
+            "cpu_seconds_per_physical_frame": 1.0,
+        })
+        plan = plan_global_stride_projection_coupled_campaign_resource_budget(
+            tasks,
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=1.0,
+            maximum_memory_gib=8.0,
+            coordinate_cache_full_scan_fraction=0.0,
+            overall_stride_candidate_strides=[1, 2],
+            planning_utilization=1.0,
+            pilot_budget_fraction=0.0,
+        )
+        rows = {row["task_id"]: row for row in plan["tasks"]}
+        coupling = plan["global_stride_coupling"]
+        self.assertEqual(coupling["selected_overall_trajectory_integer_stride"], 2)
+        self.assertEqual(
+            rows["solvated-water-analysis"]["overall_trajectory_integer_stride"],
+            2,
+        )
+        self.assertEqual(
+            rows["solvated-water-analysis"]["effective_raw_integer_stride"],
+            2,
+        )
+        for candidate in coupling["candidate_evaluations"]:
+            self.assertIn("balanced_information_utility", candidate)
+            self.assertIn("minimum_normalized_analysis_coverage", candidate)
+            self.assertGreaterEqual(
+                candidate["planner_evaluation_wall_seconds"], 0.0
+            )
+        self.assertGreaterEqual(coupling["planner_total_wall_seconds"], 0.0)
+
+    def test_cache_coupling_rejects_invalid_candidate_stride(self):
+        with self.assertRaisesRegex(
+            ResourcePlanningError, "exceeds the maximum scientifically allowed"
+        ):
+            plan_global_stride_projection_coupled_campaign_resource_budget(
+                self._cache_coupling_tasks(),
+                maximum_parallel_cpus=1,
+                maximum_wall_hours=1.0,
+                maximum_memory_gib=8.0,
+                overall_stride_candidate_strides=[10_000],
+            )
+
+    def test_explicit_overall_stride_grid_is_not_silently_expanded(self):
+        plan = plan_global_stride_projection_coupled_campaign_resource_budget(
+            self._cache_coupling_tasks(),
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=1.0,
+            maximum_memory_gib=8.0,
+            coordinate_cache_full_scan_fraction=0.0,
+            overall_stride_candidate_strides=[2],
+            planning_utilization=1.0,
+            pilot_budget_fraction=0.0,
+        )
+        self.assertEqual(
+            plan["global_stride_coupling"]["evaluated_candidate_strides"],
+            [2],
+        )
+
+    def test_cache_coupling_rejects_missing_or_ambiguous_cache(self):
+        tasks = self._cache_coupling_tasks()[1:]
+        with self.assertRaisesRegex(
+            ResourcePlanningError, "exactly one coordinate-cache task"
+        ):
+            plan_global_stride_projection_coupled_campaign_resource_budget(
+                tasks,
+                maximum_parallel_cpus=1,
+                maximum_wall_hours=1.0,
+                maximum_memory_gib=8.0,
+            )
+
     def test_projection_coupled_replanning_rebuilds_clustering_sources(self):
         tasks = [
             {
@@ -835,6 +1030,48 @@ class ResourcePlanningTests(unittest.TestCase):
                 pilot_budget_fraction=0.05,
                 finalization_headroom_fraction=0.80,
             )
+
+    def test_method_subset_recommendation_removes_low_priority_bottleneck(self):
+        tasks = [
+            {
+                "task_id": "rmsd",
+                "module_id": "replica_rmsd_rg",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [100],
+                "minimum_frames_per_replica": 10,
+                "maximum_frames_per_replica": 100,
+                "cpu_seconds_per_physical_frame": 0.01,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 100.0,
+            },
+            {
+                "task_id": "dccm",
+                "module_id": "dccm",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [100],
+                "minimum_frames_per_replica": 100,
+                "maximum_frames_per_replica": 100,
+                "cpu_seconds_per_physical_frame": 10.0,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 1.0,
+            },
+        ]
+        report = recommend_scientifically_valid_task_subset(
+            tasks,
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=0.1,
+            maximum_memory_gib=8.0,
+            planning_utilization=1.0,
+            pilot_budget_fraction=0.0,
+        )
+        self.assertEqual(report["recommendation_status"], "feasible_subset_found")
+        self.assertEqual(
+            report["disabled_configuration_switches"],
+            ["modules.dccm.enabled"],
+        )
+        self.assertFalse(report["automatic_changes_applied"])
 
 
 if __name__ == "__main__":

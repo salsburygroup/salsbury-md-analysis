@@ -108,11 +108,58 @@ PYTHONPATH=src python -m salsbury_md_analysis \
 Add `--b-vs-2b` only when a base-versus-doubled sensitivity comparison is
 wanted. Add `--replica-diagnostics` only for optional exploratory diagnostics;
 they are not recommended acceptance measures. Replica agreement and
-leave-one-replica-out are never scientific gates. Time-block summaries and
-autocorrelation-adjusted effective-sample-size uncertainty are the default
-within-trajectory diagnostics. The plan reports every subsampled method,
+leave-one-replica-out are never scientific gates. Analysis modules may report
+time-block or autocorrelation diagnostics after execution, but the planner does
+not estimate autocorrelation times or event rates and does not use a short pilot
+to lower sampling. The plan reports every subsampled method,
 selected/source counts, coverage fraction, pooled versus per-replica scope,
 and inherited downstream frame identities.
+
+## Scientific minima used by the planner
+
+Each framed method has a permissive feasibility floor: a minimum number of
+retained samples per physical replica and a minimum pooled count per system.
+There is no universal effective-sample-size threshold, minimum trajectory
+duration, or required percentage of the timeline. Short trajectories remain
+eligible when they contain enough saved observations. Duration, selected span,
+stride, and spacing are reported as provenance.
+
+The planner uses a maximum retained-frame separation only for information
+dynamics, tICA, and MSMs. It also reads each project's configured lags and
+minimum valid pair or transition counts. These requirements are evaluated on
+replica- and member-segment-safe sequences. The planner does not estimate
+autocorrelation times or event rates. Runtime pilots calibrate CPU and memory
+costs only.
+
+| Methods | Frames per replica | Frames per system | Temporal rule |
+|---|---:|---:|---|
+| Structural-integrity QC | 100 | 500 | Count floor; continuity preprocessing still scans every raw frame |
+| Replica RMSD/Rg | 100 | 100 | Count floor; order and times are retained for reporting |
+| RMSF, dihedrals, nucleic-acid geometry, optional observables, scalar distributions, H-bond pattern/comparison, grouped regularized classification, RMSF permutation | 200 | 1,000 | Count floor; no spacing gate |
+| H bonds, automatic H-bond discovery, ion coordination, ion atmosphere, RDF, trajectory features | 200 | 1,000 | Count floor; no spacing gate |
+| Water-mediated H-bond networks, DSSP, nucleic-acid structure, SASA | 100 | 500 | Count floor; no spacing gate |
+| DCCM | 250 | 1,000 | Count floor; no spacing gate |
+| Individual/common PCA | 250 | 1,000 | Count floor; no spacing gate |
+| Generalized correlation, correlation networks, FES, clustering, representatives/exports, grouped ML | 250 | 1,000 | Count floor; no spacing gate |
+| PaLD, when explicitly enabled | 20 | 100 | Count floor; no spacing gate |
+| Information dynamics | 500 | 2,000 | At most 0.50 ns between retained frames plus configured lag and total valid-pair minimum |
+| tICA | 500 | 2,000 | At most 0.50 ns between retained frames plus configured lag and valid pairs in every segment |
+| MSMs | 500 | 2,000 | At most 0.50 ns between retained frames plus largest configured lag and total valid-transition minimum |
+| Scalar threshold-state dynamics | 250 | 1,000 | Ordered, segment-safe series; selected spacing is reported, with no universal gap gate |
+| Convergence/uncertainty | 250 | 250 | Ordered per-replica series; duration and spacing are reported, with no universal gap gate |
+
+The complete per-module contract, including inherited upstream sampling and
+source-limited failures, is written into `sampling-plan.json` and
+`campaign-resource-plan.json`. Publication-specific analysis may raise these
+floors in its locked configuration; reducing them changes the scientific
+standard and is not an automatic resource-planning action.
+
+Thermodynamic and ensemble estimators have no time-gap rule because randomizing
+their stride-1 frame order would not change the estimator. Their count floors
+are deliberately lenient feasibility minima, not convergence claims. Ordered
+scalar-state and convergence reports preserve their temporal lineage without a
+universal duration or gap threshold; project-specific validation may impose a
+stronger requirement.
 
 The automatic plan gives every directly sampled estimator an exact integer
 stride. Modules with the concatenated-replica selection interface receive

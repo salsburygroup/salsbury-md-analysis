@@ -214,6 +214,9 @@ def default_analysis_config(
             "slurm_profile": None,
             "maximum_total_cpu_hours": 384.0,
             "coordinate_cache": "auto",
+            "coordinate_cache_materialization": "planned_strided",
+            "coordinate_cache_full_scan_fraction": 1.0,
+            "overall_stride_candidates": [1, 2, 3, 4, 5, 10, 20, 100],
             "resource_calibration_catalog": None,
         },
     }
@@ -534,6 +537,8 @@ def load_analysis_config(
         "censored_timeout_safety_factor",
         "fail_if_minimum_coverage_unaffordable",
         "submission_adapter", "slurm_profile", "coordinate_cache",
+        "coordinate_cache_materialization",
+        "coordinate_cache_full_scan_fraction", "overall_stride_candidates",
         "resource_calibration_catalog", "maximum_total_cpu_hours",
     }
     if not isinstance(raw_execution, dict) or set(raw_execution).difference(allowed_execution):
@@ -613,6 +618,38 @@ def load_analysis_config(
         raise AnalysisConfigError(
             "execution.coordinate_cache must be auto, off, or required"
         )
+    if execution["coordinate_cache_materialization"] not in {
+        "planned_strided", "lossless"
+    }:
+        raise AnalysisConfigError(
+            "execution.coordinate_cache_materialization must be "
+            "planned_strided or lossless"
+        )
+    scan_fraction = execution["coordinate_cache_full_scan_fraction"]
+    if (
+        isinstance(scan_fraction, bool)
+        or not isinstance(scan_fraction, (int, float))
+        or not math.isfinite(float(scan_fraction))
+        or not 0.0 <= float(scan_fraction) <= 1.0
+    ):
+        raise AnalysisConfigError(
+            "execution.coordinate_cache_full_scan_fraction must be between zero and one"
+        )
+    candidates = execution["overall_stride_candidates"]
+    if (
+        not isinstance(candidates, list)
+        or not candidates
+        or any(
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            for value in candidates
+        )
+        or len(set(candidates)) != len(candidates)
+    ):
+        raise AnalysisConfigError(
+            "execution.overall_stride_candidates must be a nonempty list of "
+            "unique positive integers"
+        )
+    execution["overall_stride_candidates"] = sorted(candidates)
     calibration_catalog = execution["resource_calibration_catalog"]
     if calibration_catalog is not None and (
         not isinstance(calibration_catalog, str) or not calibration_catalog.strip()

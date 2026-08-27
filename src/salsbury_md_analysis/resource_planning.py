@@ -8,11 +8,19 @@ execution contract for the same method, system, code, and environment class.
 from __future__ import annotations
 
 import math
+import time
+from copy import deepcopy
 from typing import Dict, Mapping, Optional, Sequence
 
 from .frame_sampling import (
     integer_stride_for_budget,
     integer_stride_selected_count,
+)
+from .scientific_sampling import (
+    POLICY_ID,
+    ScientificSamplingError,
+    assess_raw_sampling,
+    scientific_sampling_profile,
 )
 
 
@@ -1205,6 +1213,81 @@ def plan_campaign_resource_budget(
             "member_observations_are_independent_replicas": False,
         })
 
+    scientific_below_standard = []
+    scientific_postrun_diagnostics = []
+    for report in task_reports:
+        module_id = str(report.get("module_id", ""))
+        try:
+            profile = scientific_sampling_profile(module_id)
+        except ScientificSamplingError:
+            # Preprocessing and project-local extension tasks are not analysis
+            # estimators.  Their own explicit task contract remains authoritative.
+            continue
+        if profile.minimum_frames_per_replica == 0:
+            continue
+        system_ids = report.get("system_ids_per_replica")
+        if not isinstance(system_ids, list):
+            system_ids = None
+        assessment = assess_raw_sampling(
+            profile,
+            selected_frames_per_replica=report[
+                "selected_physical_frames_per_replica"
+            ],
+            source_frames_per_replica=report["source_frames_per_replica"],
+            system_ids_per_replica=system_ids,
+            integer_stride=int(report["integer_stride"]),
+            frame_intervals_ns_per_replica=(
+                [
+                    float(value) for value in report[
+                        "frame_intervals_ns_per_replica"
+                    ]
+                ]
+                if isinstance(
+                    report.get("frame_intervals_ns_per_replica"), list
+                ) else None
+            ),
+            source_time_spans_ns_per_replica=(
+                [
+                    float(value) for value in report[
+                        "source_time_spans_ns_per_replica"
+                    ]
+                ]
+                if isinstance(
+                    report.get("source_time_spans_ns_per_replica"), list
+                ) else None
+            ),
+        )
+        report["scientific_sampling_assessment"] = assessment
+        if not bool(assessment["keep_enabled"]):
+            scientific_below_standard.append({
+                "task_id": str(report["task_id"]),
+                "module_id": module_id,
+                "configuration_switch": memory_configuration_switch(report),
+                "raw_coverage_status": assessment["raw_coverage_status"],
+                "required_frames_per_replica": assessment.get(
+                    "required_frames_per_replica"
+                ),
+                "selected_physical_frames_per_replica": assessment.get(
+                    "selected_physical_frames_per_replica",
+                    report["selected_physical_frames_per_replica"],
+                ),
+            })
+        if (
+            assessment.get("postrun_event_or_transition_diagnostic") is not None
+            or assessment.get("temporal_resolution_validation_required")
+        ):
+            scientific_postrun_diagnostics.append({
+                "task_id": str(report["task_id"]),
+                "module_id": module_id,
+                "minimum_reported_events_or_transitions": assessment.get(
+                    "postrun_event_or_transition_diagnostic"
+                ),
+                "temporal_resolution_validation_required": assessment.get(
+                    "temporal_resolution_validation_required"
+                ),
+                "planner_estimates_autocorrelation_or_event_rates": False,
+            })
+
     if calibration_required:
         feasibility = "pilot_required"
     elif infeasibility_reasons:
@@ -1325,6 +1408,26 @@ def plan_campaign_resource_budget(
         },
         "tasks_requiring_project_pilots": calibration_required,
         "infeasibility_reasons": infeasibility_reasons,
+        "scientific_sampling_feasibility": {
+            "policy_id": POLICY_ID,
+            "raw_coverage_status": (
+                "all_enabled_methods_meet_or_exhaust_available_source"
+                if not scientific_below_standard else
+                "one_or_more_enabled_methods_below_standard"
+            ),
+            "below_standard_tasks": scientific_below_standard,
+            "configuration_switches_to_disable_or_replan": sorted({
+                str(row["configuration_switch"])
+                for row in scientific_below_standard
+            }),
+            "postrun_diagnostics": scientific_postrun_diagnostics,
+            "source_limited_policy": (
+                "A complete short source remains eligible for analysis. Source "
+                "duration and selected span are reported as provenance; only "
+                "unmet sample-count or applicable ordered-method resolution "
+                "requirements place a task below the planning floor."
+            ),
+        },
         "memory_feasibility": {
             "configured_memory_gib": memory_gib,
             "minimum_required_memory_gib": minimum_required_memory_gib,
@@ -1364,7 +1467,7 @@ def plan_campaign_resource_budget(
         "tasks": task_reports,
         "execution_contract": (
             "The CPU and wall limits apply to the complete campaign. Enabled tasks "
-            "receive declared minimum physical-frame coverage before additional "
+            "receive declared standard scientific raw-frame coverage before additional "
             "frames are allocated. Dependency stages are packed into waves that "
             "respect both aggregate CPU and safety-adjusted memory ceilings. "
             "Infeasible or uncalibrated plans fail closed; "
@@ -1484,6 +1587,21 @@ def plan_projection_coupled_campaign_resource_budget(
             ]
             for workflow_id, parent_id in parent_ids.items()
         }
+        parent_effective_intervals = {}
+        parent_source_spans = {}
+        for workflow_id, parent_id in parent_ids.items():
+            parent_row = planned_rows[parent_id]
+            raw_intervals = parent_row.get("frame_intervals_ns_per_replica")
+            raw_spans = parent_row.get("source_time_spans_ns_per_replica")
+            if isinstance(raw_intervals, list):
+                parent_effective_intervals[workflow_id] = [
+                    float(value) * int(parent_row["integer_stride"])
+                    for value in raw_intervals
+                ]
+            if isinstance(raw_spans, list):
+                parent_source_spans[workflow_id] = [
+                    float(value) for value in raw_spans
+                ]
         signature = tuple(
             (workflow_id, tuple(values))
             for workflow_id, values in sorted(parent_counts.items())
@@ -1491,6 +1609,14 @@ def plan_projection_coupled_campaign_resource_budget(
         input_matches_projection = all(
             [int(value) for value in row["source_frames_per_replica"]]
             == parent_counts[str(row["workflow_id"])]
+            and (
+                str(row["workflow_id"]) not in parent_effective_intervals
+                or [
+                    float(value) for value in row.get(
+                        "frame_intervals_ns_per_replica", []
+                    )
+                ] == parent_effective_intervals[str(row["workflow_id"])]
+            )
             for row in working
             if row.get("task_scope") == "conformational_view_algorithm_fit"
         )
@@ -1597,6 +1723,14 @@ def plan_projection_coupled_campaign_resource_budget(
                         maximum < declared_minimum
                     ),
                 })
+                if workflow_id in parent_effective_intervals:
+                    row["frame_intervals_ns_per_replica"] = list(
+                        parent_effective_intervals[workflow_id]
+                    )
+                if workflow_id in parent_source_spans:
+                    row["source_time_spans_ns_per_replica"] = list(
+                        parent_source_spans[workflow_id]
+                    )
             next_working.append(row)
         history.append({
             "iteration": iteration,
@@ -1659,6 +1793,890 @@ def plan_projection_coupled_campaign_resource_budget(
         "projection/clustering campaign replanning did not converge within "
         f"{maximum_coupling_iterations} iterations"
     )
+
+
+def _overall_trajectory_stride_candidates(maximum_stride: int) -> list[int]:
+    """Return the standard interpretable overall-stride pilot grid."""
+
+    if maximum_stride <= 0:
+        raise ResourcePlanningError("maximum overall trajectory stride must be positive")
+    return [
+        stride for stride in (1, 2, 3, 4, 5, 10, 20, 100)
+        if stride <= maximum_stride
+    ]
+
+
+def _overall_trajectory_maximum_stride(
+    source_counts: Sequence[int], minimum_frames_per_replica: int,
+) -> int:
+    """Return the coarsest stride retaining the declared minimum everywhere."""
+
+    if minimum_frames_per_replica <= 0:
+        raise ResourcePlanningError(
+            "minimum retained frames per replica must be positive"
+        )
+    if any(count <= 0 for count in source_counts):
+        raise ResourcePlanningError(
+            "overall-stride source frame counts must be positive"
+        )
+    if min(source_counts) < minimum_frames_per_replica:
+        return 1
+    # ceil(N / stride) >= minimum.  The closed form avoids a long loop for
+    # million-frame local or workstation trajectories.
+    if minimum_frames_per_replica == 1:
+        return max(source_counts)
+    return max(
+        1,
+        min(
+            (count - 1) // (minimum_frames_per_replica - 1)
+            for count in source_counts
+        ),
+    )
+
+
+def _global_plan_information_metrics(
+    plan: Mapping[str, object],
+) -> Dict[str, float]:
+    """Score balanced normalized coverage across distinct analyses.
+
+    Raw observation totals would let a large pooled view dominate the overall
+    stride choice.  Instead, each task contributes the square root of its
+    normalized coverage.  The concave utility rewards additional coverage while
+    giving more value to preserving breadth across different analyses.  Declared
+    priority weights still apply, and technical minima remain hard feasibility
+    gates in the underlying campaign planner.
+    """
+
+    rows = plan.get("tasks")
+    if not isinstance(rows, list):
+        raise ResourcePlanningError("campaign plan has no task rows")
+    weighted_utility = 0.0
+    weight_total = 0.0
+    raw_selected_observations = 0.0
+    normalized_coverages: list[float] = []
+    parent_raw_counts = {
+        str(raw["workflow_id"]): list(
+            raw["global_stride_raw_source_frames_per_replica"]
+        )
+        for raw in rows
+        if isinstance(raw, Mapping)
+        and raw.get("task_scope") == "conformational_view"
+        and raw.get("module_id") == "common_pca"
+        and isinstance(raw.get("workflow_id"), str)
+        and isinstance(
+            raw.get("global_stride_raw_source_frames_per_replica"), list
+        )
+    }
+    for raw in rows:
+        if not isinstance(raw, Mapping) or raw.get("module_id") == "coordinate_cache":
+            continue
+        selected = raw.get("selected_physical_frame_count")
+        weight = raw.get("priority_weight", 1.0)
+        multiplier = raw.get("member_observation_multiplier", 1)
+        if (
+            isinstance(selected, bool)
+            or not isinstance(selected, int)
+            or isinstance(weight, bool)
+            or not isinstance(weight, (int, float))
+            or isinstance(multiplier, bool)
+            or not isinstance(multiplier, int)
+        ):
+            raise ResourcePlanningError(
+                f"task {raw.get('task_id')} cannot be scored for global-stride planning"
+            )
+        raw_counts = (
+            parent_raw_counts.get(str(raw.get("workflow_id")))
+            if raw.get("task_scope") == "conformational_view_algorithm_fit"
+            else raw.get("global_stride_raw_source_frames_per_replica")
+        )
+        if not isinstance(raw_counts, list) or not raw_counts:
+            raw_counts = raw.get("source_frames_per_replica")
+        if (
+            not isinstance(raw_counts, list)
+            or not raw_counts
+            or any(
+                isinstance(value, bool) or not isinstance(value, int) or value <= 0
+                for value in raw_counts
+            )
+        ):
+            raise ResourcePlanningError(
+                f"task {raw.get('task_id')} lacks a valid information denominator"
+            )
+        denominator = float(sum(raw_counts) * multiplier)
+        selected_observations = float(selected * multiplier)
+        coverage = min(1.0, selected_observations / denominator)
+        resolved_weight = float(weight)
+        weighted_utility += resolved_weight * math.sqrt(coverage)
+        weight_total += resolved_weight
+        raw_selected_observations += selected_observations
+        normalized_coverages.append(coverage)
+    if weight_total <= 0.0 or not normalized_coverages:
+        raise ResourcePlanningError("campaign has no downstream analyses to score")
+    return {
+        "balanced_information_utility": weighted_utility / weight_total,
+        "minimum_normalized_analysis_coverage": min(normalized_coverages),
+        "mean_normalized_analysis_coverage": (
+            sum(normalized_coverages) / len(normalized_coverages)
+        ),
+        "selected_observation_count": raw_selected_observations,
+        "scored_analysis_count": float(len(normalized_coverages)),
+    }
+
+
+def _global_stride_information_upper_bound(
+    tasks: Sequence[Mapping[str, object]], stride: int
+) -> float:
+    """Bound the best normalized information possible after an overall stride."""
+
+    parent_counts = {
+        str(row.get("workflow_id")): list(
+            row.get(
+                "global_stride_raw_source_frames_per_replica",
+                row.get("source_frames_per_replica", []),
+            )
+        )
+        for row in tasks
+        if row.get("task_scope") == "conformational_view"
+        and row.get("module_id") == "common_pca"
+    }
+    weighted = 0.0
+    total_weight = 0.0
+    for row in tasks:
+        if row.get("module_id") == "coordinate_cache":
+            continue
+        raw = (
+            parent_counts.get(str(row.get("workflow_id")))
+            if row.get("task_scope") == "conformational_view_algorithm_fit"
+            else row.get(
+                "global_stride_raw_source_frames_per_replica",
+                row.get("source_frames_per_replica"),
+            )
+        )
+        if not isinstance(raw, (list, tuple)) or not raw:
+            coverage = 1.0
+        else:
+            counts = [int(value) for value in raw]
+            coverage = min(
+                1.0,
+                sum(
+                    integer_stride_selected_count(value, stride)
+                    for value in counts
+                ) / sum(counts),
+            )
+        weight = float(row.get("priority_weight", 1.0))
+        weighted += weight * math.sqrt(coverage)
+        total_weight += weight
+    return 1.0 if total_weight <= 0.0 else weighted / total_weight
+
+
+def plan_global_stride_projection_coupled_campaign_resource_budget(
+    tasks: Sequence[Mapping[str, object]],
+    *,
+    maximum_parallel_cpus: int,
+    maximum_wall_hours: float,
+    maximum_memory_gib: float,
+    coordinate_cache_minimum_frames_per_replica: int = 50,
+    coordinate_cache_full_scan_fraction: float = 1.0,
+    overall_stride_candidate_strides: Optional[Sequence[int]] = None,
+    coordinate_cache_candidate_strides: Optional[Sequence[int]] = None,
+    planning_utilization: float = 0.85,
+    pilot_budget_fraction: float = 0.05,
+    finalization_headroom_fraction: float = 0.0,
+    memory_safety_factor: float = 1.0,
+    memory_overhead_gib: float = 0.0,
+    minimum_scheduler_memory_gib: float = 0.0,
+    maximum_coupling_iterations: int = 12,
+) -> Dict[str, object]:
+    """Jointly choose an overall trajectory stride and downstream strides.
+
+    For each deterministic integer overall stride, this planner rebuilds every
+    raw-trajectory source stream, including solvated analyses, the molecular
+    coordinate cache, and every conformational view.  It then replans each PCA
+    projection and rebuilds the algorithm-specific clustering fits.  The
+    selected candidate maximizes balanced normalized coverage across distinct
+    analyses inside one CPU, wall-time, and aggregate-memory envelope; exact
+    information ties retain the finer overall stride.
+
+    ``coordinate_cache_full_scan_fraction`` separates work that must still scan
+    every source frame from work avoided when only retained cache frames are
+    materialized.  A value of one models the current stateful continuous-unwrapping
+    implementation conservatively; zero is an optimistic direct-skip bound.  The
+    parameter is explicit because the existing one-point cache calibration cannot
+    identify this split.  ``overall_stride_candidate_strides`` can restrict a
+    sensitivity study to a declared set.  The default grid includes stride one
+    as the information-preserving reference; callers supplying an explicit grid
+    control the complete evaluated set.  ``coordinate_cache_candidate_strides``
+    is retained as a compatibility spelling for the first local prototype.
+    """
+
+    overall_planning_started = time.monotonic()
+    scan_fraction = _fraction(
+        coordinate_cache_full_scan_fraction,
+        "coordinate_cache_full_scan_fraction",
+        allow_zero=True,
+    )
+    if not tasks:
+        raise ResourcePlanningError(
+            "global-stride campaign planning requires at least one task"
+        )
+    cache_rows = [
+        dict(row) for row in tasks if row.get("module_id") == "coordinate_cache"
+    ]
+    if len(cache_rows) != 1:
+        raise ResourcePlanningError(
+            "global-stride campaign planning currently requires exactly one "
+            "coordinate-cache task"
+        )
+    cache_id = str(cache_rows[0].get("task_id"))
+    cache_source = [
+        int(value) for value in cache_rows[0]["source_frames_per_replica"]
+    ]
+    declared_minimum = coordinate_cache_minimum_frames_per_replica
+    if (
+        isinstance(declared_minimum, bool)
+        or not isinstance(declared_minimum, int)
+        or declared_minimum <= 0
+    ):
+        raise ResourcePlanningError(
+            "coordinate_cache_minimum_frames_per_replica must be a positive integer"
+        )
+
+    base_tasks: list[Dict[str, object]] = []
+    overall_minimum = declared_minimum
+    for original in tasks:
+        row = dict(original)
+        if (
+            row.get("task_scope") != "conformational_view_algorithm_fit"
+            and str(row.get("task_id")) != cache_id
+        ):
+            raw_counts = row.get(
+                "global_stride_raw_source_frames_per_replica",
+                row.get("source_frames_per_replica"),
+            )
+            if not isinstance(raw_counts, (list, tuple)) or not raw_counts:
+                raise ResourcePlanningError(
+                    f"task {row.get('task_id')} lacks raw trajectory-source counts"
+                )
+            row["global_stride_raw_source_frames_per_replica"] = [
+                int(value) for value in raw_counts
+            ]
+            row["global_stride_declared_minimum_frames_per_replica"] = int(
+                row.get("minimum_frames_per_replica", 1)
+            )
+            row["global_stride_declared_maximum_frames_per_replica"] = int(
+                row.get(
+                    "maximum_frames_per_replica",
+                    max(int(value) for value in raw_counts),
+                )
+            )
+            overall_minimum = max(
+                overall_minimum,
+                int(row["global_stride_declared_minimum_frames_per_replica"]),
+            )
+        base_tasks.append(row)
+    declared_minimum = overall_minimum
+    maximum_stride = _overall_trajectory_maximum_stride(
+        cache_source, declared_minimum
+    )
+    if (
+        overall_stride_candidate_strides is not None
+        and coordinate_cache_candidate_strides is not None
+    ):
+        raise ResourcePlanningError(
+            "declare overall_stride_candidate_strides, not both candidate-stride "
+            "spellings"
+        )
+    declared_candidates = (
+        overall_stride_candidate_strides
+        if overall_stride_candidate_strides is not None
+        else coordinate_cache_candidate_strides
+    )
+    if declared_candidates is None:
+        candidates = _overall_trajectory_stride_candidates(maximum_stride)
+        requested_candidate_values = list(candidates)
+        scientifically_pruned_candidates: list[int] = []
+    else:
+        requested_candidates: set[int] = set()
+        for value in declared_candidates:
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ResourcePlanningError(
+                    "overall_stride_candidate_strides must contain only "
+                    "positive integers"
+                )
+            requested_candidates.add(value)
+        if not requested_candidates:
+            raise ResourcePlanningError(
+                "overall_stride_candidate_strides must not be empty"
+            )
+        requested_candidate_values = sorted(requested_candidates)
+        candidates = [
+            value for value in requested_candidate_values
+            if value <= maximum_stride
+        ]
+        scientifically_pruned_candidates = [
+            value for value in requested_candidate_values
+            if value > maximum_stride
+        ]
+        if not candidates:
+            raise ResourcePlanningError(
+                "every requested overall trajectory candidate stride exceeds "
+                "the maximum scientifically allowed stride "
+                f"{maximum_stride}"
+            )
+
+    evaluated_candidates: list[int] = []
+    early_terminated_candidates: list[int] = []
+
+    evaluations: list[Dict[str, object]] = []
+    feasible: list[
+        tuple[tuple[float, float, float, int, float], Dict[str, object]]
+    ] = []
+    best_feasible_information = -math.inf
+    for candidate_index, cache_stride in enumerate(candidates):
+        evaluated_candidates.append(cache_stride)
+        candidate_started = time.monotonic()
+        candidate_tasks: list[Dict[str, object]] = []
+        for original in base_tasks:
+            row = dict(original)
+            if str(row.get("task_id")) == cache_id:
+                rate = row.get("coordinate_cache_full_rate_seconds_per_frame")
+                if rate is None:
+                    rate = row.get("cpu_seconds_per_physical_frame")
+                if (
+                    isinstance(rate, bool)
+                    or not isinstance(rate, (int, float))
+                    or float(rate) < 0.0
+                ):
+                    raise ResourcePlanningError(
+                        "coordinate-cache task lacks a nonnegative frame-cost rate"
+                    )
+                original_fixed = float(
+                    row.get("coordinate_cache_original_fixed_cpu_hours", row.get(
+                        "fixed_cpu_hours", 0.0
+                    ))
+                )
+                selected_counts = [
+                    integer_stride_selected_count(count, cache_stride)
+                    for count in cache_source
+                ]
+                selected_ceiling = max(selected_counts)
+                row.update({
+                    "task_scope": "planner_selected_coordinate_preprocessing",
+                    "source_frames_per_replica": list(cache_source),
+                    "minimum_frames_per_replica": selected_ceiling,
+                    "maximum_frames_per_replica": selected_ceiling,
+                    "cpu_seconds_per_physical_frame": (
+                        float(rate) * (1.0 - scan_fraction)
+                    ),
+                    "fixed_cpu_hours": (
+                        original_fixed
+                        + float(rate) * sum(cache_source) * scan_fraction / 3600.0
+                    ),
+                    "coordinate_cache_full_rate_seconds_per_frame": float(rate),
+                    "coordinate_cache_original_fixed_cpu_hours": original_fixed,
+                    "coordinate_cache_full_scan_fraction": scan_fraction,
+                    "coordinate_cache_candidate_stride": cache_stride,
+                    "coordinate_cache_raw_source_frames_per_replica": list(
+                        cache_source
+                    ),
+                    "coordinate_cache_candidate_selected_frames_per_replica": (
+                        selected_counts
+                    ),
+                    "minimum_frame_role": (
+                        "fixed candidate working-cache coverage"
+                    ),
+                    "maximum_frame_role": (
+                        "fixed candidate working-cache coverage"
+                    ),
+                    "priority_weight": 1.0,
+                })
+            elif row.get("task_scope") != "conformational_view_algorithm_fit":
+                raw_counts = [
+                    int(value) for value in row[
+                        "global_stride_raw_source_frames_per_replica"
+                    ]
+                ]
+                overall_counts = [
+                    integer_stride_selected_count(count, cache_stride)
+                    for count in raw_counts
+                ]
+                declared_task_minimum = int(row.get(
+                    "global_stride_declared_minimum_frames_per_replica",
+                    row["minimum_frames_per_replica"],
+                ))
+                declared_task_maximum = int(row.get(
+                    "global_stride_declared_maximum_frames_per_replica",
+                    row["maximum_frames_per_replica"],
+                ))
+                candidate_maximum = min(
+                    declared_task_maximum, max(overall_counts)
+                )
+                if max(raw_counts) < declared_task_minimum:
+                    # The real supplied trajectory is already shorter than the
+                    # standard floor. Preserve that source-limited declaration;
+                    # do not confuse it with resource-induced subsampling.
+                    candidate_maximum = max(
+                        candidate_maximum, declared_task_minimum
+                    )
+                row.update({
+                    "source_frames_per_replica": overall_counts,
+                    "minimum_frames_per_replica": declared_task_minimum,
+                    "maximum_frames_per_replica": candidate_maximum,
+                    "overall_trajectory_integer_stride": cache_stride,
+                })
+                raw_intervals = row.get("frame_intervals_ns_per_replica")
+                if isinstance(raw_intervals, list):
+                    row["global_stride_raw_frame_intervals_ns_per_replica"] = [
+                        float(value) for value in raw_intervals
+                    ]
+                    row["frame_intervals_ns_per_replica"] = [
+                        float(value) * cache_stride for value in raw_intervals
+                    ]
+                if (
+                    row.get("task_scope") == "conformational_view"
+                    and row.get("module_id") == "common_pca"
+                ):
+                    row["projection_declared_maximum_frames_per_replica"] = (
+                        candidate_maximum
+                    )
+                    row.pop("dynamic_coupling_ceiling_per_replica", None)
+            candidate_tasks.append(row)
+        invalid_minimum_tasks = sorted(
+            str(row.get("task_id"))
+            for row in candidate_tasks
+            if row.get("task_scope") != "conformational_view_algorithm_fit"
+            and int(row["maximum_frames_per_replica"])
+            < int(row["minimum_frames_per_replica"])
+        )
+        if invalid_minimum_tasks:
+            evaluations.append({
+                "overall_trajectory_integer_stride": cache_stride,
+                "coordinate_cache_integer_stride": cache_stride,
+                "feasibility_status": "scientific_minimum_pruned",
+                "invalid_minimum_task_ids": invalid_minimum_tasks,
+                "balanced_information_upper_bound": (
+                    _global_stride_information_upper_bound(
+                        base_tasks, cache_stride
+                    )
+                ),
+                "planner_evaluation_wall_seconds": (
+                    time.monotonic() - candidate_started
+                ),
+            })
+            continue
+        plan = plan_projection_coupled_campaign_resource_budget(
+            candidate_tasks,
+            maximum_parallel_cpus=maximum_parallel_cpus,
+            maximum_wall_hours=maximum_wall_hours,
+            maximum_memory_gib=maximum_memory_gib,
+            planning_utilization=planning_utilization,
+            pilot_budget_fraction=pilot_budget_fraction,
+            finalization_headroom_fraction=finalization_headroom_fraction,
+            memory_safety_factor=memory_safety_factor,
+            memory_overhead_gib=memory_overhead_gib,
+            minimum_scheduler_memory_gib=minimum_scheduler_memory_gib,
+            maximum_coupling_iterations=maximum_coupling_iterations,
+        )
+        information = _global_plan_information_metrics(plan)
+        evaluation = {
+            "overall_trajectory_integer_stride": cache_stride,
+            "coordinate_cache_integer_stride": cache_stride,
+            "feasibility_status": plan["feasibility_status"],
+            **information,
+            "estimated_selected_cpu_hours": plan[
+                "estimated_selected_cpu_hours"
+            ],
+            "estimated_selected_wall_hours_lower_bound": plan[
+                "estimated_selected_wall_hours_lower_bound"
+            ],
+            "planner_evaluation_wall_seconds": (
+                time.monotonic() - candidate_started
+            ),
+        }
+        evaluations.append(evaluation)
+        if plan["feasibility_status"] == "feasible":
+            # Balanced breadth and normalized coverage win before raw counts.
+            # Exact information ties retain the finer overall stride; remaining
+            # ties prefer the shorter modeled critical path.
+            feasible.append((
+                (
+                    information["balanced_information_utility"],
+                    information["minimum_normalized_analysis_coverage"],
+                    information["selected_observation_count"],
+                    -cache_stride,
+                    -float(plan["estimated_selected_wall_hours_lower_bound"]),
+                ),
+                plan,
+            ))
+            best_feasible_information = max(
+                best_feasible_information,
+                information["balanced_information_utility"],
+            )
+        remaining = candidates[candidate_index + 1:]
+        if remaining and math.isfinite(best_feasible_information):
+            remaining_upper = max(
+                _global_stride_information_upper_bound(base_tasks, value)
+                for value in remaining
+            )
+            if best_feasible_information > remaining_upper + 1.0e-12:
+                early_terminated_candidates = list(remaining)
+                break
+    if not feasible:
+        # Return the finest candidate's fail-closed diagnostic rather than
+        # obscuring the actual technical minimum or memory shortfall.
+        result = plan_projection_coupled_campaign_resource_budget(
+            base_tasks,
+            maximum_parallel_cpus=maximum_parallel_cpus,
+            maximum_wall_hours=maximum_wall_hours,
+            maximum_memory_gib=maximum_memory_gib,
+            planning_utilization=planning_utilization,
+            pilot_budget_fraction=pilot_budget_fraction,
+            finalization_headroom_fraction=finalization_headroom_fraction,
+            memory_safety_factor=memory_safety_factor,
+            memory_overhead_gib=memory_overhead_gib,
+            minimum_scheduler_memory_gib=minimum_scheduler_memory_gib,
+            maximum_coupling_iterations=maximum_coupling_iterations,
+        )
+        result["coordinate_cache_coupling"] = {
+            "converged": False,
+            "selected_overall_trajectory_integer_stride": None,
+            "selected_coordinate_cache_integer_stride": None,
+            "candidate_evaluations": evaluations,
+            "planner_total_wall_seconds": (
+                time.monotonic() - overall_planning_started
+            ),
+            "reason": "no candidate satisfies the complete campaign envelope",
+        }
+        result["global_stride_coupling"] = result["coordinate_cache_coupling"]
+        return result
+
+    _, result = max(feasible, key=lambda item: item[0])
+    result_rows = {
+        str(row["task_id"]): row
+        for row in result["tasks"]
+        if isinstance(row, Mapping)
+    }
+    cache_report = result_rows[cache_id]
+    selected_stride = int(cache_report["coordinate_cache_candidate_stride"])
+    parent_strides = {
+        str(row["workflow_id"]): int(row["integer_stride"])
+        for row in result_rows.values()
+        if row.get("task_scope") == "conformational_view"
+        and row.get("module_id") == "common_pca"
+    }
+    effective_rows = []
+    for row in result["tasks"]:
+        if not isinstance(row, dict):
+            continue
+        if (
+            row.get("task_scope") != "conformational_view_algorithm_fit"
+            and row.get("module_id") != "coordinate_cache"
+        ):
+            local_stride = int(row["integer_stride"])
+            row["overall_trajectory_integer_stride"] = selected_stride
+            row["coordinate_cache_integer_stride"] = selected_stride
+            row["effective_raw_integer_stride"] = selected_stride * local_stride
+            effective_rows.append({
+                "task_id": str(row["task_id"]),
+                "cache_stride": selected_stride,
+                "downstream_stride": local_stride,
+                "effective_raw_stride": selected_stride * local_stride,
+            })
+        elif row.get("task_scope") == "conformational_view_algorithm_fit":
+            projection_stride = parent_strides[str(row["workflow_id"])]
+            fit_stride = int(row["integer_stride"])
+            row["coordinate_cache_integer_stride"] = selected_stride
+            row["overall_trajectory_integer_stride"] = selected_stride
+            row["projection_integer_stride"] = projection_stride
+            row["effective_raw_integer_stride"] = (
+                selected_stride * projection_stride * fit_stride
+            )
+            effective_rows.append({
+                "task_id": str(row["task_id"]),
+                "cache_stride": selected_stride,
+                "projection_stride": projection_stride,
+                "fit_stride": fit_stride,
+                "effective_raw_stride": (
+                    selected_stride * projection_stride * fit_stride
+                ),
+            })
+    coupling_report = {
+        "coupling_schema": "salsbury-global-stride-coupling-v1",
+        "converged": True,
+        "selected_overall_trajectory_integer_stride": selected_stride,
+        "selected_coordinate_cache_integer_stride": selected_stride,
+        "minimum_retained_frames_per_replica": declared_minimum,
+        "minimum_cached_frames_per_replica": declared_minimum,
+        "maximum_candidate_stride": maximum_stride,
+        "coordinate_cache_full_scan_fraction": scan_fraction,
+        "requested_candidate_strides": requested_candidate_values,
+        "scientifically_pruned_candidate_strides": (
+            scientifically_pruned_candidates
+        ),
+        "evaluated_candidate_strides": evaluated_candidates,
+        "early_terminated_candidate_strides": early_terminated_candidates,
+        "candidate_count": len(evaluated_candidates),
+        "candidate_evaluations": evaluations,
+        "planner_total_wall_seconds": time.monotonic() - overall_planning_started,
+        "candidate_policy": (
+            "Evaluate each declared exact integer overall stride on every raw "
+            "trajectory consumer, including solvated analyses, then replan "
+            "method-specific and projection-derived strides. The cache scan "
+            "fraction charges sequential connectivity reconstruction to all raw "
+            "frames and the remaining materialization cost to retained frames."
+        ),
+        "effective_stride_rows": effective_rows,
+        "execution_ready": True,
+        "execution_boundary": (
+            "Every source frame is decoded for continuous unwrapping. The "
+            "selected cache stride controls only materialization; cached timing "
+            "and sample axes preserve physical spacing, downstream cache strides "
+            "compose multiplicatively, and lagged analyses retain segment-safe "
+            "physical-time metadata."
+        ),
+        "calibration_boundary": (
+            "The cache scan/write cost split is a sensitivity parameter because "
+            "the current one-point calibration cannot identify it."
+        ),
+    }
+    result["global_stride_coupling"] = coupling_report
+    # Compatibility key for local callers of the first prototype.
+    result["coordinate_cache_coupling"] = coupling_report
+    return result
+
+
+def plan_cache_projection_coupled_campaign_resource_budget(
+    tasks: Sequence[Mapping[str, object]],
+    **kwargs: object,
+) -> Dict[str, object]:
+    """Compatibility alias for global overall-stride campaign planning."""
+
+    return plan_global_stride_projection_coupled_campaign_resource_budget(
+        tasks, **kwargs
+    )
+
+
+def _configuration_switch_for_task(task: Mapping[str, object]) -> str:
+    module_id = str(task.get("module_id", task.get("task_id", "unknown")))
+    if module_id == "coordinate_cache":
+        return "execution.coordinate_cache"
+    if module_id == "alternative_clustering" and task.get("algorithm_id"):
+        names = {
+            "mwpam": "minkowski_weighted_pam",
+        }
+        algorithm = names.get(
+            str(task["algorithm_id"]), str(task["algorithm_id"])
+        )
+        return f"clustering.methods.{algorithm}.enabled"
+    dedicated = {
+        "clustering_kmeans": "kmeans",
+        "clustering_hdbscan": "hdbscan",
+        "clustering_imwkmeans": "intelligent_minkowski_weighted_kmeans",
+    }
+    if module_id in dedicated:
+        return f"clustering.methods.{dedicated[module_id]}.enabled"
+    if module_id == "pald_community_analysis":
+        return "community_analysis.pald.enabled"
+    return f"modules.{module_id}.enabled"
+
+
+def _resource_shortfall_score(plan: Mapping[str, object]) -> float:
+    """Return a normalized deterministic infeasibility score."""
+
+    science_cpu = max(1.0e-12, float(plan["science_budget_cpu_hours"]))
+    science_wall = max(1.0e-12, float(plan["science_budget_wall_hours"]))
+    minimum_wall = plan.get("minimum_wall_hours_lower_bound")
+    memory = plan["memory_feasibility"]
+    assert isinstance(memory, Mapping)
+    score = max(
+        0.0, float(plan["minimum_known_cpu_hours"]) / science_cpu - 1.0
+    )
+    if isinstance(minimum_wall, (int, float)) and not isinstance(
+        minimum_wall, bool
+    ):
+        score += max(0.0, float(minimum_wall) / science_wall - 1.0)
+    score += max(
+        0.0,
+        float(memory["minimum_required_memory_gib"])
+        / max(1.0e-12, float(memory["configured_memory_gib"]))
+        - 1.0,
+    )
+    calibration = plan.get("tasks_requiring_project_pilots", [])
+    if isinstance(calibration, list):
+        score += float(len(calibration))
+    return score
+
+
+def recommend_scientifically_valid_task_subset(
+    tasks: Sequence[Mapping[str, object]],
+    *,
+    maximum_parallel_cpus: int,
+    maximum_wall_hours: float,
+    maximum_memory_gib: float,
+    planning_utilization: float = 0.85,
+    pilot_budget_fraction: float = 0.05,
+    finalization_headroom_fraction: float = 0.0,
+    memory_safety_factor: float = 1.0,
+    memory_overhead_gib: float = 0.0,
+    minimum_scheduler_memory_gib: float = 0.0,
+    protected_module_ids: Sequence[str] = (
+        "coordinate_cache", "provenance_manifest", "preflight_inventory",
+        "common_atom_mapping",
+    ),
+) -> Dict[str, object]:
+    """Propose the broadest scientifically valid task subset for an envelope.
+
+    The recommendation never mutates a requested configuration.  It prices the
+    standard scientific minimum first, removes the configuration bundle with
+    the greatest normalized bottleneck relief per unit of lost scientific
+    priority, closes downstream dependencies, and replans after every decision.
+    Extra sampling is never sacrificed below a method's standard floor merely
+    to keep the method nominally enabled.
+    """
+
+    from .analysis_config import DEPENDENCIES
+
+    started = time.monotonic()
+    planner_kwargs = {
+        "maximum_parallel_cpus": maximum_parallel_cpus,
+        "maximum_wall_hours": maximum_wall_hours,
+        "maximum_memory_gib": maximum_memory_gib,
+        "planning_utilization": planning_utilization,
+        "pilot_budget_fraction": pilot_budget_fraction,
+        "finalization_headroom_fraction": finalization_headroom_fraction,
+        "memory_safety_factor": memory_safety_factor,
+        "memory_overhead_gib": memory_overhead_gib,
+        "minimum_scheduler_memory_gib": minimum_scheduler_memory_gib,
+    }
+    working = [deepcopy(dict(task)) for task in tasks]
+    if not working:
+        raise ResourcePlanningError("task-subset recommendation requires tasks")
+    protected = set(str(value) for value in protected_module_ids)
+    disabled_switches: list[str] = []
+    decisions: list[Dict[str, object]] = []
+
+    def task_ids_for_switch(
+        rows: Sequence[Mapping[str, object]], switch: str
+    ) -> set[str]:
+        removed = {
+            str(row["task_id"])
+            for row in rows
+            if _configuration_switch_for_task(row) == switch
+        }
+        changed = True
+        while changed:
+            changed = False
+            modules_present = {
+                str(row.get("module_id"))
+                for row in rows if str(row["task_id"]) not in removed
+            }
+            for row in rows:
+                task_id = str(row["task_id"])
+                module_id = str(row.get("module_id"))
+                if task_id in removed:
+                    continue
+                dependencies = DEPENDENCIES.get(module_id, set())
+                if any(dependency not in modules_present for dependency in dependencies):
+                    removed.add(task_id)
+                    changed = True
+        remaining_conformational = any(
+            str(row["task_id"]) not in removed
+            and str(row.get("task_scope", "")).startswith("conformational_view")
+            for row in rows
+        )
+        if not remaining_conformational:
+            removed.update(
+                str(row["task_id"])
+                for row in rows if row.get("module_id") == "coordinate_cache"
+            )
+        return removed
+
+    current_plan = plan_campaign_resource_budget(working, **planner_kwargs)
+    current_score = _resource_shortfall_score(current_plan)
+    while current_plan["feasibility_status"] != "feasible":
+        switches = sorted({
+            _configuration_switch_for_task(row)
+            for row in working
+            if str(row.get("module_id")) not in protected
+        })
+        candidates = []
+        for switch in switches:
+            removed_ids = task_ids_for_switch(working, switch)
+            candidate_tasks = [
+                row for row in working if str(row["task_id"]) not in removed_ids
+            ]
+            if not candidate_tasks:
+                continue
+            candidate_plan = plan_campaign_resource_budget(
+                candidate_tasks, **planner_kwargs
+            )
+            candidate_score = _resource_shortfall_score(candidate_plan)
+            relief = current_score - candidate_score
+            if relief <= 1.0e-12:
+                continue
+            removed_rows = [
+                row for row in working if str(row["task_id"]) in removed_ids
+            ]
+            priority_loss = sum(
+                float(row.get("priority_weight", 1.0)) for row in removed_rows
+            )
+            candidates.append((
+                relief / max(1.0e-12, priority_loss),
+                relief,
+                -priority_loss,
+                switch,
+                candidate_tasks,
+                candidate_plan,
+                sorted(removed_ids),
+            ))
+        if not candidates:
+            break
+        (
+            _, relief, negative_priority, switch, candidate_tasks,
+            candidate_plan, removed_ids,
+        ) = max(candidates, key=lambda value: value[:4])
+        decisions.append({
+            "iteration": len(decisions) + 1,
+            "disabled_configuration_switch": switch,
+            "removed_task_ids": removed_ids,
+            "normalized_shortfall_before": current_score,
+            "normalized_shortfall_after": _resource_shortfall_score(
+                candidate_plan
+            ),
+            "shortfall_relief": relief,
+            "scientific_priority_removed": -negative_priority,
+        })
+        disabled_switches.append(switch)
+        working = candidate_tasks
+        current_plan = candidate_plan
+        current_score = _resource_shortfall_score(current_plan)
+    return {
+        "recommendation_schema": "salsbury-scientific-method-fit-v1",
+        "technical_status": "complete",
+        "recommendation_status": (
+            "feasible_subset_found"
+            if current_plan["feasibility_status"] == "feasible"
+            else "no_feasible_subset_found"
+        ),
+        "automatic_changes_applied": False,
+        "disabled_configuration_switches": disabled_switches,
+        "configuration_patch": {
+            switch: ("off" if switch == "execution.coordinate_cache" else False)
+            for switch in disabled_switches
+        },
+        "retained_task_ids": sorted(str(row["task_id"]) for row in working),
+        "decisions": decisions,
+        "recommended_plan": current_plan,
+        "planner_wall_seconds": time.monotonic() - started,
+        "strategy": (
+            "deterministic dependency-closed removal by normalized CPU, wall, "
+            "and memory shortfall relief per lost scientific-priority weight"
+        ),
+        "scientific_boundary": (
+            "This is a proposed configuration. Apply and rerun planning explicitly; "
+            "a disabled method is absent, not a low-sample scientific result."
+        ),
+    }
 
 
 def _fraction(value: object, label: str, *, allow_zero: bool = False) -> float:
