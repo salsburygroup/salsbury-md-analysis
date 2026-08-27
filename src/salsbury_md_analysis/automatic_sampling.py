@@ -29,6 +29,18 @@ from .resource_planning import plan_campaign_resource_budget
 from .resource_calibrations import (
     ResourceCalibrationError, load_resource_calibration_catalog,
 )
+from .scientific_sampling import (
+    POLICY_ID,
+    assess_raw_sampling,
+    profile_from_contract,
+    profile_contract,
+    required_frames_per_replica,
+    scientific_sampling_profile,
+)
+from .trajectory_contracts import (
+    TrajectoryContractError,
+    normalize_segment_timing,
+)
 
 
 class AutomaticSamplingError(ValueError):
@@ -38,7 +50,7 @@ class AutomaticSamplingError(ValueError):
 REFERENCE_ATOM_COUNT = 85_199
 REFERENCE_HYDROGEN_BOND_CANDIDATE_COUNT = 64_640
 MINIMUM_HYDROGEN_BOND_WORKLOAD_MULTIPLIER = 0.50
-POLICY_ID = "method-time-size-frame-budgets-v4"
+POLICY_ID = "method-time-size-frame-budgets-v5"
 DEFAULT_TARGET_WALL_SECONDS = 14_400.0
 DEFAULT_TIME_SAFETY_FACTOR = 1.5
 DEFAULT_PCA_MAXIMUM_SAMPLE_MATRIX_ELEMENTS = 25_000_000
@@ -454,6 +466,29 @@ def _campaign_direct_resource_plan(
         int(row["source_frame_count"])
         for row in dimensions["replicas"]  # type: ignore[union-attr]
     ]
+    system_ids_per_replica = [
+        str(row["system_id"])
+        for row in dimensions["replicas"]  # type: ignore[union-attr]
+    ]
+    timing_available = all(
+        row.get("maximum_frame_interval_ns") is not None
+        and row.get("source_time_span_ns") is not None
+        for row in dimensions["replicas"]  # type: ignore[union-attr]
+    )
+    frame_intervals_ns_per_replica = (
+        [
+            float(row["maximum_frame_interval_ns"])
+            for row in dimensions["replicas"]  # type: ignore[union-attr]
+        ]
+        if timing_available else None
+    )
+    source_time_spans_ns_per_replica = (
+        [
+            float(row["source_time_span_ns"])
+            for row in dimensions["replicas"]  # type: ignore[union-attr]
+        ]
+        if timing_available else None
+    )
     replica_count = len(replica_counts)
     tasks = []
     for module_id in module_ids:
@@ -469,10 +504,33 @@ def _campaign_direct_resource_plan(
         technical_pilot = _technical_pilot_frames_per_replica(
             profile, atom_count
         )
+        scientific_profile = scientific_sampling_profile(module_id)
+        scientific_minimum = required_frames_per_replica(
+            scientific_profile,
+            system_ids_per_replica=system_ids_per_replica,
+            source_frames_per_replica=(
+                replica_counts if timing_available else None
+            ),
+            frame_intervals_ns_per_replica=frame_intervals_ns_per_replica,
+            source_time_spans_ns_per_replica=(
+                source_time_spans_ns_per_replica
+            ),
+        )
         maximum_per_replica = (
             ceiling
             if profile.budget_scope == "per_replica"
             else max(1, ceiling // replica_count)
+        )
+        attainable_scientific_minimum = min(
+            scientific_minimum, max(replica_counts)
+        )
+        minimum_per_replica = min(
+            max(replica_counts),
+            max(technical_pilot, attainable_scientific_minimum),
+        )
+        maximum_per_replica = min(
+            max(replica_counts),
+            max(maximum_per_replica, minimum_per_replica),
         )
         workload_multiplier, workload_basis = _runtime_workload_multiplier(
             profile, dimensions
@@ -509,11 +567,29 @@ def _campaign_direct_resource_plan(
             "dependency_stage": 1,
             "effective_cpu_cap": 1,
             "source_frames_per_replica": replica_counts,
-            "minimum_frames_per_replica": technical_pilot,
-            "minimum_frame_role": "technical_runtime_pilot",
+            "system_ids_per_replica": system_ids_per_replica,
+            **({
+                "frame_intervals_ns_per_replica": (
+                    frame_intervals_ns_per_replica
+                ),
+                "source_time_spans_ns_per_replica": (
+                    source_time_spans_ns_per_replica
+                ),
+            } if timing_available else {}),
+            "minimum_frames_per_replica": minimum_per_replica,
+            "minimum_frame_role": "standard_scientific_raw_coverage",
             "minimum_frame_interpretation": (
-                "Small cost-calibration sample only; not scientific sufficiency, "
-                "convergence evidence, or the planned final coverage."
+                "Fixed method-specific sample-count and maximum-temporal-"
+                "separation floor. Runtime pilots calibrate cost only; the planner "
+                "does not estimate autocorrelation times or event rates."
+            ),
+            "technical_pilot_frames_per_replica": technical_pilot,
+            "scientific_sampling_requirements": profile_contract(
+                scientific_profile
+            ),
+            "scientific_minimum_frames_per_replica": scientific_minimum,
+            "attainable_scientific_minimum_frames_per_replica": (
+                attainable_scientific_minimum
             ),
             "maximum_frames_per_replica": maximum_per_replica,
             "cpu_seconds_per_physical_frame": (
@@ -533,15 +609,19 @@ def _campaign_direct_resource_plan(
             "measured_memory_multiplier": memory_atom_scale,
             **({
                 "measured_memory_cost_model": {
-                    "calibration_observations": max(
-                        1,
-                        int(measured["maximum_measured_observation_count"]),
+                    "calibration_observations": int(
+                        measured["maximum_measured_observation_count"]
                     ),
-                    "calibration_memory_gib": reference_memory_gib,
+                    "calibration_memory_gib": memory_gib,
                     "memory_exponent": 0.5,
                     "minimum_observation_scale": 0.1,
+                    "workload_scaling_applied": True,
                 },
-            } if measured is not None else {}),
+            } if (
+                measured is not None
+                and int(measured["complete_measurement_count"]) > 0
+                and int(measured["maximum_measured_observation_count"]) > 0
+            ) else {}),
             "priority_weight": _CAMPAIGN_PRIORITY.get(module_id, 4.0),
             "calibration_status": calibration_status,
             "calibration_id": calibration_id,
@@ -621,6 +701,50 @@ def _apply_campaign_direct_allocations(
         selection, stride, selected_count, selected_maximum = _execution_selection(
             _BY_MODULE[module_id], dimensions, requested_budget
         )
+        embedded_contract = allocation.get("scientific_sampling_requirements")
+        assessment_profile = (
+            profile_from_contract(embedded_contract)
+            if isinstance(embedded_contract, Mapping)
+            else scientific_sampling_profile(module_id)
+        )
+        assessment_policy_id = (
+            str(embedded_contract.get("policy_id", POLICY_ID))
+            if isinstance(embedded_contract, Mapping) else POLICY_ID
+        )
+        scientific_assessment = assess_raw_sampling(
+            assessment_profile,
+            selected_frames_per_replica=selected_per_replica,
+            source_frames_per_replica=[
+                int(value)
+                for value in allocation["source_frames_per_replica"]
+            ],
+            system_ids_per_replica=[
+                str(row["system_id"])
+                for row in dimensions["replicas"]  # type: ignore[union-attr]
+            ],
+            integer_stride=int(allocation["integer_stride"]),
+            frame_intervals_ns_per_replica=(
+                [
+                    float(value) for value in allocation[
+                        "frame_intervals_ns_per_replica"
+                    ]
+                ]
+                if isinstance(
+                    allocation.get("frame_intervals_ns_per_replica"), list
+                ) else None
+            ),
+            source_time_spans_ns_per_replica=(
+                [
+                    float(value) for value in allocation[
+                        "source_time_spans_ns_per_replica"
+                    ]
+                ]
+                if isinstance(
+                    allocation.get("source_time_spans_ns_per_replica"), list
+                ) else None
+            ),
+            policy_id=assessment_policy_id,
+        )
         source_count = int(dimensions["total_source_frame_count"])
         row.update({
             "requested_maximum_total_frame_capacity": sum(selected_per_replica),
@@ -641,6 +765,19 @@ def _apply_campaign_direct_allocations(
             ),
             "frame_selection": selection,
             "frame_stride": stride,
+            "scientific_sampling_assessment": scientific_assessment,
+            "scientific_sampling_requirements": scientific_assessment[
+                "requirements"
+            ],
+            "scientific_minimums_source_path": allocation.get(
+                "scientific_minimums_source_path"
+            ),
+            "scientific_minimums_source_sha256": allocation.get(
+                "scientific_minimums_source_sha256"
+            ),
+            "recommended_execution": bool(
+                scientific_assessment["keep_enabled"]
+            ),
             "campaign_resource_allocation": {
                 "task_id": allocation["task_id"],
                 "selected_physical_frames_per_replica": selected_per_replica,
@@ -774,6 +911,9 @@ def inspect_sampling_dimensions(
             atom_counts.append(atom_count)
             segments = []
             replica_frames = 0
+            replica_time_span_ns = 0.0
+            replica_frame_intervals_ns = []
+            timing_available = True
             for raw_segment in raw_replica["segments"]:
                 if not isinstance(raw_segment, dict):
                     raise AutomaticSamplingError("segment entries must be objects")
@@ -791,16 +931,42 @@ def inspect_sampling_dimensions(
                     )
                 count = _frame_count(trajectory_probe)
                 replica_frames += count
-                segments.append({
+                segment_row = {
                     "segment_id": str(raw_segment["segment_id"]),
                     "source_frame_count": count,
-                })
+                }
+                if raw_segment.get("timing") is not None:
+                    try:
+                        normalized_timing = normalize_segment_timing(
+                            raw_segment, "ns"
+                        )
+                    except TrajectoryContractError as exc:
+                        raise AutomaticSamplingError(str(exc)) from exc
+                    interval_ns = float(normalized_timing["frame_interval"])
+                    span_ns = max(0, count - 1) * interval_ns
+                    replica_frame_intervals_ns.append(interval_ns)
+                    replica_time_span_ns += span_ns
+                    segment_row.update({
+                        "frame_interval_ns": interval_ns,
+                        "source_time_span_ns": span_ns,
+                    })
+                else:
+                    timing_available = False
+                segments.append(segment_row)
             replica_rows.append({
                 "system_id": str(raw_system["system_id"]),
                 "replica_id": str(raw_replica["replica_id"]),
                 "atom_count": atom_count,
                 "source_frame_count": replica_frames,
                 "segments": segments,
+                "maximum_frame_interval_ns": (
+                    max(replica_frame_intervals_ns)
+                    if timing_available and replica_frame_intervals_ns else None
+                ),
+                "source_time_span_ns": (
+                    replica_time_span_ns
+                    if timing_available and replica_frame_intervals_ns else None
+                ),
             })
     if not replica_rows:
         raise AutomaticSamplingError("system manifest contains no replicas")
@@ -1158,6 +1324,21 @@ def _module_plan(
     minimum_pilot_met = all(
         count >= technical_pilot for count in selected_per_replica
     )
+    scientific_profile = scientific_sampling_profile(profile.module_id)
+    system_ids_per_replica = [
+        str(row["system_id"])
+        for row in dimensions["replicas"]  # type: ignore[union-attr]
+    ]
+    scientific_assessment = assess_raw_sampling(
+        scientific_profile,
+        selected_frames_per_replica=selected_per_replica,
+        source_frames_per_replica=[
+            int(row["source_frame_count"])
+            for row in dimensions["replicas"]  # type: ignore[union-attr]
+        ],
+        system_ids_per_replica=system_ids_per_replica,
+        integer_stride=stride,
+    )
     subsampled = selected_count < source_count
     selected_wall_seconds = (
         float(runtime["estimated_fixed_overhead_seconds"])
@@ -1212,6 +1393,13 @@ def _module_plan(
             "convergence threshold, or production recommendation"
         ),
         "minimum_pilot_frames_per_replica_met": minimum_pilot_met,
+        "scientific_sampling_requirements": profile_contract(
+            scientific_profile
+        ),
+        "scientific_sampling_assessment": scientific_assessment,
+        "recommended_execution": bool(
+            scientific_assessment["keep_enabled"]
+        ),
         "planned_selected_frames_per_replica": selected_per_replica,
         "reference_atom_count": REFERENCE_ATOM_COUNT,
         "observed_maximum_atom_count": int(dimensions["maximum_atom_count"]),
@@ -1261,6 +1449,10 @@ def _module_plan(
         },
         "rationale": profile.rationale,
         "planning_warning": (
+            "selected coverage is below the method's sample-count or applicable "
+            "ordered-method temporal-resolution floor; increase resources or "
+            "reduce the enabled-method set"
+            if not scientific_assessment["keep_enabled"] else
             None if minimum_pilot_met else
             "the pooled ceiling cannot provide even the small technical runtime pilot to every replica"
         ),
@@ -1393,6 +1585,14 @@ def automatic_sampling_plan(
             "target_wall_seconds": target_wall_seconds,
             "target_wall_hours": target_wall_seconds / 3600.0,
             "time_estimate_status": "requires upstream result dimensions or a project-local pilot",
+            "scientific_sampling_requirements": profile_contract(
+                scientific_sampling_profile(module_id)
+            ),
+            "scientific_sampling_assessment": {
+                "raw_coverage_status": "inherited_from_upstream",
+                "upstream_module_id": INHERITED_FRAME_SOURCES[module_id],
+                "postrun_diagnostics_and_temporal_validation_remain": True,
+            },
         }
         for module_id in requested if module_id in INHERITED_FRAME_SOURCES
     ]
@@ -1401,16 +1601,30 @@ def automatic_sampling_plan(
             "module_id": module_id,
             "frame_contract": "not_applicable",
             "reason": "metadata, inventory, or atom-identity operation does not evaluate trajectory frames",
+            "scientific_sampling_requirements": profile_contract(
+                scientific_sampling_profile(module_id)
+            ),
+            "scientific_sampling_assessment": {
+                "raw_coverage_status": "not_applicable",
+                "keep_enabled": True,
+                "scientific_interpretation_ready": True,
+            },
         }
         for module_id in requested if module_id in NO_FRAME_SAMPLING
     ]
     limitations = [
-        "Frame ceilings are operational limits, not claims of equilibration, convergence, or scientific sufficiency.",
+        "Standard raw-frame floors prevent a runtime pilot from being presented as production coverage; they do not establish convergence.",
         "Total topology atom count is a conservative proxy; selected atoms, candidate bonds, waters, surface atoms, sphere points, and external executables can require a method-specific pilot.",
         "Biased, enhanced, weighted, or AI ensembles may require weight-aware or state-aware sampling beyond uniform frame selection.",
         "B-versus-2B and replica diagnostics are performed only when explicitly requested.",
         "Except for replica-resolved RMSD/Rg, ceilings apply to the pooled estimator total and are allocated equally across replicas.",
     ]
+    method_plans = direct + inherited + not_applicable
+    below_standard = sorted(
+        str(row["module_id"])
+        for row in direct
+        if not bool(row.get("recommended_execution", True))
+    )
     return {
         "planning_schema": "salsbury-automatic-sampling-plan-v1",
         "policy_id": POLICY_ID,
@@ -1433,7 +1647,18 @@ def automatic_sampling_plan(
             "time_safety_factor": time_safety_factor,
             "policy": "estimate every direct method, use all frames when they fit, otherwise sample uniformly across replicas",
         },
-        "method_plans": direct + inherited + not_applicable,
+        "method_plans": method_plans,
+        "scientific_sampling_summary": {
+            "policy_id": POLICY_ID,
+            "profile_count": len(method_plans),
+            "direct_modules_below_standard_raw_floor": below_standard,
+            "all_requested_modules_have_explicit_requirements": True,
+            "postrun_policy": (
+                "Event or transition counts, temporal validation, and "
+                "independent-unit requirements remain explicit post-run "
+                "diagnostics and are never inferred from raw frame count."
+            ),
+        },
         "campaign_resource_plan": campaign_resource_plan,
         "measured_resource_calibration": {
             "configured": bool(measured_calibrations),

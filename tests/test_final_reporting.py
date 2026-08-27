@@ -13,139 +13,64 @@ from salsbury_md_analysis.finding_picker import FindingPickerError, prioritize_f
 
 
 class FinalReportingTests(unittest.TestCase):
-    def test_default_off_experimental_methods_feed_finding_picker(self):
+    def test_picker_accounts_for_every_complete_report_without_promoting_qc(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
 
-            def write(command, payload):
-                path = root / "results" / command / "report.json"
+            def write(name, payload):
+                path = root / "results" / name / "report.json"
                 path.parent.mkdir(parents=True)
                 path.write_text(json.dumps({
-                    "technical_status": "complete",
-                    "scientific_status": "not evaluated",
-                    **payload,
+                    "technical_status": "complete", **payload,
                 }), encoding="utf-8")
 
-            write("dfi", {"module_id": "perturbation_response_dynamics", "systems": [
-                {"system_id": "control", "dci": [0.2, 0.8], "dfi": [0.4, 0.6]},
-            ]})
-            write("weights", {"module_id": "trajectory_reweighting", "systems": [
-                {"system_id": "control", "diagnostics": {
-                    "kish_ratio": 0.7, "reweighting_validity_status": "passed",
-                }},
-            ]})
-            write("paths", {"module_id": "allosteric_pathways",
-                "nodes": [{"node_id": "A:1:ALA"}, {"node_id": "A:2:GLY"}],
-                "systems": [{"system_id": "control", "network": {
-                    "weighted_betweenness_centrality": [0.1, 0.9],
-                }}],
-            })
-            write("energetic", {
-                "module_id": "energetic_network_embeddings",
-                "availability_status": "available",
-                "pairwise_system_comparisons": [{
-                    "system_i": "control", "system_j": "variant",
-                    "residue_distances": [{
-                        "node_id": "A:10:ALA",
-                        "summed_wasserstein_distance": 1.25,
-                    }],
+            write("alternative", {
+                "module_id": "alternative_clustering",
+                "algorithm_results": [{
+                    "algorithm": "partition_around_medoids",
+                    "silhouette": 0.51,
+                    "cluster_sizes": [7, 5],
                 }],
             })
-            write("bridges", {"module_id": "multivalent_molecular_bridges",
-                "mediator_type_summaries": [{
-                    "system_id": "control", "mediator_type": "ZN",
-                    "bridge_occupancy": 0.6,
-                }],
+            write("structural-qc", {
+                "module_id": "structural_integrity_qc",
+                "qc_status": "findings_require_review",
+                "qc_finding_count": 2,
             })
-            write("reactive", {"module_id": "reactive_path_ensembles",
-                "complete_path_count": 12, "transition_sufficiency_status": "insufficient",
+            write("cache", {"module_id": "coordinate_cache"})
+            write("dihedrals", {
+                "module_id": "dihedral_distributions",
+                "circular_summaries": [],
             })
-            write("fingerprints", {"module_id": "interaction_fingerprints",
-                "feature_occupancies": [{
-                    "feature_id": "feature-1", "occupancy_fraction": 0.75,
-                }],
-            })
-            write("spatial", {"module_id": "spatial_interaction_ensembles",
-                "pairwise_system_spatial_differences": [{
-                    "superfeature_id": "feature-1", "system_i": "control",
-                    "system_j": "variant",
-                    "centroid_displacement_angstrom": 2.0,
-                }],
-            })
-            write("persistence", {"module_id": "interaction_persistence",
-                "persistence_readiness_status": "available_with_complete_events",
-                "feature_persistence_summaries": [{
-                    "feature_id": "feature-1", "system_id": "control",
-                    "gap_tolerance_observations": 0,
-                    "persistence_summary_gate": "passed",
-                    "time_unit": "ps", "complete_event_count": 3,
-                    "complete_event_duration_summary": {"median": 12.0},
-                }],
-            })
-            write("rff", {"module_id": "random_feature_koopman",
-                "selection_status": "selected_stable_candidate",
-                "selected_hyperparameters": {
-                    "random_feature_count": 32, "bandwidth_scale": 1.0,
-                    "selection_score": 0.8,
-                },
-            })
-            write("helical", {"module_id": "helical_mechanics",
-                "availability_status": "available", "neighbor_step_couplings": [{
-                    "system_id": "control", "step_i": 0, "step_j": 1,
-                    "mutual_information_bits": 0.3,
-                }],
-            })
-            for command, module_id in (
-                ("hydration", "hydration_density_channels"),
-                ("pockets", "ensemble_pocket_dynamics"),
-            ):
-                write(command, {"module_id": module_id, "finding_candidates": [{
-                    "statement": f"Synthetic {module_id} descriptive finding.",
-                    "effect_value": 0.5, "system_ids": ["control"],
-                }]})
-            report = prioritize_findings(root, maximum_findings=100)
-        modules = {row["module_id"] for row in report["findings"]}
-        self.assertTrue({
-            "perturbation_response_dynamics", "trajectory_reweighting",
-            "allosteric_pathways", "multivalent_molecular_bridges",
-            "energetic_network_embeddings",
-            "reactive_path_ensembles", "interaction_fingerprints",
-            "spatial_interaction_ensembles", "interaction_persistence",
-            "random_feature_koopman",
-            "helical_mechanics", "hydration_density_channels",
-            "ensemble_pocket_dynamics",
-        }.issubset(modules))
-        covered_modules = {
-            row["module_id"] for row in report["method_evidence_coverage"]
-        }
-        self.assertTrue(modules.issubset(covered_modules))
 
-    def test_unavailable_experimental_method_is_audited_without_false_finding(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / "results").mkdir()
-            (root / "energetic-network-embeddings-availability.json").write_text(
-                json.dumps({
-                    "module_id": "energetic_network_embeddings",
-                    "technical_status": "complete",
-                    "scientific_status": "not evaluated",
-                    "availability_status": "not_available",
-                    "availability_reason": "no compatible interaction parameters",
-                }),
-                encoding="utf-8",
+            report = prioritize_findings(root, maximum_findings=1)
+            accounting = {
+                row["module_id"]: row for row in report["module_accounting"]
+            }
+            self.assertEqual(report["reviewed_report_count"], 4)
+            self.assertEqual(report["reviewed_module_count"], 4)
+            self.assertEqual(report["silent_omission_count"], 0)
+            self.assertEqual(
+                accounting["alternative_clustering"]["disposition"],
+                "ranked_candidates",
             )
-            report = prioritize_findings(root, maximum_findings=100)
-        self.assertEqual(report["findings"], [])
-        self.assertEqual(report["method_evidence_coverage"], [{
-            "module_id": "energetic_network_embeddings",
-            "technical_status": "complete",
-            "availability_status": "not_available",
-            "candidate_count": 0,
-            "report_path": str(
-                root.resolve()
-                / "energetic-network-embeddings-availability.json"
-            ),
-        }])
+            self.assertEqual(
+                accounting["structural_integrity_qc"]["disposition"],
+                "quality_control",
+            )
+            self.assertEqual(
+                accounting["coordinate_cache"]["disposition"],
+                "technical_support",
+            )
+            self.assertEqual(
+                accounting["dihedral_distributions"]["disposition"],
+                "reviewed_no_automatic_highlight",
+            )
+            self.assertEqual(report["quality_control_record_count"], 1)
+            self.assertFalse(any(
+                row["module_id"] == "structural_integrity_qc"
+                for row in report["findings"]
+            ))
 
     def test_picker_scales_to_twenty_system_all_pair_comparison(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -727,6 +652,80 @@ class FinalReportingTests(unittest.TestCase):
             self.assertEqual(
                 scalar_evidence["symmetry_expanded_observations"], 100
             )
+
+    def test_cross_report_hydrogen_bonds_and_ions_use_chemical_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "analysis-config.json").write_text(json.dumps({
+                "comparisons": {"mode": "all_pairs", "alpha": 0.05},
+            }), encoding="utf-8")
+            donor = {
+                "chain_id": "A", "residue_name": "LYS", "residue_number": 10,
+                "insertion_code": "", "atom_name": "NZ",
+            }
+            acceptor = {
+                "chain_id": "B", "residue_name": "ASP", "residue_number": 20,
+                "insertion_code": "", "atom_name": "OD1",
+            }
+            for system_id, offset, occupancy in (
+                ("control", 0, 0.8), ("variant", 100, 0.2),
+            ):
+                hbond_path = (
+                    root / "results" / f"hbond-{system_id}" / "report.json"
+                )
+                hbond_path.parent.mkdir(parents=True)
+                hbond_path.write_text(json.dumps({
+                    "module_id": "hydrogen_bond_discovery",
+                    "technical_status": "complete",
+                    "atom_dictionary": [
+                        {"atom_index": offset, "identity": donor},
+                        {"atom_index": offset + 1, "identity": acceptor},
+                    ],
+                    "candidate_dictionary": [{
+                        "bond_id": f"bond-{system_id}",
+                        "donor_atom_index": offset,
+                        "hydrogen_atom_index": offset + 2,
+                        "acceptor_atom_index": offset + 1,
+                    }],
+                    "occupancies": [{
+                        "system_id": system_id, "replica_id": "replica-1",
+                        "bond_id": f"bond-{system_id}",
+                        "evaluated_frame_count": 100,
+                        "present_frame_count": round(100 * occupancy),
+                        "occupancy_fraction": occupancy,
+                    }],
+                }), encoding="utf-8")
+                ion_path = (
+                    root / "results" / f"ions-{system_id}" / "report.json"
+                )
+                ion_path.parent.mkdir()
+                ion_path.write_text(json.dumps({
+                    "module_id": "ion_atmosphere", "technical_status": "complete",
+                    "per_ion_inner_shell_persistence": [{
+                        "system_id": system_id, "replica_id": "replica-1",
+                        "species": "K", "ion_atom_index": offset + 50,
+                        "evaluated_frame_count": 100,
+                        "inner_shell_occupancy": occupancy,
+                    }],
+                }), encoding="utf-8")
+
+            report = prioritize_findings(root, maximum_findings=50)
+            families = {row["comparison_family"] for row in report["findings"]}
+            self.assertIn(
+                "hydrogen_bond_discovery:chemical_identity_pairwise_difference",
+                families,
+            )
+            self.assertIn(
+                "ion_atmosphere:pairwise_species_maximum_difference", families
+            )
+            hydrogen = next(
+                row for row in report["findings"]
+                if row["comparison_family"].startswith(
+                    "hydrogen_bond_discovery:chemical_identity"
+                )
+            )
+            self.assertAlmostEqual(hydrogen["effect_value"], 0.6)
+            self.assertEqual(len(hydrogen["report_paths"]), 2)
 
 
 if __name__ == "__main__":

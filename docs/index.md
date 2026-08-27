@@ -26,8 +26,9 @@ need scientific review.
   DFI/DCI, trajectory reweighting, allosteric and reactive paths, multivalent
   bridges, interaction fingerprints, helical mechanics, aligned solvent/ion
   density, and ensemble pocket dynamics.
-- Open the [interactive result browser](INTERACTIVE_REPORT.md) guide to review
-  ranked findings, figures, molecular structures, all reports, and provenance.
+- Use the separate `salsbury-md-analysis-interactive` companion repository when
+  you want an offline browser for ranked findings, figures, molecular
+  structures, all reports, and provenance.
 - Use [scientific validation scope](SCIENTIFIC_VALIDATION.md) to understand what
   has and has not been validated.
 
@@ -48,7 +49,7 @@ they still agree with the source.
 - [Manifest and provenance workflow](MANIFESTS.md)
 - [FES, clustering, and state-coordinate exports](FES_CLUSTERING_EXPORTS.md)
 - [Scientific reporting standard](REPORTING_STANDARD.md)
-- [Interactive result browser](INTERACTIVE_REPORT.md)
+- [Prioritized findings and complete module accounting](FINDING_PICKER.md)
 - [Automatic and pooled frame sampling](FRAME_SAMPLING.md)
 - [Comparative states, ions, and hydrogen bonds](COMPARATIVE_STATES_INTERACTIONS.md)
 - [RDF and native-contact observables](RDF_NATIVE_CONTACTS.md)

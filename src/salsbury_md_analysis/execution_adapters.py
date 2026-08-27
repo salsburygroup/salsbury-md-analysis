@@ -18,6 +18,7 @@ from typing import Dict, List, Mapping, Optional, Sequence
 
 from .analysis_config import COMMAND_MODULES
 from .manifests import load_json
+from .resource_planning import ResourcePlanningError, pack_resource_waves
 
 
 class ExecutionAdapterError(ValueError):
@@ -360,6 +361,12 @@ def _task_planner_rows(
     script = str(task["script"])
     if script == "run_coordinate_cache.slurm":
         return [row for row in rows if row.get("task_id") == "preprocessing:coordinate_cache"]
+    if script == "run_finalize_reporting.slurm":
+        text = (root / script).read_text(encoding="utf-8")
+        final_modules = set()
+        if "rmsf-permutation-from-report" in text:
+            final_modules.add("rmsf_permutation_inference")
+        return [row for row in rows if row.get("module_id") in final_modules]
     array_id = task.get("array_task_id")
     if array_id is None:
         return []
@@ -450,17 +457,27 @@ def _enrich_task_resources(
             memory_gib * float(policy["memory_safety_factor"])
             + float(policy["memory_overhead_gib"])
         )
-        requested_memory_gib = min(
-            maximum_memory,
-            max(float(policy["minimum_memory_gib"]), float(safe_memory)),
+        requested_memory_gib = max(
+            float(policy["minimum_memory_gib"]), float(safe_memory)
         )
+        if requested_memory_gib > maximum_memory + 1e-9:
+            raise ExecutionAdapterError(
+                f"safety-adjusted memory request for {path.name} is "
+                f"{requested_memory_gib:g} GiB, exceeding the aggregate campaign "
+                f"limit {maximum_memory:g} GiB"
+            )
         planner_task_ids = [str(row["task_id"]) for row in matched]
         source = "campaign_planner_with_profile_safety_margin"
     else:
         wall_hours = _existing_wall_minutes(path) / 60.0
         memory_gib = _existing_memory_gib(path)
         requested_wall_minutes = min(maximum_hours * 60.0, wall_hours * 60.0)
-        requested_memory_gib = min(maximum_memory, memory_gib)
+        requested_memory_gib = memory_gib
+        if requested_memory_gib > maximum_memory + 1e-9:
+            raise ExecutionAdapterError(
+                f"static memory request for {path.name} exceeds the aggregate "
+                f"campaign limit"
+            )
         planner_task_ids = []
         source = "generated_worker_static_request_no_planner_row"
     enriched.update({
@@ -479,15 +496,7 @@ def _enrich_task_resources(
                 ),
             )
         ),
-        "memory_request_limited_by_campaign_cap": (
-            matched and requested_memory_gib + 1e-9 < max(
-                float(policy["minimum_memory_gib"]),
-                math.ceil(
-                    memory_gib * float(policy["memory_safety_factor"])
-                    + float(policy["memory_overhead_gib"])
-                ),
-            )
-        ),
+        "memory_request_limited_by_campaign_cap": False,
     })
     return enriched
 
@@ -535,6 +544,281 @@ def _script_resource_requests(plan: Mapping[str, object]) -> Dict[str, Dict[str,
     return requests
 
 
+def _partition_for_request(
+    script: str,
+    requested_wall_minutes: float,
+    requested_memory_gib: float,
+    partitions: Mapping[str, object],
+    partition_limits: Mapping[str, object],
+    resource_policy: Mapping[str, object],
+) -> Dict[str, object]:
+    """Select a scheduler role for one task or resource-compatible task tier."""
+
+    role = _script_role(script)
+    if (
+        requested_memory_gib
+        >= float(resource_policy["large_memory_threshold_gib"])
+        and bool(partitions.get("large_memory"))
+    ):
+        role = "large_memory"
+    partition = partitions.get(role) or partitions.get("default")
+    partition_limit = (
+        None if partition is None else partition_limits.get(str(partition))
+    )
+    long_wall_routed = False
+    if partition_limit is not None and requested_wall_minutes > float(partition_limit):
+        long_wall_partition = partitions.get("long_wall")
+        if not long_wall_partition:
+            raise ExecutionAdapterError(
+                f"{script} requests {requested_wall_minutes:g} minutes, "
+                f"exceeding partition {partition!r} limit "
+                f"{float(partition_limit):g}, but partitions.long_wall is unset"
+            )
+        long_wall_limit = partition_limits.get(str(long_wall_partition))
+        if (
+            long_wall_limit is not None
+            and requested_wall_minutes > float(long_wall_limit)
+        ):
+            raise ExecutionAdapterError(
+                f"{script} requests {requested_wall_minutes:g} minutes, "
+                f"exceeding long-wall partition {long_wall_partition!r} limit "
+                f"{float(long_wall_limit):g}"
+            )
+        role = "long_wall"
+        partition = long_wall_partition
+        long_wall_routed = True
+    return {
+        "selected_partition_role": role,
+        "selected_partition": partition,
+        "long_wall_routed": long_wall_routed,
+        "selected_partition_maximum_wall_minutes": (
+            None if partition is None else partition_limits.get(str(partition))
+        ),
+    }
+
+
+def _slurm_array_expression(indices: Sequence[int]) -> str:
+    """Return a compact Slurm array expression for sorted task indices."""
+
+    ordered = sorted(set(indices))
+    if not ordered:
+        raise ExecutionAdapterError("a Slurm submission tier has no array tasks")
+    ranges: List[str] = []
+    start = previous = ordered[0]
+    for value in ordered[1:]:
+        if value == previous + 1:
+            previous = value
+            continue
+        ranges.append(str(start) if start == previous else f"{start}-{previous}")
+        start = previous = value
+    ranges.append(str(start) if start == previous else f"{start}-{previous}")
+    return ",".join(ranges)
+
+
+def _submission_resource_tiers(
+    plan: Mapping[str, object],
+    partitions: Mapping[str, object],
+    partition_limits: Mapping[str, object],
+    resource_policy: Mapping[str, object],
+) -> Dict[str, List[Dict[str, object]]]:
+    """Group each array's elements by their effective scheduler request."""
+
+    tasks_by_script: Dict[str, List[Mapping[str, object]]] = {}
+    for phase in plan.get("phases", []):
+        for task in phase.get("tasks", []):
+            if task.get("array_task_id") is None:
+                continue
+            tasks_by_script.setdefault(str(task["script"]), []).append(task)
+
+    result: Dict[str, List[Dict[str, object]]] = {}
+    for script, tasks in sorted(tasks_by_script.items()):
+        task_ids = [int(task["array_task_id"]) for task in tasks]
+        if len(task_ids) != len(set(task_ids)):
+            raise ExecutionAdapterError(f"duplicate array task ids for {script}")
+        grouped: Dict[tuple[int, str, Optional[str]], List[Mapping[str, object]]] = {}
+        for task in tasks:
+            wall_minutes = float(task["requested_wall_minutes"])
+            memory_gib = float(task["requested_memory_gib"])
+            route = _partition_for_request(
+                script,
+                wall_minutes,
+                memory_gib,
+                partitions,
+                partition_limits,
+                resource_policy,
+            )
+            key = (
+                int(math.ceil(memory_gib)),
+                _format_slurm_time(wall_minutes),
+                None if route["selected_partition"] is None
+                else str(route["selected_partition"]),
+            )
+            grouped.setdefault(key, []).append(task)
+        tiers: List[Dict[str, object]] = []
+        for tier_index, (_, tier_tasks) in enumerate(
+            sorted(
+                grouped.items(),
+                key=lambda item: min(int(task["array_task_id"]) for task in item[1]),
+            )
+        ):
+            indices = sorted(int(task["array_task_id"]) for task in tier_tasks)
+            requested_wall_minutes = max(
+                float(task["requested_wall_minutes"]) for task in tier_tasks
+            )
+            requested_memory_gib = max(
+                float(task["requested_memory_gib"]) for task in tier_tasks
+            )
+            route = _partition_for_request(
+                script,
+                requested_wall_minutes,
+                requested_memory_gib,
+                partitions,
+                partition_limits,
+                resource_policy,
+            )
+            tiers.append({
+                "tier_id": tier_index,
+                "array_task_ids": indices,
+                "array_expression": _slurm_array_expression(indices),
+                "requested_wall_minutes": requested_wall_minutes,
+                "requested_memory_gib": requested_memory_gib,
+                "slurm_time": _format_slurm_time(requested_wall_minutes),
+                "slurm_memory": f"{int(math.ceil(requested_memory_gib))}G",
+                "planner_task_ids": sorted({
+                    str(planner_task_id)
+                    for task in tier_tasks
+                    for planner_task_id in task.get("planner_task_ids", [])
+                }),
+                **route,
+            })
+        result[script] = tiers
+    return result
+
+
+def _tier_parallelism(counts: Sequence[int], cap: int) -> List[int]:
+    """Share one original array throttle across simultaneously submitted tiers."""
+
+    if cap < 1:
+        raise ExecutionAdapterError("Slurm array parallelism must be positive")
+    if len(counts) > cap:
+        return [1 for _ in counts]
+    allocations = [1 for _ in counts]
+    remaining = cap - len(counts)
+    while remaining:
+        candidates = [
+            index for index, count in enumerate(counts)
+            if allocations[index] < count
+        ]
+        if not candidates:
+            break
+        selected = max(
+            candidates,
+            key=lambda index: (counts[index] - allocations[index], -index),
+        )
+        allocations[selected] += 1
+        remaining -= 1
+    return allocations
+
+
+def _append_afterok_dependencies(options: str, variables: Sequence[str]) -> str:
+    if not variables:
+        return options
+    suffix = ":".join(f"${{{variable}}}" for variable in variables)
+    pattern = r'--dependency="afterok:([^"]*)"'
+    if re.search(pattern, options):
+        return re.sub(
+            pattern,
+            lambda match: f'--dependency="afterok:{match.group(1)}:{suffix}"',
+            options,
+            count=1,
+        )
+    return f'{options} --dependency="afterok:{suffix}"'
+
+
+def _split_tiered_array_submissions(
+    text: str,
+    tiers_by_script: Mapping[str, Sequence[Dict[str, object]]],
+) -> str:
+    """Replace one mixed-resource array submission with safe tier submissions."""
+
+    lines = text.splitlines()
+    output: List[str] = []
+    for line in lines:
+        replacement: Optional[List[str]] = None
+        for script, tiers in tiers_by_script.items():
+            if len(tiers) <= 1 or f'"$ROOT/{script}"' not in line:
+                continue
+            match = re.fullmatch(
+                r'(?P<indent>\s*)(?P<variable>[A-Za-z_][A-Za-z0-9_]*)='
+                r'\$\(sbatch\s+(?P<options>.*?)\s+' +
+                re.escape(f'"$ROOT/{script}"') + r'\)',
+                line,
+            )
+            if not match:
+                continue
+            array_match = re.search(r'(?:^|\s)--array=([^\s]+)', match.group("options"))
+            if not array_match:
+                continue
+            original_array = array_match.group(1)
+            cap_match = re.search(r'%(\d+)$', original_array)
+            cap = (
+                int(cap_match.group(1)) if cap_match
+                else sum(len(tier["array_task_ids"]) for tier in tiers)
+            )
+            options = re.sub(
+                r'(?:^|\s)--array=[^\s]+', '', match.group("options"), count=1
+            ).strip()
+            allocations = _tier_parallelism(
+                [len(tier["array_task_ids"]) for tier in tiers], cap
+            )
+            variable = match.group("variable")
+            indent = match.group("indent")
+            tier_variables: List[str] = []
+            tier_lines: List[str] = []
+            previous_wave: List[str] = []
+            current_wave: List[str] = []
+            wave_width = 0
+            wave_index = 0
+            for tier_index, (tier, parallelism) in enumerate(zip(tiers, allocations)):
+                if wave_width + parallelism > cap:
+                    previous_wave = current_wave
+                    current_wave = []
+                    wave_width = 0
+                    wave_index += 1
+                tier_variable = f"{variable}_TIER_{tier_index}"
+                tier_options = _append_afterok_dependencies(options, previous_wave)
+                scheduler_options = [
+                    tier_options,
+                    f"--array={tier['array_expression']}%{parallelism}",
+                    f"--time={tier['slurm_time']}",
+                    f"--mem={tier['slurm_memory']}",
+                ]
+                if tier.get("selected_partition"):
+                    scheduler_options.append(
+                        f"--partition={tier['selected_partition']}"
+                    )
+                tier_lines.extend([
+                    f"{indent}{tier_variable}=$(sbatch "
+                    + " ".join(scheduler_options)
+                    + f' "$ROOT/{script}")',
+                    f'{indent}{tier_variable}="${{{tier_variable}%%;*}}"',
+                ])
+                tier["submission_parallelism"] = parallelism
+                tier["dependency_wave"] = wave_index
+                tier_variables.append(tier_variable)
+                current_wave.append(tier_variable)
+                wave_width += parallelism
+            tier_lines.append(
+                f'{indent}{variable}="' + ":".join(
+                    f"${{{tier_variable}}}" for tier_variable in tier_variables
+                ) + '"'
+            )
+            replacement = tier_lines
+            break
+        output.extend(replacement if replacement is not None else [line])
+    return "\n".join(output) + ("\n" if text.endswith("\n") else "")
+
+
 def _task_resource_requests(plan: Mapping[str, object]) -> List[Dict[str, object]]:
     rows: List[Dict[str, object]] = []
     for phase in plan.get("phases", []):
@@ -560,6 +844,261 @@ def _task_resource_requests(plan: Mapping[str, object]) -> List[Dict[str, object
     return rows
 
 
+def _slurm_resource_waves(
+    execution_plan: Mapping[str, object],
+    partitions: Mapping[str, object],
+    partition_limits: Mapping[str, object],
+    resource_policy: Mapping[str, object],
+) -> List[Dict[str, object]]:
+    """Pack each dependency phase under the campaign CPU and memory limits."""
+
+    maximum_cpus = int(execution_plan.get("maximum_parallel_cpus", 0))
+    maximum_memory = float(
+        execution_plan.get("maximum_parallel_memory_gib", 0.0)
+    )
+    if maximum_cpus <= 0 or maximum_memory <= 0.0:
+        raise ExecutionAdapterError(
+            "execution plan lacks positive aggregate CPU and memory limits"
+        )
+    phase_waves: List[Dict[str, object]] = []
+    for phase_index, phase in enumerate(execution_plan.get("phases", [])):
+        phase_id = str(phase["phase_id"])
+        items = []
+        for task_index, task in enumerate(phase.get("tasks", [])):
+            script = str(task["script"])
+            array_task_id = task.get("array_task_id")
+            requested_wall_minutes = float(task["requested_wall_minutes"])
+            requested_memory_gib = float(task["requested_memory_gib"])
+            route = _partition_for_request(
+                script,
+                requested_wall_minutes,
+                requested_memory_gib,
+                partitions,
+                partition_limits,
+                resource_policy,
+            )
+            item_id = (
+                f"{phase_id}:{script}:"
+                f"{'single' if array_task_id is None else array_task_id}"
+            )
+            items.append({
+                "item_id": item_id,
+                "task_index": task_index,
+                "script": script,
+                "array_task_id": array_task_id,
+                "cpu_slots": int(task["cpu_slots"]),
+                "memory_gib": requested_memory_gib,
+                "wall_hours": requested_wall_minutes / 60.0,
+                "planned_wall_hours": float(task["planned_wall_hours"]),
+                "requested_wall_minutes": requested_wall_minutes,
+                "requested_memory_gib": requested_memory_gib,
+                "slurm_time": _format_slurm_time(requested_wall_minutes),
+                "slurm_memory": f"{int(math.ceil(requested_memory_gib))}G",
+                "planner_task_ids": list(task.get("planner_task_ids", [])),
+                **route,
+            })
+        try:
+            waves = pack_resource_waves(
+                items,
+                maximum_parallel_cpus=maximum_cpus,
+                maximum_parallel_memory_gib=maximum_memory,
+            )
+        except ResourcePlanningError as exc:
+            raise ExecutionAdapterError(str(exc)) from exc
+        for wave in waves:
+            wave["planned_wall_hours"] = max(
+                (
+                    float(item.get("planned_wall_hours", 0.0))
+                    for item in wave.get("items", [])
+                ),
+                default=0.0,
+            )
+            wave["phase_index"] = phase_index
+            wave["phase_id"] = phase_id
+            phase_waves.append(wave)
+    return phase_waves
+
+
+def _slurm_submission_preview(
+    execution_plan: Mapping[str, object],
+    resource_waves: Sequence[Mapping[str, object]],
+) -> Dict[str, object]:
+    """Return a bounded, machine-readable contract shown before submission."""
+
+    maximum_cpus = int(execution_plan["maximum_parallel_cpus"])
+    maximum_memory = float(execution_plan["maximum_parallel_memory_gib"])
+    task_count = sum(
+        len(wave.get("items", [])) for wave in resource_waves
+    )
+    peak_cpus = max(
+        (int(wave["cpu_slots"]) for wave in resource_waves), default=0
+    )
+    peak_memory = max(
+        (float(wave["memory_gib"]) for wave in resource_waves), default=0.0
+    )
+    planner_critical_path = sum(
+        float(wave.get("planned_wall_hours", 0.0)) for wave in resource_waves
+    )
+    scheduler_reservation_path = sum(
+        float(wave.get("wall_hours", 0.0)) for wave in resource_waves
+    )
+    warnings: List[Dict[str, object]] = []
+    if peak_cpus < maximum_cpus:
+        warnings.append({
+            "severity": "warning",
+            "code": "REQUESTED_CPUS_EXCEED_GENERATED_PARALLELISM",
+            "message": (
+                f"The campaign allows {maximum_cpus} simultaneous CPUs, but its "
+                f"generated dependency and memory waves can use at most {peak_cpus}; "
+                f"the remaining {maximum_cpus - peak_cpus} CPUs cannot shorten "
+                "this prepared schedule."
+            ),
+            "requested_parallel_cpus": maximum_cpus,
+            "generated_parallel_cpu_ceiling": peak_cpus,
+            "excess_cpus": maximum_cpus - peak_cpus,
+        })
+    wave_summaries = [
+        {
+            "dependency_wave_index": index,
+            "phase_id": wave.get("phase_id"),
+            "phase_wave_index": wave.get("wave_index"),
+            "task_count": len(wave.get("items", [])),
+            "cpu_slots": int(wave["cpu_slots"]),
+            "aggregate_memory_gib": float(wave["memory_gib"]),
+            "planner_estimated_wall_hours": float(
+                wave.get("planned_wall_hours", 0.0)
+            ),
+            "scheduler_time_limit_hours": float(wave.get("wall_hours", 0.0)),
+        }
+        for index, wave in enumerate(resource_waves)
+    ]
+    return {
+        "slurm_submission_preview_schema": "salsbury-slurm-submission-preview-v1",
+        "technical_status": "complete",
+        "scientific_status": "not evaluated",
+        "execution_started": False,
+        "jobs_submitted": False,
+        "task_count": task_count,
+        "dependency_wave_count": len(resource_waves),
+        "maximum_parallel_cpus_configured": maximum_cpus,
+        "maximum_parallel_cpus_in_generated_waves": peak_cpus,
+        "maximum_parallel_memory_gib_configured": maximum_memory,
+        "maximum_parallel_memory_gib_in_generated_waves": peak_memory,
+        "planner_estimated_dependency_critical_path_hours": (
+            planner_critical_path
+        ),
+        "scheduler_time_limit_reservation_critical_path_hours": (
+            scheduler_reservation_path
+        ),
+        "campaign_planner_wall_hours": (
+            float(execution_plan["maximum_campaign_wall_hours"])
+            if execution_plan.get("maximum_campaign_wall_hours") is not None
+            else None
+        ),
+        "dependency_waves": wave_summaries,
+        "resource_contract": (
+            "Each later dependency wave waits for every job in the preceding "
+            "wave. CPU slots and safety-adjusted memory summed within every "
+            "wave stay at or below the configured aggregate caps."
+        ),
+        "time_interpretation": (
+            "Planner hours are estimated execution time. Scheduler reservation "
+            "hours sum per-job kill limits along the serialized dependency path; "
+            "they are upper bounds, not an execution-time prediction."
+        ),
+        "preview_command": "./submit.sh --preview",
+        "execution_command": "./submit.sh",
+        "warning_count": len(warnings),
+        "warnings": warnings,
+    }
+
+
+def _render_resource_bounded_submit(
+    root: Path,
+    profile: Mapping[str, object],
+    profile_path: Path,
+    resource_waves: Sequence[Mapping[str, object]],
+) -> str:
+    """Render one canonical Slurm launcher whose waves enforce aggregate limits."""
+
+    submit_command = shlex.quote(str(profile["submit_command"]))
+    lines = [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        'ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)',
+        _profile_preamble(profile, profile_path),
+        f"SUBMIT_COMMAND={submit_command}",
+        'PREVIEW="$ROOT/slurm-submission-preview.json"',
+        'case "${1:-}" in',
+        '  --preview)',
+        '    cat "$PREVIEW"',
+        '    exit 0',
+        '    ;;',
+        '  "") ;;',
+        '  *)',
+        '    printf "Usage: %s [--preview]\\n" "$0" >&2',
+        '    exit 2',
+        '    ;;',
+        'esac',
+        'cat "$PREVIEW"',
+        'printf "Submitting the reviewed Slurm resource waves now.\\n"',
+        "",
+    ]
+    previous_jobs: List[str] = []
+    submitted_jobs: List[str] = []
+    for global_wave_index, wave in enumerate(resource_waves):
+        items = wave.get("items", [])
+        if not isinstance(items, list) or not items:
+            continue
+        current_jobs: List[str] = []
+        lines.append(
+            f"# {wave['phase_id']} resource wave {int(wave['wave_index']) + 1}: "
+            f"{int(wave['cpu_slots'])} CPUs, {float(wave['memory_gib']):g} GiB"
+        )
+        dependency = (
+            ""
+            if not previous_jobs
+            else ' --dependency="afterok:'
+            + ":".join(f"${{{name}}}" for name in previous_jobs)
+            + '"'
+        )
+        for item_index, item in enumerate(items):
+            variable = f"JOB_W{global_wave_index:03d}_T{item_index:03d}"
+            options = [
+                "--parsable",
+                f"--cpus-per-task={int(item['cpu_slots'])}",
+                f"--time={item['slurm_time']}",
+                f"--mem={item['slurm_memory']}",
+            ]
+            if item.get("selected_partition"):
+                options.append(
+                    f"--partition={shlex.quote(str(item['selected_partition']))}"
+                )
+            if item.get("array_task_id") is not None:
+                options.append(f"--array={int(item['array_task_id'])}")
+            command_options = " ".join(options)
+            script = shlex.quote(str(item["script"]))
+            lines.extend([
+                f'{variable}=$("$SUBMIT_COMMAND" {command_options}{dependency} '
+                f'"$ROOT"/{script})',
+                f'{variable}="${{{variable}%%;*}}"',
+            ])
+            current_jobs.append(variable)
+            submitted_jobs.append(variable)
+        previous_jobs = current_jobs
+        lines.append("")
+    if submitted_jobs:
+        lines.extend([
+            'printf "Submitted %s jobs; final job IDs: %s\\n" '
+            f'"{len(submitted_jobs)}" "'
+            + ":".join(f"${{{name}}}" for name in previous_jobs)
+            + '"',
+        ])
+    else:
+        lines.append('printf "No jobs were generated.\\n"')
+    return "\n".join(lines) + "\n"
+
+
 def apply_slurm_profile(
     root: Path,
     profile: Mapping[str, object],
@@ -582,53 +1121,44 @@ def apply_slurm_profile(
     script_requests = _script_resource_requests(execution_plan)
     partition_limits = profile["partition_maximum_wall_minutes"]
     assert isinstance(partition_limits, Mapping)
+    submission_tiers = _submission_resource_tiers(
+        execution_plan,
+        partitions,
+        partition_limits,
+        resource_policy,
+    )
+    resource_waves = _slurm_resource_waves(
+        execution_plan,
+        partitions,
+        partition_limits,
+        resource_policy,
+    )
+    submission_preview = _slurm_submission_preview(
+        execution_plan, resource_waves
+    )
+    (root / "slurm-submission-preview.json").write_text(
+        json.dumps(submission_preview, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
     for path in sorted(root.glob("*.slurm")):
         text = path.read_text(encoding="utf-8")
-        role = _script_role(path.name)
         request = script_requests.get(path.name, {
             "requested_wall_minutes": _existing_wall_minutes(path),
             "requested_memory_gib": _existing_memory_gib(path),
             "planner_task_ids": [],
             "aggregation": "static worker fallback",
         })
-        is_large = (
-            float(request["requested_memory_gib"])
-            >= float(resource_policy["large_memory_threshold_gib"])
-            and bool(partitions.get("large_memory"))
-        )
-        if is_large:
-            role = "large_memory"
-        partition = partitions.get(role) or partitions.get("default")
         requested_wall_minutes = float(request["requested_wall_minutes"])
-        partition_limit = (
-            None if partition is None else partition_limits.get(str(partition))
+        route = _partition_for_request(
+            path.name,
+            requested_wall_minutes,
+            float(request["requested_memory_gib"]),
+            partitions,
+            partition_limits,
+            resource_policy,
         )
-        long_wall_routed = False
-        if (
-            partition_limit is not None
-            and requested_wall_minutes > float(partition_limit)
-        ):
-            long_wall_partition = partitions.get("long_wall")
-            if not long_wall_partition:
-                raise ExecutionAdapterError(
-                    f"{path.name} requests {requested_wall_minutes:g} minutes, "
-                    f"exceeding partition {partition!r} limit "
-                    f"{float(partition_limit):g}, but partitions.long_wall is unset"
-                )
-            long_wall_limit = partition_limits.get(str(long_wall_partition))
-            if (
-                long_wall_limit is not None
-                and requested_wall_minutes > float(long_wall_limit)
-            ):
-                raise ExecutionAdapterError(
-                    f"{path.name} requests {requested_wall_minutes:g} minutes, "
-                    f"exceeding long-wall partition {long_wall_partition!r} limit "
-                    f"{float(long_wall_limit):g}"
-                )
-            role = "long_wall"
-            partition = long_wall_partition
-            long_wall_routed = True
+        partition = route["selected_partition"]
         directives = []
         if account:
             directives.append(f"#SBATCH --account={account}")
@@ -661,12 +1191,7 @@ def apply_slurm_profile(
                 text, flags=re.MULTILINE,
             )
         path.write_text(text, encoding="utf-8")
-        request["selected_partition_role"] = role
-        request["selected_partition"] = partition
-        request["long_wall_routed"] = long_wall_routed
-        request["selected_partition_maximum_wall_minutes"] = (
-            None if partition is None else partition_limits.get(str(partition))
-        )
+        request.update(route)
         request["slurm_time"] = _format_slurm_time(
             float(request["requested_wall_minutes"])
         )
@@ -675,6 +1200,7 @@ def apply_slurm_profile(
     submit_command = str(profile["submit_command"])
     for path in sorted(root.glob("submit*.sh")):
         text = path.read_text(encoding="utf-8")
+        text = _split_tiered_array_submissions(text, submission_tiers)
         text = text.replace("set -euo pipefail\n", f"set -euo pipefail\n{preamble}\n", 1)
         text = re.sub(r"\bsbatch\b", submit_command, text)
         python_path = environment.get("python_executable")
@@ -691,17 +1217,42 @@ def apply_slurm_profile(
                 text, flags=re.MULTILINE,
             )
         path.write_text(text, encoding="utf-8")
+    canonical_submit = root / "submit.sh"
+    if canonical_submit.is_file():
+        canonical_submit.write_text(
+            _render_resource_bounded_submit(
+                root, profile, profile_path, resource_waves
+            ),
+            encoding="utf-8",
+        )
+        os.chmod(canonical_submit, 0o755)
     return {
-        "scheduler_resource_requests_schema": "salsbury-scheduler-resource-requests-v1",
+        "scheduler_resource_requests_schema": "salsbury-scheduler-resource-requests-v3",
         "profile_id": profile["profile_id"],
         "cluster_name": profile["cluster_name"],
         "resource_policy": dict(resource_policy),
         "partition_maximum_wall_minutes": dict(partition_limits),
         "tasks": _task_resource_requests(execution_plan),
         "scripts": script_requests,
+        "submission_resource_tiers": submission_tiers,
+        "maximum_parallel_cpus": execution_plan["maximum_parallel_cpus"],
+        "maximum_parallel_memory_gib": execution_plan[
+            "maximum_parallel_memory_gib"
+        ],
+        "resource_waves": resource_waves,
+        "submission_preview": submission_preview,
+        "submission_preview_file": "slurm-submission-preview.json",
+        "canonical_submit_script": (
+            "submit.sh" if canonical_submit.is_file() else None
+        ),
+        "aggregate_resource_contract": (
+            "tasks in one wave may run concurrently; every later wave depends "
+            "afterok on every job in the preceding wave, and each wave stays "
+            "within both campaign CPU and safety-adjusted memory limits"
+        ),
         "large_memory_routing": (
-            "a whole worker array uses the large-memory role when the largest "
-            "element request reaches the configured threshold"
+            "mixed-resource arrays are submitted as resource-matched subarrays; "
+            "only tiers at or above the configured threshold use the large-memory role"
         ),
         "long_wall_routing": (
             "a worker script is routed to the long-wall role when its requested "
@@ -786,11 +1337,8 @@ def build_local_execution_plan(
         completion_reports.append("final-resource-summary.json")
     if bool(reporting.get("finding_picker_enabled")):
         completion_reports.append("final-findings-summary.json")
-    if bool(reporting.get("interactive_report_enabled")):
-        completion_reports.extend([
-            "final-interactive-report-summary.json",
-            "interactive-report/manifest.json",
-        ])
+    if "rmsf-permutation-from-report" in finalizer.read_text(encoding="utf-8"):
+        completion_reports.append("results/rmsf-permutation-inference/report.json")
     if not completion_reports:
         completion_reports.append("final-reporting-disabled.json")
     final_task = _task(finalizer)
@@ -809,7 +1357,7 @@ def build_local_execution_plan(
             for task in phase["tasks"]
         ]
     return {
-        "local_execution_plan_schema": "salsbury-local-execution-plan-v2",
+        "local_execution_plan_schema": "salsbury-local-execution-plan-v3",
         "maximum_parallel_cpus": maximum_cpus,
         "maximum_campaign_wall_hours": float(execution["maximum_hours_per_cpu"]),
         "maximum_parallel_memory_gib": float(execution["maximum_memory_gib"]),
@@ -850,6 +1398,83 @@ def prepare_execution_artifacts(
     (root / "local-execution-plan.json").write_text(
         json.dumps(plan, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    contract_phases = []
+    previous_phase_id: Optional[str] = None
+    for phase in plan["phases"]:
+        phase_id = str(phase["phase_id"])
+        tasks = []
+        for index, task in enumerate(phase["tasks"]):
+            cpu_slots = int(task["cpu_slots"])
+            memory_gib = float(task.get("requested_memory_gib", 1.0))
+            wall_minutes = float(task.get("requested_wall_minutes", 30.0))
+            array_task_id = task.get("array_task_id")
+            environment = {
+                "SLURM_CPUS_PER_TASK": str(cpu_slots),
+                "SLURM_MEM_PER_NODE": str(int(math.ceil(memory_gib * 1024.0))),
+                "SLURM_TIMELIMIT": str(max(1, int(math.ceil(wall_minutes)))),
+            }
+            if array_task_id is not None:
+                environment["SLURM_ARRAY_TASK_ID"] = str(array_task_id)
+            tasks.append({
+                "launcher_task_id": f"{phase_id}:{index}",
+                "argv": ["bash", str(task["script"])],
+                "working_directory": str(root),
+                "environment": environment,
+                "launcher_assigned_environment": [
+                    "SLURM_JOB_ID", "SLURM_ARRAY_JOB_ID", "SLURM_CLUSTER_NAME"
+                ],
+                "script": task["script"],
+                "array_task_id": array_task_id,
+                "cpu_slots": cpu_slots,
+                "requested_memory_gib": memory_gib,
+                "requested_wall_minutes": wall_minutes,
+                "planner_task_ids": task.get("planner_task_ids", []),
+                "completion_reports": task.get("completion_reports", []),
+            })
+        contract_phases.append({
+            "phase_id": phase_id,
+            "depends_on": [] if previous_phase_id is None else [previous_phase_id],
+            "tasks": tasks,
+        })
+        previous_phase_id = phase_id
+    launcher_contract = {
+        "launcher_contract_schema": "salsbury-external-launcher-contract-v1",
+        "analysis_root": str(root),
+        "resource_envelope": {
+            "maximum_parallel_cpus": plan["maximum_parallel_cpus"],
+            "maximum_parallel_memory_gib": plan["maximum_parallel_memory_gib"],
+            "maximum_campaign_wall_hours": plan["maximum_campaign_wall_hours"],
+        },
+        "dependency_policy": (
+            "phases are serial and fail closed; tasks within one phase may run "
+            "concurrently only while their summed CPU and memory requests stay "
+            "within the resource envelope"
+        ),
+        "task_success_policy": (
+            "a task succeeds only with exit code zero; do not launch dependent "
+            "phases after a failure or timeout"
+        ),
+        "environment_contract": {
+            "compatibility_note": (
+                "Worker scripts use Slurm-compatible environment names even when "
+                "the external launcher is not Slurm."
+            ),
+            "launcher_assigned_values": {
+                "SLURM_JOB_ID": "unique task-attempt identifier",
+                "SLURM_ARRAY_JOB_ID": "stable identifier shared by one array script",
+                "SLURM_CLUSTER_NAME": "external launcher or site name",
+            },
+            "optional_user_overrides": [
+                "SALSBURY_MD_ANALYSIS_PYTHON",
+                "SALSBURY_MD_ANALYSIS_PYTHONPATH",
+            ],
+        },
+        "phases": contract_phases,
+    }
+    (root / "launcher-contract.json").write_text(
+        json.dumps(launcher_contract, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     package_root = str(Path(__file__).resolve(strict=True).parents[1])
     # Keep the virtual-environment entry point rather than resolving its
     # symlink to a base interpreter that may not have the package dependencies.
@@ -867,8 +1492,29 @@ exec "$PYTHON" -m salsbury_md_analysis run-local-workflow "$ROOT"
     (root / "run-local.sh").write_text(launcher, encoding="utf-8")
     os.chmod(root / "run-local.sh", 0o755)
 
+    custom_launcher = f"""#!/usr/bin/env bash
+set -euo pipefail
+ROOT={shlex.quote(str(root))}
+CONTRACT="$ROOT/launcher-contract.json"
+LAUNCHER="${{SALSBURY_MD_ANALYSIS_CUSTOM_LAUNCHER:-}}"
+if [[ -z "$LAUNCHER" ]]; then
+  printf 'Set SALSBURY_MD_ANALYSIS_CUSTOM_LAUNCHER to an executable that accepts launcher-contract.json.\n' >&2
+  exit 2
+fi
+if [[ ! -x "$LAUNCHER" ]]; then
+  printf 'Custom launcher is not executable: %s\n' "$LAUNCHER" >&2
+  exit 2
+fi
+exec "$LAUNCHER" "$CONTRACT"
+"""
+    (root / "run-custom.sh").write_text(custom_launcher, encoding="utf-8")
+    os.chmod(root / "run-custom.sh", 0o755)
+
     profile_id = None
-    generated = ["local-execution-plan.json", "run-local.sh"]
+    generated = [
+        "local-execution-plan.json", "launcher-contract.json",
+        "run-local.sh", "run-custom.sh",
+    ]
     if adapter == "slurm":
         assert profile is not None
         profile_id = str(profile["profile_id"])
@@ -881,14 +1527,20 @@ exec "$PYTHON" -m salsbury_md_analysis run-local-workflow "$ROOT"
             json.dumps(scheduler_requests, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        generated.extend(["slurm-profile.json", "scheduler-resource-requests.json"])
+        generated.extend([
+            "slurm-profile.json",
+            "scheduler-resource-requests.json",
+            "slurm-submission-preview.json",
+        ])
     metadata = {
         "execution_adapter_schema": "salsbury-execution-adapter-v1",
         "active_adapter": adapter,
         "slurm_profile_id": profile_id,
         "local_launcher": "run-local.sh",
         "slurm_launcher": "submit.sh",
+        "custom_launcher": "run-custom.sh",
         "shared_resource_plan": "local-execution-plan.json",
+        "external_launcher_contract": "launcher-contract.json",
         "scheduler_resource_requests": (
             "scheduler-resource-requests.json" if adapter == "slurm" else None
         ),
@@ -897,7 +1549,7 @@ exec "$PYTHON" -m salsbury_md_analysis run-local-workflow "$ROOT"
             "per_task_wall_minutes", "complete_campaign_wall_deadline",
         ],
         "scientific_workflow_identity": (
-            "both launchers execute the same generated worker scripts and output contracts"
+            "all launchers execute the same generated worker scripts and output contracts"
         ),
     }
     (root / "execution-adapter.json").write_text(
@@ -907,7 +1559,10 @@ exec "$PYTHON" -m salsbury_md_analysis run-local-workflow "$ROOT"
     return {
         "adapter": adapter,
         "generated_files": generated,
-        "next_command": f"cd {root} && ./{'submit.sh' if adapter == 'slurm' else 'run-local.sh'}",
+        "next_command": (
+            f"cd {root} && ./"
+            f"{'submit.sh' if adapter == 'slurm' else 'run-custom.sh' if adapter == 'custom' else 'run-local.sh'}"
+        ),
         "slurm_profile_id": profile_id,
     }
 
@@ -1047,7 +1702,9 @@ def run_local_workflow(root: Path) -> Dict[str, object]:
     plan_path = resolved / "local-execution-plan.json"
     plan = load_json(plan_path)
     accepted_schemas = {
-        "salsbury-local-execution-plan-v1", "salsbury-local-execution-plan-v2"
+        "salsbury-local-execution-plan-v1",
+        "salsbury-local-execution-plan-v2",
+        "salsbury-local-execution-plan-v3",
     }
     if not isinstance(plan, dict) or plan.get("local_execution_plan_schema") not in accepted_schemas:
         raise ExecutionAdapterError("local execution plan is invalid")

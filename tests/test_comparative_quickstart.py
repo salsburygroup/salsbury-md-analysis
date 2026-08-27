@@ -11,10 +11,46 @@ from salsbury_md_analysis.comparative_quickstart import (
     prepare_comparative_analysis,
     prepare_comparative_analysis_memory_fit,
 )
-from tests.test_quickstart import _write_dcd, _write_oligomer_inputs
+from tests.test_quickstart import _write_dcd, _write_inputs, _write_oligomer_inputs
 
 
 class ComparativeQuickstartTests(unittest.TestCase):
+    def test_protein_only_comparison_marks_helical_mechanics_inapplicable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pdb, psf, trajectories = _write_inputs(root)
+            request = root / "comparison.json"
+            request.write_text(json.dumps({
+                "request_schema": "salsbury-comparative-analysis-input-v1",
+                "systems": [{
+                    "system_id": system_id,
+                    "pdb": str(pdb),
+                    "psf": str(psf),
+                    "trajectories": [str(path) for path in trajectories],
+                    "frame_interval_ps": 10.0,
+                } for system_id in ("control", "variant")],
+            }), encoding="utf-8")
+            config = root / "config.json"
+            config.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "modules": {"helical_mechanics": {"enabled": True}},
+            }), encoding="utf-8")
+            output = root / "analysis"
+            prepare_comparative_analysis(
+                request_path=request,
+                output_directory=output,
+                project_id="protein-only-comparison",
+                config_path=config,
+            )
+            availability = json.loads(
+                (output / "helical-mechanics-availability-control.json")
+                .read_text()
+            )
+        self.assertEqual(availability["availability_status"], "not_available")
+        self.assertEqual(
+            availability["availability_reason"], "no_duplex_dna_or_rna"
+        )
+
     def test_enabled_available_duplex_mechanics_gets_per_system_planner_tasks(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -77,7 +113,10 @@ class ComparativeQuickstartTests(unittest.TestCase):
             config = root / "config.json"
             config.write_text(json.dumps({
                 "config_schema": "salsbury-analysis-config-v1",
-                "modules": {"helical_mechanics": {"enabled": True}},
+                "modules": {
+                    "helical_mechanics": {"enabled": True},
+                    "energetic_network_embeddings": {"enabled": True},
+                },
             }), encoding="utf-8")
             output = root / "analysis"
             prepare_comparative_analysis(
@@ -97,6 +136,10 @@ class ComparativeQuickstartTests(unittest.TestCase):
             worker = (
                 output / "run_automatic_context_stage_1_array.slurm"
             ).read_text()
+            energetic_availability = json.loads(
+                (output / "energetic-network-embeddings-availability.json")
+                .read_text()
+            )
         tasks = {row["task_id"]: row for row in campaign["tasks"]}
         for system_id in ("control", "variant"):
             structure_id = (
@@ -125,6 +168,13 @@ class ComparativeQuickstartTests(unittest.TestCase):
         self.assertIn(
             "SALSBURY_MD_ANALYSIS_NUCLEIC_ACID_STRUCTURE_REPORT", worker
         )
+        self.assertEqual(
+            energetic_availability["availability_status"], "not_available"
+        )
+        self.assertEqual(
+            energetic_availability["availability_reason"],
+            "not applicable: protein residues are absent from control, variant",
+        )
 
     def test_comparison_memory_fallback_writes_explicit_reduced_config(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -147,7 +197,7 @@ class ComparativeQuickstartTests(unittest.TestCase):
             config_path = root / "low-memory.json"
             config_path.write_text(json.dumps({
                 "config_schema": "salsbury-analysis-config-v1",
-                "execution": {"maximum_memory_gib": 1.5},
+                "execution": {"maximum_memory_gib": 4.0},
             }), encoding="utf-8")
             output = root / "comparison-memory-fit"
             report = prepare_comparative_analysis_memory_fit(
@@ -319,10 +369,10 @@ class ComparativeQuickstartTests(unittest.TestCase):
                 },
             )
 
-    def test_preparation_accepts_twenty_system_variant_panel(self):
+    def test_preparation_accepts_wt_plus_twenty_variant_panel(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            pdb, psf, trajectories = _write_oligomer_inputs(root)
+            pdb, psf, trajectories = _write_inputs(root)
             request = {
                 "request_schema": "salsbury-comparative-analysis-input-v1",
                 "systems": [
@@ -333,7 +383,7 @@ class ComparativeQuickstartTests(unittest.TestCase):
                         "trajectories": [str(path) for path in trajectories],
                         "frame_interval_ps": 10.0,
                     }
-                    for index in range(20)
+                    for index in range(21)
                 ],
             }
             request_path = root / "panel.json"
@@ -341,15 +391,63 @@ class ComparativeQuickstartTests(unittest.TestCase):
             report = prepare_comparative_analysis(
                 request_path=request_path,
                 output_directory=root / "panel-analysis",
-                project_id="twenty-variant-panel",
+                project_id="wt-plus-twenty-variant-panel",
             )
-            self.assertEqual(report["system_count"], 20)
-            self.assertEqual(report["replica_count"], 60)
-            self.assertEqual(report["total_source_frame_count"], 6000)
+            self.assertEqual(report["system_count"], 21)
+            self.assertEqual(report["replica_count"], 63)
+            self.assertEqual(report["total_source_frame_count"], 1260)
             config = json.loads(
                 (root / "panel-analysis" / "analysis-config.json").read_text()
             )
             self.assertEqual(config["comparisons"]["mode"], "all_pairs")
+            campaign = json.loads(
+                (root / "panel-analysis" / "campaign-resource-plan.json")
+                .read_text()
+            )
+            capacity = campaign["workflow_parallel_capacity"]
+            self.assertEqual(
+                capacity["coordinate_cache_replica_parallel_cpu_ceiling"], 63
+            )
+            self.assertEqual(capacity["useful_parallel_cpu_ceiling"], 154)
+
+    def test_disabled_common_pca_prepares_without_conformational_projects(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pdb, psf, trajectories = _write_inputs(root)
+            request_path = root / "comparison.json"
+            request_path.write_text(json.dumps({
+                "request_schema": "salsbury-comparative-analysis-input-v1",
+                "systems": [
+                    {
+                        "system_id": system_id,
+                        "pdb": str(pdb),
+                        "psf": str(psf),
+                        "trajectories": [str(path) for path in trajectories],
+                        "frame_interval_ps": 10.0,
+                    }
+                    for system_id in ("control", "variant")
+                ],
+            }), encoding="utf-8")
+            config_path = root / "config.json"
+            config_path.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "modules": {"common_pca": {"enabled": False}},
+            }), encoding="utf-8")
+            output = root / "analysis"
+            report = prepare_comparative_analysis(
+                request_path=request_path,
+                output_directory=output,
+                project_id="no-common-pca",
+                config_path=config_path,
+            )
+            self.assertEqual(report["technical_status"], "complete")
+            resolved = json.loads((output / "analysis-config.json").read_text())
+            self.assertTrue(all(
+                row["enabled"] is False
+                for row in resolved["views"].values()
+            ))
+            self.assertFalse(any(output.glob("project-global_common_heavy*.json")))
+            self.assertTrue((output / "conformational-views.json").exists())
 
     def test_schema_v2_preserves_segmented_replica_boundaries_and_counts(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -485,6 +583,7 @@ class ComparativeQuickstartTests(unittest.TestCase):
                 )
             task_ids = {row["task_id"] for row in campaign["tasks"]}
             self.assertNotIn("direct:common_pca", task_ids)
+            self.assertIn("base:rmsf_permutation_inference", task_ids)
             self.assertIn("view:global_common_heavy:common_pca", task_ids)
             self.assertIn("view:global_common_heavy:pca_fes_basins", task_ids)
             self.assertIn(
@@ -600,8 +699,33 @@ class ComparativeQuickstartTests(unittest.TestCase):
             config = json.loads((output / "analysis-config.json").read_text())
             self.assertEqual(config["default_module_policy"], "all_applicable")
             self.assertEqual(config["comparisons"]["mode"], "all_pairs")
+            self.assertTrue(
+                config["modules"]["integrated_comparison"]["protected"]
+            )
             coverage = json.loads((output / "module-coverage.json").read_text())
             self.assertEqual(coverage["comparison_system_ids"], ["control", "variant"])
+            self.assertEqual(
+                coverage["module_status"]["rmsf_permutation_inference"]["status"],
+                "automatic",
+            )
+            self.assertEqual(
+                coverage["module_status"]["integrated_comparison"]["status"],
+                "automatic",
+            )
+            self.assertIn(
+                "rmsf-permutation-from-report",
+                (output / "run_finalize_reporting.slurm").read_text(),
+            )
+            self.assertIn(
+                "integrate-comparison-results",
+                (output / "run_finalize_reporting.slurm").read_text(),
+            )
+            planning = json.loads((output / "planning-report.json").read_text())
+            rmsf_family = next(
+                row for row in planning["sampling"]["analysis_families"]
+                if row["family_id"] == "rmsf_inference"
+            )
+            self.assertEqual(rmsf_family["status"], "on")
             subprocess.run(["bash", "-n", str(output / "submit.sh")], check=True)
             subprocess.run(
                 ["bash", "-n", str(output / "submit-conformational-views.sh")],

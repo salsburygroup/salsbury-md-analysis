@@ -7,6 +7,7 @@ from pathlib import Path
 from salsbury_md_analysis.automatic_sampling import (
     AutomaticSamplingError,
     REFERENCE_ATOM_COUNT,
+    _campaign_direct_resource_plan,
     _module_plan,
     _runtime_workload_multiplier,
     automatic_sampling_plan,
@@ -286,6 +287,78 @@ class AutomaticSamplingTests(unittest.TestCase):
             plans[module_id]["subsampling_triggered"]
             for module_id in plans
         ))
+
+    def test_censored_only_memory_does_not_invent_observation_scaling(self):
+        dimensions = self._reference_dimensions(frames_per_replica=1000)
+        measured = {
+            "structural_integrity_qc": {
+                "catalog_sha256": "a" * 64,
+                "conservative_cpu_seconds_per_frame": 1.0,
+                "maximum_resident_memory_mib": 700.0,
+                "maximum_measured_selected_frame_count": 0,
+                "maximum_measured_observation_count": 0,
+                "measurement_count": 1,
+                "complete_measurement_count": 0,
+                "censored_timeout_count": 1,
+                "calibration_evidence_status": "censored_lower_bound_only",
+            }
+        }
+        plan = _campaign_direct_resource_plan(
+            dimensions,
+            ["structural_integrity_qc"],
+            {
+                "maximum_parallel_cpus": 1,
+                "maximum_hours_per_cpu": 24,
+                "maximum_memory_gib": 185,
+                "planning_utilization": 0.85,
+                "pilot_budget_fraction": 0.05,
+                "memory_safety_factor": 1.25,
+            },
+            time_safety_factor=1.5,
+            measured_calibrations=measured,
+        )
+        row = plan["tasks"][0]
+        self.assertIsNone(row["measured_memory_cost_model"])
+        self.assertLessEqual(
+            row["estimated_peak_memory_gib_at_selected_observations"], 4.0
+        )
+
+    def test_measured_memory_model_keeps_system_size_scaling(self):
+        dimensions = self._reference_dimensions(frames_per_replica=1000)
+        dimensions["maximum_atom_count"] = REFERENCE_ATOM_COUNT // 4
+        measured = {
+            "replica_rmsd_rg": {
+                "catalog_sha256": "b" * 64,
+                "conservative_cpu_seconds_per_frame": 0.1,
+                "maximum_resident_memory_mib": 100.0,
+                "maximum_measured_selected_frame_count": 3000,
+                "maximum_measured_observation_count": 3000,
+                "measurement_count": 1,
+                "complete_measurement_count": 1,
+                "censored_timeout_count": 0,
+                "calibration_evidence_status": "completed_execution",
+            }
+        }
+        plan = _campaign_direct_resource_plan(
+            dimensions,
+            ["replica_rmsd_rg"],
+            {
+                "maximum_parallel_cpus": 1,
+                "maximum_hours_per_cpu": 24,
+                "maximum_memory_gib": 185,
+                "planning_utilization": 0.85,
+                "pilot_budget_fraction": 0.05,
+                "memory_safety_factor": 1.25,
+            },
+            time_safety_factor=1.5,
+            measured_calibrations=measured,
+        )
+        row = plan["tasks"][0]
+        self.assertAlmostEqual(
+            row["measured_memory_cost_model"]["calibration_memory_gib"],
+            2.0,
+            places=3,
+        )
 
     def test_rejects_unknown_simulation_kind(self):
         with tempfile.TemporaryDirectory() as temporary:

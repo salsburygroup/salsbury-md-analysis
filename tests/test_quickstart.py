@@ -15,6 +15,7 @@ from salsbury_md_analysis.quickstart import (
     _composition,
     _discover_dssp_executable,
     _hydrogen_bond_feature_observation_gate,
+    _record_conformational_experimental_exclusions,
     _secondary_structure_applicable,
     prepare_standard_analysis,
     prepare_standard_analysis_memory_fit,
@@ -149,6 +150,45 @@ def _write_oligomer_inputs(root: Path):
 
 
 class QuickstartTests(unittest.TestCase):
+    def test_perturbation_response_is_explicitly_inapplicable_without_trace_view(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "project-global.json").write_text(json.dumps({
+                "requested_modules": ["common_pca", "trajectory_reweighting"],
+            }), encoding="utf-8")
+            exclusions = {}
+            _record_conformational_experimental_exclusions(
+                root, ["project-global.json"], exclusions
+            )
+        self.assertIn("perturbation_response_dynamics", exclusions)
+        self.assertIn("macromolecular-trace", exclusions[
+            "perturbation_response_dynamics"
+        ])
+
+    def test_perturbation_response_reports_missing_functional_site_first(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "project-global.json").write_text(json.dumps({
+                "requested_modules": ["common_pca", "trajectory_reweighting"],
+            }), encoding="utf-8")
+            exclusions = {}
+            _record_conformational_experimental_exclusions(
+                root,
+                ["project-global.json"],
+                exclusions,
+                {
+                    "modules": {
+                        "perturbation_response_dynamics": {
+                            "enabled": True,
+                            "options": {},
+                        },
+                    },
+                },
+            )
+        self.assertIn("functional_site_node_indices", exclusions[
+            "perturbation_response_dynamics"
+        ])
+
     def test_available_dssr_duplex_receives_helical_planner_task(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -388,6 +428,10 @@ class QuickstartTests(unittest.TestCase):
         self.assertNotIn("random_feature_koopman", base["requested_modules"])
         self.assertNotIn("helical_mechanics", base["requested_modules"])
         self.assertEqual(helical_availability["availability_status"], "not_available")
+        self.assertEqual(
+            helical_availability["availability_reason"],
+            "no_duplex_dna_or_rna",
+        )
         self.assertFalse(helical_availability["planner_task_created"])
         self.assertEqual(
             base["definitions"]["multivalent_molecular_bridges"]
@@ -800,6 +844,13 @@ class QuickstartTests(unittest.TestCase):
                 sampling["campaign_resource_plan"]["raw_capacity_cpu_hours"],
                 384.0,
             )
+            safety = sampling["campaign_resource_plan"][
+                "resource_safety_margins"
+            ]
+            self.assertEqual(safety["modeled_task_time_factor"], 1.5)
+            self.assertEqual(safety["analysis_memory_model_factor"], 1.25)
+            self.assertEqual(safety["scheduler_memory_safety_factor"], 1.5)
+            self.assertEqual(safety["scheduler_memory_overhead_gib"], 1.0)
             self.assertTrue((output / "submit.sh").stat().st_mode & 0o100)
             self.assertTrue((output / "run-local.sh").stat().st_mode & 0o100)
             self.assertEqual(report["execution_adapter"], "local")
@@ -809,9 +860,22 @@ class QuickstartTests(unittest.TestCase):
             )
             self.assertEqual(
                 local_plan["local_execution_plan_schema"],
-                "salsbury-local-execution-plan-v2",
+                "salsbury-local-execution-plan-v3",
             )
-            self.assertEqual(local_plan["maximum_parallel_cpus"], 16)
+            self.assertEqual(local_plan["maximum_parallel_cpus"], 8)
+            campaign = json.loads(
+                (output / "campaign-resource-plan.json").read_text()
+            )
+            self.assertEqual(campaign["maximum_parallel_cpus_input"], 16)
+            self.assertEqual(campaign["effective_parallel_cpu_cap"], 8)
+            self.assertEqual(
+                campaign["resource_warnings"][0]["code"],
+                "REQUESTED_CPUS_EXCEED_USEFUL_PARALLELISM",
+            )
+            self.assertIn(
+                "Slurm submission will be changed to 8 CPUs",
+                campaign["resource_warnings"][0]["message"],
+            )
             self.assertEqual(local_plan["maximum_parallel_memory_gib"], 128.0)
             worker_paths = sorted(output.glob("run_stage_*_array.slurm"))
             workers = [path.read_text(encoding="utf-8") for path in worker_paths]
@@ -967,7 +1031,13 @@ class QuickstartTests(unittest.TestCase):
                 project["reference_connectivity"], str(connectivity.resolve())
             )
 
-    def test_memory_fallback_writes_requested_and_reduced_configs(self):
+    @patch(
+        "salsbury_md_analysis.quickstart._discover_dssp_executable",
+        return_value=None,
+    )
+    def test_memory_fallback_writes_requested_and_reduced_configs(
+        self, _discover_dssp,
+    ):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "inputs"
@@ -976,7 +1046,7 @@ class QuickstartTests(unittest.TestCase):
             config_path = root / "low-memory.json"
             config_path.write_text(json.dumps({
                 "config_schema": "salsbury-analysis-config-v1",
-                "execution": {"maximum_memory_gib": 1.5},
+                "execution": {"maximum_memory_gib": 4.0},
             }), encoding="utf-8")
             output = root / "analysis-memory-fit"
             report = prepare_standard_analysis_memory_fit(

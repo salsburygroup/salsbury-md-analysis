@@ -41,10 +41,21 @@ salsbury-md-analysis prepare-analysis ... --config my-analysis-config.json
 Each `modules.<module_id>` entry has an `enabled` flag and an `options` object.
 Options replace generated definition fields and then undergo the normal strict
 project-schema validation. Disabling an upstream module also disables its
-dependent analyses; the generated `module-coverage.json` records this rather
-than producing a workflow that will fail later. Preflight, provenance, and
-common-atom mapping infrastructure cannot be disabled. Each topology-derived
+dependent analyses; the resolved config turns off affected conformational
+views before project construction, and `module-coverage.json` records the
+decision. Preflight, provenance, common-atom mapping, and structural-integrity
+QC cannot be disabled. Comparative preparation additionally protects
+`integrated_comparison`: every comparison campaign must review and account for
+all completed result reports before the finding picker runs. Each topology-derived
 view has its own `enabled` flag and optional per-view `module_options`.
+The complete generated config also gives each module a generated `protected`
+flag, its direct `depends_on` list, and its `turning_off_also_disables` list.
+`module_groups` places the switches
+in numbered sections: required infrastructure, quality/motion,
+conformational bases, states/kinetics, internal geometry,
+interactions/solvent/ions, and integration. These fields explain the graph;
+only `enabled` and `options` are editable. Changing an explanatory dependency
+field is rejected because it would make the config disagree with execution.
 The high-detail common-heavy and interface views are enabled by default.
 `macromolecular_trace` PCA and its state trajectories are off by default but
 can be enabled independently for a deliberately coarse diagnostic.
@@ -52,6 +63,14 @@ DFI/DCI currently runs only on that trace view because its scientific unit is
 one representative macromolecular node per residue. Activation examples and
 the external weight schema and optional external-network override are in
 [`EXPERIMENTAL_METHODS.md`](EXPERIMENTAL_METHODS.md).
+
+`hydrogen_bonds` is the optional manual fixed-feature interface. Routine
+campaigns use `hydrogen_bond_discovery`, which infers donor, bonded hydrogen,
+and acceptor candidates from topology connectivity and chemical identity.
+`representative_structures` is likewise an optional coordinate-space
+mean/medoid utility. Routine state workflows use `representative_frames` and
+`state_coordinate_exports`; the former selects observed frames nearest the
+declared cluster center or FES basin root in that analysis feature space.
 
 The `clustering.methods` object lists all eleven conventional partitioning
 methods explicitly:
@@ -85,6 +104,14 @@ CPUs for 24 wall hours, or 768 raw CPU-hours before the configured utilization
 and pilot/finalization reserves. It does **not** mean 24 hours for every method.
 `time_safety_factor`, `memory_safety_factor`, and
 `censored_timeout_safety_factor` are independently configurable.
+The analysis-config `memory_safety_factor` adjusts measured working-set
+calibrations. It is distinct from the execution profile's scheduler-memory
+factor and fixed overhead; both are recorded in `resource_safety_margins`.
+The default 1.5 time factor is applied to modeled task costs before frame
+allocation. The planner then uses only the configured utilization fraction
+(normally 0.85) and removes pilot and finalization reserves. A Slurm profile may
+add a further per-job wall-time margin; that is a timeout request, not additional
+planned analysis time.
 `finalization_headroom_fraction` reserves campaign capacity for dependency
 barriers, summaries, hashes, and fail-closed acceptance rather than allocating
 the entire envelope to scientific estimators. A timed-out job is retained as a
@@ -100,24 +127,77 @@ estimators receive small method-specific runtime pilots (normally 10--100
 frames per replica at the TREX reference size and fewer for substantially
 larger systems). Those pilots calibrate cost and memory only; they are not
 scientific minima, convergence thresholds, or production recommendations.
-The planner then allocates additional deterministic, full-timespan samples
-within the shared envelope and reports every reduction. Preparation writes
+The planner does not estimate autocorrelation times or event rates. It enforces
+each method's fixed minimum sample count and, for order-dependent methods only,
+the maximum retained-frame temporal separation using the declared frame
+interval before allocating additional
+deterministic full-timespan samples within the shared envelope. Preparation writes
 `campaign-resource-plan.json`, which inventories base direct tasks, inherited
 base tasks, and all enabled conformational-view tasks. Downstream FES,
 clustering, and state methods share the selected physical-frame identities of
 their view PCA; equivalent oligomer members add observations but do not add
-physical frames or replicas. A configured envelope that cannot fund the small
+physical frames or replicas. Every replan regenerates the PCA projection count
+and uses it as the source count for each downstream clustering fit. The planner
+iterates until those counts agree exactly. If discrete stride upgrades alternate
+between two allocations, it derives the componentwise lower projection ceiling
+from that cycle and replans the fits; it never falls back to a saved count.
+A configured envelope that cannot fund the small
 technical minima fails closed by default.
-The plan also includes `experimental_module_coverage`: one row for every
-default-off method, its resolved configuration state, planner task IDs, or an
-explicit `not_available` reason. Preparation fails if an enabled method is
-neither planned nor availability-gated.
+
+Method-reduction advice preserves every module marked `protected: true`,
+including protection through dependency closure. If those retained tasks do
+not fit, the terminal and saved plan report `No acceptable reduced plan` and
+recommend a larger envelope. A reduced configuration is never manufactured by
+turning off structural-integrity QC.
+
+The terminal summary and `campaign-resource-plan.json` also report the padded
+minimum resource request for the best protected dependency-closed subset. CPU
+and aggregate memory come from its busiest resource wave under the supplied
+CPU and memory caps. Requested wall time is its modeled science critical path
+divided by the usable science fraction after pilot and finalization reserves,
+then rounded up to a whole hour. The report records the task-time model factor,
+analysis-memory factor, scheduler-memory factor and overhead, and per-job
+Slurm timeout margin. A status of `requires_larger_wall_time` means the subset
+fits the supplied CPU and memory caps but needs a longer campaign ceiling. The
+accompanying warning states that this permissive minimum is an execution floor,
+not a convergence, equilibration, or biological-validity claim.
+
+The method floors are independently configurable. Create a complete policy
+file with `write-scientific-minimums-template`, review its per-replica,
+pooled-overall-per-system, and ordered-method time-gap values, and set
+`sampling.scientific_minimums_file` to that path. The public policy allows a
+user or publication workflow to raise count floors or tighten positive
+time-gap maxima. It rejects changes that weaken the packaged standard. The
+resolved policy ID, source path, and SHA-256 are copied into the campaign plan.
+
+Stride upgrades follow a progressive absolute resource frontier. For an
+otherwise identical plan, increasing the wall limit extends the shorter
+allocation instead of replacing its inexpensive upgrades with newly affordable
+expensive work. Per-task frame coverage is therefore nondecreasing across a
+duration series such as 8, 24, 48, and 168 hours. Priority weights decide among
+upgrades that become affordable at the same frontier; they do not retract an
+earlier task's frames.
+
+CPU-hours and wall time are reported separately in
+`resource_budget_utilization`. A low CPU-hour fraction is not automatically
+unused scientific work: serial estimators, dependency barriers, and per-task CPU
+caps can saturate wall time while many requested cores are idle.
+`allocation_saturation` identifies the stop reason, the groups at their frame
+ceilings, memory-blocked groups, and the wall allowance required by the next
+stride upgrade. No duplicate calculation is added merely to consume the raw
+CPU-hour envelope.
+When `maximum_parallel_cpus` exceeds the largest concurrently useful stage,
+`resource_warnings` reports `REQUESTED_CPUS_EXCEED_USEFUL_PARALLELISM`, the
+useful ceiling, and the excess requested cores. The requested value remains in
+the provenance record. The resolved execution cap is reduced to the useful
+ceiling, and generated local, custom, and Slurm launchers use that effective
+value. The warning states both counts before execution.
 That failure includes the minimum calibrated critical path, the science wall
 and CPU allowances after reserves, the configured campaign ceiling, and the
 smallest calculated `--target-wall-hours` retry bound. The number is guidance,
 not an automatic change to the user's resource request.
 
-Memory is planned per task at its technical minimum. Legacy tier values are
+Memory starts with a per-task working-set estimate at its technical minimum. Legacy tier values are
 referenced to the retained 85,206-atom solvated benchmark system, then adjusted
 by a conservative square-root atom-count factor. The factor cannot fall below
 0.1 or rise above 4.0, so fixed library allocations retain headroom and very
@@ -125,10 +205,16 @@ large systems do not extrapolate without bound. Measured maxima are transferred
 by the measured observation coverage instead: the square-root observation
 factor also has a 0.1 floor. A power-law method keeps its declared
 observation-based exponent. Every task records the reference value, applicable
-scaling model, and final selected-observation estimate.
+scaling model, and final selected-observation estimate. The execution profile
+then converts each working set to a buffered request. The DEAC rule is
+`ceil(1.5 × working set + 1 GiB)`, with a 2 GiB minimum. The campaign's
+`maximum_memory_gib` limits the sum of those requests in each concurrent wave.
+It is not repeated for every job. CPU and memory limits are both considered
+while allocating frames and estimating dependency-stage wall time.
 
-When one or more technical minima exceed `maximum_memory_gib`, the plan's
-`memory_feasibility` section reports the exact largest estimate, its shortfall,
+When one or more safety-adjusted technical minima exceed `maximum_memory_gib`, the plan's
+`memory_feasibility` section reports the largest raw working set, the required
+buffered request, its shortfall,
 a whole-GiB rounded recommendation, the oversized task rows, and the minimal
 set of module or individual clustering-method switches that must be disabled
 at that cap. The default behavior does not alter the user's analysis. It writes
@@ -165,20 +251,30 @@ feature count and member-observation expansion. Methods driven by projected
 observations rather than raw atoms keep their observation-based model. The
 applied multiplier and reference workload remain in
 `campaign-resource-plan.json`.
-The generated local and Slurm adapters run base stages before conformational stages.
-`execution.submission_adapter` selects `local` or `slurm`; local is the default.
+The generated local, Slurm, and custom-launcher adapters run base stages before
+conformational stages. `execution.submission_adapter` selects `local`, `slurm`,
+or `custom`; local is the default.
 Slurm mode requires a validated `execution.slurm_profile`, which keeps account,
 partition, QoS, environment, command, and storage conventions outside scientific
 configuration. The supplied `profiles/analysis/deac-default.json` selects the
-Salsbury-group DEAC profile. Both adapters run the same workers and output contracts.
-The Slurm adapter translates the task-level planner estimates into scheduler time
-and memory requests with explicit safety margins, records the mapping in
-`scheduler-resource-requests.json`, and routes sufficiently large requests through
-the profile's large-memory role. It limits base arrays to the configured CPU count,
-and dependency-batches view
-arrays and per-system preflights so their simultaneous CPU reservations do not
-exceed `maximum_parallel_cpus`. This controls active compute allocation; queue
+Salsbury-group DEAC profile. Custom mode hands `launcher-contract.json` to the
+executable named by `SALSBURY_MD_ANALYSIS_CUSTOM_LAUNCHER`. All adapters use the
+same workers and output contracts.
+The Slurm adapter records task-specific scheduler requests in
+`scheduler-resource-requests.json` and routes sufficiently large requests through
+the profile's large-memory role. Its canonical launcher submits deterministic
+dependency waves. Each wave stays within both `maximum_parallel_cpus` and the
+aggregate `maximum_memory_gib`; downstream work waits for all jobs in the preceding
+wave. This controls active compute allocation; queue
 wait and scheduler backfill are not counted as analysis wall time.
+
+`advise-slurm-capacity` is an optional, read-only step for prepared Slurm
+campaigns. It can replace the configured CPU count with the smaller of the live
+scheduler ceiling and the workflow's useful parallelism, then rerun the saved
+sampling allocation for a requested duration. Because selected observations are
+recomputed, observation-scaled memory is recomputed as well. The command reports
+per-task and exact planned resource-wave memory separately; it does not alter the
+config, regenerate workers, or submit work.
 
 The `exports` section separates feature/alignment atoms from coordinate output.
 The default coordinate payload retains the complete non-water molecular system
@@ -209,17 +305,14 @@ base and conformational-view stage, verifies all expected reports exist, and
 writes:
 
 - `analysis_resource_and_frame_table.csv`, `.json`, and `.md`;
+- `results/integrated-comparison/report.json` for comparative campaigns;
 - `prioritized_findings.csv`, `.json`, and `.md`;
-- `interactive-report/index.html` and its hash-bound `manifest.json` when
-  `reporting.interactive_report_enabled` is true; and
 - compact finalizer status reports.
 
-The interactive report is enabled by default and can be disabled independently
-of the resource table and finding picker. It is a self-contained, offline
-presentation of ranked findings, structured plots, representative PDBs, all
-modules, resources, QC, and provenance. It never replaces the raw reports or
-changes their technical/scientific status. See
-[`INTERACTIVE_REPORT.md`](INTERACTIVE_REPORT.md).
+Interactive browsing is provided by the separate
+`salsbury-md-analysis-interactive` companion repository. The core package does
+not install or invoke the viewer; its JSON, CSV, Markdown, structures, and
+method reports remain the scientific record.
 Root-level `*-availability.json` records are included alongside completed
 module reports, so an optional method that cannot run is shown as unavailable
 rather than silently absent.

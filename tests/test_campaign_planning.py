@@ -253,7 +253,10 @@ class CampaignPlanningTests(unittest.TestCase):
                     "projection_frame_stride": 1,
                     "projection_frame_selection": {"mode": "fixed_stride_v1"},
                 },
-                "markov_state_models": {},
+                "markov_state_models": {
+                    "lag_frames": [1, 2, 5, 10],
+                    "minimum_transition_count": 1,
+                },
                 "reactive_path_ensembles": {
                     "maximum_paths_per_direction": 80,
                     "maximum_path_frames": 400,
@@ -522,6 +525,120 @@ class CampaignPlanningTests(unittest.TestCase):
         )
         self.assertEqual(task["minimum_lag_pairs"], 20)
         self.assertEqual(task["maximum_available_lag_pairs"], 20)
+
+    def test_tica_requires_configured_pairs_in_every_segment(self):
+        project = {
+            "requested_modules": [
+                "common_pca",
+                "time_lagged_independent_component_analysis",
+            ],
+            "definitions": {
+                "common_pca": {
+                    "maximum_features": 100,
+                    "projection_frame_stride": 1,
+                    "projection_frame_selection": {"mode": "fixed_stride_v1"},
+                },
+                "time_lagged_independent_component_analysis": {
+                    "lag_frames": 3,
+                    "minimum_pairs_per_segment": 10,
+                },
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "project-short-tica.json"
+            path.write_text(json.dumps(project), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValueError, "at least 13 projected frames"
+            ):
+                _view_tasks(path, [12], 10_000, time_safety_factor=1.5)
+
+    def test_tica_carries_configured_lag_pair_minimum_into_plan(self):
+        project = {
+            "requested_modules": [
+                "common_pca",
+                "time_lagged_independent_component_analysis",
+            ],
+            "definitions": {
+                "common_pca": {
+                    "maximum_features": 100,
+                    "projection_frame_stride": 1,
+                    "projection_frame_selection": {"mode": "fixed_stride_v1"},
+                },
+                "time_lagged_independent_component_analysis": {
+                    "lag_frames": 3,
+                    "minimum_pairs_per_segment": 10,
+                },
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "project-tica.json"
+            path.write_text(json.dumps(project), encoding="utf-8")
+            tasks = _view_tasks(path, [20], 10_000, time_safety_factor=1.5)
+        task = next(
+            row for row in tasks
+            if row["module_id"]
+            == "time_lagged_independent_component_analysis"
+        )
+        self.assertEqual(task["lag_frames"], 3)
+        self.assertEqual(task["minimum_lag_pairs_per_segment"], 10)
+        self.assertEqual(
+            task["minimum_frames_per_replica_for_lag_pairs"], 13
+        )
+        self.assertEqual(task["maximum_available_lag_pairs"], 17)
+
+    def test_msm_uses_largest_configured_lag_and_transition_minimum(self):
+        project = {
+            "requested_modules": ["common_pca", "markov_state_models"],
+            "definitions": {
+                "common_pca": {
+                    "maximum_features": 100,
+                    "projection_frame_stride": 1,
+                    "projection_frame_selection": {"mode": "fixed_stride_v1"},
+                },
+                "markov_state_models": {
+                    "lag_frames": [1, 3, 5],
+                    "minimum_transition_count": 4,
+                },
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "project-msm.json"
+            path.write_text(json.dumps(project), encoding="utf-8")
+            tasks = _view_tasks(path, [10], 10_000, time_safety_factor=1.5)
+        task = next(
+            row for row in tasks if row["module_id"] == "markov_state_models"
+        )
+        self.assertEqual(task["largest_configured_lag_frames"], 5)
+        self.assertEqual(task["minimum_transition_count"], 4)
+        self.assertEqual(
+            task["minimum_frames_per_replica_for_transition_pairs"], 9
+        )
+        self.assertEqual(
+            task["maximum_available_transition_pairs_at_largest_lag"], 5
+        )
+
+    def test_msm_rejects_insufficient_configured_transition_pairs(self):
+        project = {
+            "requested_modules": ["common_pca", "markov_state_models"],
+            "definitions": {
+                "common_pca": {
+                    "maximum_features": 100,
+                    "projection_frame_stride": 1,
+                    "projection_frame_selection": {"mode": "fixed_stride_v1"},
+                },
+                "markov_state_models": {
+                    "lag_frames": [1, 5],
+                    "minimum_transition_count": 2,
+                },
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "project-short-msm.json"
+            path.write_text(json.dumps(project), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValueError, "only 0 segment-safe transition pairs"
+            ):
+                _view_tasks(path, [5], 10_000, time_safety_factor=1.5)
 
     def test_alternative_families_are_independent_logical_tasks_in_one_bundle(self):
         project = {
