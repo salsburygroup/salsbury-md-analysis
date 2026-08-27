@@ -15,6 +15,7 @@
 | `individual_pca` | 6 | md | **experimental** | Individual-replica PCA |
 | `common_pca` | 6 | md | **experimental** | Common-atom shared-basis PCA |
 | `time_lagged_independent_component_analysis` | 6K | md | **experimental** | Time-lagged independent component analysis |
+| `random_feature_koopman` | 6R | md | **experimental** | Random-feature nonlinear Koopman kinetics |
 | `pca_fes_basins` | 7 | md | **experimental** | PCA free-energy surfaces and basin populations |
 | `clustering_kmeans` | 8 | md | **experimental** | KMeans clustering |
 | `clustering_hdbscan` | 8 | md | **experimental** | HDBSCAN sensitivity clustering |
@@ -22,6 +23,7 @@
 | `representative_frames` | 8R | md | **experimental** | Representative frames for clusters and PCA basins |
 | `state_coordinate_exports` | 8E | md | **experimental** | Immutable state trajectories and structures |
 | `markov_state_models` | 9 | md | **experimental** | Markov-state models |
+| `reactive_path_ensembles` | 9P | md | **experimental** | Reactive-path ensembles from ordinary MD |
 | `dihedral_distributions` | 10 | md | **experimental** | Backbone and side-chain dihedral distributions |
 | `hydrogen_bonds` | 11 | md | **experimental** | Hydrogen-bond occupancies |
 | `hydrogen_bond_discovery` | 11D | md | **experimental** | Topology-template hydrogen-bond discovery |
@@ -31,6 +33,7 @@
 | `grouped_regularized_classification` | 11M | md | **experimental** | Grouped logistic and elastic-net classification |
 | `secondary_structure` | 12 | md | **experimental** | Secondary structure |
 | `nucleic_acid_structure` | 12N | md | **experimental** | Nucleic-acid structural motifs |
+| `helical_mechanics` | 12M | md | **experimental** | DSSR-gated duplex helical mechanics |
 | `nucleic_acid_geometry` | 12G | md | **experimental** | Intrinsic nucleic-acid ring and stacking geometry |
 | `ion_coordination_geometry` | 12I | md | **experimental** | Bound-ion coordination and ion-pair geometry |
 | `ion_atmosphere` | 12A | md | **experimental** | Species-resolved ion atmosphere |
@@ -42,7 +45,17 @@
 | `alternative_clustering` | 8A | md | **experimental** | Alternative clustering and validation |
 | `pald_community_analysis` | 8P | md | **experimental** | Partitioned Local Depth community analysis |
 | `information_dynamics` | 5D | md | **experimental** | Directional and higher-order information dynamics |
+| `perturbation_response_dynamics` | 6D | md | **experimental** | Perturbation-response DFI and DCI |
+| `trajectory_reweighting` | 7W | md | **experimental** | Frame-aligned trajectory reweighting |
 | `correlation_networks` | 5R | md | **experimental** | Correlation networks and profile clustering |
+| `allosteric_pathways` | 5A | md | **experimental** | Trajectory-derived contact-occupancy pathways |
+| `energetic_network_embeddings` | 12E | md | **experimental** | Residue interaction-energy network embeddings |
+| `multivalent_molecular_bridges` | 12B | md | **experimental** | Multivalent molecular-bridge networks |
+| `hydration_density_channels` | 12D | md | **experimental** | Aligned hydration and ion-density channels |
+| `ensemble_pocket_dynamics` | 12P | md | **experimental** | Ensemble pocket dynamics |
+| `interaction_fingerprints` | 12F | md | **experimental** | Chemically typed interaction fingerprints |
+| `spatial_interaction_ensembles` | 12S | md | **experimental** | Spatial interaction superfeatures |
+| `interaction_persistence` | 12T | md | **experimental** | Temporal persistence of interaction fingerprints |
 | `trajectory_features` | 6F | md | **experimental** | Reusable trajectory feature extractors |
 | `scalar_feature_distributions` | 6H | md | **experimental** | Scalar feature histograms and residence runs |
 | `scalar_threshold_states` | 6T | md | **experimental** | Scalar threshold states |
@@ -402,6 +415,38 @@ Scientific limits:
 - Current kinetic interpretation requires unbiased MD and one common evaluated physical-time interval.
 - TICA modes and timescales require lag, feature, stationarity, and convergence sensitivity analysis.
 
+## Random-feature nonlinear Koopman kinetics
+
+- ID: `random_feature_koopman`
+- Stage: `6R`
+- Category: `md`
+- Status: **experimental**
+
+Map selected TICA coordinates through isotropic-Gaussian random Fourier dictionaries, fit segment-safe reversible slow modes, scan feature-count and bandwidth candidates, and withhold selection unless held-out VAMP-E and slow-subspace recovery are stable across several prespecified feature-map seeds.
+
+Required inputs:
+
+- complete unbiased-MD TICA projections
+- selected TICA components
+- lag and random-feature hyperparameter grids
+- at least three prespecified feature-map seeds
+- VAMP-E and subspace-stability gates
+
+Declared outputs:
+
+- candidate-specific held-out VAMP-E
+- seed-pair slow-subspace similarities
+- selected nonlinear slow coordinates only after stability gates pass
+- random-feature dictionary and projection lineage
+- nonlinear implied-timescale diagnostics
+
+Scientific limits:
+
+- Random Fourier features approximate a declared Gaussian kernel and do not prove that kernel is physically appropriate.
+- Seeds alter the fitted nonlinear representation, so a recorded multi-seed stability gate is mandatory.
+- Hyperparameter selection reuses the declared validation folds and remains sensitivity evidence rather than independent confirmation.
+- Nonlinear coordinates and implied timescales do not establish metastability, convergence, Markovianity, mechanism, or causality.
+
 ## PCA free-energy surfaces and basin populations
 
 - ID: `pca_fes_basins`
@@ -444,28 +489,31 @@ Scientific limits:
 - Category: `md`
 - Status: **experimental**
 
-Select complete tICA or common-PCA partitions using a declared k grid, KMeans++ seeds, convergence and occupancy gates, exact or deterministic seeded full-partition silhouette evaluation, and adjusted-Rand seed stability.
+Select complete tICA, common-PCA, or trajectory-feature partitions using a declared k grid and dependency-free deterministic strat_all/strat_reduced NANI initialization by default; retain seeded KMeans++ as a compatibility sensitivity, with convergence, occupancy, multi-seed silhouette-selection, and adjusted-Rand initialization-stability evidence.
 
 Required inputs:
 
-- tICA or common PCA features
-- component selection
+- tICA, common PCA, or declared trajectory features
+- component or feature selection
 - cluster grid
-- random seeds
-- occupancy, size, and silhouette resource gates
+- NANI strategy and candidate percentage or legacy random seeds
+- occupancy, size, multi-seed silhouette, and unanimous-selection gates
 
 Declared outputs:
 
 - complete assignments
 - centers
-- per-seed diagnostics
-- exact-or-estimated silhouette provenance
-- stability selection evidence
+- initial-center and complementary-MSD provenance
+- per-initialization diagnostics
+- exact-or-multi-seed-estimated silhouette provenance
+- silhouette winner-stability gate
+- initialization-stability evidence
 
 Scientific limits:
 
-- A high silhouette score and seed stability do not establish physical metastability, convergence, or kinetics.
-- Euclidean KMeans favors convex clusters in the declared standardized or raw feature space.
+- A high silhouette score and initialization stability do not establish physical metastability, convergence, or kinetics.
+- NANI changes KMeans initialization, not its Euclidean convex-cluster assumption.
+- The NANI percentage and strat_all versus dense-state-focused strat_reduced choice require sensitivity analysis.
 
 ## HDBSCAN sensitivity clustering
 
@@ -618,6 +666,39 @@ Scientific limits:
 - The clustering and FES state definitions are both reported and are not treated as interchangeable.
 - Rates and pathways are not valid until sampling, lag, connectivity, population, and convergence gates pass.
 - Technical completion does not establish a valid kinetic model.
+
+## Reactive-path ensembles from ordinary MD
+
+- ID: `reactive_path_ensembles`
+- Stage: `9P`
+- Category: `md`
+- Status: **experimental**
+
+Reuse complete KMeans frame assignments and their trajectory features; discover a recurrent endpoint pair or accept disjoint multi-state source and sink sets; extract segment-safe last-exit/first-arrival paths; compare bounded path ensembles with multidimensional dynamic time warping; cluster route families; and report explicit transition-sufficiency and kinetics-readiness gates.
+
+Required inputs:
+
+- complete KMeans assignments with frame identity, physical time, and feature values
+- automatic recurrent-pair or explicit disjoint multi-state endpoints
+- DTW, route-clustering, resource, and event-sufficiency gates
+- optional validated KMeans Markov-state report
+
+Declared outputs:
+
+- endpoint-selection inventory
+- complete source-to-sink and sink-to-source path records
+- endpoint transition-count matrix
+- pairwise normalized DTW distances
+- route clusters and medoid representative paths
+- transition-sufficiency and kinetics-readiness status
+
+Scientific limits:
+
+- Paths never cross system, replica, segment, or member boundaries.
+- Automatically selected KMeans endpoints have no inferred biological meaning and are not assumed metastable.
+- DTW route families are descriptive and do not establish mechanism, flux, committor probability, or causality.
+- Ordinary MD cannot characterize a transition it did not observe; absent or insufficient transitions are reported explicitly.
+- A kinetics-ready status is a prerequisite gate and not a rate estimate.
 
 ## Backbone and side-chain dihedral distributions
 
@@ -890,6 +971,38 @@ Scientific limits:
 - DSSR is an external dependency; JSON paths and missing-value policies must be declared explicitly and may vary by DSSR version.
 - Periodic production analysis requires connectivity-aware reconstruction.
 - Motif counts and structural descriptors require replica-sensitive convergence analysis.
+
+## DSSR-gated duplex helical mechanics
+
+- ID: `helical_mechanics`
+- Stage: `12M`
+- Category: `md`
+- Status: **experimental**
+
+For DSSR-verified duplex DNA or RNA only, assemble frame-aligned shift, slide, rise, tilt, roll, and twist vectors, separate supported multimodal states, estimate regularized state-specific covariance stiffness matrices, and quantify neighboring-step state coupling.
+
+Required inputs:
+
+- installed and version-recorded x3dna-dssr
+- DSSR-detected duplex stem
+- six frame-aligned base-step descriptor queries
+- temperature
+- state and covariance gates
+
+Declared outputs:
+
+- explicit available/not-available status
+- step-resolved state populations
+- regularized covariance and stiffness matrices
+- adjacent-step joint states and mutual information
+
+Scientific limits:
+
+- The module is unavailable without DSSR or a DSSR-detected duplex stem.
+- Stiffness is a local harmonic covariance model and is never fitted across an unresolved multimodal mixture.
+- Translation-rotation matrices use mixed angstrom/radian coordinates.
+- DSSR step ordering, state count, regularization, sampling, and replica sensitivity require validation.
+- Mechanical association does not establish causality or biological mechanism.
 
 ## Intrinsic nucleic-acid ring and stacking geometry
 
@@ -1227,6 +1340,65 @@ Scientific limits:
 - Directional dependence does not establish causal mechanism.
 - Lag pairs never cross segments.
 
+## Perturbation-response DFI and DCI
+
+- ID: `perturbation_response_dynamics`
+- Stage: `6D`
+- Category: `md`
+- Status: **experimental**
+
+Calculate dynamic flexibility and functional-site dynamic coupling indices from per-system common-PCA score covariances mapped into the retained shared Cartesian subspace, using reproducible random unit-force perturbations.
+
+Required inputs:
+
+- common PCA basis and per-system projections
+- zero-based functional-site node indices
+- force-sampling and explained-variance gates
+
+Declared outputs:
+
+- target-by-source response matrices
+- DFI and percentile profiles
+- functional-site DCI and percentile profiles
+- reference-system differences
+- retained-subspace provenance
+
+Scientific limits:
+
+- Residue interpretation requires one declared representative node per residue.
+- Results require PCA-dimensionality, force-count, functional-site, alignment, mapping, and sampling sensitivity analysis.
+- Frame-pooled covariance is not replica-level uncertainty.
+- Dynamic coupling does not establish causality, pathway, mechanism, or scientific validity.
+
+## Frame-aligned trajectory reweighting
+
+- ID: `trajectory_reweighting`
+- Stage: `7W`
+- Category: `md`
+- Status: **experimental**
+
+Normalize externally derived per-frame log weights with exact trajectory-identity joins, stable log-sum-exp arithmetic, per-system weighted common-PCA moments, and declared Kish-ESS, Kish-ratio, and maximum-weight reliability gates.
+
+Required inputs:
+
+- common PCA projections with frame identities
+- external log weights with matching system/replica/segment/member/frame identities
+- declared reliability gates
+
+Declared outputs:
+
+- normalized per-frame weights
+- Kish and entropy effective sample sizes
+- weight-concentration diagnostics
+- weighted common-PCA moments
+- reweighting validity status
+
+Scientific limits:
+
+- The module consumes weights and does not infer bias potentials, MBAR free energies, or experimental-restraint multipliers.
+- Weight-only ESS does not remove trajectory autocorrelation or prove phase-space overlap.
+- Passing gates does not silently authorize biased FES conversion or establish scientific validity.
+
 ## Correlation networks and profile clustering
 
 - ID: `correlation_networks`
@@ -1255,6 +1427,262 @@ Scientific limits:
 - Network topology and profile clustering are threshold- and parameter-sensitive.
 - Correlation edges and clusters are not direct physical interactions or causal links.
 - The optional HDBSCAN dependency must be installed separately.
+
+## Trajectory-derived contact-occupancy pathways
+
+- ID: `allosteric_pathways`
+- Stage: `5A`
+- Category: `md`
+- Status: **experimental**
+
+Build per-system residue contact occupancies directly from selected trajectory frames, transform retained occupancies to negative-log path distances, enumerate declared source-to-sink shortest-path multiplicity and participation, calculate weighted betweenness, and optionally combine it with a separately derived displacement-dependency factor.
+
+Required inputs:
+
+- accepted trajectories and topology mappings
+- one representative atom per residue
+- declared source and sink node sets
+- contact, sequence-separation, and occupancy thresholds
+- optional explicit external-network override
+
+Declared outputs:
+
+- trajectory-derived contact edge tables
+- all-equal-shortest-path counts and representative paths
+- node and edge path participation
+- weighted betweenness centrality
+- optional local dependency and combined prioritization scores
+
+Scientific limits:
+
+- Physical contacts and statistical dependencies remain separate channels; dependency never creates an edge.
+- Negative-log occupancy distance is a persistence cost, not time, energy, or causal information flow.
+- Representative-atom cutoff, sequence exclusion, occupancy threshold, endpoint, and sampling sensitivity are required.
+- The local dependency factor is code-defined and does not claim equivalence to an external SenseNet implementation.
+- Pathways and prioritization scores do not establish mechanism or scientific validity.
+
+## Residue interaction-energy network embeddings
+
+- ID: `energetic_network_embeddings`
+- Stage: `12E`
+- Category: `md`
+- Status: **experimental**
+
+Reproduce the Cowan/Thayer cpptraj-pairwise protein-only workflow from atom-order-matched Amber PRMTOP, CHARMM PSF plus parameter/stream files, or a serialized OpenMM System: direct nonperiodic electrostatic and Lennard-Jones atom-pair energies, absolute residue aggregation, local edge normalization, electrostatic heat kernels, deterministic per-frame PCA, and residue-wise Wasserstein comparisons.
+
+Required inputs:
+
+- accepted made-whole trajectories
+- PDB/GRO atom identities
+- Amber PRMTOP/PARM7, CHARMM PSF plus PRM/PAR/STR, or one standard-NonbondedForce OpenMM System XML
+- explicit bond graph for cpptraj-style exclusions
+- at least two complete common protein residues
+- frame and all-pairs resource gates
+
+Declared outputs:
+
+- protein-only residue-pair interaction-energy networks
+- electrostatic heat kernels
+- per-frame three-component embeddings
+- pairwise-system residue Wasserstein rankings
+- VDW-negligibility diagnostic
+
+Scientific limits:
+
+- The network is not a unique decomposition of the reciprocal-space PME contribution or the complete simulation energy.
+- CHARMM NBFIX is honored; OpenMM custom nonbonded expressions fail closed rather than being guessed.
+- Raw GROMACS TPR extraction is not implemented; GROMACS-derived systems can use serialized OpenMM System XML when representable by one standard NonbondedForce.
+- Solvent, ions, nucleic acids, ligands, mutations, and atom-incomplete residues are excluded; no solvent-inclusive or signed-energy extension is implemented.
+- Absolute-energy aggregation discards favorable-versus-unfavorable sign.
+- Per-frame PCA and summed marginal Wasserstein distances inherit the published supplement's axis and dependence limitations.
+- Residue rankings are descriptive and do not establish affinity, causality, mechanism, or allostery.
+
+## Multivalent molecular-bridge networks
+
+- ID: `multivalent_molecular_bridges`
+- Stage: `12B`
+- Category: `md`
+- Status: **experimental**
+
+Identify supported ions, recognized waters, or explicitly named ligand and cosolvent residues that simultaneously contact multiple solute residues; retain frame-level bridge hyperedges, pairwise residue-network projections, multiplicity distributions, and segment-safe boundary-censored bridge residence events.
+
+Required inputs:
+
+- accepted trajectories and topology identities
+- configured mediator classes and optional residue names
+- solute residue classes and atom-element filters
+- mediator-specific contact cutoffs
+- frame and sparse-output resource gates
+
+Declared outputs:
+
+- frame-level mediator-to-residue hyperedges
+- mediator and mediator-type bridge occupancies
+- multiplicity distributions
+- segment-safe residence events
+- pairwise projected residue edges
+
+Scientific limits:
+
+- Distance-defined bridges do not establish binding affinity, energetic stabilization, phase separation, or mechanism.
+- Recognized-water bridges are oxygen-proximity observations; hydrogen-bond chemistry remains a separate module.
+- Pairwise projection expands a k-residue hyperedge into k choose 2 edges and must not replace the retained hyperedge.
+- Subsampled selected-observation runs are not continuous-time lifetimes.
+- Cutoff, protonation, atom selection, and mediator-definition sensitivity are required.
+
+## Aligned hydration and ion-density channels
+
+- ID: `hydration_density_channels`
+- Stage: `12D`
+- Category: `md`
+- Status: **experimental**
+
+Accumulate reference-aligned three-dimensional water and ion frame occupancy on an explicit bounded grid, retain exact frame-to-component identities, compare common-grid densities across systems, and identify connected boundary-reaching high-occupancy geometric channel candidates.
+
+Required inputs:
+
+- accepted trajectories and topology identities
+- alignment and solute-extent selections
+- configured water and ion identities
+- grid, occupancy, component, and resource gates
+
+Declared outputs:
+
+- species-resolved voxel occupancy
+- two-dimensional density projections
+- connected density components
+- geometric channel-candidate labels
+- exact frame-level component fingerprints
+- pairwise common-grid differences
+
+Scientific limits:
+
+- This spatial analysis supplements rather than replaces RDF, bridge, and interaction-fingerprint definitions.
+- Boundary-reaching components are geometric channel candidates, not evidence of diffusion, flux, permeability, free energy, or mechanism.
+- Alignment, grid, occupancy threshold, species identity, and frame-selection sensitivity are required.
+- Frame occupancies are descriptive and are not independent-replica uncertainty.
+
+## Ensemble pocket dynamics
+
+- ID: `ensemble_pocket_dynamics`
+- Stage: `12P`
+- Category: `md`
+- Status: **experimental**
+
+Detect locally enclosed solvent-sized empty regions with a deterministic reference-aligned grid, retain per-frame lining residues and volumes, track pocket identities through residue overlap and centroid gates, and compare persistence across systems.
+
+Required inputs:
+
+- accepted trajectories and topology identities
+- alignment and solute-heavy selections
+- grid and geometric enclosure settings
+- tracking and resource gates
+
+Declared outputs:
+
+- per-frame geometric pocket instances
+- tracked pocket clusters
+- lining-residue identities
+- volume and persistence summaries
+- pairwise occupancy differences
+
+Scientific limits:
+
+- The native geometry screen does not predict druggability, ligand affinity, binding free energy, or opening kinetics.
+- Pocket identities are threshold-sensitive and require grid, atom-selection, tracking, and frame-selection sensitivity analysis.
+- Solvent occupancy is provided separately by the hydration-density module and is not treated as pocket wall material.
+- Frame persistence is descriptive and is not independent-replica uncertainty.
+
+## Chemically typed interaction fingerprints
+
+- ID: `interaction_fingerprints`
+- Stage: `12F`
+- Category: `md`
+- Status: **experimental**
+
+Join exact frame identities from direct hydrogen bonds, one-water bridges, ion coordination, ion-atmosphere shells, multivalent mediator bridges, and aligned hydration-density components into one sparse chemically typed fingerprint with explicit source missingness and pairwise-complete co-occurrence statistics.
+
+Required inputs:
+
+- one or more complete supported interaction or hydration-density reports
+- exact system/replica/segment/source-frame identities
+- feature and pair resource gates
+
+Declared outputs:
+
+- typed feature dictionary
+- frame-level sparse fingerprints with source availability
+- source-specific occupancies
+- pairwise-complete co-occurrence, conditional probability, Jaccard, and phi tables
+
+Scientific limits:
+
+- Missing upstream frames are never interaction-negative observations.
+- Feature and interaction chemistry or spatial definitions are inherited from source modules and require their sensitivity analyses.
+- Co-occurrence is descriptive association, not energetic coupling, causality, or mechanism.
+- Frame counts are not independent-replica uncertainty.
+
+## Spatial interaction superfeatures
+
+- ID: `spatial_interaction_ensembles`
+- Stage: `12S`
+- Category: `md`
+- Status: **experimental**
+
+Convert extractable direct-hydrogen-bond and ion-coordination fingerprint endpoints into exact receptor-aligned partner-coordinate ensembles, summarize their three-dimensional spread, and test deterministic NANI spatial partitions with observation, separation, recurrence, and replica-support gates.
+
+Required inputs:
+
+- complete interaction-fingerprint report
+- accepted trajectories and topology identities
+- reference structure and declared alignment selection
+- observation, recurrence, and exact-mode resource gates
+
+Declared outputs:
+
+- spatial superfeature dictionary
+- exact frame-aligned partner-coordinate observations
+- centroid, covariance, principal-axis, and radius summaries
+- gated spatial mode candidates
+- pairwise system spatial differences
+- explicit unsupported-feature inventory
+
+Scientific limits:
+
+- The module supplements rather than replaces binary fingerprints, RDFs, bridges, hydration density, or persistence analyses.
+- Only fingerprint types exposing exact partner atoms are spatialized; unsupported types are explicitly reported.
+- Alignment and atom-definition sensitivity are required, and multiple points from one frame are not independent samples.
+- Spatial mode candidates are not binding states, free-energy basins, kinetics, metastability, affinity, causality, or mechanism.
+
+## Temporal persistence of interaction fingerprints
+
+- ID: `interaction_persistence`
+- Stage: `12T`
+- Category: `md`
+- Status: **experimental**
+
+Convert exact-frame chemically typed fingerprints into segment-safe continuous and explicitly gap-tolerant persistence events with physical-time durations, complete-event gates, and left/right boundary censoring while preserving source-specific missingness.
+
+Required inputs:
+
+- complete interaction-fingerprint report
+- source-module availability on every fingerprint frame
+- physical segment timing
+- gap, interval-regularity, complete-event, feature, and event-record gates
+
+Declared outputs:
+
+- feature/system persistence events
+- complete and boundary-censored duration distributions
+- zero-gap primary and gap-tolerant sensitivity summaries
+- complete-event sufficiency status
+
+Scientific limits:
+
+- Missing source observations are never treated as interaction-negative frames.
+- Durations describe persistence across saved and evaluated snapshots; behavior between observations is unobserved.
+- Gap-tolerant persistence is a sensitivity and never replaces the zero-gap primary definition.
+- Occupancy and persistence do not establish binding free energy, affinity, causality, or mechanism.
 
 ## Reusable trajectory feature extractors
 

@@ -202,7 +202,9 @@ def ion_atmosphere_project(project_path: Path, hash_content: bool = False) -> Di
                     evaluated += 1
                     record: Dict[str, object] = {
                         "system_id": system_id, "replica_id": replica_id,
-                        "segment_id": segment_id, "frame_index": raw_frame.frame_index,
+                        "segment_id": segment_id,
+                        "source_frame_index": frame.frame_index,
+                        "frame_index": frame.frame_index,
                         "species": {},
                     }
                     species_record = record["species"]

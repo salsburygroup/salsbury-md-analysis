@@ -5,6 +5,33 @@ schema is `salsbury-analysis-config-v1`, and its default is
 `all_applicable`: every applicable scientific analysis and high-detail
 conformational view that can be selected without inventing chemistry is
 enabled; the deliberately coarse trace view is the documented exception.
+Thirteen active-development methods are also deliberate exceptions:
+`perturbation_response_dynamics`, `trajectory_reweighting`,
+`allosteric_pathways`, `multivalent_molecular_bridges`,
+`energetic_network_embeddings`,
+`reactive_path_ensembles`, `interaction_fingerprints`,
+`spatial_interaction_ensembles`, `interaction_persistence`,
+`random_feature_koopman`, `helical_mechanics`, `hydration_density_channels`,
+and `ensemble_pocket_dynamics` are present in
+every generated configuration but are off until explicitly enabled. The
+pathway network itself is trajectory-derived by default.
+Set the master switch to opt into all thirteen at once:
+
+```json
+{
+  "config_schema": "salsbury-analysis-config-v1",
+  "enable_all_experimental_modules": true
+}
+```
+
+The master switch is applied before individual module entries, so an explicit
+`modules.<module_id>.enabled: false` can still leave a method out. It does not
+bypass topology applicability, required scientific inputs, resource gates, or
+external-program checks; for example, helical mechanics still requires DSSR
+and a detected duplex, while energetic-network embeddings require an Amber
+PRMTOP/PARM7, CHARMM PSF plus matching parameter files, or a serialized OpenMM
+System XML with one standard `NonbondedForce`. Every route also requires an
+explicit bond graph for cpptraj-style exclusions.
 Supply a reviewed partial or complete configuration with:
 
 ```bash
@@ -32,6 +59,10 @@ field is rejected because it would make the config disagree with execution.
 The high-detail common-heavy and interface views are enabled by default.
 `macromolecular_trace` PCA and its state trajectories are off by default but
 can be enabled independently for a deliberately coarse diagnostic.
+DFI/DCI currently runs only on that trace view because its scientific unit is
+one representative macromolecular node per residue. Activation examples and
+the external weight schema and optional external-network override are in
+[`EXPERIMENTAL_METHODS.md`](EXPERIMENTAL_METHODS.md).
 
 `hydrogen_bonds` is the optional manual fixed-feature interface. Routine
 campaigns use `hydrogen_bond_discovery`, which infers donor, bonded hydrogen,
@@ -278,6 +309,14 @@ writes:
 - `prioritized_findings.csv`, `.json`, and `.md`;
 - compact finalizer status reports.
 
+Interactive browsing is provided by the separate
+`salsbury-md-analysis-interactive` companion repository. The core package does
+not install or invoke the viewer; its JSON, CSV, Markdown, structures, and
+method reports remain the scientific record.
+Root-level `*-availability.json` records are included alongside completed
+module reports, so an optional method that cannot run is shown as unavailable
+rather than silently absent.
+
 Each instrumented report also contains a `planner_benchmark` adapter accepted
 directly by `plan-frame-resources`. It uses original selected physical frames
 as the linear frame-planner unit and separately records member-expanded
@@ -314,8 +353,17 @@ explicitly descriptive unless an upstream inferential method supplies a valid
 p-value; the picker never converts a large effect into statistical
 significance. The same transparent triage covers residue SASA, declared
 observables, nucleic-acid and ion geometry, RDF peaks, circular dihedral
-differences, and water-mediated bridges. When systems were executed into
+differences, water-mediated bridges, and every enabled default-off experimental
+method. Experimental hydration components, geometric pockets, interaction
+fingerprints and their censored persistence events, seed-gated random-feature
+nonlinear kinetics, pathways, bridges, DFI/DCI, reweighting diagnostics,
+reactive paths, and helical mechanics enter the same evidence-linked descriptive triage;
+their effect sizes are never relabeled as statistical significance. When systems were executed into
 separate reports, it selects the highest evaluated-frame coverage for each
 system, compares those reports, and records every contributing path. This
 keeps shorter RDF/resource pilots out of a comparison when a higher-coverage
 completed report is available.
+The JSON output records `method_evidence_coverage` for every completed report
+and availability record considered. An unavailable method contributes zero
+candidates and cannot become a significant or descriptive finding merely
+because it was requested.

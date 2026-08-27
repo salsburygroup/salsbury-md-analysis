@@ -22,6 +22,13 @@ need scientific review.
   workstation or cluster run.
 - Use [configuration and final reporting](CONFIGURATION_AND_FINAL_REPORTING.md)
   to change modules, CPU/time limits, exports, clustering, or comparisons.
+- Configure [default-off experimental methods](EXPERIMENTAL_METHODS.md) for
+  DFI/DCI, trajectory reweighting, allosteric and reactive paths, multivalent
+  bridges, interaction fingerprints, helical mechanics, aligned solvent/ion
+  density, and ensemble pocket dynamics.
+- Use the separate `salsbury-md-analysis-interactive` companion repository when
+  you want an offline browser for ranked findings, figures, molecular
+  structures, all reports, and provenance.
 - Use [scientific validation scope](SCIENTIFIC_VALIDATION.md) to understand what
   has and has not been validated.
 

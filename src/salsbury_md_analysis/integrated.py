@@ -7,6 +7,19 @@ from typing import Callable, Dict, List, Mapping, Sequence
 
 from .clustering import clustering_kmeans_project_safe
 from .convergence import convergence_uncertainty_project_safe
+from .perturbation_response import perturbation_response_dynamics_project_safe
+from .reweighting import trajectory_reweighting_project_safe
+from .allosteric_pathways import allosteric_pathways_project_safe
+from .energetic_network_embeddings import energetic_network_embeddings_project_safe
+from .multivalent_bridges import multivalent_molecular_bridges_project_safe
+from .hydration_density import hydration_density_channels_project_safe
+from .pocket_dynamics import ensemble_pocket_dynamics_project_safe
+from .interaction_fingerprints import interaction_fingerprints_project_safe
+from .spatial_interaction_ensembles import spatial_interaction_ensembles_project_safe
+from .interaction_persistence import interaction_persistence_project_safe
+from .helical_mechanics import helical_mechanics_project_safe
+from .random_feature_koopman import random_feature_koopman_project_safe
+from .reactive_paths import reactive_path_ensembles_project_safe
 from .finding_picker import prioritize_findings
 from .manifests import ManifestValidationError, load_json, sha256_file
 from .observables import optional_observables_project_safe
@@ -280,6 +293,19 @@ _RUNNERS: Dict[str, Callable[..., Dict[str, object]]] = {
     "clustering_kmeans": clustering_kmeans_project_safe,
     "optional_observables": optional_observables_project_safe,
     "convergence_uncertainty": convergence_uncertainty_project_safe,
+    "perturbation_response_dynamics": perturbation_response_dynamics_project_safe,
+    "trajectory_reweighting": trajectory_reweighting_project_safe,
+    "allosteric_pathways": allosteric_pathways_project_safe,
+    "energetic_network_embeddings": energetic_network_embeddings_project_safe,
+    "multivalent_molecular_bridges": multivalent_molecular_bridges_project_safe,
+    "hydration_density_channels": hydration_density_channels_project_safe,
+    "ensemble_pocket_dynamics": ensemble_pocket_dynamics_project_safe,
+    "interaction_fingerprints": interaction_fingerprints_project_safe,
+    "spatial_interaction_ensembles": spatial_interaction_ensembles_project_safe,
+    "interaction_persistence": interaction_persistence_project_safe,
+    "helical_mechanics": helical_mechanics_project_safe,
+    "random_feature_koopman": random_feature_koopman_project_safe,
+    "reactive_path_ensembles": reactive_path_ensembles_project_safe,
 }
 
 

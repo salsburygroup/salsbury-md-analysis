@@ -1,0 +1,32 @@
+{
+  "validation_schema": "salsbury-public-alpha-dependency-test-v1",
+  "candidate_version": "0.2.0a1",
+  "recorded_at": "2026-08-23",
+  "execution_host": "Apple silicon workstation, macOS; temporary isolated dependency environment",
+  "python": "3.12",
+  "dependencies": {
+    "numpy": "2.5.2",
+    "scipy": "1.18.1",
+    "scikit-learn": "1.9.0",
+    "hdbscan": "0.8.44",
+    "openmm": "not installed; one expected optional test skip"
+  },
+  "command": "/usr/bin/time -l <isolated-python> -m unittest discover -s tests -q",
+  "tests_run": 461,
+  "expected_skips": 1,
+  "failures": 0,
+  "errors": 0,
+  "elapsed_seconds": 27.496,
+  "measured_wall_seconds_with_runner": 28.11,
+  "user_cpu_seconds": 25.46,
+  "system_cpu_seconds": 2.15,
+  "maximum_resident_memory_bytes": 199999488,
+  "generated_documentation_check": "pass via the dependency-equipped suite",
+  "interactive_report_check": "focused builder, tamper detection, configuration, and finalizer tests pass; a clean 28-report NEMO end-to-end run generated a hash-matched offline dashboard with no unexpected nonempty error logs",
+  "artifact_build_check": "pass; salsbury_md_analysis-0.2.0a1-py3-none-any.whl, sha256 38524da7db99d13dd757f7b85fdfa4cacdde05cb310af957e4dd993633d7fb06",
+  "artifact_install_check": "pass; wheel installed without dependencies into a clean target and reported version 0.2.0a1 from outside the source tree",
+  "github_ci_status": "not submitted; this is an unreleased local development candidate",
+  "technical_status": "local regression, artifact, and NEMO end-to-end visual acceptance pass",
+  "scientific_status": "not evaluated",
+  "interpretation": "Dependency-equipped regression and documentation evidence only. This does not establish scientific validity, promote experimental modules, or constitute a release decision."
+}

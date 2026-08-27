@@ -5,7 +5,6 @@ from __future__ import annotations
 from copy import deepcopy
 import math
 from pathlib import Path
-import shutil
 import sys
 import tempfile
 from typing import Dict, Mapping, Optional, Sequence
@@ -31,7 +30,11 @@ from .coordinates import CoordinateReadError, iter_coordinate_frames
 from .execution_adapters import (
     ExecutionAdapterError, _active_python_executable, prepare_execution_artifacts,
 )
-from .manifests import load_json, validate_project, validate_system
+from .energetic_network_embeddings import probe_energetic_parameter_source
+from .manifests import (
+    load_json, resolve_manifest_path, validate_project, validate_system,
+)
+from .nucleic_acid_structure import probe_dssr_reference_duplex
 from .preflight import (
     FileProbeError,
     probe_connectivity,
@@ -49,12 +52,16 @@ from .quickstart import (
     _conformational_view_projects,
     _conformational_view_slurm_files,
     _coordinate_cache_enabled,
+    _discover_dssr_executable,
     _discover_dssp_executable,
     _exclude_conformational_views_from_base_workflow,
+    _experimental_planner_coverage,
     _effective_parallel_cpu_cap,
     _execution_config_for_parallel_cpu_cap,
+    _force_field_parameter_spec,
     _generic_definitions,
     _json_write,
+    _record_conformational_experimental_exclusions,
     _require_new_directory,
     _safe_id,
     _slurm_files,
@@ -67,6 +74,7 @@ from .registry import list_modules
 _ALLOWED_SYSTEM_FIELDS = {
     "system_id", "pdb", "psf", "connectivity", "trajectories",
     "frame_interval_ps", "first_frame_time_ps", "replicas",
+    "force_field_parameters",
 }
 _ALLOWED_REPLICA_FIELDS = {"replica_id", "segments"}
 _ALLOWED_SEGMENT_FIELDS = {
@@ -121,6 +129,7 @@ def _deferred_modules(exclusions: Dict[str, str], disabled: Dict[str, str]) -> D
         "ion_coordination_geometry": "automatic bound-ion ligand-shell definitions are not yet enabled in the generic initializer",
         "ion_atmosphere": "requires supported ions and polar non-solvent solute atoms; automatic inference is configurable",
         "nucleic_acid_structure": "requires a separately licensed x3dna-dssr executable",
+        "helical_mechanics": "requires an enabled module and a per-system DSSR duplex-availability probe",
         "rmsf_permutation_inference": "requires a declared exchangeable-unit comparison",
         "integrated_comparison": "runs after accepted upstream reports are selected",
     }
@@ -136,6 +145,7 @@ _AUTOMATIC_CONTEXT_COMMANDS = {
     "nucleic_acid_geometry": "nucleic-acid-geometry",
     "ion_coordination_geometry": "ion-geometry",
     "ion_atmosphere": "ion-atmosphere",
+    "helical_mechanics": "helical-mechanics",
 }
 
 _AUTOMATIC_CONTEXT_STAGES = {
@@ -146,20 +156,10 @@ _AUTOMATIC_CONTEXT_STAGES = {
     "nucleic-acid-geometry": 0,
     "ion-geometry": 0,
     "ion-atmosphere": 0,
+    "helical-mechanics": 1,
     "scalar-distributions": 1,
     "scalar-threshold-states": 1,
 }
-
-
-def _discover_dssr_executable() -> Optional[str]:
-    for name in ("x3dna-dssr", "dssr"):
-        found = shutil.which(name)
-        if found:
-            return str(Path(found).resolve(strict=True))
-        candidate = Path(_active_python_executable()).parent / name
-        if candidate.is_file() and candidate.stat().st_mode & 0o111:
-            return str(candidate.resolve(strict=True))
-    return None
 
 
 def _automatic_context_project(
@@ -206,6 +206,60 @@ def _automatic_context_project(
     assert isinstance(raw_definitions, dict)
     assert isinstance(applicable, list)
     assert isinstance(not_applicable, dict)
+    config_modules = analysis_config["modules"]
+    assert isinstance(config_modules, dict)
+    helical_config = config_modules.get("helical_mechanics")
+    helical_requested = (
+        isinstance(helical_config, dict)
+        and helical_config.get("enabled") is True
+    )
+    helical_probe: Dict[str, object] = {
+        "status": "not_available", "reason": "helical_mechanics_disabled",
+        "executable": dssr_executable,
+    }
+    if helical_requested:
+        helical_probe = (
+            probe_dssr_reference_duplex(dssr_executable, reference_structure)
+            if dssr_executable is not None
+            else {
+                "status": "not_available", "reason": "dssr_not_installed",
+                "executable": None,
+            }
+        )
+        source_definition = raw_definitions.get("nucleic_acid_structure")
+        base_definitions = base_project.get("definitions")
+        helical_definition = (
+            base_definitions.get("helical_mechanics")
+            if isinstance(base_definitions, dict) else None
+        )
+        parameters = helical_probe.get("helical_step_parameters")
+        if (
+            helical_probe.get("status") == "available"
+            and isinstance(source_definition, dict)
+            and isinstance(helical_definition, dict)
+            and isinstance(parameters, dict)
+            and isinstance(parameters.get("object_path"), list)
+            and isinstance(parameters.get("fields"), dict)
+        ):
+            object_path = list(parameters["object_path"])
+            fields = parameters["fields"]
+            source_definition["numeric_queries"] = [{
+                "query_id": f"helical-step-{name}",
+                "path": [*object_path, str(fields[name])],
+                "missing_policy": "fail",
+            } for name in ("shift", "slide", "rise", "tilt", "roll", "twist")]
+            configured_helical = deepcopy(helical_definition)
+            configured_helical["preparation_availability"] = deepcopy(helical_probe)
+            raw_definitions["helical_mechanics"] = configured_helical
+            if "helical_mechanics" not in applicable:
+                applicable.append("helical_mechanics")
+        else:
+            reason = str(
+                helical_probe.get("reason")
+                or "nucleic_acid_structure_source_not_configured"
+            )
+            not_applicable["helical_mechanics"] = reason
+        inferred["dssr_duplex_probe"] = deepcopy(helical_probe)
     raw_commands = [
         _AUTOMATIC_CONTEXT_COMMANDS[module_id]
         for module_id in applicable
@@ -218,9 +272,30 @@ def _automatic_context_project(
     except AnalysisConfigError as exc:
         raise QuickstartError(str(exc)) from exc
     inference_filename = f"automatic-chemical-context-{system_id}.json"
+    generated = [inference_filename]
+    if helical_requested and "helical_mechanics" not in requested:
+        reason = str(
+            helical_probe.get("reason")
+            or disabled.get(
+                "helical_mechanics", "nucleic_acid_structure_source_not_configured"
+            )
+        )
+        not_applicable["helical_mechanics"] = reason
+        availability_filename = f"helical-mechanics-availability-{system_id}.json"
+        _json_write(root / availability_filename, {
+            "module_id": "helical_mechanics",
+            "system_id": system_id,
+            "technical_status": "complete",
+            "scientific_status": "not evaluated",
+            "availability_status": "not_available",
+            "availability_reason": reason,
+            "planner_task_created": False,
+            "preparation_probe": helical_probe,
+        })
+        generated.append(availability_filename)
     _json_write(root / inference_filename, inferred)
     if not commands:
-        return None, inferred, {**not_applicable, **disabled}, [inference_filename]
+        return None, inferred, {**not_applicable, **disabled}, generated
     project = deepcopy(dict(base_project))
     project.update({
         "project_id": f"{base_project['project_id']}-{system_id}-chemical-context",
@@ -240,9 +315,7 @@ def _automatic_context_project(
     path = root / filename
     _json_write(path, project)
     validate_project(project, source_path=path, check_paths=True)
-    return filename, inferred, {**not_applicable, **disabled}, [
-        inference_filename, filename,
-    ]
+    return filename, inferred, {**not_applicable, **disabled}, [*generated, filename]
 
 
 def _automatic_context_slurm_files(
@@ -312,6 +385,9 @@ export MKL_NUM_THREADS=1
 if [[ "$COMMAND" == "scalar-distributions" || "$COMMAND" == "scalar-threshold-states" ]]; then
   export SALSBURY_MD_ANALYSIS_TRAJECTORY_FEATURES_REPORT="${{OUTPUT%/*}}/trajectory-features/report.json"
 fi
+if [[ "$COMMAND" == "helical-mechanics" ]]; then
+  export SALSBURY_MD_ANALYSIS_NUCLEIC_ACID_STRUCTURE_REPORT="${{OUTPUT%/*}}/nucleic-acid-structure/report.json"
+fi
 mkdir -p "$OUTPUT" "$ROOT/logs"
 FINAL="$OUTPUT/report.json"
 SUMMARY="$FINAL.summary.json"
@@ -357,6 +433,7 @@ def prepare_comparative_analysis(
     temperature_kelvin: float = 300.0,
     target_wall_hours: Optional[float] = None,
     dssp_executable: Optional[str] = None,
+    dssr_executable: Optional[str] = None,
     config_path: Optional[Path] = None,
 ) -> Dict[str, object]:
     """Prepare one shared-basis, common-grid workflow for two or more systems."""
@@ -417,6 +494,49 @@ def prepare_comparative_analysis(
         connectivity = Path(
             str(raw_psf if raw_psf is not None else raw_connectivity)
         ).expanduser().resolve(strict=True)
+        raw_force_field_parameters = raw.get("force_field_parameters")
+        force_field_parameters = None
+        if raw_force_field_parameters is not None:
+            if (
+                not isinstance(raw_force_field_parameters, dict)
+                or set(raw_force_field_parameters).difference({"format", "files"})
+                or not isinstance(raw_force_field_parameters.get("format"), str)
+                or not isinstance(raw_force_field_parameters.get("files"), list)
+                or not raw_force_field_parameters["files"]
+            ):
+                raise QuickstartError(
+                    f"{system_id}.force_field_parameters requires format and files"
+                )
+            parameter_paths = [
+                resolve_manifest_path(str(value), source)
+                for value in raw_force_field_parameters["files"]
+            ]
+            format_name = str(raw_force_field_parameters["format"])
+            if format_name == "charmm_parameter_files_v1":
+                force_field_parameters = _force_field_parameter_spec(
+                    charmm_parameter_files=parameter_paths,
+                )
+            elif format_name == "openmm_system_xml_v1":
+                if len(parameter_paths) != 1:
+                    raise QuickstartError(
+                        f"{system_id} OpenMM System XML requires exactly one file"
+                    )
+                force_field_parameters = _force_field_parameter_spec(
+                    openmm_system_xml=parameter_paths[0],
+                )
+            elif format_name == "gromacs_tpr_v1":
+                if len(parameter_paths) != 1:
+                    raise QuickstartError(
+                        f"{system_id} GROMACS TPR requires exactly one file"
+                    )
+                force_field_parameters = _force_field_parameter_spec(
+                    gromacs_tpr=parameter_paths[0],
+                )
+            else:
+                raise QuickstartError(
+                    f"{system_id}.force_field_parameters has unsupported format "
+                    f"{format_name!r}"
+                )
         if pdb.suffix.lower() not in {".pdb", ".ent"}:
             raise QuickstartError(f"{system_id}.pdb must name a PDB file")
         if raw_psf is not None and connectivity.suffix.lower() != ".psf":
@@ -599,12 +719,17 @@ def prepare_comparative_analysis(
                 )
             frame_counts.append(replica_frame_count)
             system_frame_counts.append(replica_frame_count)
-            replicas.append({
+            replica_row = {
                 "replica_id": replica_id,
                 "topology": str(pdb),
                 "connectivity": str(connectivity),
                 "segments": segments,
-            })
+            }
+            if force_field_parameters is not None:
+                replica_row["force_field_parameters"] = deepcopy(
+                    force_field_parameters
+                )
+            replicas.append(replica_row)
         composition = _composition(pdb)
         try:
             atoms = read_pdb_atoms(pdb)
@@ -617,7 +742,13 @@ def prepare_comparative_analysis(
             ) from exc
         compositions.append(composition)
         references.append((system_id, atoms, coordinates))
-        protected_paths.extend([pdb, connectivity, *trajectories])
+        parameter_paths = (
+            [Path(str(value)) for value in force_field_parameters["files"]]
+            if force_field_parameters is not None else []
+        )
+        protected_paths.extend([
+            pdb, connectivity, *parameter_paths, *trajectories,
+        ])
         system_rows.append({
             "system_id": system_id,
             "metadata": {
@@ -630,6 +761,7 @@ def prepare_comparative_analysis(
             "system_id": system_id,
             "pdb": pdb,
             "connectivity": connectivity,
+            "force_field_parameters": force_field_parameters,
             "trajectories": trajectories,
             "frame_counts": system_frame_counts,
             "composition": composition,
@@ -726,12 +858,28 @@ def prepare_comparative_analysis(
             "comparisons.reference_system_id must name one declared comparative system"
         )
     dssp = _discover_dssp_executable(dssp_executable)
-    dssr = _discover_dssr_executable()
+    dssr = _discover_dssr_executable(dssr_executable)
+    energetic_parameter_details = []
+    for inputs in system_inputs:
+        probe = probe_energetic_parameter_source(
+            Path(str(inputs["pdb"])),
+            Path(str(inputs["connectivity"])),
+            inputs.get("force_field_parameters"),
+        )
+        energetic_parameter_details.append({
+            "system_id": str(inputs["system_id"]),
+            **probe,
+        })
+    energetic_parameter_available = all(
+        row.get("availability_status") == "available"
+        for row in energetic_parameter_details
+    )
     sampling_plan = automatic_sampling_plan(
         system_path,
         simulation_kind="unbiased_md",
         module_ids=_applicable_sampling_modules(
-            composition, analysis_config, dssp_executable=dssp
+            composition, analysis_config, dssp_executable=dssp,
+            energetic_parameter_available=energetic_parameter_available,
         ),
         b_vs_2b=bool(analysis_config["sampling"]["b_vs_2b_sensitivity"]),  # type: ignore[index]
         replica_diagnostics=bool(
@@ -750,15 +898,28 @@ def prepare_comparative_analysis(
         sampling_plan,
         frame_counts_per_replica=frame_counts,
         dssp_executable=dssp,
+        dssr_probe={
+            "status": "not_available",
+            "reason": "comparative_per_system_duplex_probe_required",
+            "executable": dssr,
+        },
     )
     requested = [
         "provenance_manifest", "preflight_inventory", "common_atom_mapping",
         "structural_integrity_qc", "replica_rmsd_rg", "pooled_rmsf", "dccm",
         "generalized_correlation_and_information", "information_dynamics",
-        "correlation_networks", "individual_pca", "common_pca",
+        "perturbation_response_dynamics", "trajectory_reweighting",
+        "correlation_networks", "allosteric_pathways",
+        "energetic_network_embeddings", "multivalent_molecular_bridges",
+        "hydration_density_channels", "ensemble_pocket_dynamics",
+        "interaction_fingerprints", "spatial_interaction_ensembles",
+        "interaction_persistence", "helical_mechanics",
+        "individual_pca", "common_pca",
         "time_lagged_independent_component_analysis", "pca_fes_basins",
+        "random_feature_koopman",
         "clustering_kmeans", "clustering_hdbscan", "clustering_imwkmeans",
         "alternative_clustering", "representative_frames", "markov_state_models",
+        "reactive_path_ensembles",
         "grouped_ml", "dihedral_distributions", "hydrogen_bond_discovery",
         "solvent_accessible_surface_area", "convergence_uncertainty",
         "rmsf_permutation_inference", "integrated_comparison",
@@ -773,6 +934,43 @@ def prepare_comparative_analysis(
         )
     except AnalysisConfigError as exc:
         raise QuickstartError(str(exc)) from exc
+    # Helical mechanics is scheduled independently for every system whose
+    # reference passes the duplex/DSSR applicability probe.
+    commands = [command for command in commands if command != "helical-mechanics"]
+    requested = [module for module in requested if module != "helical_mechanics"]
+    energetic_availability_file: Optional[str] = None
+    if (
+        "energetic_network_embeddings" in requested
+        and not energetic_parameter_available
+    ):
+        commands = [
+            command for command in commands
+            if command != "energetic-network-embeddings"
+        ]
+        requested = [
+            module_id for module_id in requested
+            if module_id != "energetic_network_embeddings"
+        ]
+        unavailable = next(
+            row for row in energetic_parameter_details
+            if row.get("availability_status") != "available"
+        )
+        reason = "not available: " + str(
+            unavailable.get("availability_reason", "no compatible parameters")
+        )
+        exclusions["energetic_network_embeddings"] = reason
+        energetic_availability_file = (
+            "energetic-network-embeddings-availability.json"
+        )
+        _json_write(root / energetic_availability_file, {
+            "module_id": "energetic_network_embeddings",
+            "technical_status": "complete",
+            "scientific_status": "not evaluated",
+            "availability_status": "not_available",
+            "availability_reason": reason,
+            "planner_task_created": False,
+            "systems": energetic_parameter_details,
+        })
     if "integrated_comparison" not in requested:
         raise QuickstartError(
             "integrated_comparison is mandatory for comparative campaigns and cannot be disabled"
@@ -961,6 +1159,24 @@ def prepare_comparative_analysis(
                 output_directory=root,
             ) from exc
         raise QuickstartError(str(exc)) from exc
+    planner_exclusions = dict(exclusions)
+    for module_id, reasons in context_not_applicable.items():
+        planner_exclusions.setdefault(
+            module_id, "; ".join(sorted(set(reasons)))
+        )
+    _record_conformational_experimental_exclusions(
+        root, view_project_files, planner_exclusions, analysis_config
+    )
+    # Preserve the complete plan even if the coverage audit itself detects an
+    # integration defect. This makes the failure diagnosable without rerunning
+    # input discovery.
+    _json_write(root / "campaign-resource-plan.json", campaign_resource_plan)
+    experimental_planner_coverage = _experimental_planner_coverage(
+        analysis_config, campaign_resource_plan, planner_exclusions
+    )
+    campaign_resource_plan["experimental_module_coverage"] = (
+        experimental_planner_coverage
+    )
     _json_write(root / "sampling-plan.json", sampling_plan)
     _json_write(root / "campaign-resource-plan.json", campaign_resource_plan)
     effective_parallel_cpu_cap = _effective_parallel_cpu_cap(
@@ -1018,6 +1234,9 @@ def prepare_comparative_analysis(
     for module_id, reasons in context_not_applicable.items():
         if module_id not in automatic_ids:
             deferred[module_id] = "; ".join(sorted(set(reasons)))
+    for module_id, reason in planner_exclusions.items():
+        if module_id not in automatic_ids:
+            deferred[module_id] = str(reason)
     unaccounted = sorted(set(registry_ids).difference(automatic_ids, deferred))
     if unaccounted:
         raise QuickstartError(
@@ -1040,6 +1259,7 @@ def prepare_comparative_analysis(
             )
             for module_id in registry_ids
         },
+        "experimental_planner_coverage": experimental_planner_coverage,
     }
     _json_write(root / "module-coverage.json", coverage)
     (root / "logs").mkdir()
@@ -1167,6 +1387,7 @@ remain visible in `module-coverage.json`.
             *(["coordinate-cache-reuse.json"] if coordinate_cache_input is not None else []),
             *per_system_manifest_files, *view_project_files,
             *context_generated_files, *context_slurm_files,
+            *([energetic_availability_file] if energetic_availability_file else []),
             *coordinate_cache_files, *view_slurm_files,
             "analysis-config.json", *slurm_files,
             *execution_artifacts["generated_files"], *planning_report_files,
@@ -1186,6 +1407,7 @@ def prepare_comparative_analysis_memory_fit(
     temperature_kelvin: float = 300.0,
     target_wall_hours: Optional[float] = None,
     dssp_executable: Optional[str] = None,
+    dssr_executable: Optional[str] = None,
     config_path: Optional[Path] = None,
 ) -> Dict[str, object]:
     """Prepare a comparison with an explicit, opt-in memory-fit reduction."""
@@ -1203,6 +1425,7 @@ def prepare_comparative_analysis_memory_fit(
         "project_id": project_id,
         "temperature_kelvin": temperature_kelvin,
         "dssp_executable": dssp_executable,
+        "dssr_executable": dssr_executable,
     }
     with tempfile.TemporaryDirectory(
         prefix="salsbury-comparison-memory-fit-planning-"

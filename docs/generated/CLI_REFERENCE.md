@@ -4,11 +4,11 @@
 
 ```text
 usage: salsbury-md-analysis [-h] [--version]
-                            {list-modules,validate-manifest,inventory-system,preflight-system,map-common-atoms,compile-context,structural-qc,rmsd-rg,rmsf,dccm,information-correlation,individual-pca,common-pca,tica,pca-fes-basins,cluster-kmeans,representative-frames,cluster-imwkmeans,cluster-hdbscan,markov-models,dihedrals,hydrogen-bonds,observables,sasa,convergence,grouped-ml,integrate,integrate-comparison-results,secondary-structure,alternative-clustering,pald-community,information-dynamics,correlation-networks,trajectory-features,state-coordinate-exports,rdf,scalar-distributions,scalar-threshold-states,hydrogen-bond-discovery,water-mediated-hydrogen-bonds,grouped-regularized-classification,nucleic-acid-structure,nucleic-acid-geometry,ion-geometry,ion-atmosphere,compare-hydrogen-bonds,hydrogen-bond-patterns,representative-structures,rmsf-permutation,plan-frame-resources,plan-campaign-resources,plan-automatic-sampling,prepare-analysis,prepare-comparison,run-local-workflow,report-plan-matrix,write-planning-report,rmsf-permutation-from-report,advise-slurm-capacity,build-coordinate-cache,prepare-unwrapped-cache,write-scientific-minimums-template,summarize-timeseries,run-instrumented,run-coordinate-cache-instrumented,summarize-execution-resources,build-resource-calibration-catalog,prioritize-findings,export-rmsf-visualization,run-regression}
+                            {list-modules,validate-manifest,inventory-system,preflight-system,map-common-atoms,compile-context,structural-qc,rmsd-rg,rmsf,dccm,information-correlation,individual-pca,common-pca,tica,pca-fes-basins,cluster-kmeans,representative-frames,cluster-imwkmeans,cluster-hdbscan,markov-models,dihedrals,hydrogen-bonds,observables,sasa,convergence,grouped-ml,integrate,integrate-comparison-results,secondary-structure,alternative-clustering,pald-community,information-dynamics,perturbation-response,trajectory-reweighting,allosteric-pathways,energetic-network-embeddings,multivalent-bridges,hydration-density-channels,ensemble-pocket-dynamics,interaction-fingerprints,spatial-interaction-ensembles,interaction-persistence,random-feature-koopman,helical-mechanics,reactive-path-ensembles,correlation-networks,trajectory-features,state-coordinate-exports,rdf,scalar-distributions,scalar-threshold-states,hydrogen-bond-discovery,water-mediated-hydrogen-bonds,grouped-regularized-classification,nucleic-acid-structure,nucleic-acid-geometry,ion-geometry,ion-atmosphere,compare-hydrogen-bonds,hydrogen-bond-patterns,representative-structures,rmsf-permutation,plan-frame-resources,plan-campaign-resources,plan-automatic-sampling,prepare-analysis,prepare-comparison,run-local-workflow,report-plan-matrix,write-planning-report,rmsf-permutation-from-report,advise-slurm-capacity,build-coordinate-cache,prepare-unwrapped-cache,write-scientific-minimums-template,summarize-timeseries,run-instrumented,run-coordinate-cache-instrumented,summarize-execution-resources,build-resource-calibration-catalog,prioritize-findings,export-rmsf-visualization,run-regression}
                             ...
 
 positional arguments:
-  {list-modules,validate-manifest,inventory-system,preflight-system,map-common-atoms,compile-context,structural-qc,rmsd-rg,rmsf,dccm,information-correlation,individual-pca,common-pca,tica,pca-fes-basins,cluster-kmeans,representative-frames,cluster-imwkmeans,cluster-hdbscan,markov-models,dihedrals,hydrogen-bonds,observables,sasa,convergence,grouped-ml,integrate,integrate-comparison-results,secondary-structure,alternative-clustering,pald-community,information-dynamics,correlation-networks,trajectory-features,state-coordinate-exports,rdf,scalar-distributions,scalar-threshold-states,hydrogen-bond-discovery,water-mediated-hydrogen-bonds,grouped-regularized-classification,nucleic-acid-structure,nucleic-acid-geometry,ion-geometry,ion-atmosphere,compare-hydrogen-bonds,hydrogen-bond-patterns,representative-structures,rmsf-permutation,plan-frame-resources,plan-campaign-resources,plan-automatic-sampling,prepare-analysis,prepare-comparison,run-local-workflow,report-plan-matrix,write-planning-report,rmsf-permutation-from-report,advise-slurm-capacity,build-coordinate-cache,prepare-unwrapped-cache,write-scientific-minimums-template,summarize-timeseries,run-instrumented,run-coordinate-cache-instrumented,summarize-execution-resources,build-resource-calibration-catalog,prioritize-findings,export-rmsf-visualization,run-regression}
+  {list-modules,validate-manifest,inventory-system,preflight-system,map-common-atoms,compile-context,structural-qc,rmsd-rg,rmsf,dccm,information-correlation,individual-pca,common-pca,tica,pca-fes-basins,cluster-kmeans,representative-frames,cluster-imwkmeans,cluster-hdbscan,markov-models,dihedrals,hydrogen-bonds,observables,sasa,convergence,grouped-ml,integrate,integrate-comparison-results,secondary-structure,alternative-clustering,pald-community,information-dynamics,perturbation-response,trajectory-reweighting,allosteric-pathways,energetic-network-embeddings,multivalent-bridges,hydration-density-channels,ensemble-pocket-dynamics,interaction-fingerprints,spatial-interaction-ensembles,interaction-persistence,random-feature-koopman,helical-mechanics,reactive-path-ensembles,correlation-networks,trajectory-features,state-coordinate-exports,rdf,scalar-distributions,scalar-threshold-states,hydrogen-bond-discovery,water-mediated-hydrogen-bonds,grouped-regularized-classification,nucleic-acid-structure,nucleic-acid-geometry,ion-geometry,ion-atmosphere,compare-hydrogen-bonds,hydrogen-bond-patterns,representative-structures,rmsf-permutation,plan-frame-resources,plan-campaign-resources,plan-automatic-sampling,prepare-analysis,prepare-comparison,run-local-workflow,report-plan-matrix,write-planning-report,rmsf-permutation-from-report,advise-slurm-capacity,build-coordinate-cache,prepare-unwrapped-cache,write-scientific-minimums-template,summarize-timeseries,run-instrumented,run-coordinate-cache-instrumented,summarize-execution-resources,build-resource-calibration-catalog,prioritize-findings,export-rmsf-visualization,run-regression}
     list-modules        List registered analyses and honest implementation
                         status.
     validate-manifest   Validate a project, system, output, or publication-
@@ -40,8 +40,8 @@ positional arguments:
                         PCA features.
     pca-fes-basins      Build a mode-aware PCA landscape and deterministic
                         occupancy basins.
-    cluster-kmeans      Scan a seeded KMeans grid over declared common-PCA
-                        features.
+    cluster-kmeans      Scan a deterministic NANI or legacy seeded KMeans grid
+                        over declared features.
     representative-frames
                         Select deterministic observed representatives for
                         clusters or PCA basins.
@@ -79,6 +79,45 @@ positional arguments:
     information-dynamics
                         Calculate segment-safe transfer entropy and higher-
                         order feature statistics.
+    perturbation-response
+                        Calculate experimental DFI/DCI profiles from common-
+                        PCA trajectory covariances.
+    trajectory-reweighting
+                        Apply exact frame-aligned log weights with ESS and
+                        concentration gates.
+    allosteric-pathways
+                        Trace contact-occupancy pathways with equal-path
+                        participation and centrality.
+    energetic-network-embeddings
+                        Build Cowan/Thayer-compatible protein residue
+                        interaction-energy heat-kernel embeddings from Amber,
+                        CHARMM, or serialized OpenMM parameters.
+    multivalent-bridges
+                        Find solvent, ion, and ligand multiresidue bridge
+                        hyperedges.
+    hydration-density-channels
+                        Map aligned water and ion density plus geometric
+                        channel candidates.
+    ensemble-pocket-dynamics
+                        Track ensemble geometric pocket persistence and
+                        volume.
+    interaction-fingerprints
+                        Join chemically typed frame-level interaction
+                        fingerprints with explicit missingness.
+    spatial-interaction-ensembles
+                        Map receptor-aligned interaction-partner clouds and
+                        gated spatial mode candidates.
+    interaction-persistence
+                        Measure segment-safe fingerprint persistence with
+                        complete-event and censoring gates.
+    random-feature-koopman
+                        Run a seed-gated random-feature nonlinear kinetic
+                        sensitivity over TICA coordinates.
+    helical-mechanics   Calculate DSSR-gated state-specific duplex helical
+                        mechanics.
+    reactive-path-ensembles
+                        Extract segment-safe reactive paths and cluster route
+                        families with explicit sufficiency gates.
     correlation-networks
                         Build thresholded signed networks from DCCM outputs.
     trajectory-features

@@ -27,6 +27,26 @@
                 "replica_id": {"type": "string", "minLength": 1},
                 "topology": {"type": "string", "minLength": 1},
                 "connectivity": {"type": ["string", "null"], "minLength": 1},
+                "force_field_parameters": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["format", "files"],
+                  "properties": {
+                    "format": {
+                      "enum": [
+                        "charmm_parameter_files_v1",
+                        "openmm_system_xml_v1",
+                        "gromacs_tpr_v1"
+                      ]
+                    },
+                    "files": {
+                      "type": "array",
+                      "minItems": 1,
+                      "uniqueItems": true,
+                      "items": {"type": "string", "minLength": 1}
+                    }
+                  }
+                },
                 "segments": {
                   "type": "array",
                   "minItems": 1,

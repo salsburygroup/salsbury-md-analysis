@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Rebase the default-off experimental method suite onto the current core,
+  including dependency-aware configuration, exhaustive scientific sampling
+  policies, resource-planner and scheduler accounting, integrated comparison,
+  and method-aware finding highlights.
+- Keep the interactive results browser in its separate companion repository;
+  the core package produces the complete machine-readable evidence it consumes.
+
 - Regenerate each shared or per-system PCA projection allocation during resource
   replanning and feed its exact selected counts into every downstream clustering
   fit. Coupling now iterates to equality, stabilizes discrete stride cycles with

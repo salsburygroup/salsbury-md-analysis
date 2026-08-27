@@ -7,11 +7,11 @@
 | Status | Count |
 |---|---:|
 | supported | 0 |
-| experimental | 45 |
+| experimental | 58 |
 | planned | 0 |
 | deprecated | 0 |
 
-Registered suite modules: **45**.
+Registered suite modules: **58**.
 
 Registration alone is not an implementation claim. Experimental modules have code and tests, but are not production-supported.
 

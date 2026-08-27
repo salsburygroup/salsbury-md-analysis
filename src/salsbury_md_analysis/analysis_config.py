@@ -23,8 +23,20 @@ COMMAND_MODULES = {
     "common-pca": "common_pca",
     "information-correlation": "generalized_correlation_and_information",
     "information-dynamics": "information_dynamics",
+    "perturbation-response": "perturbation_response_dynamics",
+    "trajectory-reweighting": "trajectory_reweighting",
+    "allosteric-pathways": "allosteric_pathways",
+    "energetic-network-embeddings": "energetic_network_embeddings",
+    "multivalent-bridges": "multivalent_molecular_bridges",
+    "hydration-density-channels": "hydration_density_channels",
+    "ensemble-pocket-dynamics": "ensemble_pocket_dynamics",
+    "interaction-fingerprints": "interaction_fingerprints",
+    "spatial-interaction-ensembles": "spatial_interaction_ensembles",
+    "interaction-persistence": "interaction_persistence",
+    "helical-mechanics": "helical_mechanics",
     "correlation-networks": "correlation_networks",
     "tica": "time_lagged_independent_component_analysis",
+    "random-feature-koopman": "random_feature_koopman",
     "pca-fes-basins": "pca_fes_basins",
     "cluster-kmeans": "clustering_kmeans",
     "cluster-hdbscan": "clustering_hdbscan",
@@ -34,6 +46,7 @@ COMMAND_MODULES = {
     "representative-frames": "representative_frames",
     "state-coordinate-exports": "state_coordinate_exports",
     "markov-models": "markov_state_models",
+    "reactive-path-ensembles": "reactive_path_ensembles",
     "grouped-ml": "grouped_ml",
     "dihedrals": "dihedral_distributions",
     "hydrogen-bond-discovery": "hydrogen_bond_discovery",
@@ -63,7 +76,11 @@ DEFINITION_MODULES = {
 DEPENDENCIES = {
     "generalized_correlation_and_information": {"common_pca"},
     "information_dynamics": {"common_pca"},
+    "perturbation_response_dynamics": {"common_pca"},
+    "trajectory_reweighting": {"common_pca"},
+    "allosteric_pathways": {"dccm"},
     "time_lagged_independent_component_analysis": {"common_pca"},
+    "random_feature_koopman": {"time_lagged_independent_component_analysis"},
     "pca_fes_basins": {"common_pca"},
     "clustering_kmeans": {"common_pca"},
     "clustering_hdbscan": {"common_pca"},
@@ -73,6 +90,10 @@ DEPENDENCIES = {
     "representative_frames": {"pca_fes_basins"},
     "state_coordinate_exports": {"pca_fes_basins"},
     "markov_state_models": {"pca_fes_basins"},
+    "reactive_path_ensembles": {"clustering_kmeans"},
+    "interaction_persistence": {"interaction_fingerprints"},
+    "spatial_interaction_ensembles": {"interaction_fingerprints"},
+    "helical_mechanics": {"nucleic_acid_structure"},
     "grouped_ml": {"clustering_kmeans"},
     "correlation_networks": {"dccm"},
     "convergence_uncertainty": {"replica_rmsd_rg"},
@@ -141,6 +162,21 @@ MODULE_GROUPS = {
         "description": "Cross-system integration and final comparison reporting.",
         "modules": {"integrated_comparison"},
     },
+    "08_experimental_methods": {
+        "description": (
+            "Default-off research methods. Enable them individually or with the "
+            "experimental master switch; ordinary dependencies still apply."
+        ),
+        "modules": {
+            "perturbation_response_dynamics", "trajectory_reweighting",
+            "allosteric_pathways", "energetic_network_embeddings",
+            "multivalent_molecular_bridges", "hydration_density_channels",
+            "ensemble_pocket_dynamics", "interaction_fingerprints",
+            "spatial_interaction_ensembles", "interaction_persistence",
+            "helical_mechanics", "random_feature_koopman",
+            "reactive_path_ensembles",
+        },
+    },
 }
 
 
@@ -199,6 +235,24 @@ def _module_configuration_metadata(
         }
     return module_rows, groups
 
+# Experimental methods under active development remain visible in generated
+# configuration but require an explicit user opt-in.
+DEFAULT_DISABLED_MODULES = {
+    "perturbation_response_dynamics",
+    "trajectory_reweighting",
+    "allosteric_pathways",
+    "energetic_network_embeddings",
+    "multivalent_molecular_bridges",
+    "hydration_density_channels",
+    "ensemble_pocket_dynamics",
+    "reactive_path_ensembles",
+    "interaction_fingerprints",
+    "spatial_interaction_ensembles",
+    "interaction_persistence",
+    "helical_mechanics",
+    "random_feature_koopman",
+}
+
 
 CLUSTERING_METHODS = {
     "kmeans": {"module_id": "clustering_kmeans", "algorithm": None},
@@ -243,9 +297,14 @@ def default_analysis_config(
     module_rows, module_groups = _module_configuration_metadata(
         module_ids, protected_modules=protected_modules
     )
+    for module_id in DEFAULT_DISABLED_MODULES.intersection(module_rows):
+        row = module_rows[module_id]
+        assert isinstance(row, dict)
+        row["enabled"] = False
     return {
         "config_schema": "salsbury-analysis-config-v1",
         "default_module_policy": "all_applicable",
+        "enable_all_experimental_modules": False,
         "module_groups": module_groups,
         "modules": module_rows,
         "views": {
@@ -362,6 +421,7 @@ def load_analysis_config(
         "config_schema", "default_module_policy", "module_groups", "modules", "views",
         "reporting", "comparisons", "sampling", "oligomers", "exports",
         "execution", "inference", "clustering", "community_analysis",
+        "enable_all_experimental_modules",
     }
     unknown = sorted(set(supplied).difference(allowed_top))
     if unknown:
@@ -370,6 +430,21 @@ def load_analysis_config(
         raise AnalysisConfigError("config_schema must be salsbury-analysis-config-v1")
     if supplied.get("default_module_policy", "all_applicable") != "all_applicable":
         raise AnalysisConfigError("default_module_policy must be all_applicable")
+    enable_all_experimental = supplied.get(
+        "enable_all_experimental_modules", False
+    )
+    if not isinstance(enable_all_experimental, bool):
+        raise AnalysisConfigError(
+            "enable_all_experimental_modules must be boolean"
+        )
+    config["enable_all_experimental_modules"] = enable_all_experimental
+    if enable_all_experimental:
+        modules = config["modules"]
+        assert isinstance(modules, dict)
+        for module_id in DEFAULT_DISABLED_MODULES.intersection(modules):
+            row = modules[module_id]
+            assert isinstance(row, dict)
+            row["enabled"] = True
     known_modules = set(module_ids)
     raw_groups = supplied.get("module_groups")
     if raw_groups is not None and raw_groups != config["module_groups"]:
@@ -452,8 +527,37 @@ def load_analysis_config(
             "state_trajectory_exports_enabled": exports_enabled,
             "module_options": deepcopy(module_options),
         }
+    modules = config["modules"]
+    views = config["views"]
+    assert isinstance(modules, dict) and isinstance(views, dict)
+    perturbation = modules.get("perturbation_response_dynamics")
+    trace = views.get("macromolecular_trace")
+    if (
+        isinstance(perturbation, dict)
+        and perturbation.get("enabled") is True
+        and isinstance(trace, dict)
+    ):
+        options = perturbation.get("options", {})
+        sites = (
+            options.get("functional_site_node_indices")
+            if isinstance(options, dict) else None
+        )
+        if isinstance(sites, list) and sites:
+            supplied_trace = raw_views.get("macromolecular_trace")
+            if (
+                isinstance(supplied_trace, dict)
+                and supplied_trace.get("enabled") is False
+            ):
+                raise AnalysisConfigError(
+                    "perturbation_response_dynamics with functional-site nodes "
+                    "requires views.macromolecular_trace.enabled=true"
+                )
+            trace["enabled"] = True
     for section, allowed in (
-        ("reporting", {"resource_table_enabled", "finding_picker_enabled", "maximum_findings"}),
+        ("reporting", {
+            "resource_table_enabled", "finding_picker_enabled",
+            "maximum_findings",
+        }),
         ("comparisons", {
             "mode", "reference_system_id", "multiple_testing", "alpha",
             "run_per_system_analysis", "run_shared_basis_comparisons",
@@ -466,7 +570,12 @@ def load_analysis_config(
     reporting = config["reporting"]
     comparisons = config["comparisons"]
     assert isinstance(reporting, dict) and isinstance(comparisons, dict)
-    if not all(isinstance(reporting[key], bool) for key in ("resource_table_enabled", "finding_picker_enabled")):
+    if not all(
+        isinstance(reporting[key], bool)
+        for key in (
+            "resource_table_enabled", "finding_picker_enabled",
+        )
+    ):
         raise AnalysisConfigError("reporting enable flags must be boolean")
     if isinstance(reporting["maximum_findings"], bool) or not isinstance(reporting["maximum_findings"], int) or reporting["maximum_findings"] <= 0:
         raise AnalysisConfigError("reporting.maximum_findings must be positive integer")

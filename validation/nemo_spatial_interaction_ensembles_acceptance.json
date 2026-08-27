@@ -1,0 +1,110 @@
+{
+  "acceptance_schema": "salsbury-nemo-spatial-interaction-ensembles-acceptance-v1",
+  "recorded_date": "2026-08-25",
+  "branch": "experimental",
+  "baseline_commit": "a76db92a94bc15d6fefc74feb7b8518ca0814b6f",
+  "fixture": {
+    "tutorial": "tutorials/nemo_zinc_finger",
+    "atom_count": 423,
+    "source_frame_count": 1000,
+    "saved_frame_interval_ps": 0.2,
+    "independent_replica_count": 1,
+    "independent_system_count": 1
+  },
+  "configuration": {
+    "source_config": "tutorials/nemo_zinc_finger/interaction-fingerprint-analysis-config.json",
+    "source_config_sha256": "2d6415b6c5c86260848d37e894310556abf9b78a685ee5d9a83fb8225c0c63d5",
+    "module_default_enabled": false,
+    "point_construction_policy": "endpoint_partner_coordinates_v1",
+    "mode_k_values": [2, 3],
+    "minimum_mode_silhouette": 0.35,
+    "minimum_mode_centroid_separation_angstrom": 1.0,
+    "minimum_mode_time_blocks": 2,
+    "minimum_mode_replicas": 1,
+    "maximum_exact_mode_points": 1000
+  },
+  "source_fingerprint_evidence": {
+    "project_manifest_sha256": "c10bf413fa2f61a2cee2553029c8b4514ff4be7b1e04c6bfa59521bb46d05798",
+    "system_manifest_sha256": "83cbaae5fa541325b7697bfbd85fb1010d75884b241a6d07c1987ade357994c6",
+    "input_content_signature_sha256": "1aecdc92bd1ca2e958732d14c6075008c3f9df75535c3009fa3cd39e09eb19b0",
+    "interaction_fingerprint_report_sha256": "c6a2f903ce8ef54d7b22cbd5bb6cf8b6e17f476690f455e5a7b66fc440068281"
+  },
+  "planner_acceptance": {
+    "technical_status": "complete",
+    "campaign_resource_plan_sha256": "9b1443cf126270856f44b40947ef2ae2ebb8513279d90abb31f14daae1050e5c",
+    "module_coverage_sha256": "be4b5a1a51f33822e867a25f0c1b973e73ea64c9c80a8ae8ec5a838dd751bbec",
+    "task_id": "base:spatial_interaction_ensembles",
+    "dependency_stage": 3,
+    "upstream_module_id": "interaction_fingerprints",
+    "selected_physical_frame_count": 1000,
+    "subsampling_triggered": false,
+    "calibration_id": "provisional-aligned-interaction-cloud-v1",
+    "exact_mode_resource_policy": "withhold mode inference rather than sample points"
+  },
+  "module_acceptance": {
+    "technical_status": "complete",
+    "scientific_status": "not evaluated",
+    "availability_status": "available",
+    "evaluated_frame_count": 1000,
+    "compiled_superfeature_count": 88,
+    "point_observation_count": 16064,
+    "spatial_summary_count": 64,
+    "spatial_summary_gate_pass_count": 44,
+    "mode_inference_status_counts": {
+      "gated_multimodal_candidate": 9,
+      "no_gated_multimodal_candidate": 34,
+      "not_evaluated_summary_gate_failed": 20,
+      "withheld_by_exact_mode_resource_gate": 1
+    },
+    "selected_spatial_mode_candidate_count": 9,
+    "selected_candidate_k_values": [2],
+    "selected_candidate_silhouette_range": [
+      0.3660114355624179,
+      0.7824041093724531
+    ],
+    "selected_candidate_minimum_centroid_separation_range_angstrom": [
+      1.1175624534581023,
+      6.464928418159002
+    ],
+    "all_selected_modes_recur_in_at_least_three_time_blocks": true,
+    "pairwise_system_spatial_difference_count": 0,
+    "unsupported_fingerprint_feature_count": 8,
+    "unsupported_interaction_type_counts": {
+      "aligned_ion_density_component": 1,
+      "ion_shell_presence": 6,
+      "multivalent_mediator_bridge": 1
+    },
+    "zinc_site_point_observation_count": 4000,
+    "zinc_site_mode_inference_status": "withheld_by_exact_mode_resource_gate",
+    "wall_seconds": 18.151941291987896,
+    "maximum_resident_memory_mib": 95.46875,
+    "report_size_bytes": 9321918,
+    "report_sha256": "478bc4e83058effef3bb65b10b5c45b32eb10cbc8411a0c61d6e2f4548754d78"
+  },
+  "reporting_acceptance": {
+    "finding_candidate_count": 1,
+    "finding_evidence_level": "descriptive",
+    "finding_effect": "highest gated spatial-mode exact silhouette",
+    "finding_effect_value": 0.7824041093724531,
+    "binding_state_warning_present": true,
+    "dashboard_visual_count": 8,
+    "dashboard_visual_kind_counts": {
+      "experimental_method_summary": 1,
+      "experimental_metric_bars": 1,
+      "spatial_interaction_cloud": 6
+    },
+    "dashboard_cloud_display_policy": "deterministic stride to at most 600 XY display points; raw exact points remain in the report"
+  },
+  "software_verification": {
+    "full_test_count": 534,
+    "passed_count": 533,
+    "skipped_count": 1,
+    "generated_documentation_check": "passed"
+  },
+  "interpretation": {
+    "positive_software_result": "The exact fingerprint-to-coordinate join, receptor alignment, spatial summaries, deterministic exact clustering, recurrence gates, and exact-cap withholding all executed on 1000 NEMO frames without issues.",
+    "mode_boundary": "The nine retained results are spatial mode candidates for hydrogen-bond partner clouds. They are not binding states, free-energy basins, metastable states, kinetics, affinity, causality, or mechanism.",
+    "comparative_boundary": "NEMO contains one system, so the zero pairwise spatial comparisons are expected. K-retained versus K-absent centroid and spread differences require both systems.",
+    "replica_boundary": "NEMO contains one replica. Time-block recurrence was tested, but independent-replica reproducibility was not."
+  }
+}

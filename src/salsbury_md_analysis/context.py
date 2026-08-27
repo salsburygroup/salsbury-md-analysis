@@ -109,6 +109,15 @@ def _system_identity(
                 else:
                     segment_out["sample_axis"] = axis["sample_axis"]
                 segments_out.append(segment_out)
+            force_field_parameters = replica.get("force_field_parameters")
+            normalized_force_field_parameters = None
+            if isinstance(force_field_parameters, dict):
+                files = force_field_parameters.get("files", [])
+                assert isinstance(files, list)
+                normalized_force_field_parameters = {
+                    "format": str(force_field_parameters["format"]),
+                    "files": [str(path) for path in files],
+                }
             replicas_out.append({
                 "replica_id": str(replica["replica_id"]),
                 "topology": str(replica["topology"]),
@@ -117,6 +126,7 @@ def _system_identity(
                     if replica.get("connectivity") is not None
                     else None
                 ),
+                "force_field_parameters": normalized_force_field_parameters,
                 "segments": segments_out,
             })
         systems_out.append({

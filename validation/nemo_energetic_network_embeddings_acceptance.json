@@ -1,0 +1,66 @@
+{
+  "acceptance_schema": "salsbury-nemo-energetic-network-embeddings-acceptance-v1",
+  "recorded_date": "2026-08-26",
+  "fixture": "tutorials/nemo_zinc_finger/data/nemo_zinc_finger_1000_frames.dcd",
+  "config": "tutorials/nemo_zinc_finger/interaction-fingerprint-analysis-config.json",
+  "force_field_provenance": {
+    "model": "CHARMM22 all-hydrogen protein force field",
+    "release": "CHARMM c31b1 historical toppar distribution",
+    "exact_production_release_known": false,
+    "publication_basis": "The source NEMO publication declares CHARMM22 with a patch that deprotonates the three zinc-coordinating cysteines and a nonbonded monatomic zinc ion.",
+    "official_download_url": "https://mackerell.umaryland.edu/download.php?filename=CHARMM_ff_params_files%2Ftoppar_c31b1.tar.gz",
+    "archive_sha256": "0ac3cc4c88cdfa27bdb14cdbd9dc306e585fc348e395fee66b8efe60e4a96ba4",
+    "parameter_member": "toppar/par_all22_prot.inp",
+    "parameter_sha256": "d973d84c8d0aee92c958d46e8aba73873e78180227a78c864b65dcddc8a99c34",
+    "redistributed_in_repository": false,
+    "psf_atom_type_count": 30,
+    "covered_psf_atom_type_count": 30,
+    "zinc_atom_type_covered": true,
+    "patched_charge_basis": "The supplied PSF already contains the CYN-patched atom identities, charges, and explicit bond graph; the downloaded CHARMM22 file supplies documented-compatible Lennard-Jones entries.",
+    "nbfix_pair_type_count": 0,
+    "historical_release_sensitivity": {
+      "comparison_release": "CHARMM c32b1",
+      "comparison_archive_sha256": "b88366f3c1300672e5c9005eb953ee24eb6f0509c55e6df863aa9d14c99e6630",
+      "atom_type_indices_exactly_equal": true,
+      "lennard_jones_a_table_exactly_equal": true,
+      "lennard_jones_b_table_exactly_equal": true,
+      "maximum_absolute_table_difference": 0.0
+    }
+  },
+  "module_acceptance": {
+    "module_id": "energetic_network_embeddings",
+    "configuration_enabled": true,
+    "availability_status": "available",
+    "analysis_performed": true,
+    "evaluated_frame_count": 1000,
+    "common_protein_residue_count": 28,
+    "common_protein_atom_count": 422,
+    "vdw_to_electrostatic_weight_ratio": 0.001218225721924967,
+    "maximum_accepted_vdw_to_electrostatic_weight_ratio": 0.1,
+    "vdw_negligibility_status": "passed",
+    "pairwise_system_comparison_count": 0,
+    "report_sha256": "8283ea6828ff52abbf58c0ad93f892addbcccad65dee72b18df8680792fa666e",
+    "error_count": 0,
+    "warning_count": 0,
+    "scientific_status": "not evaluated"
+  },
+  "planner_acceptance": {
+    "planner_task_created": true,
+    "energetic_network_task_count": 1,
+    "planner_task_id": "direct:energetic_network_embeddings",
+    "contract": "An enabled optional energetic module is planned only after the PSF and supplied parameter files pass exact atom-type and nonbonded-parameter coverage checks."
+  },
+  "reporting_acceptance": {
+    "finding_picker_evidence_status": "available",
+    "finding_candidate_count": 0,
+    "interactive_dashboard_record_included": true,
+    "contract": "A technically complete one-system energetic report is visible to the selector and dashboard but produces no comparative finding without a second system."
+  },
+  "scope_boundary": {
+    "protein_only": true,
+    "solvent_inclusive_extension_implemented": false,
+    "signed_energy_extension_implemented": false,
+    "complete_pme_energy_claimed": false,
+    "interpretation": "The trial verifies parameter ingestion, frame accounting, residue-network construction, planner execution, and reporting integration. It does not establish convergence, zinc-binding energetics, allostery, mechanism, or a complete PME energy decomposition."
+  }
+}

@@ -8,7 +8,7 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(len(MODULES), len({module.module_id for module in MODULES}))
 
     def test_public_registry_is_md_only(self):
-        self.assertEqual(len(MODULES), 45)
+        self.assertEqual(len(MODULES), 58)
         self.assertTrue({module.category for module in MODULES} <= {"core", "md", "reporting"})
         self.assertFalse(any("dock" in module.module_id for module in MODULES))
 
@@ -28,10 +28,23 @@ class RegistryTests(unittest.TestCase):
                 "dccm",
                 "generalized_correlation_and_information",
                 "information_dynamics",
+                "perturbation_response_dynamics",
+                "trajectory_reweighting",
                 "correlation_networks",
+                "allosteric_pathways",
+                "energetic_network_embeddings",
+                "multivalent_molecular_bridges",
+                "hydration_density_channels",
+                "ensemble_pocket_dynamics",
+                "interaction_fingerprints",
+                "spatial_interaction_ensembles",
+                "interaction_persistence",
+                "helical_mechanics",
+                "reactive_path_ensembles",
                 "individual_pca",
                 "common_pca",
                 "time_lagged_independent_component_analysis",
+                "random_feature_koopman",
                 "pca_fes_basins",
                 "clustering_kmeans",
                 "clustering_hdbscan",
@@ -74,9 +87,22 @@ class RegistryTests(unittest.TestCase):
             "preflight_inventory", "structural_integrity_qc", "replica_rmsd_rg",
             "pooled_rmsf", "dccm", "generalized_correlation_and_information",
             "information_dynamics", "correlation_networks", "trajectory_features",
+            "allosteric_pathways",
+            "energetic_network_embeddings",
+            "multivalent_molecular_bridges",
+            "hydration_density_channels",
+            "ensemble_pocket_dynamics",
+            "interaction_fingerprints",
+            "spatial_interaction_ensembles",
+            "interaction_persistence",
+            "helical_mechanics",
+            "reactive_path_ensembles",
+            "perturbation_response_dynamics",
+            "trajectory_reweighting",
             "scalar_feature_distributions", "scalar_threshold_states",
             "individual_pca", "common_pca",
             "time_lagged_independent_component_analysis",
+            "random_feature_koopman",
             "pca_fes_basins", "clustering_kmeans", "clustering_hdbscan",
             "clustering_imwkmeans", "representative_frames",
             "state_coordinate_exports",

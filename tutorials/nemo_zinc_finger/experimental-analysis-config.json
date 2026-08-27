@@ -1,0 +1,64 @@
+{
+  "config_schema": "salsbury-analysis-config-v1",
+  "default_module_policy": "all_applicable",
+  "modules": {
+    "perturbation_response_dynamics": {
+      "enabled": true,
+      "options": {
+        "functional_site_node_indices": [4, 5, 8, 25],
+        "minimum_cumulative_explained_variance": 0.0
+      }
+    },
+    "trajectory_reweighting": {
+      "enabled": true,
+      "options": {
+        "weights_path": "nemo-uniform-log-weights.json"
+      }
+    },
+    "allosteric_pathways": {
+      "enabled": true,
+      "options": {
+        "network_source": "trajectory",
+        "network_path": "",
+        "source_node_indices": [4, 5],
+        "sink_node_indices": [8, 25],
+        "contact_cutoff_angstrom": 8.0,
+        "minimum_sequence_separation": 2,
+        "minimum_contact_occupancy": 0.5
+      }
+    },
+    "reactive_path_ensembles": {
+      "enabled": true,
+      "options": {
+        "endpoint_mode": "automatic_recurrent_pair",
+        "source_state_ids": [],
+        "sink_state_ids": []
+      }
+    }
+  },
+  "views": {
+    "global_common_heavy": {
+      "enabled": false,
+      "state_trajectory_exports_enabled": false
+    },
+    "macromolecular_trace": {
+      "enabled": true,
+      "state_trajectory_exports_enabled": false
+    }
+  },
+  "execution": {
+    "submission_adapter": "local",
+    "maximum_parallel_cpus": 2,
+    "maximum_hours_per_cpu": 1.0,
+    "maximum_memory_gib": 32.0,
+    "maximum_scratch_gib": 8.0,
+    "planning_utilization": 0.85,
+    "pilot_budget_fraction": 0.05,
+    "finalization_headroom_fraction": 0.05,
+    "time_safety_factor": 1.5,
+    "memory_safety_factor": 1.25,
+    "censored_timeout_safety_factor": 1.5,
+    "fail_if_minimum_coverage_unaffordable": true,
+    "coordinate_cache": "auto"
+  }
+}

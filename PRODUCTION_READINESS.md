@@ -1,16 +1,16 @@
 # Production-readiness assessment
 
 Assessment date: 2026-08-25
-Candidate: `0.1.1`
+Candidate: `0.2.0a2`
 
 ## Decision boundary
 
-This branch contains the proposed `v0.1.1` experimental patch release. It is not
+This branch contains the proposed `v0.2.0a2` experimental branch candidate. It is not
 presented as a supported scientific release.
 Every registered module remains `experimental`; technical completion, scheduler
 success, and scientific validity are separate statuses.
 
-The source contains 45 of 45 MD/core/reporting modules in the registry and
+The source contains 58 of 58 MD/core/reporting modules in the registry and
 standard profile. The prior `v0.1.0` dependency test is retained in
 `validation/v0.1.0_dependency_test.json`. Earlier candidate evidence remains in
 `validation/v0.1.0a1_dependency_test.json`. The later memory-planning update,
@@ -49,7 +49,7 @@ states require the original simulation topology and explicit project review.
 
 | Gate | Current evidence | Interpretation |
 |---|---|---|
-| Registry/profile | 45 of 45 modules with exact-set tests | Coverage contract, not scientific approval |
+| Registry/profile | 58 of 58 modules with exact-set tests | Current experimental-branch coverage contract, not scientific approval or a revision of the v0.1 evidence |
 | Dependency-equipped suite | Machine-readable release record in `validation/v0.1.0_dependency_test.json`, with earlier candidate evidence retained separately | Software behavior in the recorded environments only |
 | Memory-planner update | Source-hash-bound 457-test, low-memory preparation, and GitHub Actions record in `validation/v0.1.0a1_memory_planner_update_test.json` | Current update behavior on the recorded workstation and CI matrix; scientific status remains unevaluated |
 | GitHub Actions | Six successful Linux/macOS jobs for Python 3.10--3.12 plus the successful isolated artifact-build/install job | Technical portability and packaging gate for the tested head; rerun after every later commit |

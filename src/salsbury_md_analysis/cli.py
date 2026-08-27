@@ -51,6 +51,19 @@ from .integrated import (
 )
 from .information import generalized_correlation_and_information_project_safe
 from .information_dynamics import information_dynamics_project_safe
+from .perturbation_response import perturbation_response_dynamics_project_safe
+from .reweighting import trajectory_reweighting_project_safe
+from .allosteric_pathways import allosteric_pathways_project_safe
+from .energetic_network_embeddings import energetic_network_embeddings_project_safe
+from .multivalent_bridges import multivalent_molecular_bridges_project_safe
+from .hydration_density import hydration_density_channels_project_safe
+from .pocket_dynamics import ensemble_pocket_dynamics_project_safe
+from .interaction_fingerprints import interaction_fingerprints_project_safe
+from .spatial_interaction_ensembles import spatial_interaction_ensembles_project_safe
+from .interaction_persistence import interaction_persistence_project_safe
+from .random_feature_koopman import random_feature_koopman_project_safe
+from .helical_mechanics import helical_mechanics_project_safe
+from .reactive_paths import reactive_path_ensembles_project_safe
 from .trajectory_features import trajectory_features_project_safe
 from .hydrogen_bond_patterns import (
     HydrogenBondPatternError,
@@ -147,6 +160,19 @@ EXTENDED_PROJECT_COMMANDS = {
     "alternative-clustering": alternative_clustering_project_safe,
     "pald-community": pald_community_analysis_project_safe,
     "information-dynamics": information_dynamics_project_safe,
+    "perturbation-response": perturbation_response_dynamics_project_safe,
+    "trajectory-reweighting": trajectory_reweighting_project_safe,
+    "allosteric-pathways": allosteric_pathways_project_safe,
+    "energetic-network-embeddings": energetic_network_embeddings_project_safe,
+    "multivalent-bridges": multivalent_molecular_bridges_project_safe,
+    "hydration-density-channels": hydration_density_channels_project_safe,
+    "ensemble-pocket-dynamics": ensemble_pocket_dynamics_project_safe,
+    "interaction-fingerprints": interaction_fingerprints_project_safe,
+    "spatial-interaction-ensembles": spatial_interaction_ensembles_project_safe,
+    "interaction-persistence": interaction_persistence_project_safe,
+    "random-feature-koopman": random_feature_koopman_project_safe,
+    "helical-mechanics": helical_mechanics_project_safe,
+    "reactive-path-ensembles": reactive_path_ensembles_project_safe,
     "correlation-networks": correlation_networks_project_safe,
     "trajectory-features": trajectory_features_project_safe,
     "state-coordinate-exports": state_coordinate_exports_project_safe,
@@ -719,9 +745,13 @@ def _prepare_analysis_command(
     temperature_kelvin: float,
     target_wall_hours: Optional[float],
     dssp_executable: Optional[str],
+    dssr_executable: Optional[str],
     config_path: Optional[Path],
     generate_connectivity_openmm: bool,
     openmm_bond_definitions: Sequence[Path],
+    energetic_charmm_parameter_files: Sequence[Path],
+    energetic_openmm_system_xml: Optional[Path],
+    energetic_gromacs_tpr: Optional[Path],
     auto_disable_to_fit_memory: bool,
     plan_only: bool,
 ) -> int:
@@ -741,9 +771,13 @@ def _prepare_analysis_command(
             temperature_kelvin=temperature_kelvin,
             target_wall_hours=target_wall_hours,
             dssp_executable=dssp_executable,
+            dssr_executable=dssr_executable,
             config_path=config_path,
             generate_connectivity_openmm=generate_connectivity_openmm,
             openmm_bond_definitions=openmm_bond_definitions,
+            energetic_charmm_parameter_files=energetic_charmm_parameter_files,
+            energetic_openmm_system_xml=energetic_openmm_system_xml,
+            energetic_gromacs_tpr=energetic_gromacs_tpr,
         )
         if plan_only and report.get("technical_status") == "complete":
             plan_path = output_directory.expanduser().resolve(strict=True) / (
@@ -809,6 +843,7 @@ def _prepare_comparison_command(
     temperature_kelvin: float,
     target_wall_hours: Optional[float],
     dssp_executable: Optional[str],
+    dssr_executable: Optional[str],
     config_path: Optional[Path],
     auto_disable_to_fit_memory: bool,
     plan_only: bool,
@@ -825,6 +860,7 @@ def _prepare_comparison_command(
             temperature_kelvin=temperature_kelvin,
             target_wall_hours=target_wall_hours,
             dssp_executable=dssp_executable,
+            dssr_executable=dssr_executable,
             config_path=config_path,
         )
         if plan_only and report.get("technical_status") == "complete":
@@ -1267,7 +1303,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     kmeans_parser = subparsers.add_parser(
         "cluster-kmeans",
-        help="Scan a seeded KMeans grid over declared common-PCA features.",
+        help="Scan a deterministic NANI or legacy seeded KMeans grid over declared features.",
     )
     kmeans_parser.add_argument("path", type=Path, help="Project manifest path.")
     kmeans_parser.add_argument(
@@ -1409,6 +1445,19 @@ def build_parser() -> argparse.ArgumentParser:
         "alternative-clustering": "Run distinctly labeled clustering families on common-PCA features.",
         "pald-community": "Calculate sampled PaLD cohesion, local depth, strong ties, and communities.",
         "information-dynamics": "Calculate segment-safe transfer entropy and higher-order feature statistics.",
+        "perturbation-response": "Calculate experimental DFI/DCI profiles from common-PCA trajectory covariances.",
+        "trajectory-reweighting": "Apply exact frame-aligned log weights with ESS and concentration gates.",
+        "allosteric-pathways": "Trace contact-occupancy pathways with equal-path participation and centrality.",
+        "energetic-network-embeddings": "Build Cowan/Thayer-compatible protein residue interaction-energy heat-kernel embeddings from Amber, CHARMM, or serialized OpenMM parameters.",
+        "multivalent-bridges": "Find solvent, ion, and ligand multiresidue bridge hyperedges.",
+        "hydration-density-channels": "Map aligned water and ion density plus geometric channel candidates.",
+        "ensemble-pocket-dynamics": "Track ensemble geometric pocket persistence and volume.",
+        "interaction-fingerprints": "Join chemically typed frame-level interaction fingerprints with explicit missingness.",
+        "spatial-interaction-ensembles": "Map receptor-aligned interaction-partner clouds and gated spatial mode candidates.",
+        "interaction-persistence": "Measure segment-safe fingerprint persistence with complete-event and censoring gates.",
+        "random-feature-koopman": "Run a seed-gated random-feature nonlinear kinetic sensitivity over TICA coordinates.",
+        "helical-mechanics": "Calculate DSSR-gated state-specific duplex helical mechanics.",
+        "reactive-path-ensembles": "Extract segment-safe reactive paths and cluster route families with explicit sufficiency gates.",
         "correlation-networks": "Build thresholded signed networks from DCCM outputs.",
         "trajectory-features": "Extract Cartesian, COM, distance, fluctuation, and principal-axis features.",
         "state-coordinate-exports": "Write immutable state trajectories and observed representative structures.",
@@ -1541,6 +1590,27 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     prepare_parser.add_argument(
+        "--energetic-charmm-parameter", type=Path, action="append", default=[],
+        help=(
+            "CHARMM .prm/.par/.str/.inp nonbonded parameter file for the optional "
+            "energetic-network module; repeat in load order. Requires PSF connectivity."
+        ),
+    )
+    prepare_parser.add_argument(
+        "--energetic-openmm-system-xml", type=Path,
+        help=(
+            "Serialized OpenMM System XML containing one standard NonbondedForce "
+            "for the optional energetic-network module."
+        ),
+    )
+    prepare_parser.add_argument(
+        "--energetic-gromacs-tpr", type=Path,
+        help=(
+            "Record a compiled GROMACS TPR parameter source. Raw TPR extraction "
+            "currently reports not available; use OpenMM System XML for execution."
+        ),
+    )
+    prepare_parser.add_argument(
         "--trajectory", type=Path, action="append", required=True,
         help="Replica DCD path; repeat once per replica.",
     )
@@ -1563,6 +1633,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     prepare_parser.add_argument("--dssp-executable")
+    prepare_parser.add_argument(
+        "--dssr-executable",
+        help=(
+            "Optional x3dna-dssr executable. When omitted it is discovered on PATH; "
+            "duplex mechanics remains unavailable unless the executable and a DSSR-detected "
+            "duplex stem are both present."
+        ),
+    )
     prepare_parser.add_argument(
         "--config", type=Path,
         help=(
@@ -1729,6 +1807,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     comparison_parser.add_argument("--dssp-executable")
+    comparison_parser.add_argument(
+        "--dssr-executable",
+        help=(
+            "Optional x3dna-dssr executable. Each comparison system receives its "
+            "own duplex probe; enabled helical mechanics is planned only for systems "
+            "whose probe succeeds."
+        ),
+    )
     comparison_parser.add_argument(
         "--config", type=Path,
         help=(
@@ -2036,9 +2122,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.temperature_kelvin,
             args.target_wall_hours,
             args.dssp_executable,
+            args.dssr_executable,
             args.config,
             args.generate_connectivity_openmm,
             args.openmm_bond_definitions,
+            args.energetic_charmm_parameter,
+            args.energetic_openmm_system_xml,
+            args.energetic_gromacs_tpr,
             args.auto_disable_to_fit_memory,
             args.plan_only,
         )
@@ -2050,6 +2140,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.temperature_kelvin,
             args.target_wall_hours,
             args.dssp_executable,
+            args.dssr_executable,
             args.config,
             args.auto_disable_to_fit_memory,
             args.plan_only,

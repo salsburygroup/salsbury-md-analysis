@@ -1,0 +1,105 @@
+{
+  "validation_schema": "salsbury-nemo-experimental-methods-acceptance-v1",
+  "branch": "experimental",
+  "recorded_at": "2026-08-24",
+  "execution_host_class": "Apple silicon workstation",
+  "dependencies": {
+    "python": "3.12.13",
+    "numpy": "2.5.2",
+    "scipy": "1.18.1",
+    "scikit-learn": "1.9.0"
+  },
+  "fixture": {
+    "system": "human NEMO zinc-finger domain with one zinc ion",
+    "source_physical_frames": 1000,
+    "frame_interval_ps": 0.2,
+    "atom_count": 423,
+    "residue_node_count": 28,
+    "pdb_sha256": "fca08ab6ff7f2b43fe3e02d3da8fe94aaff3db5cab52fcfbbc02bb5e7cdc8ac4",
+    "psf_sha256": "85a5bf380f42f1c607d85e40ac91c6cbfcf60614e418ad667ea63a1e137a3aa0",
+    "trajectory_sha256": "bf7ad649bbb0d7a4bc37d3c2ce5a64140cf7de7b863cc9c6cebb789b80725524"
+  },
+  "configuration": {
+    "source_config": "tutorials/nemo_zinc_finger/experimental-analysis-config.json",
+    "source_config_sha256": "3b066374671503774d745cb48fe6a566a117f6bb9bca923a88406068132123b2",
+    "source_node_indices": [4, 5],
+    "sink_node_indices": [8, 25],
+    "functional_site_node_indices": [4, 5, 8, 25],
+    "site_identity": "zero-based trace nodes for Cys 5, Cys 6, Cys 9, and Cys 26",
+    "contact_cutoff_angstrom": 8.0,
+    "minimum_sequence_separation": 2,
+    "minimum_contact_occupancy": 0.5,
+    "reweighting_control": "uniform exact-identity log weights; a no-op software control rather than fitted data"
+  },
+  "common_pca_prerequisite": {
+    "basis_frames": 500,
+    "projection_frames": 1000,
+    "component_count": 10,
+    "cumulative_explained_variance_fraction": 0.9167848181919843,
+    "total_cpu_seconds": 37.015715,
+    "wall_seconds": 38.456000334001146,
+    "maximum_resident_memory_mib": 64.3125,
+    "report_sha256": "2b411ebcbe9c480d369377f76aa4524b8752e13549bf433c306a2676c15ebee1"
+  },
+  "methods": {
+    "perturbation_response_dynamics": {
+      "technical_status": "complete",
+      "selected_physical_frame_count": 1000,
+      "node_count": 28,
+      "random_force_directions": 250,
+      "total_cpu_seconds": 0.310658,
+      "wall_seconds": 0.3524523749947548,
+      "maximum_resident_memory_mib": 65.09375,
+      "report_sha256": "77d127045a6e85d20e7d390a5bd06c465c06505e909b28099b6632fcaed570bd"
+    },
+    "trajectory_reweighting": {
+      "technical_status": "complete",
+      "reweighting_validity_status": "passed",
+      "selected_physical_frame_count": 1000,
+      "kish_effective_sample_size": 1000.0000000000017,
+      "kish_ratio": 1.0000000000000018,
+      "maximum_single_frame_weight": 0.001,
+      "log_weight_range": 0.0,
+      "total_cpu_seconds": 0.293936,
+      "wall_seconds": 0.30867587501415983,
+      "maximum_resident_memory_mib": 66.421875,
+      "report_sha256": "9f1d6be4a59e65a31c49e92463d423ccdc17188884b32252f5cd80ca1269cad8"
+    },
+    "allosteric_pathways": {
+      "technical_status": "complete",
+      "pathway_validity_status": "passed",
+      "network_source": "trajectory",
+      "selected_physical_frame_count": 1000,
+      "node_count": 28,
+      "retained_edge_count": 77,
+      "reachable_source_sink_pair_count": 4,
+      "requested_source_sink_pair_count": 4,
+      "maximum_equal_shortest_path_count": 196,
+      "total_cpu_seconds": 18.698369,
+      "wall_seconds": 19.39589441602584,
+      "maximum_resident_memory_mib": 66.21875,
+      "report_sha256": "0f429d580da6cd5b0634682f4af7b492330a905e055cedc93f899cadb166c0b7"
+    }
+  },
+  "planner_calibration": {
+    "technical_status": "complete",
+    "feasibility_status": "feasible",
+    "time_safety_factor": 1.5,
+    "memory_floor_gib_per_task": 1.0,
+    "models": {
+      "perturbation_response_dynamics": "measured NEMO frame rate with provisional node-squared and force-direction scaling",
+      "trajectory_reweighting": "measured NEMO frame rate with provisional component-count-squared scaling",
+      "allosteric_pathways": "measured NEMO trajectory rate with provisional residue-node-squared scaling"
+    },
+    "boundary": "single-fixture calibrations are conservative provisional planner inputs, not validated cross-system performance models"
+  },
+  "regression_suite": {
+    "tests_discovered": 482,
+    "expected_skips": 1,
+    "failures": 0,
+    "errors": 0
+  },
+  "technical_status": "complete",
+  "scientific_status": "not evaluated",
+  "interpretation": "The trial verifies execution, exact frame accounting, trajectory-derived residue-network construction, weight-identity joining, and provisional planner integration. Uniform weights test a no-op control. The short single trajectory does not establish DFI or DCI convergence, pathway robustness, zinc allostery, thermodynamic reweighting, mechanism, or biological importance. The high shortest-path multiplicity requires cutoff, occupancy-threshold, and sequence-exclusion sensitivity analysis before any pathway interpretation."
+}

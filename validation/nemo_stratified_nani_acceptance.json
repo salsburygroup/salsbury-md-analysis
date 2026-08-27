@@ -1,0 +1,59 @@
+{
+  "validation_schema": "salsbury-nemo-stratified-nani-acceptance-v1",
+  "branch": "experimental",
+  "recorded_at": "2026-08-25",
+  "fixture": {
+    "system": "human NEMO zinc-finger domain with one zinc ion",
+    "source_physical_frames": 1000,
+    "atom_count": 423,
+    "trajectory_sha256": "bf7ad649bbb0d7a4bc37d3c2ce5a64140cf7de7b863cc9c6cebb789b80725524"
+  },
+  "configuration": {
+    "feature_source": "tica",
+    "component_indices": [1, 2, 3],
+    "k_values": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    "initialization_methods": ["nani_strat_all", "nani_strat_reduced"],
+    "nani_percentage": 10,
+    "clustering_random_seed": null,
+    "silhouette_random_seeds": [0, 7, 19, 41],
+    "maximum_silhouette_observations": 1000
+  },
+  "execution": {
+    "preparation_status": "complete",
+    "clustering_status": "complete",
+    "first_direct_clustering_wall_seconds": 42.409,
+    "second_direct_clustering_wall_seconds": 41.204,
+    "post_silhouette_gate_validation_wall_seconds": 43.465,
+    "structured_reports_identical": true,
+    "eligible_k_count": 11,
+    "eligible_initializations_per_k": 2
+  },
+  "selected_model": {
+    "k": 4,
+    "initialization_method": "nani_strat_reduced",
+    "initial_center_frame_indices": [365, 19, 749, 30],
+    "iteration_count": 11,
+    "cluster_sizes": [242, 288, 352, 118],
+    "silhouette": 0.40222213571162163,
+    "mean_adjusted_rand_to_other_initializer": 0.9976654073078967
+  },
+  "silhouette_sampling_stability": {
+    "gate_applied": false,
+    "status": "not_applicable_exact_silhouette",
+    "configured_random_seeds": [0, 7, 19, 41],
+    "evaluated_random_seeds": [],
+    "selected_k": 4,
+    "reason": "all 1000 observations were evaluated exactly"
+  },
+  "planner_evidence": {
+    "task_present": true,
+    "initialization_methods_recorded": true,
+    "initialization_runs_per_k": 2,
+    "nani_percentage_recorded": 10,
+    "speed_credit_applied": false,
+    "reason": "retain the measured KMeans planning floor until NANI has multi-system calibration"
+  },
+  "technical_status": "complete",
+  "scientific_status": "not evaluated",
+  "interpretation": "This verifies deterministic execution, initializer sensitivity reporting, and planner visibility on the bounded tutorial fixture. It does not establish four metastable NEMO states, convergence, kinetics, or readiness for promotion to a regular release branch."
+}

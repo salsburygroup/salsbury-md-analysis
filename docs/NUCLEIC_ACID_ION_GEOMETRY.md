@@ -47,6 +47,16 @@ the installed DSSR JSON version. Every query declares whether a missing path is
 skipped or fails the analysis. The exact query paths and DSSR version are part
 of the output because JSON fields can differ by external-tool version.
 
+The optional `helical_mechanics` consumer is narrower than the general DSSR
+adapter. Preparation must verify an installed executable, a DSSR `stems`
+collection, and an installed-version JSON object containing shift, slide, rise,
+tilt, roll, and twist. If any check fails, the module is reported as not
+available and receives no planner task. If all checks pass and the user has
+enabled it, preparation freezes the discovered query paths and schedules both
+the DSSR source and the derived mechanics task. Comparative preparation performs
+this check separately for each system, so only enabled, available duplex systems
+receive helical-mechanics planner tasks.
+
 ## Bound ions and ion pairs
 
 Each ion site declares one ion atom, candidate ligand atoms, a coordination

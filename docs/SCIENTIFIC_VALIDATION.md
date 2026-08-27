@@ -39,7 +39,9 @@ independent comparison or part of the 29-case claim.
 The separate PaLD local-depth and strong-tie community module brings the current
 registry to 44. It has focused synthetic contract and numerical tests only; no
 real-trajectory scientific validation has yet passed.
-The species-resolved ion-atmosphere module brings the current registry to 45.
+At the time of this retained validation record, the species-resolved
+ion-atmosphere module brought the registry to 45. Later experimental-branch
+modules do not retroactively change that evidence boundary.
 It has focused numerical tests plus bounded software-execution evidence for K,
 Mg, Zn, Na, Ca, Cl, and Fe. That evidence validates species routing, frame
 accounting, and resource instrumentation only; it is not an independent

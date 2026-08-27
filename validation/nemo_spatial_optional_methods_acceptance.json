@@ -1,0 +1,138 @@
+{
+  "validation_schema": "salsbury-nemo-spatial-optional-methods-acceptance-v1",
+  "branch": "experimental",
+  "baseline_commit": "9d5af63ea83e48de4e72275e435cda54561a1429",
+  "recorded_at": "2026-08-25",
+  "fixture": {
+    "system": "human NEMO zinc-finger domain with one zinc ion and no explicit water",
+    "source_physical_frames": 1000,
+    "frame_interval_ps": 0.2,
+    "atom_count": 423,
+    "pdb_sha256": "fca08ab6ff7f2b43fe3e02d3da8fe94aaff3db5cab52fcfbbc02bb5e7cdc8ac4",
+    "psf_sha256": "85a5bf380f42f1c607d85e40ac91c6cbfcf60614e418ad667ea63a1e137a3aa0",
+    "trajectory_sha256": "bf7ad649bbb0d7a4bc37d3c2ce5a64140cf7de7b863cc9c6cebb789b80725524"
+  },
+  "configuration": {
+    "source_config": "tutorials/nemo_zinc_finger/interaction-fingerprint-analysis-config.json",
+    "source_config_sha256": "e889a82016484bc8746d53858dcd5baf76b15d3176902fb39e924c0ea4c9683f",
+    "project_manifest_sha256": "3cf6ad97b80a365e72509a25bab294257c7b04822a5c6726fc8cd5cfc78bf552",
+    "new_modules_default_enabled": false,
+    "hydration_minimum_voxel_frame_occupancy": 0.1,
+    "pocket_grid_spacing_angstrom": 2.0,
+    "pocket_maximum_candidates_per_frame": 24
+  },
+  "planner": {
+    "technical_status": "complete",
+    "sampling_plan_sha256": "bec2df19bc4ebb7a2d1d1ee978aaf96e708b1cecbb85f2d0f59e75f6576c6435",
+    "campaign_resource_plan_sha256": "16b55e6280e04f1528af69d5b755898bc278ced44c24ba53eee7f7e2711b81e9",
+    "module_coverage_sha256": "a119bade0b5662f5169efd09633b0daeec718ddc556a8c387651dfb2e577bab3",
+    "tasks": [
+      {
+        "task_id": "direct:hydration_density_channels",
+        "selected_physical_frame_count": 1000,
+        "calibration_id": "nemo-zinc-finger-1000f-423a-1zn-density-20260825",
+        "calibration_status": "completed_single_fixture_provisional_scaling"
+      },
+      {
+        "task_id": "direct:ensemble_pocket_dynamics",
+        "selected_physical_frame_count": 1000,
+        "calibration_id": "nemo-zinc-finger-1000f-423a-pocket-grid-20260825",
+        "calibration_status": "completed_single_fixture_provisional_scaling"
+      },
+      {
+        "task_id": "base:interaction_fingerprints",
+        "selected_physical_frame_count": 1000,
+        "calibration_id": "provisional-sparse-interaction-join-v1",
+        "calibration_status": "provisional_complexity_model"
+      }
+    ],
+    "availability_gate": {
+      "module_id": "helical_mechanics",
+      "status": "deferred",
+      "reason": "no_duplex_dna_or_rna",
+      "planner_task_created": false
+    }
+  },
+  "methods": {
+    "hydration_density_channels": {
+      "technical_status": "complete",
+      "availability_status": "available",
+      "selected_physical_frame_count": 1000,
+      "particle_observation_count": 1000,
+      "species": ["ion:ZN2"],
+      "retained_density_component_count": 1,
+      "maximum_voxel_frame_occupancy": 0.447,
+      "geometric_channel_candidate_count": 0,
+      "total_cpu_seconds": 19.34,
+      "report_sha256": "8e1511a99c16017bd4dbb4017c1bfab5b54d486a82bb7b0e50f64724c597df0f"
+    },
+    "ensemble_pocket_dynamics": {
+      "technical_status": "complete",
+      "availability_status": "available",
+      "selected_physical_frame_count": 1000,
+      "bounded_pocket_instance_count": 9253,
+      "tracked_pocket_cluster_count": 32,
+      "most_persistent_cluster_id": "pocket-cluster-2",
+      "most_persistent_cluster_occupancy": 0.802,
+      "most_persistent_cluster_mean_volume_angstrom3": 118.81296758104739,
+      "frames_reaching_configured_pocket_cap": 0,
+      "total_cpu_seconds": 41.14,
+      "report_sha256": "5da50f5ec591a54fa29ae4378987163330162b03c6d5f2fcab27891558d247d5"
+    },
+    "interaction_fingerprint_integration": {
+      "technical_status": "complete",
+      "availability_status": "available",
+      "source_module": "hydration_density_channels",
+      "evaluated_frame_count": 1000,
+      "feature_count": 1,
+      "feature_occupancy": 0.852,
+      "cooccurrence_edge_count": 0,
+      "report_sha256": "d16e491793261c1471027ad8f4489549fb7485197694b022891634df5464a2e7"
+    }
+  },
+  "reporting": {
+    "finding_picker": {
+      "technical_status": "complete",
+      "candidate_count": 3,
+      "reported_count": 3,
+      "module_ids": [
+        "interaction_fingerprints",
+        "ensemble_pocket_dynamics",
+        "hydration_density_channels"
+      ],
+      "all_candidates_descriptive": true,
+      "prioritized_findings_sha256": "79200b49e21b52ccf2aea666368db9dc80a07fa3b173cd34a7c4c39479e8b942"
+    },
+    "interactive_dashboard": {
+      "technical_status": "complete",
+      "network_dependency": "none",
+      "module_report_count": 3,
+      "finding_count": 3,
+      "experimental_method_summary_enabled": true,
+      "hydration_density_view_enabled": true,
+      "pocket_metric_view_enabled": true,
+      "index_sha256": "f1c1784fe365ecb9f1efb95e493c1ce2598fe4899abef3d40859be521e1cc8f8",
+      "manifest_sha256": "08bff8a3ad88a7d1c1f5095c119daf35f741e7e01b9d0e774c653683aeb7b7d1"
+    }
+  },
+  "default_off_optional_modules": [
+    "perturbation_response_dynamics",
+    "trajectory_reweighting",
+    "allosteric_pathways",
+    "multivalent_molecular_bridges",
+    "reactive_path_ensembles",
+    "interaction_fingerprints",
+    "helical_mechanics",
+    "hydration_density_channels",
+    "ensemble_pocket_dynamics"
+  ],
+  "regression_suite": {
+    "tests_discovered": 511,
+    "expected_skips": 1,
+    "failures": 0,
+    "errors": 0
+  },
+  "technical_status": "complete",
+  "scientific_status": "not evaluated",
+  "interpretation": "This bounded run validates execution, exact frame accounting, planner inclusion, hydration-component fingerprint joining, descriptive finding selection, and offline dashboard rendering for the two new optional modules. NEMO contains no explicit water, so the hydration result tests zinc density but not hydration-water channels. Connected pocket growth, one-instance-per-cluster-per-frame tracking, and a configurable 24-candidate safety cap produced no per-frame cap truncation on this fixture. The geometric pocket clusters remain threshold-sensitive, and the result does not establish druggability, affinity, opening kinetics, convergence, mechanism, or biological importance. The single-fixture timing models remain provisional."
+}

@@ -21,6 +21,7 @@ from typing import Dict, Mapping, Optional, Sequence
 from .atom_mapping import AtomMappingError, read_pdb_atoms
 from .analysis_config import (
     COMMAND_MODULES,
+    DEFAULT_DISABLED_MODULES,
     AnalysisConfigError,
     apply_module_configuration,
     enabled_modules,
@@ -40,6 +41,7 @@ from .coordinates import CoordinateReadError, iter_coordinate_frames
 from .execution_adapters import (
     ExecutionAdapterError, _active_python_executable, prepare_execution_artifacts,
 )
+from .energetic_network_embeddings import probe_energetic_parameter_source
 from .conformational_views import plan_conformational_views
 from .coordinate_cache import (
     coordinate_cache_prefix,
@@ -69,6 +71,7 @@ from .periodic import (
 from .resource_planning import plan_alternative_clustering_fit_strides
 from .registry import list_modules
 from .selections import select_atoms
+from .nucleic_acid_structure import probe_dssr_reference_duplex
 
 
 class QuickstartError(ValueError):
@@ -92,10 +95,181 @@ class QuickstartMemoryError(QuickstartPlanningError):
     """Raised with a complete plan when enabled minima exceed the memory cap."""
 
 
+def _experimental_planner_coverage(
+    analysis_config: Mapping[str, object],
+    campaign_resource_plan: Mapping[str, object],
+    exclusions: Mapping[str, str],
+) -> Dict[str, object]:
+    """Audit every default-off method against its resolved planner state."""
+
+    modules = analysis_config.get("modules")
+    tasks = campaign_resource_plan.get("tasks")
+    if not isinstance(modules, Mapping) or not isinstance(tasks, list):
+        raise QuickstartError("experimental planner coverage inputs are incomplete")
+    task_ids_by_module: Dict[str, list[str]] = {}
+    for task in tasks:
+        if not isinstance(task, Mapping):
+            continue
+        module_id = str(task.get("module_id", ""))
+        task_id = task.get("task_id")
+        if module_id and isinstance(task_id, str):
+            task_ids_by_module.setdefault(module_id, []).append(task_id)
+    rows = []
+    missing = []
+    for module_id in sorted(DEFAULT_DISABLED_MODULES):
+        module_config = modules.get(module_id)
+        enabled = bool(
+            isinstance(module_config, Mapping)
+            and module_config.get("enabled") is True
+        )
+        task_ids = sorted(task_ids_by_module.get(module_id, []))
+        if not enabled:
+            status = "disabled_by_config"
+            reason = "default-off experimental method was not enabled"
+        elif task_ids:
+            status = "planned"
+            reason = "enabled and available; planner task created"
+        elif module_id in exclusions:
+            status = "not_available"
+            reason = str(exclusions[module_id])
+        else:
+            status = "missing_planner_task"
+            reason = "enabled method has no planner task or availability exclusion"
+            missing.append(module_id)
+        rows.append({
+            "module_id": module_id,
+            "configuration_enabled": enabled,
+            "planner_status": status,
+            "planner_task_ids": task_ids,
+            "reason": reason,
+        })
+    if missing:
+        raise QuickstartError(
+            "enabled experimental modules lack planner accounting: "
+            + ", ".join(missing)
+        )
+    return {
+        "coverage_schema": "salsbury-experimental-planner-coverage-v1",
+        "module_count": len(rows),
+        "enabled_module_count": sum(
+            row["configuration_enabled"] is True for row in rows
+        ),
+        "planned_module_count": sum(
+            row["planner_status"] == "planned" for row in rows
+        ),
+        "not_available_module_count": sum(
+            row["planner_status"] == "not_available" for row in rows
+        ),
+        "modules": rows,
+    }
+
+
+def _record_conformational_experimental_exclusions(
+    root: Path,
+    view_project_files: Sequence[str],
+    exclusions: Dict[str, str],
+    analysis_config: Optional[Mapping[str, object]] = None,
+) -> None:
+    """Record method contracts that make an enabled view method inapplicable."""
+
+    requested_modules = set()
+    for filename in view_project_files:
+        project = load_json(root / filename)
+        requested = project.get("requested_modules")
+        if isinstance(requested, list):
+            requested_modules.update(str(value) for value in requested)
+    modules = (
+        analysis_config.get("modules")
+        if isinstance(analysis_config, Mapping) else None
+    )
+    perturbation = (
+        modules.get("perturbation_response_dynamics")
+        if isinstance(modules, Mapping) else None
+    )
+    options = (
+        perturbation.get("options")
+        if isinstance(perturbation, Mapping) else None
+    )
+    functional_sites = (
+        options.get("functional_site_node_indices")
+        if isinstance(options, Mapping) else None
+    )
+    if (
+        "perturbation_response_dynamics" not in requested_modules
+        and analysis_config is not None
+        and (not isinstance(functional_sites, list) or not functional_sites)
+    ):
+        exclusions.setdefault(
+            "perturbation_response_dynamics",
+            (
+                "not available: functional_site_node_indices were not declared; "
+                "the generic workflow does not guess a biological functional site"
+            ),
+        )
+    elif "perturbation_response_dynamics" not in requested_modules:
+        exclusions.setdefault(
+            "perturbation_response_dynamics",
+            (
+                "not applicable: the current DFI/DCI contract requires an enabled "
+                "macromolecular-trace view with one node per residue; no such view "
+                "was generated for this system"
+            ),
+        )
+
+
+def _force_field_parameter_spec(
+    *, charmm_parameter_files: Sequence[Path] = (),
+    openmm_system_xml: Optional[Path] = None,
+    gromacs_tpr: Optional[Path] = None,
+) -> Optional[Dict[str, object]]:
+    """Normalize one explicit force-field source for energetic analyses."""
+
+    modes = sum((
+        bool(charmm_parameter_files), openmm_system_xml is not None,
+        gromacs_tpr is not None,
+    ))
+    if modes > 1:
+        raise QuickstartError(
+            "choose only one energetic parameter source: CHARMM parameter files, "
+            "OpenMM System XML, or GROMACS TPR"
+        )
+    if charmm_parameter_files:
+        files = [
+            Path(path).expanduser().resolve(strict=True)
+            for path in charmm_parameter_files
+        ]
+        unsupported = [
+            str(path) for path in files
+            if path.suffix.lower() not in {".prm", ".par", ".str", ".inp"}
+        ]
+        if unsupported:
+            raise QuickstartError(
+                "CHARMM energetic parameter files must use .prm, .par, .str, or .inp: "
+                + ", ".join(unsupported)
+            )
+        return {
+            "format": "charmm_parameter_files_v1",
+            "files": [str(path) for path in files],
+        }
+    if openmm_system_xml is not None:
+        path = Path(openmm_system_xml).expanduser().resolve(strict=True)
+        if path.suffix.lower() != ".xml":
+            raise QuickstartError("serialized OpenMM System input must use .xml")
+        return {"format": "openmm_system_xml_v1", "files": [str(path)]}
+    if gromacs_tpr is not None:
+        path = Path(gromacs_tpr).expanduser().resolve(strict=True)
+        if path.suffix.lower() != ".tpr":
+            raise QuickstartError("GROMACS compiled parameter input must use .tpr")
+        return {"format": "gromacs_tpr_v1", "files": [str(path)]}
+    return None
+
+
 _GENERIC_DIRECT_ESTIMATORS = (
     "structural_integrity_qc", "replica_rmsd_rg", "pooled_rmsf", "dccm",
     "individual_pca", "dihedral_distributions",
     "hydrogen_bond_discovery", "solvent_accessible_surface_area",
+    "multivalent_molecular_bridges", "hydration_density_channels",
+    "ensemble_pocket_dynamics",
 )
 
 _GENERIC_CHEMISTRY_COMMANDS = {
@@ -124,14 +298,19 @@ def _applicable_sampling_modules(
     analysis_config: Mapping[str, object],
     *,
     dssp_executable: Optional[str],
+    energetic_parameter_available: bool = False,
 ) -> list[str]:
-    """Return only direct estimators the zero-input workflow can execute."""
+    """Return applicable direct and frame-inheriting base estimators."""
 
     enabled = enabled_modules(analysis_config)
     result = [
         module_id for module_id in _GENERIC_DIRECT_ESTIMATORS
         if module_id in enabled
     ]
+    if "allosteric_pathways" in enabled:
+        result.append("allosteric_pathways")
+    if energetic_parameter_available and "energetic_network_embeddings" in enabled:
+        result.append("energetic_network_embeddings")
     if (
         int(composition["water_residue_count"]) > 0
         and "water_mediated_hydrogen_bond_networks" in enabled
@@ -191,6 +370,28 @@ def _discover_dssp_executable(explicit: Optional[str]) -> Optional[str]:
         candidate = interpreter_directory / name
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate.resolve(strict=True))
+    return None
+
+
+def _discover_dssr_executable(explicit: Optional[str]) -> Optional[str]:
+    """Find x3dna-dssr without treating its separate license as bundled."""
+
+    if explicit:
+        found = shutil.which(explicit)
+        candidate = Path(explicit).expanduser()
+        if found:
+            return str(Path(found).resolve(strict=True))
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate.resolve(strict=True))
+        raise QuickstartError(
+            f"declared DSSR executable is not an executable file or command: {explicit}"
+        )
+    found = shutil.which("x3dna-dssr")
+    if found:
+        return str(Path(found).resolve(strict=True))
+    candidate = Path(_active_python_executable()).parent / "x3dna-dssr"
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return str(candidate.resolve(strict=True))
     return None
 
 
@@ -413,6 +614,7 @@ def _generic_definitions(
     *,
     frame_counts_per_replica: Sequence[int],
     dssp_executable: Optional[str],
+    dssr_probe: Mapping[str, object],
 ) -> tuple[Dict[str, object], list[str], Dict[str, str]]:
     if not frame_counts_per_replica or any(
         isinstance(value, bool) or not isinstance(value, int) or value < 1
@@ -433,6 +635,9 @@ def _generic_definitions(
     component_count = max(2, min(10, 3 * trace_atoms, minimum_replica_frames - 1))
     k_max = max(2, min(12, total_frames // 20))
     k_values = list(range(2, k_max + 1))
+    # Retain the paper's 10% default while guaranteeing that even a very small
+    # prepared project supplies at least k_max deterministic NANI candidates.
+    nani_percentage = max(10, math.ceil(100 * k_max / total_frames))
     definitions: Dict[str, object] = {
         "structural_qc": {
             "near_coincident_distance_angstrom": 0.5,
@@ -524,6 +729,24 @@ def _generic_definitions(
             "maximum_features": min(5, component_count),
             "maximum_tensor_elements": 1_000,
         },
+        "perturbation_response_dynamics": {
+            "feature_source": "common_pca",
+            "functional_site_node_indices": [],
+            "random_force_directions": 250,
+            "random_seed": 20260824,
+            "maximum_nodes": max(1, trace_atoms),
+            "minimum_observations_per_system": 2,
+            "minimum_cumulative_explained_variance": 0.0,
+            "include_self_perturbations": True,
+        },
+        "trajectory_reweighting": {
+            "observable_source": "common_pca",
+            "weights_path": "",
+            "normalization_scope": "per_system",
+            "minimum_kish_effective_sample_size": 20.0,
+            "minimum_kish_ratio": 0.05,
+            "maximum_single_frame_weight": 0.25,
+        },
         "correlation_networks": {
             "matrix_kinds": ["frame_pooled_dccm", "difference_from_reference_dccm"],
             "absolute_threshold": 0.3,
@@ -537,6 +760,191 @@ def _generic_definitions(
                 "allow_single_cluster": False,
             },
         },
+        "allosteric_pathways": {
+            "network_source": "trajectory",
+            "network_path": "",
+            "node_selection": "analysis",
+            "alignment_selection": "alignment",
+            "minimum_reference_coverage": 0.95,
+            "frame_stride": 1,
+            "frame_selection": _frame_selection(rows, "dccm"),
+            "contact_cutoff_angstrom": 8.0,
+            "minimum_sequence_separation": 2,
+            "minimum_evaluated_frames_per_system": 20,
+            "minimum_variance_angstrom2": 1.0e-12,
+            "source_node_indices": [],
+            "sink_node_indices": [],
+            "minimum_contact_occupancy": 0.5,
+            "distance_epsilon": 1.0e-12,
+            "shortest_path_equality_tolerance": 1.0e-12,
+            "maximum_nodes": max(2, trace_atoms),
+            "neighbor_correlation_factor_enabled": True,
+        },
+        "energetic_network_embeddings": {
+            "parameter_source": "force_field_parameter_source_auto_v1",
+            "atom_scope": "strict_common_complete_protein_residues_v1",
+            "periodic_pair_treatment": "nonperiodic_made_whole_cpptraj_pairwise_v1",
+            "electrostatic_reporting_threshold_kcal_per_mol": 0.0001,
+            "vdw_reporting_threshold_kcal_per_mol": 0.0001,
+            "network_edge_threshold": 0.003,
+            "heat_diffusion_time": 6.0,
+            "embedding_component_count": 3,
+            "frame_stride": 1,
+            "frame_selection": _frame_selection(
+                rows, "energetic_network_embeddings"
+            ),
+            "minimum_evaluated_frames_per_system": 20,
+            "maximum_common_protein_residues": 2_000,
+            "maximum_selected_atom_pairs": 10_000_000,
+            "maximum_atom_pair_frame_evaluations": 500_000_000,
+            "pair_chunk_size": 250_000,
+            "maximum_heat_kernel_elements": 50_000_000,
+            "maximum_vdw_to_electrostatic_ratio": 0.10,
+        },
+        "multivalent_molecular_bridges": {
+            "frame_stride": 1,
+            "frame_selection": _frame_selection(
+                rows, "multivalent_molecular_bridges"
+            ),
+            "maximum_frames": int(
+                rows.get("multivalent_molecular_bridges", {}).get(
+                    "selected_frame_count", total_frames
+                )
+            ),
+            "include_supported_ions": bool(composition["ion_atom_indices"]),
+            "include_recognized_waters": (
+                int(composition["water_residue_count"]) > 0
+            ),
+            "mediator_residue_names": [],
+            "solute_residue_classes": ["protein", "nucleic_acid"],
+            "solute_residue_names": [],
+            "mediator_atom_elements": [],
+            "solute_atom_elements": ["N", "O", "S", "P"],
+            "contact_cutoff_angstrom": 4.0,
+            "water_contact_cutoff_angstrom": 3.5,
+            "minimum_distinct_residues": 2,
+            "maximum_neighbor_pairs_per_frame": 2_000_000,
+            "maximum_bridge_records": 1_000_000,
+            "minimum_evaluated_frames_per_system": 10,
+        },
+        "hydration_density_channels": {
+            "alignment_selection": "alignment",
+            "reference_extent_selection": "solute_heavy",
+            "minimum_reference_coverage": 0.95,
+            "frame_stride": 1,
+            "frame_selection": _frame_selection(rows, "hydration_density_channels"),
+            "maximum_frames": int(
+                rows.get("hydration_density_channels", {}).get(
+                    "selected_frame_count", total_frames
+                )
+            ),
+            "include_recognized_waters": int(composition["water_residue_count"]) > 0,
+            "include_supported_ions": bool(composition["ion_atom_indices"]),
+            "additional_residue_names": [],
+            "grid_spacing_angstrom": 1.5,
+            "grid_padding_angstrom": 8.0,
+            "minimum_voxel_frame_occupancy": 0.10,
+            "minimum_component_voxels": 1,
+            "minimum_channel_depth_angstrom": 4.5,
+            "maximum_grid_voxels": 500_000,
+            "maximum_particle_observations": 100_000_000,
+            "maximum_sparse_frame_voxels": 50_000_000,
+            "minimum_evaluated_frames_per_system": 10,
+        },
+        "ensemble_pocket_dynamics": {
+            "backend": "native_grid_v1",
+            "alignment_selection": "alignment",
+            "solute_selection": "solute_heavy",
+            "minimum_reference_coverage": 0.95,
+            "frame_stride": 1,
+            "frame_selection": _frame_selection(rows, "ensemble_pocket_dynamics"),
+            "maximum_frames": int(
+                rows.get("ensemble_pocket_dynamics", {}).get(
+                    "selected_frame_count", total_frames
+                )
+            ),
+            "grid_spacing_angstrom": 2.0,
+            "grid_padding_angstrom": 4.0,
+            "minimum_clearance_angstrom": 1.4,
+            "maximum_surface_distance_angstrom": 4.5,
+            "minimum_seed_clearance_angstrom": 2.5,
+            "minimum_seed_separation_angstrom": 5.5,
+            "pocket_growth_radius_angstrom": 4.0,
+            "neighborhood_radius_angstrom": 6.0,
+            "minimum_nearby_atoms": 4,
+            "minimum_nearby_residues": 3,
+            "minimum_occupied_directions": 5,
+            "maximum_directional_imbalance": 0.55,
+            "minimum_pocket_voxels": 2,
+            "maximum_pockets_per_frame": 24,
+            "residue_jaccard_threshold": 0.50,
+            "maximum_centroid_distance_angstrom": 6.0,
+            "maximum_grid_voxels": 250_000,
+            "maximum_pocket_instances": 50_000,
+            "maximum_tracking_comparisons": 5_000_000,
+            "minimum_evaluated_frames_per_system": 10,
+        },
+        "interaction_fingerprints": {
+            "source_modules": [
+                "hydrogen_bond_discovery",
+                "water_mediated_hydrogen_bond_networks",
+                "ion_coordination_geometry", "ion_atmosphere",
+                "multivalent_molecular_bridges",
+                "hydration_density_channels",
+            ],
+            "frame_join_policy": "pairwise_complete_observations_v1",
+            "minimum_feature_occupancy": 0.0,
+            "maximum_features": 10_000,
+            "maximum_pair_comparisons": 2_000_000,
+            "minimum_pair_observations": 10,
+            "minimum_cooccurrence_count": 2,
+        },
+        "spatial_interaction_ensembles": {
+            "source_module": "interaction_fingerprints",
+            "alignment_selection": "alignment",
+            "minimum_reference_coverage": 0.95,
+            "point_construction_policy": "endpoint_partner_coordinates_v1",
+            "minimum_point_observations": 20,
+            "minimum_distinct_frames": 20,
+            "time_block_count": 4,
+            "mode_k_values": [2, 3],
+            "minimum_mode_observations": 10,
+            "minimum_mode_fraction": 0.10,
+            "minimum_mode_silhouette": 0.35,
+            "minimum_mode_centroid_separation_angstrom": 1.0,
+            "minimum_mode_time_blocks": 2,
+            "minimum_mode_replicas": 1,
+            "maximum_superfeatures": 10_000,
+            "maximum_point_observations": 5_000_000,
+            "maximum_exact_mode_points": 1_000,
+            "maximum_mode_iterations": 100,
+            "mode_center_tolerance_angstrom": 1.0e-6,
+        },
+        "interaction_persistence": {
+            "source_module": "interaction_fingerprints",
+            "gap_tolerance_observations": [0, 1],
+            "minimum_observations_per_series": 10,
+            "minimum_complete_events": 2,
+            "maximum_features": 10_000,
+            "maximum_event_records": 5_000_000,
+            "maximum_interval_relative_deviation": 0.01,
+        },
+        "helical_mechanics": {
+            "source_module": "nucleic_acid_structure",
+            "duplex_collection_field": "stems",
+            "descriptor_query_ids": {
+                name: f"helical-step-{name}"
+                for name in ("shift", "slide", "rise", "tilt", "roll", "twist")
+            },
+            "angular_input_unit": "degrees",
+            "minimum_frames_per_step": 20,
+            "minimum_frames_per_state": 12,
+            "maximum_states": 3,
+            "minimum_silhouette_for_state_split": 0.25,
+            "covariance_eigenvalue_floor_fraction": 1.0e-6,
+            "maximum_steps": 1_000,
+            "preparation_availability": deepcopy(dict(dssr_probe)),
+        },
         "time_lagged_independent_component_analysis": {
             "feature_source": "common_pca",
             "component_indices": list(range(1, min(5, component_count) + 1)),
@@ -546,6 +954,23 @@ def _generic_definitions(
             "covariance_eigenvalue_cutoff": 1.0e-10,
             "minimum_pairs_per_segment": 10,
             "maximum_features": min(5, component_count),
+        },
+        "random_feature_koopman": {
+            "source_module": "time_lagged_independent_component_analysis",
+            "component_indices": list(range(1, min(3, component_count) + 1)),
+            "lag_frames": max(1, min(10, minimum_replica_frames // 20)),
+            "component_count": min(3, component_count),
+            "random_feature_counts": [32, 64],
+            "bandwidth_scales": [0.5, 1.0, 2.0],
+            "random_seeds": [0, 7, 19, 41],
+            "cross_validation_folds": 5,
+            "covariance_regularization": 1.0e-8,
+            "covariance_eigenvalue_cutoff": 1.0e-10,
+            "minimum_pairs_per_segment": 10,
+            "maximum_bandwidth_observations": 500,
+            "maximum_feature_matrix_elements": 50_000_000,
+            "maximum_seed_vamp_e_relative_range": 0.25,
+            "minimum_seed_subspace_similarity": 0.70,
         },
         "pca_fes_basins": {
             "x_component": 1,
@@ -569,7 +994,9 @@ def _generic_definitions(
             "component_indices": [1, 2, 3] if component_count >= 3 else [1, 2],
             "standardize_features": True,
             "k_values": k_values,
-            "random_seeds": [0, 7, 19, 41],
+            "initialization_methods": ["nani_strat_all", "nani_strat_reduced"],
+            "nani_percentage": nani_percentage,
+            "silhouette_random_seeds": [0, 7, 19, 41],
             "maximum_iterations": 500,
             "center_tolerance": 1.0e-6,
             "minimum_cluster_size": 5,
@@ -656,6 +1083,28 @@ def _generic_definitions(
             "bootstrap_confidence_level": 0.95,
             "random_seed": 0,
         },
+        "reactive_path_ensembles": {
+            "assignment_source": "clustering_kmeans",
+            "endpoint_mode": "automatic_recurrent_pair",
+            "source_state_ids": [],
+            "sink_state_ids": [],
+            "feature_indices": [1, 2, 3] if component_count >= 3 else [1, 2],
+            "feature_scaling": "zscore",
+            "minimum_pair_events_for_automatic_selection": 2,
+            "sakoe_chiba_fraction": 0.2,
+            "maximum_paths_per_direction": 100,
+            "maximum_path_frames": 500,
+            "maximum_pairwise_dtw_cells": 20_000_000,
+            "maximum_path_clusters": 4,
+            "minimum_path_cluster_size": 2,
+            "minimum_complete_paths_for_comparison": 10,
+            "minimum_complete_paths_per_direction": 3,
+            "minimum_replicas_with_complete_paths": 2,
+            "minimum_complete_paths_for_kinetics": 50,
+            "minimum_complete_paths_per_direction_for_kinetics": 10,
+            "minimum_replicas_with_complete_paths_for_kinetics": 3,
+            "require_validated_msm_for_kinetics": True,
+        },
         "grouped_ml": {
             "feature_source": "clustering_kmeans_features",
             "target_source": "clustering_kmeans_assignments",
@@ -730,7 +1179,16 @@ def _generic_definitions(
     commands = [
         "structural-qc", "rmsd-rg", "rmsf", "dccm", "individual-pca",
         "common-pca", "information-correlation", "information-dynamics",
-        "correlation-networks", "tica", "pca-fes-basins", "cluster-kmeans",
+        "perturbation-response",
+        "trajectory-reweighting",
+        "correlation-networks", "allosteric-pathways",
+        "energetic-network-embeddings",
+        "multivalent-bridges", "hydration-density-channels",
+        "ensemble-pocket-dynamics", "interaction-fingerprints",
+        "spatial-interaction-ensembles", "interaction-persistence",
+        "helical-mechanics", "tica",
+        "random-feature-koopman",
+        "pca-fes-basins", "cluster-kmeans",
         "cluster-imwkmeans", "alternative-clustering", "pald-community",
         "representative-frames",
         "markov-models", "grouped-ml", "dihedrals", "hydrogen-bond-discovery",
@@ -789,14 +1247,17 @@ def _generic_definitions(
 _VIEW_STAGE_COMMANDS = {
     0: ("common-pca",),
     1: (
-        "information-correlation", "information-dynamics", "tica",
+        "information-correlation", "information-dynamics",
+        "perturbation-response", "trajectory-reweighting", "tica",
         "pca-fes-basins", "cluster-kmeans", "cluster-hdbscan",
         "cluster-imwkmeans", "alternative-clustering", "pald-community",
     ),
     2: (
+        "random-feature-koopman",
         "representative-frames", "state-coordinate-exports",
         "markov-models", "grouped-ml",
     ),
+    3: ("reactive-path-ensembles",),
 }
 
 _VIEW_COMMANDS = frozenset(
@@ -813,15 +1274,26 @@ _GENERIC_STAGE_COMMANDS = {
         "water-mediated-hydrogen-bonds", "secondary-structure",
         "trajectory-features", "observables", "rdf", "ion-atmosphere",
         "ion-geometry", "nucleic-acid-structure", "nucleic-acid-geometry",
+        "multivalent-bridges", "hydration-density-channels",
+        "ensemble-pocket-dynamics",
+        "energetic-network-embeddings",
     },
     1: {
         "information-correlation", "information-dynamics",
-        "correlation-networks", "tica", "pca-fes-basins", "cluster-kmeans",
+        "perturbation-response",
+        "trajectory-reweighting",
+        "correlation-networks", "allosteric-pathways", "tica",
+        "pca-fes-basins", "cluster-kmeans",
         "cluster-imwkmeans", "alternative-clustering", "convergence",
         "cluster-hdbscan", "pald-community", "scalar-distributions",
-        "scalar-threshold-states",
+        "scalar-threshold-states", "interaction-fingerprints",
+        "helical-mechanics",
     },
-    2: {"representative-frames", "markov-models", "grouped-ml"},
+    2: {
+        "spatial-interaction-ensembles", "interaction-persistence",
+        "representative-frames",
+        "markov-models", "grouped-ml",
+    },
 }
 
 
@@ -1004,19 +1476,26 @@ def _conformational_view_projects(
         return [], [plan_filename]
     view_definition_ids = {
         "common_pca", "generalized_correlation_and_information",
-        "information_dynamics", "time_lagged_independent_component_analysis",
+        "information_dynamics", "perturbation_response_dynamics",
+        "trajectory_reweighting", "time_lagged_independent_component_analysis",
+        "random_feature_koopman",
         "pca_fes_basins", "clustering_kmeans", "clustering_hdbscan",
         "clustering_imwkmeans", "alternative_clustering",
         "pald_community_analysis", "representative_frames",
         "state_coordinate_exports", "markov_state_models", "grouped_ml",
+        "reactive_path_ensembles",
     }
     requested = [
         "common_pca", "generalized_correlation_and_information",
-        "information_dynamics", "time_lagged_independent_component_analysis",
+        "information_dynamics", "perturbation_response_dynamics",
+        "trajectory_reweighting",
+        "time_lagged_independent_component_analysis",
+        "random_feature_koopman",
         "pca_fes_basins", "clustering_kmeans", "clustering_hdbscan",
         "clustering_imwkmeans", "alternative_clustering",
         "pald_community_analysis", "representative_frames",
         "state_coordinate_exports", "markov_state_models", "grouped_ml",
+        "reactive_path_ensembles",
     ]
     generated: list[str] = []
     executable_views: list[str] = []
@@ -1107,6 +1586,11 @@ def _conformational_view_projects(
         }
         definitions = view_project["definitions"]
         assert isinstance(definitions, dict)
+        if view_id != "macromolecular_trace":
+            # The current DFI/DCI contract is residue/node based.  The trace
+            # view supplies one representative macromolecular node per residue;
+            # heavy-atom and interface views would change the scientific unit.
+            definitions.pop("perturbation_response_dynamics", None)
         total_frames = total_source_frames
         export_stride = max(1, math.ceil(total_frames / 200))
         definitions["state_coordinate_exports"] = {
@@ -1400,6 +1884,8 @@ fi
                 )
             if stage >= 2:
                 cache_exports += (
+                    f"export SALSBURY_MD_ANALYSIS_TICA_REPORT="
+                    f"{json.dumps(str(output_root / 'tica/report.json'))}\n"
                     f"export SALSBURY_MD_ANALYSIS_KMEANS_REPORT="
                     f"{json.dumps(str(output_root / 'cluster-kmeans/report.json'))}\n"
                     f"export SALSBURY_MD_ANALYSIS_HDBSCAN_REPORT="
@@ -1410,6 +1896,11 @@ fi
                     f"{json.dumps(str(output_root / 'alternative-clustering/report.json'))}\n"
                     f"export SALSBURY_MD_ANALYSIS_FES_REPORT="
                     f"{json.dumps(str(output_root / 'pca-fes-basins/report.json'))}\n"
+                )
+            if stage >= 3 and "markov_state_models" in requested_modules:
+                cache_exports += (
+                    f"export SALSBURY_MD_ANALYSIS_MSM_REPORT="
+                    f"{json.dumps(str(output_root / 'markov-models/report.json'))}\n"
                 )
             worker = f"""#!/usr/bin/env bash
 #SBATCH --job-name=sma-{project_id[:12]}-{view_index}-v{stage}
@@ -1723,19 +2214,35 @@ rm "$TMP" "$SUMMARY_TMP"
             'PREFLIGHT_JOB=$(sbatch --parsable '
             '--dependency="afterok:$CACHE_JOB" "$ROOT/run_preflight.slurm")'
         )
+    interaction_source_exports = "\n".join(
+        f"export {variable}={json.dumps(str(root / f'results/{command}/report.json'))}"
+        for command, variable in (
+            ("hydrogen-bond-discovery", "SALSBURY_MD_ANALYSIS_HYDROGEN_BOND_DISCOVERY_REPORT"),
+            ("water-mediated-hydrogen-bonds", "SALSBURY_MD_ANALYSIS_WATER_HYDROGEN_BOND_REPORT"),
+            ("ion-geometry", "SALSBURY_MD_ANALYSIS_ION_GEOMETRY_REPORT"),
+            ("ion-atmosphere", "SALSBURY_MD_ANALYSIS_ION_ATMOSPHERE_REPORT"),
+            ("multivalent-bridges", "SALSBURY_MD_ANALYSIS_MULTIVALENT_BRIDGES_REPORT"),
+            ("hydration-density-channels", "SALSBURY_MD_ANALYSIS_HYDRATION_DENSITY_REPORT"),
+            ("nucleic-acid-structure", "SALSBURY_MD_ANALYSIS_NUCLEIC_ACID_STRUCTURE_REPORT"),
+        )
+        if command in commands
+    )
     cache_exports = {
         0: "",
         1: f"""export SALSBURY_MD_ANALYSIS_COMMON_PCA_REPORT={json.dumps(str(root / 'results/common-pca/report.json'))}
 export SALSBURY_MD_ANALYSIS_DCCM_REPORT={json.dumps(str(root / 'results/dccm/report.json'))}
 export SALSBURY_MD_ANALYSIS_RMSD_RG_REPORT={json.dumps(str(root / 'results/rmsd-rg/report.json'))}
 export SALSBURY_MD_ANALYSIS_TRAJECTORY_FEATURES_REPORT={json.dumps(str(root / 'results/trajectory-features/report.json'))}
-export SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT={json.dumps(str(root / 'preflight.report.json'))}""",
+export SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT={json.dumps(str(root / 'preflight.report.json'))}
+{interaction_source_exports}""",
         2: f"""export SALSBURY_MD_ANALYSIS_COMMON_PCA_REPORT={json.dumps(str(root / 'results/common-pca/report.json'))}
+export SALSBURY_MD_ANALYSIS_TICA_REPORT={json.dumps(str(root / 'results/tica/report.json'))}
 export SALSBURY_MD_ANALYSIS_KMEANS_REPORT={json.dumps(str(root / 'results/cluster-kmeans/report.json'))}
 export SALSBURY_MD_ANALYSIS_HDBSCAN_REPORT={json.dumps(str(root / 'results/cluster-hdbscan/report.json'))}
 export SALSBURY_MD_ANALYSIS_IMWKMEANS_REPORT={json.dumps(str(root / 'results/cluster-imwkmeans/report.json'))}
 export SALSBURY_MD_ANALYSIS_ALTERNATIVE_CLUSTERING_REPORT={json.dumps(str(root / 'results/alternative-clustering/report.json'))}
 export SALSBURY_MD_ANALYSIS_FES_REPORT={json.dumps(str(root / 'results/pca-fes-basins/report.json'))}
+export SALSBURY_MD_ANALYSIS_INTERACTION_FINGERPRINTS_REPORT={json.dumps(str(root / 'results/interaction-fingerprints/report.json'))}
 export SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT={json.dumps(str(root / 'preflight.report.json'))}""",
     }
 
@@ -2118,9 +2625,13 @@ def prepare_standard_analysis(
     temperature_kelvin: float = 300.0,
     target_wall_hours: Optional[float] = None,
     dssp_executable: Optional[str] = None,
+    dssr_executable: Optional[str] = None,
     config_path: Optional[Path] = None,
     generate_connectivity_openmm: bool = False,
     openmm_bond_definitions: Sequence[Path] = (),
+    energetic_charmm_parameter_files: Sequence[Path] = (),
+    energetic_openmm_system_xml: Optional[Path] = None,
+    energetic_gromacs_tpr: Optional[Path] = None,
 ) -> Dict[str, object]:
     """Prepare manifests, budgets, and a local or Slurm workflow without touching inputs."""
 
@@ -2150,6 +2661,11 @@ def prepare_standard_analysis(
     bond_definition_paths = [
         path.expanduser().resolve(strict=True) for path in openmm_bond_definitions
     ]
+    force_field_parameters = _force_field_parameter_spec(
+        charmm_parameter_files=energetic_charmm_parameter_files,
+        openmm_system_xml=energetic_openmm_system_xml,
+        gromacs_tpr=energetic_gromacs_tpr,
+    )
     if bond_definition_paths and not generate_connectivity_openmm:
         raise QuickstartError(
             "--openmm-bond-definitions requires --generate-connectivity-openmm"
@@ -2229,6 +2745,19 @@ def prepare_standard_analysis(
         )
     except (AnalysisConfigError, OSError) as exc:
         raise QuickstartError(str(exc)) from exc
+    dssr = _discover_dssr_executable(dssr_executable)
+    if not bool(composition.get("has_nucleic_acid")):
+        dssr_probe: Dict[str, object] = {
+            "status": "not_available", "reason": "no_duplex_dna_or_rna",
+            "executable": dssr,
+        }
+    elif dssr is None:
+        dssr_probe = {
+            "status": "not_available", "reason": "dssr_not_installed",
+            "executable": None,
+        }
+    else:
+        dssr_probe = probe_dssr_reference_duplex(dssr, pdb)
     if target_wall_hours is not None:
         if (
             isinstance(target_wall_hours, bool)
@@ -2255,6 +2784,10 @@ def prepare_standard_analysis(
                     "replica_id": f"replica-{index + 1}",
                     "topology": str(pdb),
                     "connectivity": str(psf),
+                    **(
+                        {"force_field_parameters": deepcopy(force_field_parameters)}
+                        if force_field_parameters is not None else {}
+                    ),
                     "segments": [{
                         "segment_id": "production",
                         "trajectory": str(path),
@@ -2272,6 +2805,12 @@ def prepare_standard_analysis(
     system_path = root / "system.json"
     _json_write(system_path, system)
     validate_system(system, source_path=system_path, check_paths=True)
+    energetic_parameter_probe = probe_energetic_parameter_source(
+        pdb, psf, force_field_parameters,
+    )
+    energetic_parameter_available = (
+        energetic_parameter_probe.get("availability_status") == "available"
+    )
     execution_config = analysis_config["execution"]
     assert isinstance(execution_config, dict)
     coordinate_cache_input = execution_config.get("coordinate_cache_input")
@@ -2288,7 +2827,8 @@ def prepare_standard_analysis(
         system_path,
         simulation_kind="unbiased_md",
         module_ids=_applicable_sampling_modules(
-            composition, analysis_config, dssp_executable=dssp
+            composition, analysis_config, dssp_executable=dssp,
+            energetic_parameter_available=energetic_parameter_available,
         ),
         b_vs_2b=bool(analysis_config["sampling"]["b_vs_2b_sensitivity"]),  # type: ignore[index]
         replica_diagnostics=bool(
@@ -2307,6 +2847,7 @@ def prepare_standard_analysis(
         sampling_plan,
         frame_counts_per_replica=frame_counts,
         dssp_executable=dssp,
+        dssr_probe=dssr_probe,
     )
     inference_config = analysis_config["inference"]
     assert isinstance(inference_config, dict)
@@ -2324,7 +2865,7 @@ def prepare_standard_analysis(
                 pdb,
                 maximum_frames_by_module=maximum_by_module,
                 total_source_frames=sum(frame_counts),
-                dssr_executable=None,
+                dssr_executable=dssr,
                 ion_site_classification_enabled=bool(
                     inference_config["ion_site_classification_enabled"]
                 ),
@@ -2335,6 +2876,21 @@ def prepare_standard_analysis(
             ) from exc
         inferred_definitions = inferred["definitions"]
         assert isinstance(inferred_definitions, dict)
+        dssr_definition = inferred_definitions.get("nucleic_acid_structure")
+        parameter_contract = dssr_probe.get("helical_step_parameters")
+        if (
+            isinstance(dssr_definition, dict)
+            and isinstance(parameter_contract, dict)
+            and isinstance(parameter_contract.get("object_path"), list)
+            and isinstance(parameter_contract.get("fields"), dict)
+        ):
+            object_path = list(parameter_contract["object_path"])
+            fields = parameter_contract["fields"]
+            dssr_definition["numeric_queries"] = [{
+                "query_id": f"helical-step-{name}",
+                "path": [*object_path, str(fields[name])],
+                "missing_policy": "fail",
+            } for name in ("shift", "slide", "rise", "tilt", "roll", "twist")]
         definitions.update(deepcopy(inferred_definitions))
         inferred_modules = [str(value) for value in inferred["applicable_modules"]]
         commands.extend(
@@ -2351,12 +2907,20 @@ def prepare_standard_analysis(
         "provenance_manifest", "preflight_inventory", "common_atom_mapping",
         "structural_integrity_qc", "replica_rmsd_rg", "pooled_rmsf", "dccm",
         "generalized_correlation_and_information", "information_dynamics",
+        "perturbation_response_dynamics", "trajectory_reweighting",
         "correlation_networks", "individual_pca", "common_pca",
+        "allosteric_pathways", "multivalent_molecular_bridges",
+        "energetic_network_embeddings",
+        "hydration_density_channels", "ensemble_pocket_dynamics",
+        "interaction_fingerprints", "spatial_interaction_ensembles",
+        "helical_mechanics",
+        "interaction_persistence", "random_feature_koopman",
         "time_lagged_independent_component_analysis",
         "pca_fes_basins", "clustering_kmeans", "clustering_hdbscan",
         "clustering_imwkmeans", "alternative_clustering",
         "pald_community_analysis", "representative_frames",
         "markov_state_models", "grouped_ml", "dihedral_distributions",
+        "reactive_path_ensembles",
         "hydrogen_bond_discovery",
         "solvent_accessible_surface_area", "convergence_uncertainty",
     ]
@@ -2373,6 +2937,65 @@ def prepare_standard_analysis(
         )
     except AnalysisConfigError as exc:
         raise QuickstartError(str(exc)) from exc
+    helical_definition = definitions.get("helical_mechanics")
+    if isinstance(helical_definition, dict):
+        helical_definition["preparation_availability"] = deepcopy(dssr_probe)
+    helical_availability_file: Optional[str] = None
+    helical_source_configured = "nucleic_acid_structure" in definitions
+    if (
+        "helical_mechanics" in requested
+        and (
+            dssr_probe.get("status") != "available"
+            or not helical_source_configured
+        )
+    ):
+        commands = [command for command in commands if command != "helical-mechanics"]
+        requested = [module_id for module_id in requested if module_id != "helical_mechanics"]
+        reason = str(
+            dssr_probe.get("reason", "dssr_or_duplex_unavailable")
+            if dssr_probe.get("status") != "available"
+            else "nucleic_acid_structure_source_not_configured"
+        )
+        exclusions["helical_mechanics"] = reason
+        helical_availability_file = "helical-mechanics-availability.json"
+        _json_write(root / helical_availability_file, {
+            "module_id": "helical_mechanics",
+            "technical_status": "complete", "scientific_status": "not evaluated",
+            "availability_status": "not_available",
+            "availability_reason": reason,
+            "planner_task_created": False,
+            "preparation_probe": dssr_probe,
+        })
+    energetic_availability_file: Optional[str] = None
+    if (
+        "energetic_network_embeddings" in requested
+        and not energetic_parameter_available
+    ):
+        commands = [
+            command for command in commands
+            if command != "energetic-network-embeddings"
+        ]
+        requested = [
+            module_id for module_id in requested
+            if module_id != "energetic_network_embeddings"
+        ]
+        reason = (
+            "not available: "
+            + str(energetic_parameter_probe.get(
+                "availability_reason", "no compatible interaction parameters"
+            ))
+        )
+        exclusions["energetic_network_embeddings"] = reason
+        energetic_availability_file = "energetic-network-embeddings-availability.json"
+        _json_write(root / energetic_availability_file, {
+            "module_id": "energetic_network_embeddings",
+            "technical_status": "complete", "scientific_status": "not evaluated",
+            "availability_status": "not_available",
+            "availability_reason": reason,
+            "planner_task_created": False,
+            "supplied_connectivity": str(psf) if psf is not None else None,
+            "preparation_probe": energetic_parameter_probe,
+        })
     commands, requested = _exclude_conformational_views_from_base_workflow(
         commands, requested
     )
@@ -2403,6 +3026,10 @@ def prepare_standard_analysis(
                 pdb,
                 *([] if generated_connectivity_file is not None else [psf]),
                 *bond_definition_paths,
+                *(
+                    [Path(str(value)) for value in force_field_parameters["files"]]
+                    if force_field_parameters is not None else []
+                ),
                 *trajectory_paths,
             ]
         ],
@@ -2460,6 +3087,19 @@ def prepare_standard_analysis(
                 output_directory=root,
             ) from exc
         raise QuickstartError(str(exc)) from exc
+    _record_conformational_experimental_exclusions(
+        root, view_project_files, exclusions, analysis_config
+    )
+    # Preserve the complete plan even if the coverage audit itself detects an
+    # integration defect. This makes the failure diagnosable without rerunning
+    # input discovery.
+    _json_write(root / "campaign-resource-plan.json", campaign_resource_plan)
+    experimental_planner_coverage = _experimental_planner_coverage(
+        analysis_config, campaign_resource_plan, exclusions
+    )
+    campaign_resource_plan["experimental_module_coverage"] = (
+        experimental_planner_coverage
+    )
     _json_write(root / "sampling-plan.json", sampling_plan)
     _json_write(root / "campaign-resource-plan.json", campaign_resource_plan)
     effective_parallel_cpu_cap = _effective_parallel_cpu_cap(
@@ -2546,6 +3186,7 @@ def prepare_standard_analysis(
             )
             for module_id in registry_ids
         },
+        "experimental_planner_coverage": experimental_planner_coverage,
         "interpretation": (
             "Deferred modules are visible, not silently omitted. The matched TREX validation "
             "suite is the comprehensive all-module software exercise; this initializer avoids "
@@ -2696,9 +3337,13 @@ def prepare_standard_analysis_memory_fit(
     temperature_kelvin: float = 300.0,
     target_wall_hours: Optional[float] = None,
     dssp_executable: Optional[str] = None,
+    dssr_executable: Optional[str] = None,
     config_path: Optional[Path] = None,
     generate_connectivity_openmm: bool = False,
     openmm_bond_definitions: Sequence[Path] = (),
+    energetic_charmm_parameter_files: Sequence[Path] = (),
+    energetic_openmm_system_xml: Optional[Path] = None,
+    energetic_gromacs_tpr: Optional[Path] = None,
 ) -> Dict[str, object]:
     """Prepare, explicitly reduce memory-incompatible modules, and replan.
 
@@ -2725,8 +3370,12 @@ def prepare_standard_analysis_memory_fit(
         "first_frame_time_ps": first_frame_time_ps,
         "temperature_kelvin": temperature_kelvin,
         "dssp_executable": dssp_executable,
+        "dssr_executable": dssr_executable,
         "generate_connectivity_openmm": generate_connectivity_openmm,
         "openmm_bond_definitions": openmm_bond_definitions,
+        "energetic_charmm_parameter_files": energetic_charmm_parameter_files,
+        "energetic_openmm_system_xml": energetic_openmm_system_xml,
+        "energetic_gromacs_tpr": energetic_gromacs_tpr,
     }
     with tempfile.TemporaryDirectory(
         prefix="salsbury-memory-fit-planning-"

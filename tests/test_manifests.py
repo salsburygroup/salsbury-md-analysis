@@ -150,6 +150,35 @@ class ManifestTests(unittest.TestCase):
             )
             self.assertEqual(first["scientific_status"], "not evaluated")
 
+    def test_force_field_parameter_files_are_validated_and_hashed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            inputs = root / "inputs"
+            inputs.mkdir()
+            (inputs / "system.pdb").write_bytes(b"MODEL\nENDMDL\n")
+            (inputs / "trajectory.dcd").write_bytes(b"trajectory")
+            parameter = inputs / "protein.prm"
+            parameter.write_bytes(b"NONBONDED\nN 0 -0.2 1.8\nEND\n")
+            expected_digest = hashlib.sha256(parameter.read_bytes()).hexdigest()
+            data = self._system()
+            data["systems"][0]["replicas"][0]["force_field_parameters"] = {
+                "format": "charmm_parameter_files_v1",
+                "files": ["inputs/protein.prm"],
+            }
+            manifest = root / "system.json"
+            manifest.write_text(json.dumps(data), encoding="utf-8")
+            validate_system(data, source_path=manifest, check_paths=True)
+            inventory = inventory_system_inputs(
+                data, manifest, hash_content=True
+            )
+        row = next(
+            entry for entry in inventory["entries"]
+            if entry["role"].startswith("force_field_parameter:")
+        )
+        self.assertEqual(
+            row["sha256"], expected_digest
+        )
+
     def test_missing_input_fails_inventory(self):
         with tempfile.TemporaryDirectory() as temporary:
             manifest = Path(temporary) / "system.json"

@@ -9,8 +9,8 @@ write local and Slurm launchers. It will not modify the simulation inputs.
 
 ## Status
 
-Version 0.1.1 is an **experimental toolkit release**. It contains
-45 registered MD, core, and reporting modules. Every registered module has an
+Version 0.2.0a2 is an **experimental branch candidate**. It contains
+58 registered MD, core, and reporting modules. Every registered module has an
 implementation and automated tests, but none is yet marked `supported` for
 unreviewed production or publication use. Technical completion and scientific
 validity are reported separately.
@@ -23,11 +23,24 @@ The comprehensive, nonredundant `standard_md_v1` profile includes:
   connectivity-aware make-whole or continuous unwrapping;
 - replica RMSD and radius of gyration, pooled RMSF, DCCM, nonlinear information
   measures, information dynamics, and correlation networks;
+- default-off DFI/DCI perturbation response, exact frame-aligned trajectory
+  reweighting, contact-occupancy allosteric pathways, and solvent/ion/ligand
+  multivalent molecular-bridge networks, protein-only residue interaction-energy
+  heat-kernel embeddings from Amber, CHARMM, or serialized OpenMM parameters,
+  and segment-safe reactive-path
+  ensembles with DTW route clustering and explicit transition-sufficiency gates,
+  plus chemically typed frame-level interaction fingerprints, aligned spatial
+  interaction superfeatures, DSSR-gated duplex helical mechanics, censored
+  temporal interaction persistence, aligned water/ion density and geometric
+  channel candidates, ensemble geometric pocket dynamics, and seed-gated
+  random-feature nonlinear kinetic sensitivity;
 - individual and shared-basis PCA, TICA, and free-energy or occupancy
   landscapes, with observed representative frames and structures and optional
   immutable state trajectories;
 - eleven separately switchable conventional clustering methods. Ten are on by
-  default; HDBSCAN is an optional noise-aware sensitivity. Ward and
+  default; KMeans uses dependency-free deterministic strat_all and
+  strat_reduced NANI initialization, while seeded KMeans++ remains available
+  for compatibility. HDBSCAN is an optional noise-aware sensitivity. Ward and
   quality-threshold run only when they can assign every evaluated observation
   exactly. PaLD is kept separate because it describes local-depth and
   strong-tie communities rather than an ordinary full-trajectory partition,
@@ -88,6 +101,11 @@ redistributed by this repository.
 The quick-start initializer discovers `mkdssp`/`dssp` either on `PATH` or next
 to the active Python interpreter, which covers the reviewed Conda environment
 without requiring a separate executable argument.
+It similarly discovers `x3dna-dssr` but schedules helical mechanics only when a
+reference probe verifies a DSSR duplex stem and the installed JSON exposes all
+six required step descriptors. `--dssr-executable` can declare an explicit
+installation for either single-system or comparison preparation; comparisons
+gate and plan helical mechanics independently for each system.
 
 The bundled NEMO tutorial trajectory and group-generated topology are licensed
 separately under CC BY 4.0; the starting PDB retains its PDB provenance. See
@@ -386,6 +404,23 @@ partial file keeps its default. Each scientific module uses
 `modules.<module_id>.enabled`; conformational views and their optional state
 trajectory exports have separate switches; and each clustering method can be
 controlled independently. For example:
+
+```json
+{
+  "config_schema": "salsbury-analysis-config-v1",
+  "enable_all_experimental_modules": true
+}
+```
+
+That master opt-in enables all thirteen default-off experimental methods. Explicit
+`modules.<module_id>.enabled: false` entries take precedence, and normal input,
+applicability, and external-tool gates still apply.
+If DFI/DCI functional-site nodes are supplied, its required macromolecular-trace
+view is enabled automatically while trace-defined trajectory export remains off.
+Without those nodes, DFI/DCI is reported as unavailable rather than guessing a
+biological functional site.
+
+Individual controls can be combined with the other configuration sections:
 
 ```json
 {
