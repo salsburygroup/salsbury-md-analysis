@@ -47,6 +47,7 @@ from .quickstart import (
     QuickstartMemoryError,
     QuickstartPlanningError,
     _composition,
+    _apply_experimental_input_gates,
     _applicable_sampling_modules,
     _configure_coordinate_cache_views,
     _conformational_view_projects,
@@ -797,8 +798,19 @@ def prepare_comparative_analysis(
     composition["has_nucleic_acid"] = any(
         bool(row["has_nucleic_acid"]) for row in compositions
     )
+    common_residue_names = {
+        str(name).upper() for name in compositions[0].get("residue_names", [])
+    }
+    for row in compositions[1:]:
+        common_residue_names.intersection_update(
+            str(name).upper() for name in row.get("residue_names", [])
+        )
+    composition["residue_names"] = sorted(common_residue_names)
     water_counts = [int(row["water_residue_count"]) for row in compositions]
     composition["water_residue_count"] = max(water_counts) if all(water_counts) else 0
+    composition["ion_atom_indices"] = (
+        [0] if all(bool(row.get("ion_atom_indices")) for row in compositions) else []
+    )
     composition["solute_heavy_atom_count"] = max(
         int(row["solute_heavy_atom_count"]) for row in compositions
     )
@@ -944,6 +956,9 @@ def prepare_comparative_analysis(
         )
     except AnalysisConfigError as exc:
         raise QuickstartError(str(exc)) from exc
+    commands, requested = _apply_experimental_input_gates(
+        definitions, commands, requested, exclusions, composition
+    )
     # Helical mechanics is scheduled independently for every system whose
     # reference passes the duplex/DSSR applicability probe.
     commands = [command for command in commands if command != "helical-mechanics"]

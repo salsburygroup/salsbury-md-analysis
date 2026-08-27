@@ -974,6 +974,78 @@ def plan_campaign_resource_budget(
                 costs[str(row["task_id"])] = value
         return costs
 
+    dependency_stages = sorted({
+        int(row["dependency_stage"]) for row in normalized
+    })
+
+    def schedule_stage(
+        stage: int,
+        selection: Mapping[str, Sequence[int]],
+        costs: Mapping[str, float],
+    ) -> Dict[str, object]:
+        rows = [
+            row for row in normalized
+            if int(row["dependency_stage"]) == stage
+        ]
+        stage_cpu_hours = sum(costs[str(row["task_id"])] for row in rows)
+        bundles: Dict[str, list[Mapping[str, object]]] = {}
+        for row in rows:
+            bundles.setdefault(str(row["execution_bundle_id"]), []).append(row)
+        bundle_walls = {
+            bundle_id: sum(
+                costs[str(row["task_id"])]
+                / min(maximum_parallel_cpus, int(row["effective_cpu_cap"]))
+                for row in bundle_rows
+            )
+            for bundle_id, bundle_rows in bundles.items()
+        }
+        bundle_resources = []
+        for bundle_id, bundle_rows in bundles.items():
+            bundle_resources.append({
+                "item_id": bundle_id,
+                "cpu_slots": max(
+                    min(maximum_parallel_cpus, int(row["effective_cpu_cap"]))
+                    for row in bundle_rows
+                ),
+                "memory_gib": max(
+                    task_scheduler_memory(
+                        row, selection[str(row["task_id"])]
+                    )
+                    for row in bundle_rows
+                ),
+                "wall_hours": bundle_walls[bundle_id],
+            })
+        resource_waves = pack_resource_waves(
+            bundle_resources,
+            maximum_parallel_cpus=maximum_parallel_cpus,
+            maximum_parallel_memory_gib=memory_gib,
+        )
+        longest = max(bundle_walls.values())
+        lower_bound = max(
+            stage_cpu_hours / maximum_parallel_cpus,
+            longest,
+        )
+        packed_wall = sum(
+            float(wave["wall_hours"]) for wave in resource_waves
+        )
+        useful = sum(
+            max(int(row["effective_cpu_cap"]) for row in bundle_rows)
+            for bundle_rows in bundles.values()
+        )
+        return {
+            "dependency_stage": stage,
+            "task_count": len(rows),
+            "execution_bundle_count": len(bundles),
+            "estimated_cpu_hours": stage_cpu_hours,
+            "maximum_useful_parallel_cpus": useful,
+            "planned_parallel_cpus": min(maximum_parallel_cpus, useful),
+            "estimated_wall_hours_lower_bound": lower_bound,
+            "estimated_wall_hours_with_resource_waves": packed_wall,
+            "resource_waves": resource_waves,
+            "task_ids": [str(row["task_id"]) for row in rows],
+            "execution_bundle_wall_hours": bundle_walls,
+        }
+
     def schedule_summary(
         selection: Mapping[str, Sequence[int]],
     ) -> tuple[Optional[float], list[Dict[str, object]]]:
@@ -982,70 +1054,15 @@ def plan_campaign_resource_budget(
             return None, []
         stages = []
         total_wall = 0.0
-        for stage in sorted({int(row["dependency_stage"]) for row in normalized}):
-            rows = [row for row in normalized if int(row["dependency_stage"]) == stage]
-            stage_cpu_hours = sum(costs[str(row["task_id"])] for row in rows)
-            bundles: Dict[str, list[Mapping[str, object]]] = {}
-            for row in rows:
-                bundles.setdefault(str(row["execution_bundle_id"]), []).append(row)
-            bundle_walls = {
-                bundle_id: sum(
-                    costs[str(row["task_id"])]
-                    / min(maximum_parallel_cpus, int(row["effective_cpu_cap"]))
-                    for row in bundle_rows
+        try:
+            for stage in dependency_stages:
+                stage_report = schedule_stage(stage, selection, costs)
+                stages.append(stage_report)
+                total_wall += float(
+                    stage_report["estimated_wall_hours_with_resource_waves"]
                 )
-                for bundle_id, bundle_rows in bundles.items()
-            }
-            bundle_resources = []
-            for bundle_id, bundle_rows in bundles.items():
-                bundle_resources.append({
-                    "item_id": bundle_id,
-                    "cpu_slots": max(
-                        min(maximum_parallel_cpus, int(row["effective_cpu_cap"]))
-                        for row in bundle_rows
-                    ),
-                    "memory_gib": max(
-                        task_scheduler_memory(
-                            row, selection[str(row["task_id"])]
-                        )
-                        for row in bundle_rows
-                    ),
-                    "wall_hours": bundle_walls[bundle_id],
-                })
-            try:
-                resource_waves = pack_resource_waves(
-                    bundle_resources,
-                    maximum_parallel_cpus=maximum_parallel_cpus,
-                    maximum_parallel_memory_gib=memory_gib,
-                )
-            except ResourcePlanningError:
-                return None, []
-            longest = max(bundle_walls.values())
-            lower_bound = max(
-                stage_cpu_hours / maximum_parallel_cpus,
-                longest,
-            )
-            packed_wall = sum(
-                float(wave["wall_hours"]) for wave in resource_waves
-            )
-            useful = sum(
-                max(int(row["effective_cpu_cap"]) for row in bundle_rows)
-                for bundle_rows in bundles.values()
-            )
-            stages.append({
-                "dependency_stage": stage,
-                "task_count": len(rows),
-                "execution_bundle_count": len(bundles),
-                "estimated_cpu_hours": stage_cpu_hours,
-                "maximum_useful_parallel_cpus": useful,
-                "planned_parallel_cpus": min(maximum_parallel_cpus, useful),
-                "estimated_wall_hours_lower_bound": lower_bound,
-                "estimated_wall_hours_with_resource_waves": packed_wall,
-                "resource_waves": resource_waves,
-                "task_ids": [str(row["task_id"]) for row in rows],
-                "execution_bundle_wall_hours": bundle_walls,
-            })
-            total_wall += packed_wall
+        except ResourcePlanningError:
+            return None, []
         return total_wall, stages
 
     calibration_required = sorted(
@@ -1185,7 +1202,12 @@ def plan_campaign_resource_budget(
         inexpensive earlier upgrades with a newly affordable expensive one.
         """
 
-        current_total = sum(known_costs(selected).values())
+        current_costs = known_costs(selected)
+        current_total = sum(current_costs.values())
+        current_wall, current_stages = schedule_summary(selected)
+        current_stage_reports = {
+            int(row["dependency_stage"]): row for row in current_stages
+        }
         candidates: list[Dict[str, object]] = []
         memory_blocked: list[str] = []
         at_ceiling: list[str] = []
@@ -1215,14 +1237,44 @@ def plan_campaign_resource_budget(
                     ),
                 )
                 proposed[task_id] = next_counts
-            proposed_costs = known_costs(proposed)
+            proposed_costs = dict(current_costs)
+            for row in rows:
+                task_id = str(row["task_id"])
+                value = task_cost(row, proposed[task_id])
+                if value is None:
+                    proposed_costs.pop(task_id, None)
+                else:
+                    proposed_costs[task_id] = value
             proposed_total = sum(proposed_costs.values())
             delta = proposed_total - current_total
-            proposed_wall, _ = schedule_summary(proposed)
+            proposed_wall = current_wall
+            if proposed_wall is not None and len(proposed_costs) == len(normalized):
+                try:
+                    for stage in sorted({
+                        int(row["dependency_stage"]) for row in rows
+                    }):
+                        current_stage = current_stage_reports.get(stage)
+                        if current_stage is None:
+                            raise ResourcePlanningError(
+                                f"dependency stage {stage} is unavailable"
+                            )
+                        proposed_stage = schedule_stage(
+                            stage, proposed, proposed_costs
+                        )
+                        proposed_wall += (
+                            float(proposed_stage[
+                                "estimated_wall_hours_with_resource_waves"
+                            ])
+                            - float(current_stage[
+                                "estimated_wall_hours_with_resource_waves"
+                            ])
+                        )
+                except ResourcePlanningError:
+                    proposed_wall = None
             proposed_memory_fits = all(
                 task_scheduler_memory(row, proposed[str(row["task_id"])])
                 <= memory_gib + 1.0e-12
-                for row in normalized
+                for row in rows
             )
             if proposed_wall is None or not proposed_memory_fits:
                 memory_blocked.append(group_id)

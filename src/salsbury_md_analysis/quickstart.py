@@ -217,6 +217,100 @@ def _record_conformational_experimental_exclusions(
         )
 
 
+_EXPERIMENTAL_INPUT_COMMANDS = {
+    "trajectory_reweighting": "trajectory-reweighting",
+    "allosteric_pathways": "allosteric-pathways",
+    "multivalent_molecular_bridges": "multivalent-bridges",
+    "hydration_density_channels": "hydration-density-channels",
+}
+
+
+def _apply_experimental_input_gates(
+    definitions: Dict[str, object],
+    commands: Sequence[str],
+    requested: Sequence[str],
+    exclusions: Dict[str, str],
+    composition: Mapping[str, object],
+) -> tuple[list[str], list[str]]:
+    """Remove enabled experimental methods lacking required scientific input."""
+
+    unavailable: Dict[str, str] = {}
+    reweighting = definitions.get("trajectory_reweighting")
+    if (
+        "trajectory_reweighting" in requested
+        and isinstance(reweighting, Mapping)
+        and not str(reweighting.get("weights_path", "")).strip()
+    ):
+        unavailable["trajectory_reweighting"] = (
+            "not available: weights_path was not declared; the generic workflow "
+            "does not synthesize frame weights"
+        )
+    pathways = definitions.get("allosteric_pathways")
+    if "allosteric_pathways" in requested and isinstance(pathways, Mapping):
+        sources = pathways.get("source_node_indices")
+        sinks = pathways.get("sink_node_indices")
+        if (
+            not isinstance(sources, list)
+            or not sources
+            or not isinstance(sinks, list)
+            or not sinks
+        ):
+            unavailable["allosteric_pathways"] = (
+                "not available: source_node_indices and sink_node_indices were "
+                "not declared; the generic workflow does not guess biological "
+                "pathway endpoints"
+            )
+    residue_names = {
+        str(value).upper() for value in composition.get("residue_names", [])
+    }
+    water_present = int(composition.get("water_residue_count", 0)) > 0
+    ions_present = bool(composition.get("ion_atom_indices"))
+    bridges = definitions.get("multivalent_molecular_bridges")
+    if "multivalent_molecular_bridges" in requested and isinstance(bridges, Mapping):
+        explicit = {
+            str(value).upper()
+            for value in bridges.get("mediator_residue_names", [])
+        }
+        mediator_present = (
+            (bool(bridges.get("include_supported_ions")) and ions_present)
+            or (bool(bridges.get("include_recognized_waters")) and water_present)
+            or bool(explicit.intersection(residue_names))
+        )
+        if not mediator_present:
+            unavailable["multivalent_molecular_bridges"] = (
+                "not applicable: no enabled ion, water, or declared mediator "
+                "residue is present in the reference topology"
+            )
+    hydration = definitions.get("hydration_density_channels")
+    if "hydration_density_channels" in requested and isinstance(hydration, Mapping):
+        additional = {
+            str(value).upper()
+            for value in hydration.get("additional_residue_names", [])
+        }
+        particle_present = (
+            (bool(hydration.get("include_recognized_waters")) and water_present)
+            or (bool(hydration.get("include_supported_ions")) and ions_present)
+            or bool(additional.intersection(residue_names))
+        )
+        if not particle_present:
+            unavailable["hydration_density_channels"] = (
+                "not applicable: no enabled water, ion, or additional particle "
+                "residue is present in the reference topology"
+            )
+    if not unavailable:
+        return list(commands), list(requested)
+    for module_id, reason in unavailable.items():
+        definitions.pop(module_id, None)
+        exclusions[module_id] = reason
+    removed_commands = {
+        _EXPERIMENTAL_INPUT_COMMANDS[module_id] for module_id in unavailable
+    }
+    return (
+        [command for command in commands if command not in removed_commands],
+        [module_id for module_id in requested if module_id not in unavailable],
+    )
+
+
 def _force_field_parameter_spec(
     *, charmm_parameter_files: Sequence[Path] = (),
     openmm_system_xml: Optional[Path] = None,
@@ -303,12 +397,76 @@ def _applicable_sampling_modules(
     """Return applicable direct and frame-inheriting base estimators."""
 
     enabled = enabled_modules(analysis_config)
+    conditional_direct = {
+        "multivalent_molecular_bridges", "hydration_density_channels"
+    }
     result = [
         module_id for module_id in _GENERIC_DIRECT_ESTIMATORS
-        if module_id in enabled
+        if module_id in enabled and module_id not in conditional_direct
     ]
+    modules = analysis_config.get("modules")
+    assert isinstance(modules, Mapping)
+    residue_names = {
+        str(value).upper() for value in composition.get("residue_names", [])
+    }
+    water_present = int(composition.get("water_residue_count", 0)) > 0
+    ions_present = bool(composition.get("ion_atom_indices"))
+    bridge_config = modules.get("multivalent_molecular_bridges")
+    bridge_options = (
+        bridge_config.get("options")
+        if isinstance(bridge_config, Mapping) else None
+    )
+    if "multivalent_molecular_bridges" in enabled:
+        options = bridge_options if isinstance(bridge_options, Mapping) else {}
+        explicit = {
+            str(value).upper()
+            for value in options.get("mediator_residue_names", [])
+        }
+        if (
+            (bool(options.get("include_supported_ions", ions_present)) and ions_present)
+            or (
+                bool(options.get("include_recognized_waters", water_present))
+                and water_present
+            )
+            or bool(explicit.intersection(residue_names))
+        ):
+            result.append("multivalent_molecular_bridges")
+    hydration_config = modules.get("hydration_density_channels")
+    hydration_options = (
+        hydration_config.get("options")
+        if isinstance(hydration_config, Mapping) else None
+    )
+    if "hydration_density_channels" in enabled:
+        options = hydration_options if isinstance(hydration_options, Mapping) else {}
+        additional = {
+            str(value).upper()
+            for value in options.get("additional_residue_names", [])
+        }
+        if (
+            (bool(options.get("include_supported_ions", ions_present)) and ions_present)
+            or (
+                bool(options.get("include_recognized_waters", water_present))
+                and water_present
+            )
+            or bool(additional.intersection(residue_names))
+        ):
+            result.append("hydration_density_channels")
+    allosteric_config = modules.get("allosteric_pathways")
+    allosteric_options = (
+        allosteric_config.get("options")
+        if isinstance(allosteric_config, Mapping) else None
+    )
     if "allosteric_pathways" in enabled:
-        result.append("allosteric_pathways")
+        options = allosteric_options if isinstance(allosteric_options, Mapping) else {}
+        sources = options.get("source_node_indices")
+        sinks = options.get("sink_node_indices")
+        if (
+            isinstance(sources, list)
+            and sources
+            and isinstance(sinks, list)
+            and sinks
+        ):
+            result.append("allosteric_pathways")
     if energetic_parameter_available and "energetic_network_embeddings" in enabled:
         result.append("energetic_network_embeddings")
     if (
@@ -490,6 +648,7 @@ def _composition(pdb_path: Path) -> Dict[str, object]:
         "ion_atom_indices": ion_indices,
         "has_protein": protein,
         "has_nucleic_acid": nucleic_acid,
+        "residue_names": sorted({str(key[3]).upper() for key in residue_atoms}),
         "trace_atom_count": trace_count,
         "solute_heavy_atom_count": solute_heavy_count,
         "selections": selections,
@@ -2937,6 +3096,9 @@ def prepare_standard_analysis(
         )
     except AnalysisConfigError as exc:
         raise QuickstartError(str(exc)) from exc
+    commands, requested = _apply_experimental_input_gates(
+        definitions, commands, requested, exclusions, composition
+    )
     helical_definition = definitions.get("helical_mechanics")
     if isinstance(helical_definition, dict):
         helical_definition["preparation_availability"] = deepcopy(dssr_probe)
