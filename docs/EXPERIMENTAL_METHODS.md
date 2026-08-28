@@ -293,19 +293,41 @@ appears, or disappears around the aptamer and thrombin interface.
 ## Ensemble geometric pocket dynamics
 
 `ensemble_pocket_dynamics` is a separate default-off trajectory module. Its
-native `native_grid_v1` backend aligns the solute-heavy ensemble, finds
-solvent-sized locally enclosed empty grid points, selects clearance maxima,
-grows bounded pocket regions, and tracks frame instances using lining-residue
-Jaccard overlap plus a centroid-distance gate. The report includes exact
-frame identities, lining residues, seed clearance, pocket volume, enclosure,
-per-system persistence, and pairwise occupancy differences. A per-frame seed
-cap and total-instance/comparison gates bound the calculation and report any
-truncation explicitly.
+default `native_frequency_grid_v2` backend aligns the solute-heavy ensemble,
+detects solvent-sized locally enclosed empty grid points in each selected
+frame, and accumulates their occupancy on one reference grid. Recurrent
+connected regions are defined only after all selected frames have been read.
+The report contains the voxel frequency map, exact frame-to-region identities,
+region volumes, lining-residue occurrence summaries, observed representative
+frame identities, per-system occupancy, and pairwise occupancy differences.
+This avoids assigning a persistent ID to every transient frame pocket.
+
+The generated configuration exposes the region definition directly:
+
+- `minimum_region_frequency_fraction` is the minimum within-system frame
+  frequency for a voxel to enter recurrent-region discovery.
+- `minimum_region_voxels` removes connected regions smaller than the declared
+  grid size.
+- `maximum_frequency_regions` is a fail-closed resource gate; regions are not
+  silently discarded when it is exceeded.
+- `representative_frames_per_region` controls how many observed frame
+  identities are retained for structure export.
+- `maximum_sparse_frame_voxels` bounds the compact frame-to-voxel accounting.
+
+The older `native_grid_v1` backend remains available when discrete pocket
+tracking is specifically requested. It selects clearance maxima, grows bounded
+frame pockets, and joins them with lining-residue Jaccard overlap and a
+centroid-distance gate. That identity assignment is more sensitive to pocket
+splits, merges, and transient detections, so it is no longer the generated
+default. The frequency-map backend follows the ensemble-map design used by
+MDpocket, but its cavity detector is the package's native geometric grid screen,
+not an fpocket/MDpocket alpha-sphere implementation.
 
 These are geometric cavities or clefts, not druggability predictions. The
 backend does not estimate ligand affinity, binding free energy, or opening
-kinetics. Grid, clearance, angular burial, seed/growth, tracking, and frame
-selection settings require sensitivity tests. Water and ions are not pocket
+kinetics. Grid, clearance, angular burial, seed/growth, frequency-region, and
+frame-selection settings require sensitivity tests. The legacy backend also
+requires tracking-threshold sensitivity tests. Water and ions are not pocket
 walls: their occupancy is retained separately by
 `hydration_density_channels`, allowing an exact-frame comparison of pocket
 opening with hydration or ion occupancy without conflating the definitions.
