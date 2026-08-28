@@ -421,6 +421,10 @@ class QuickstartTests(unittest.TestCase):
         )
         self.assertIn("hydration_density_channels", base["requested_modules"])
         self.assertIn("ensemble_pocket_dynamics", base["requested_modules"])
+        self.assertEqual(
+            base["definitions"]["ensemble_pocket_dynamics"]["backend"],
+            "native_frequency_grid_v2",
+        )
         self.assertIn("interaction_fingerprints", base["requested_modules"])
         self.assertIn("spatial_interaction_ensembles", base["requested_modules"])
         self.assertIn("interaction_persistence", base["requested_modules"])

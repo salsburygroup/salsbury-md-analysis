@@ -1693,7 +1693,9 @@
             "maximum_tracking_comparisons", "minimum_evaluated_frames_per_system"
           ],
           "properties": {
-            "backend": {"const": "native_grid_v1"},
+            "backend": {
+              "enum": ["native_grid_v1", "native_frequency_grid_v2"]
+            },
             "alignment_selection": {"type": "string", "minLength": 1},
             "solute_selection": {"type": "string", "minLength": 1},
             "minimum_reference_coverage": {"type": "number", "minimum": 0, "maximum": 1},
@@ -1719,7 +1721,12 @@
             "maximum_grid_voxels": {"type": "integer", "minimum": 1},
             "maximum_pocket_instances": {"type": "integer", "minimum": 1},
             "maximum_tracking_comparisons": {"type": "integer", "minimum": 1},
-            "minimum_evaluated_frames_per_system": {"type": "integer", "minimum": 1}
+            "minimum_evaluated_frames_per_system": {"type": "integer", "minimum": 1},
+            "minimum_region_frequency_fraction": {"type": "number", "minimum": 0, "maximum": 1},
+            "minimum_region_voxels": {"type": "integer", "minimum": 1},
+            "maximum_frequency_regions": {"type": "integer", "minimum": 1},
+            "representative_frames_per_region": {"type": "integer", "minimum": 1},
+            "maximum_sparse_frame_voxels": {"type": "integer", "minimum": 1}
           }
         },
         "helical_mechanics": {

@@ -1,14 +1,15 @@
 """Reference-aligned ensemble pocket geometry and persistence.
 
-The native backend is a deterministic grid screen.  It detects locally
-enclosed solvent-sized empty regions near solute heavy atoms, tracks them by
-residue overlap, and reports persistence and volume across exact source-frame
-identities.  It deliberately does not estimate ligandability or druggability.
+The native backends use the same deterministic geometric grid screen.  The
+frequency-map backend accumulates pocket-like voxel occupancy before defining
+recurrent spatial regions.  The legacy backend tracks discrete frame pockets
+by residue overlap.  Neither backend estimates ligandability or druggability.
 """
 
 from __future__ import annotations
 
 import math
+from array import array
 from collections import Counter, defaultdict, deque
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
@@ -81,23 +82,32 @@ def _settings(project: Mapping[str, object]) -> Dict[str, object]:
         "maximum_grid_voxels", "maximum_pocket_instances",
         "maximum_tracking_comparisons", "minimum_evaluated_frames_per_system",
     }
+    optional_defaults = {
+        "minimum_region_frequency_fraction": 0.05,
+        "minimum_region_voxels": 4,
+        "maximum_frequency_regions": 128,
+        "representative_frames_per_region": 2,
+        "maximum_sparse_frame_voxels": 250_000_000,
+    }
     if not isinstance(raw, dict):
         raise PocketDynamicsError(
             "definitions.ensemble_pocket_dynamics must be an object"
         )
     missing = sorted(required.difference(raw))
-    unknown = sorted(set(raw).difference(required))
+    unknown = sorted(set(raw).difference(required | set(optional_defaults)))
     if missing or unknown:
         raise PocketDynamicsError(
             "pocket-dynamics settings mismatch; missing=" + ",".join(missing)
             + "; unknown=" + ",".join(unknown)
         )
-    if raw["backend"] != "native_grid_v1":
-        raise PocketDynamicsError("backend must be native_grid_v1")
+    if raw["backend"] not in {"native_grid_v1", "native_frequency_grid_v2"}:
+        raise PocketDynamicsError(
+            "backend must be native_grid_v1 or native_frequency_grid_v2"
+        )
     for name in ("alignment_selection", "solute_selection"):
         if not isinstance(raw[name], str) or not raw[name].strip():
             raise PocketDynamicsError(f"{name} must be a nonempty selection name")
-    result = dict(raw)
+    result = {**optional_defaults, **raw}
     result["minimum_reference_coverage"] = _finite(
         raw["minimum_reference_coverage"], "minimum_reference_coverage",
         minimum=0.0, maximum=1.0,
@@ -115,8 +125,12 @@ def _settings(project: Mapping[str, object]) -> Dict[str, object]:
         "minimum_pocket_voxels", "maximum_pockets_per_frame",
         "maximum_grid_voxels", "maximum_pocket_instances",
         "maximum_tracking_comparisons", "minimum_evaluated_frames_per_system",
+        "minimum_region_voxels", "maximum_frequency_regions",
+        "representative_frames_per_region", "maximum_sparse_frame_voxels",
     ):
-        result[name] = positive_integer(raw[name], name, error_type=PocketDynamicsError)
+        result[name] = positive_integer(
+            result[name], name, error_type=PocketDynamicsError
+        )
     for name in (
         "grid_spacing_angstrom", "grid_padding_angstrom",
         "minimum_clearance_angstrom", "maximum_surface_distance_angstrom",
@@ -127,6 +141,10 @@ def _settings(project: Mapping[str, object]) -> Dict[str, object]:
         result[name] = _finite(raw[name], name, positive=True)
     for name in ("maximum_directional_imbalance", "residue_jaccard_threshold"):
         result[name] = _finite(raw[name], name, minimum=0.0, maximum=1.0)
+    result["minimum_region_frequency_fraction"] = _finite(
+        result["minimum_region_frequency_fraction"],
+        "minimum_region_frequency_fraction", minimum=0.0, maximum=1.0,
+    )
     if result["minimum_clearance_angstrom"] >= result["maximum_surface_distance_angstrom"]:
         raise PocketDynamicsError(
             "minimum_clearance_angstrom must be smaller than maximum_surface_distance_angstrom"
@@ -381,12 +399,511 @@ def _track_instances(
     return clusters, comparisons
 
 
+def _flat_pocket_voxels(
+    pockets: Sequence[Mapping[str, object]], grid_shape: Tuple[int, int, int]
+) -> Tuple[int, ...]:
+    """Return the union of pocket voxels as stable flat grid indices."""
+    return tuple(sorted({
+        int(np.ravel_multi_index(tuple(int(value) for value in voxel), grid_shape))
+        for pocket in pockets
+        for voxel in pocket["voxel_indices"]  # type: ignore[union-attr]
+    }))
+
+
+def _discover_frequency_region_flats(
+    system_voxel_counts: Mapping[str, Counter[int]],
+    system_frame_counts: Mapping[str, int],
+    grid_shape: Tuple[int, int, int],
+    settings: Mapping[str, object],
+) -> List[List[int]]:
+    """Define recurrent connected regions from per-system voxel frequencies."""
+    threshold = float(settings["minimum_region_frequency_fraction"])
+    recurrent = set()
+    for system_id, counts in system_voxel_counts.items():
+        denominator = int(system_frame_counts[system_id])
+        recurrent.update(
+            flat for flat, count in counts.items()
+            if count / denominator >= threshold
+        )
+    components = [
+        component for component in _components(
+            tuple(
+                int(value) for value in np.unravel_index(flat, grid_shape)
+            )
+            for flat in recurrent
+        )
+        if len(component) >= int(settings["minimum_region_voxels"])
+    ]
+    ranked: List[Tuple[float, List[int]]] = []
+    for component in components:
+        flats = sorted(
+            int(np.ravel_multi_index(voxel, grid_shape)) for voxel in component
+        )
+        maximum_frequency = max(
+            (
+                counts.get(flat, 0) / int(system_frame_counts[system_id])
+                for system_id, counts in system_voxel_counts.items()
+                for flat in flats
+            ),
+            default=0.0,
+        )
+        ranked.append((maximum_frequency, flats))
+    ranked.sort(key=lambda row: (-row[0], -len(row[1]), row[1][0]))
+    if len(ranked) > int(settings["maximum_frequency_regions"]):
+        raise PocketDynamicsError(
+            f"frequency map produced {len(ranked)} recurrent regions; "
+            "maximum_frequency_regions gate exceeded"
+        )
+    return [row[1] for row in ranked]
+
+
+def _representative_frame_rows(
+    candidates: Sequence[Tuple[float, Mapping[str, object]]], maximum: int,
+) -> List[Dict[str, object]]:
+    """Choose observed maximum-volume and mean-volume-nearest frames."""
+    if not candidates:
+        return []
+    mean_volume = sum(row[0] for row in candidates) / len(candidates)
+    ranked = [
+        ("maximum_observed_volume", max(
+            candidates,
+            key=lambda row: (
+                row[0], -int(row[1]["source_frame_index"]),
+                str(row[1]["replica_id"]), str(row[1]["segment_id"]),
+            ),
+        )),
+        ("closest_observed_to_mean_volume", min(
+            candidates,
+            key=lambda row: (
+                abs(row[0] - mean_volume), int(row[1]["source_frame_index"]),
+                str(row[1]["replica_id"]), str(row[1]["segment_id"]),
+            ),
+        )),
+    ]
+    ranked.extend(
+        ("additional_central_observed_volume", candidate)
+        for candidate in sorted(
+            candidates,
+            key=lambda row: (
+                abs(row[0] - mean_volume), int(row[1]["source_frame_index"]),
+                str(row[1]["replica_id"]), str(row[1]["segment_id"]),
+            ),
+        )
+    )
+    result = []
+    seen = set()
+    for reason, (volume, frame) in ranked:
+        identity = (
+            str(frame["system_id"]), str(frame["replica_id"]),
+            str(frame["segment_id"]), int(frame["source_frame_index"]),
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result.append({
+            "selection_reason": reason,
+            "system_id": identity[0], "replica_id": identity[1],
+            "segment_id": identity[2], "source_frame_index": identity[3],
+            "axis_kind": frame["axis_kind"], "axis_unit": frame["axis_unit"],
+            "axis_value": frame["axis_value"],
+            "region_volume_angstrom3": volume,
+        })
+        if len(result) >= maximum:
+            break
+    return result
+
+
+def _frequency_map_project(
+    source: Path, project: Mapping[str, object], settings: Mapping[str, object],
+    hash_content: bool,
+) -> Dict[str, object]:
+    """Accumulate aligned pocket occupancy before defining recurrent regions."""
+    context = compile_project_context_file(source, hash_content=hash_content)
+    contract = context["contract"]
+    assert isinstance(contract, dict)
+    selections = contract["selections"]
+    units = contract["units"]
+    assert isinstance(selections, dict) and isinstance(units, dict)
+    coordinate_unit = str(units["coordinates"])
+    alignment_definition = selections.get(str(settings["alignment_selection"]))
+    solute_definition = selections.get(str(settings["solute_selection"]))
+    if not isinstance(alignment_definition, dict) or not isinstance(solute_definition, dict):
+        raise PocketDynamicsError("alignment or solute selection is undefined")
+
+    reference_path = resolve_manifest_path(str(project["reference_structure"]), source)
+    _, reference_atoms = read_topology_atoms(reference_path)
+    try:
+        raw_reference = next(iter_coordinate_frames(reference_path, coordinate_unit))
+    except StopIteration as exc:
+        raise PocketDynamicsError("reference structure contains no coordinates") from exc
+    reference_frame = PeriodicFrameProcessor.from_reference(
+        project, source, len(reference_atoms)
+    ).process(raw_reference, str(reference_path))
+    reference_solute = select_atoms(
+        reference_atoms, solute_definition, str(settings["solute_selection"])
+    )
+    reference_solute_coordinates = _coordinates_at(
+        reference_frame.coordinates_angstrom,
+        [atom.atom_index for atom in reference_solute],
+    )
+    grid, grid_centers = _grid(
+        reference_solute_coordinates, float(settings["grid_spacing_angstrom"]),
+        float(settings["grid_padding_angstrom"]), int(settings["maximum_grid_voxels"]),
+    )
+    grid_shape = tuple(int(value) for value in grid["shape"])
+
+    system_path = Path(str(context["system_manifest_path"]))
+    manifest = load_json(system_path)
+    frame_plan, frame_report = plan_frame_selection(
+        manifest, system_path, coordinate_unit, settings["frame_selection"],
+        frame_stride=int(settings["frame_stride"]), error_type=PocketDynamicsError,
+    )
+    if int(frame_report["selected_frame_count"]) > int(settings["maximum_frames"]):
+        raise PocketDynamicsError("maximum_frames gate exceeded")
+    topology_rows = []
+    for system in manifest["systems"]:
+        for replica in system["replicas"]:
+            topology_path = resolve_manifest_path(str(replica["topology"]), system_path)
+            _, atoms = read_topology_atoms(topology_path)
+            topology_rows.append((str(system["system_id"]), str(replica["replica_id"]), atoms))
+    mappings = build_common_correspondences(
+        reference_atoms, [row[2] for row in topology_rows], alignment_definition,
+        str(settings["alignment_selection"]), str(project["common_atom_policy"]),
+        float(settings["minimum_reference_coverage"]),
+    )
+    mappings_by_key = {
+        (row[0], row[1]): mapping for row, mapping in zip(topology_rows, mappings)
+    }
+    atoms_by_key = {(row[0], row[1]): row[2] for row in topology_rows}
+    reference_alignment = _coordinates_at(
+        reference_frame.coordinates_angstrom, mappings[0].reference_indices
+    )
+
+    frame_rows: List[Dict[str, object]] = []
+    system_frames: Counter[str] = Counter()
+    system_voxel_counts: Dict[str, Counter[int]] = defaultdict(Counter)
+    voxel_lining_occurrences: Dict[int, Counter[str]] = defaultdict(Counter)
+    total_sparse_voxels = 0
+    saturated_frame_count = 0
+    for system in manifest["systems"]:
+        system_id = str(system["system_id"])
+        for replica in system["replicas"]:
+            replica_id = str(replica["replica_id"])
+            atoms = atoms_by_key[(system_id, replica_id)]
+            mapping = mappings_by_key[(system_id, replica_id)]
+            solute_atoms = select_atoms(
+                atoms, solute_definition, str(settings["solute_selection"])
+            )
+            solute_indices = tuple(atom.atom_index for atom in solute_atoms)
+            residue_ids = tuple(_residue_id(atom) for atom in solute_atoms)
+            required_indices = tuple(sorted(set(mapping.target_indices) | set(solute_indices)))
+            processor = PeriodicFrameProcessor.from_replica(
+                project, replica, system_path, len(atoms)
+            )
+            for segment in replica["segments"]:
+                segment_id = str(segment["segment_id"])
+                selected_indices = frame_plan[(system_id, replica_id, segment_id)]
+                trajectory_path = resolve_manifest_path(str(segment["trajectory"]), system_path)
+                axis = normalize_segment_axis(segment, project.get("time_unit"))
+                processor.begin_segment(bool(segment.get("continuous_with_previous", False)))
+                for raw_frame in iter_coordinate_frames(
+                    trajectory_path, coordinate_unit,
+                    reader_frame_indices(selected_indices, processor.policy),
+                ):
+                    selected = frame_selected(
+                        raw_frame.frame_index, selected_indices,
+                        int(settings["frame_stride"]),
+                    )
+                    if not selected and processor.policy != "unwrap_continuous":
+                        continue
+                    frame = processor.process(
+                        raw_frame,
+                        f"{system_id}/{replica_id}/{segment_id}/frame-{raw_frame.frame_index}",
+                        required_indices,
+                    )
+                    if not selected:
+                        continue
+                    transform = best_fit_transform(
+                        _coordinates_at(frame.coordinates_angstrom, mapping.target_indices),
+                        reference_alignment,
+                    )
+                    aligned = np.asarray(apply_transform(
+                        _coordinates_at(frame.coordinates_angstrom, solute_indices), transform
+                    ), dtype=float)
+                    pockets = _frame_pockets(
+                        aligned, grid_centers, grid_shape, residue_ids, settings
+                    )
+                    if len(pockets) == int(settings["maximum_pockets_per_frame"]):
+                        saturated_frame_count += 1
+                    active_flats = _flat_pocket_voxels(pockets, grid_shape)
+                    total_sparse_voxels += len(active_flats)
+                    if total_sparse_voxels > int(settings["maximum_sparse_frame_voxels"]):
+                        raise PocketDynamicsError(
+                            "maximum_sparse_frame_voxels gate exceeded"
+                        )
+                    system_voxel_counts[system_id].update(active_flats)
+                    frame_lining: Dict[int, set[str]] = defaultdict(set)
+                    for pocket in pockets:
+                        for voxel in pocket["voxel_indices"]:  # type: ignore[union-attr]
+                            flat = int(np.ravel_multi_index(
+                                tuple(int(value) for value in voxel), grid_shape
+                            ))
+                            frame_lining[flat].update(
+                                str(value) for value in pocket["lining_residue_ids"]  # type: ignore[union-attr]
+                            )
+                    for flat, residues in frame_lining.items():
+                        voxel_lining_occurrences[flat].update(residues)
+                    frame_rows.append({
+                        "system_id": system_id, "replica_id": replica_id,
+                        "segment_id": segment_id,
+                        "source_frame_index": int(frame.frame_index),
+                        "axis_kind": axis["kind"],
+                        "axis_unit": project.get("time_unit")
+                        if axis["kind"] == "physical_time" else "sample",
+                        "axis_value": frame_axis_value(axis, frame.frame_index),
+                        "detected_pocket_voxel_count": len(active_flats),
+                        "_active_voxel_flat_indices": array("I", active_flats),
+                    })
+                    system_frames[system_id] += 1
+    for system_id, count in system_frames.items():
+        if count < int(settings["minimum_evaluated_frames_per_system"]):
+            raise PocketDynamicsError(
+                f"system {system_id} produced {count} selected frames; minimum is "
+                f"{settings['minimum_evaluated_frames_per_system']}"
+            )
+    if not system_frames:
+        raise PocketDynamicsError("no trajectory frames were evaluated")
+
+    region_flats = _discover_frequency_region_flats(
+        system_voxel_counts, system_frames, grid_shape, settings
+    )
+    flat_to_region = {
+        flat: index for index, flats in enumerate(region_flats, start=1)
+        for flat in flats
+    }
+    region_frame_candidates: Dict[int, Dict[str, List[Tuple[float, Mapping[str, object]]]]] = defaultdict(lambda: defaultdict(list))
+    region_present_counts: Dict[int, Counter[str]] = defaultdict(Counter)
+    region_volumes: Dict[int, Dict[str, List[float]]] = defaultdict(lambda: defaultdict(list))
+    voxel_volume = float(settings["grid_spacing_angstrom"]) ** 3
+    for frame in frame_rows:
+        counts = Counter(
+            flat_to_region[flat]
+            for flat in frame["_active_voxel_flat_indices"]  # type: ignore[union-attr]
+            if flat in flat_to_region
+        )
+        frame["active_pocket_regions"] = [
+            {
+                "pocket_region_id": f"pocket-region-{region_index}",
+                "active_voxel_count": count,
+                "volume_angstrom3": count * voxel_volume,
+            }
+            for region_index, count in sorted(counts.items())
+        ]
+        del frame["_active_voxel_flat_indices"]
+        for region_index, count in counts.items():
+            system_id = str(frame["system_id"])
+            volume = count * voxel_volume
+            region_present_counts[region_index][system_id] += 1
+            region_volumes[region_index][system_id].append(volume)
+            region_frame_candidates[region_index][system_id].append((volume, frame))
+
+    regions = []
+    for region_index, flats in enumerate(region_flats, start=1):
+        per_system = []
+        for system_id in sorted(system_frames):
+            present = region_present_counts[region_index][system_id]
+            volumes = region_volumes[region_index][system_id]
+            per_system.append({
+                "system_id": system_id,
+                "present_frame_count": present,
+                "evaluated_frame_count": system_frames[system_id],
+                "occupancy_fraction": present / system_frames[system_id],
+                "present_frame_volume_summary_angstrom3": sample_summary(volumes)
+                if volumes else None,
+                "representative_frames": _representative_frame_rows(
+                    region_frame_candidates[region_index][system_id],
+                    int(settings["representative_frames_per_region"]),
+                ),
+            })
+        lining = Counter()
+        for flat in flats:
+            lining.update(voxel_lining_occurrences.get(flat, Counter()))
+        centers = grid_centers[flats]
+        regions.append({
+            "pocket_region_id": f"pocket-region-{region_index}",
+            "voxel_flat_indices": flats,
+            "voxel_indices": [
+                [int(value) for value in np.unravel_index(flat, grid_shape)]
+                for flat in flats
+            ],
+            "voxel_count": len(flats),
+            "maximum_geometric_volume_angstrom3": len(flats) * voxel_volume,
+            "centroid_angstrom": centers.mean(axis=0).tolist(),
+            "lining_residue_voxel_frame_occurrences": [
+                {"residue_id": residue_id, "occurrence_count": count}
+                for residue_id, count in sorted(
+                    lining.items(), key=lambda row: (-row[1], row[0])
+                )
+            ],
+            "per_system_occupancy": per_system,
+        })
+
+    systems = sorted(system_frames)
+    pairwise = []
+    for region in regions:
+        occupancies = {
+            str(row["system_id"]): float(row["occupancy_fraction"])
+            for row in region["per_system_occupancy"]
+        }
+        for left_index, left in enumerate(systems):
+            for right in systems[left_index + 1:]:
+                pairwise.append({
+                    "pocket_region_id": region["pocket_region_id"],
+                    "system_i": left, "system_j": right,
+                    "occupancy_difference": occupancies[left] - occupancies[right],
+                })
+
+    total_frames = sum(system_frames.values())
+    observed_flats = sorted({
+        flat for counts in system_voxel_counts.values() for flat in counts
+    })
+    frequency_voxels = []
+    for flat in observed_flats:
+        frequency_voxels.append({
+            "voxel_flat_index": flat,
+            "voxel_index": [
+                int(value) for value in np.unravel_index(flat, grid_shape)
+            ],
+            "center_angstrom": grid_centers[flat].tolist(),
+            "pooled_frame_frequency_fraction": sum(
+                counts.get(flat, 0) for counts in system_voxel_counts.values()
+            ) / total_frames,
+            "per_system_frequency": [
+                {
+                    "system_id": system_id,
+                    "occupied_frame_count": system_voxel_counts[system_id].get(flat, 0),
+                    "evaluated_frame_count": system_frames[system_id],
+                    "frequency_fraction": system_voxel_counts[system_id].get(flat, 0)
+                    / system_frames[system_id],
+                }
+                for system_id in systems
+            ],
+        })
+
+    findings = []
+    for system_id in systems:
+        choices = [
+            (
+                next(
+                    float(row["occupancy_fraction"])
+                    for row in region["per_system_occupancy"]
+                    if row["system_id"] == system_id
+                ),
+                region,
+            )
+            for region in regions
+        ]
+        if choices:
+            occupancy, region = max(
+                choices, key=lambda row: (row[0], row[1]["pocket_region_id"])
+            )
+            findings.append({
+                "category": "other_physical", "evidence_level": "descriptive",
+                "statement": (
+                    f"Most persistent recurrent geometric pocket region in {system_id} "
+                    f"is {region['pocket_region_id']} at {occupancy:.1%} of evaluated "
+                    "frames; this is not a druggability prediction."
+                ),
+                "effect_value": occupancy, "system_ids": [system_id],
+                "comparison_family": "ensemble_pocket_dynamics:within_system_frequency_region",
+            })
+    for row in pairwise:
+        if float(row["occupancy_difference"]) != 0.0:
+            findings.append({
+                "category": "other_physical", "evidence_level": "descriptive",
+                "statement": (
+                    f"Recurrent geometric pocket region {row['pocket_region_id']} "
+                    f"occupancy differs by {float(row['occupancy_difference']):+.1%} "
+                    f"between {row['system_i']} and {row['system_j']}."
+                ),
+                "effect_value": row["occupancy_difference"],
+                "system_ids": [row["system_i"], row["system_j"]],
+                "comparison_family": "ensemble_pocket_dynamics:pairwise_frequency_region",
+            })
+
+    issues = []
+    if not observed_flats:
+        issues.append({
+            "severity": "warning", "code": "NO_GEOMETRIC_POCKETS_DETECTED",
+            "message": "No grid voxel met the configured geometric pocket criteria.",
+        })
+    elif not regions:
+        issues.append({
+            "severity": "warning", "code": "NO_RECURRENT_POCKET_REGIONS",
+            "message": (
+                "Pocket-like voxels were observed, but no connected region met the "
+                "configured frequency and size thresholds."
+            ),
+        })
+    if saturated_frame_count:
+        issues.append({
+            "severity": "warning", "code": "POCKETS_PER_FRAME_CAP_REACHED",
+            "message": (
+                f"{saturated_frame_count} evaluated frames reached the configured "
+                "maximum_pockets_per_frame; lower-ranked clearance seeds were omitted."
+            ),
+        })
+    return {
+        "module_id": "ensemble_pocket_dynamics",
+        "technical_status": "complete", "scientific_status": "not evaluated",
+        "availability_status": "available", "availability_reason": None,
+        "project_manifest_path": str(source),
+        "project_manifest_sha256": context["project_manifest_sha256"],
+        "system_manifest_path": str(system_path),
+        "system_manifest_sha256": context["system_manifest_sha256"],
+        "input_content_signature_sha256": context["input_content_signature_sha256"],
+        "content_hashes_included": hash_content, "settings": settings,
+        "grid": grid, "frame_selection": frame_report,
+        "system_frame_counts": dict(sorted(system_frames.items())),
+        "voxel_frequency_map": frequency_voxels,
+        "frame_pocket_region_records": frame_rows,
+        "recurrent_pocket_regions": regions,
+        "pairwise_system_pocket_differences": pairwise,
+        "frames_reaching_pocket_cap": saturated_frame_count,
+        "tracking_comparison_count": 0,
+        "tracking_contract": (
+            "reference-aligned voxel frequencies define recurrent connected spatial "
+            "regions after all selected frames; no online discrete pocket IDs"
+        ),
+        "finding_candidates": findings,
+        "observation_accounting": {
+            "selected_physical_frame_count": total_frames,
+            "sparse_frame_voxel_count": total_sparse_voxels,
+            "observed_frequency_voxel_count": len(observed_flats),
+            "recurrent_region_count": len(regions),
+        },
+        "error_count": 0,
+        "warning_count": sum(issue["severity"] == "warning" for issue in issues),
+        "issues": issues,
+        "limitations": [
+            "The native frequency-grid backend detects recurrent geometric empty regions; it does not predict druggability, ligand affinity, binding free energy, or opening kinetics.",
+            "The frequency-map design is inspired by ensemble cavity mapping, but the native geometric detector is not an fpocket or MDpocket alpha-sphere reimplementation.",
+            "Frequency and region definitions require grid, clearance, atom-selection, region-threshold, and frame-selection sensitivity analysis.",
+            "Lining-residue occurrence counts are voxel-frame occurrences and are not independent observations.",
+            "Water and ion occupancy are analyzed separately by hydration_density_channels; solvent is not treated as pocket wall material.",
+            "Frame persistence is descriptive and is not independent-replica uncertainty.",
+        ],
+    }
+
+
 def ensemble_pocket_dynamics_project(
     project_path: Path, hash_content: bool = False
 ) -> Dict[str, object]:
     source = Path(project_path).expanduser().resolve(strict=False)
     project = load_json(source)
     settings = _settings(project)
+    if settings["backend"] == "native_frequency_grid_v2":
+        return _frequency_map_project(source, project, settings, hash_content)
     context = compile_project_context_file(source, hash_content=hash_content)
     contract = context["contract"]
     assert isinstance(contract, dict)
