@@ -231,10 +231,17 @@ network tools; it does not replace the mediator identity or multiplicity.
 Recognized water uses the water oxygen and a separate polar-solute cutoff. It
 is therefore a geometric solvent-bridge screen. Use the water-mediated
 hydrogen-bond module when donor, acceptor, and angle chemistry is required.
-The report includes per-frame hyperedges, mediator and mediator-type
-occupancies, multiplicity distributions, interchain flags, and segment-safe
-boundary-censored residence events. Subsampled runs describe consecutive
-selected observations, not continuous-time lifetimes.
+The report includes mediator and mediator-type occupancies, multiplicity
+distributions, interchain flags, and segment-safe boundary-censored residence
+events. Every observed bridge contributes to those summaries and to a compact
+frame-feature matrix used by `interaction_fingerprints`. Because a detailed
+nested hyperedge for every mediator-frame can become much larger than the
+trajectory, the report retains a deterministic SHA-256 min-hash sample of
+detailed hyperedges up to `maximum_bridge_records`. The report states the
+observed and retained counts; changing that limit does not change the complete
+occupancy, residence, projected-edge, or frame-feature calculations.
+Subsampled runs describe consecutive selected observations, not continuous-time
+lifetimes.
 Every frame record retains system, replica, segment, and source-frame identity,
 so bridge presence can be joined exactly to FES or clustering assignments for
 a separately reviewed state-conditioned comparison. The bridge module itself
@@ -264,7 +271,9 @@ to the common reference, images each recognized water oxygen or supported ion
 to the nearest solute image, and accumulates species-resolved frame occupancy
 on one explicit three-dimensional grid. The report retains the full grid
 contract, two-dimensional projections, exact frame identities, and pairwise
-common-grid differences.
+common-grid differences. Per-frame occupied voxels are held during computation
+as sorted flat 32-bit indices rather than Python coordinate tuples; this changes
+storage cost, not voxel identity or occupancy.
 
 Voxels above the configured frame-occupancy threshold are grouped with
 six-face connectivity. A component that reaches the bounded grid exterior and

@@ -280,6 +280,45 @@ def _multivalent_features(
     if not isinstance(summaries, list) or not isinstance(hyperedges, list):
         raise InteractionFingerprintError("multivalent-bridge report is incomplete")
     result = {_key(row): set() for row in summaries if isinstance(row, dict)}
+    compact_dictionary = report.get("bridge_feature_dictionary")
+    if isinstance(compact_dictionary, list) and all(
+        isinstance(row, dict)
+        and isinstance(row.get("active_bridge_feature_indices"), list)
+        for row in summaries
+    ):
+        by_index = {}
+        for row in compact_dictionary:
+            if (
+                not isinstance(row, dict)
+                or not isinstance(row.get("feature_index"), int)
+                or not isinstance(row.get("contacted_residue_ids"), list)
+            ):
+                raise InteractionFingerprintError(
+                    "multivalent compact feature dictionary is malformed"
+                )
+            residues = sorted(str(value) for value in row["contacted_residue_ids"])
+            mediator_type = str(row.get("mediator_type", "unknown"))
+            by_index[int(row["feature_index"])] = _add_feature(
+                dictionary,
+                source="multivalent_molecular_bridges",
+                interaction_type="multivalent_mediator_bridge",
+                identity=mediator_type + ":" + "+".join(residues),
+                definition={
+                    "mediator_type": mediator_type,
+                    "contacted_residue_ids": residues,
+                    "mediator_kind": row.get("mediator_kind"),
+                },
+            )
+        for summary in summaries:
+            assert isinstance(summary, dict)
+            target = result[_key(summary)]
+            for index in summary["active_bridge_feature_indices"]:
+                if isinstance(index, bool) or not isinstance(index, int) or index not in by_index:
+                    raise InteractionFingerprintError(
+                        "multivalent frame names an unknown compact feature index"
+                    )
+                target.add(by_index[index])
+        return result
     for edge in hyperedges:
         if not isinstance(edge, dict) or not isinstance(edge.get("contacted_residues"), list):
             raise InteractionFingerprintError("multivalent bridge hyperedge is malformed")

@@ -10,6 +10,7 @@ flux, free energy, or transport mechanism is inferred.
 from __future__ import annotations
 
 import math
+from array import array
 from collections import Counter, defaultdict, deque
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
@@ -43,6 +44,11 @@ class HydrationDensityError(ValueError):
 
 Voxel = Tuple[int, int, int]
 FrameKey = Tuple[str, str, str, int]
+
+
+def _flat_voxel(voxel: Voxel, shape: Tuple[int, int, int]) -> int:
+    """Encode one grid voxel compactly for retained per-frame occupancy."""
+    return (voxel[0] * shape[1] + voxel[1]) * shape[2] + voxel[2]
 
 
 def _finite(
@@ -347,7 +353,12 @@ def hydration_density_channels_project(
 
     voxel_frames: Dict[Tuple[str, str], Counter[Voxel]] = defaultdict(Counter)
     particle_counts: Dict[Tuple[str, str], Counter[Voxel]] = defaultdict(Counter)
-    frame_voxels: Dict[FrameKey, Dict[str, set[Voxel]]] = {}
+    # Per-frame occupancy is needed after the aggregate density components are
+    # known.  Keeping Python sets of three-integer tuples for every frame used
+    # tens of bytes per occupied voxel and exhausted practical campaign limits.
+    # Sorted uint32 flat indices preserve exact occupancy while using four bytes
+    # per retained voxel.  maximum_grid_voxels is already well below uint32.
+    frame_voxels: Dict[FrameKey, Dict[str, array]] = {}
     frame_metadata: Dict[FrameKey, Dict[str, object]] = {}
     system_frames: Counter[str] = Counter()
     observed_species: Dict[str, set[str]] = defaultdict(set)
@@ -428,7 +439,7 @@ def hydration_density_channels_project(
                         "axis_value": frame_axis_value(axis, frame.frame_index),
                     }
                     frame_metadata[key] = meta
-                    per_species: Dict[str, set[Voxel]] = {}
+                    per_species: Dict[str, array] = {}
                     for species, indices in particles.items():
                         imaged = []
                         for index in indices:
@@ -454,10 +465,16 @@ def hydration_density_channels_project(
                             particle_counts[(system_id, species)][voxel] += 1
                         voxel_frames[(system_id, species)].update(occupied)
                         observed_species[system_id].add(species)
-                        per_species[species] = occupied
+                        per_species[species] = array(
+                            "I", sorted(_flat_voxel(voxel, shape) for voxel in occupied)
+                        )
                         total_sparse_voxels += len(occupied)
                         if total_sparse_voxels > int(settings["maximum_sparse_frame_voxels"]):
-                            raise HydrationDensityError("maximum_sparse_frame_voxels gate exceeded")
+                            raise HydrationDensityError(
+                                "maximum_sparse_frame_voxels gate exceeded: "
+                                f"observed more than {settings['maximum_sparse_frame_voxels']} "
+                                "distinct species-frame voxels"
+                            )
                     frame_voxels[key] = per_species
                     system_frames[system_id] += 1
 
@@ -483,7 +500,7 @@ def hydration_density_channels_project(
             )
 
     component_rows = []
-    component_voxels: Dict[str, set[Voxel]] = {}
+    component_voxels: Dict[str, set[int]] = {}
     projection_rows = []
     occupancy_arrays: Dict[Tuple[str, str], np.ndarray] = {}
     for system_id in sorted(system_frames):
@@ -507,16 +524,20 @@ def hydration_density_channels_project(
                     minimum_channel_depth=float(settings["minimum_channel_depth_angstrom"]),
                 )
                 component_rows.append(row)
-                component_voxels[str(row["feature_id"])] = set(voxels)
-            array = np.zeros(shape, dtype=float)
+                component_voxels[str(row["feature_id"])] = {
+                    _flat_voxel(voxel, shape) for voxel in voxels
+                }
+            occupancy_array = np.zeros(shape, dtype=float)
             for voxel, count in counts.items():
-                array[voxel] = count / system_frames[system_id]
-            occupancy_arrays[(system_id, species)] = array
+                occupancy_array[voxel] = count / system_frames[system_id]
+            occupancy_arrays[(system_id, species)] = occupancy_array
             projection_rows.append({
                 "system_id": system_id, "species": species,
                 "projection_axis": "z", "normalization": "mean frame occupancy summed over z",
-                "matrix": array.sum(axis=2).tolist(),
-                "maximum_projected_occupancy": float(array.sum(axis=2).max()),
+                "matrix": occupancy_array.sum(axis=2).tolist(),
+                "maximum_projected_occupancy": float(
+                    occupancy_array.sum(axis=2).max()
+                ),
             })
 
     frame_records = []
@@ -524,7 +545,12 @@ def hydration_density_channels_project(
         active_ids = []
         for feature_id, voxels in component_voxels.items():
             species = feature_id.split("|", 2)[1]
-            if feature_id.startswith(key[0] + "|") and frame_voxels[key].get(species, set()).intersection(voxels):
+            occupied = frame_voxels[key].get(species)
+            if (
+                feature_id.startswith(key[0] + "|")
+                and occupied is not None
+                and any(flat in voxels for flat in occupied)
+            ):
                 active_ids.append(feature_id)
         frame_records.append({**frame_metadata[key], "active_feature_ids": sorted(active_ids)})
 
@@ -602,6 +628,7 @@ def hydration_density_channels_project(
             "selected_physical_frame_count": sum(system_frames.values()),
             "particle_observation_count": total_particle_observations,
             "sparse_frame_voxel_count": total_sparse_voxels,
+            "sparse_frame_voxel_storage": "sorted_uint32_flat_indices_v1",
         },
         "error_count": 0,
         "warning_count": sum(issue["severity"] == "warning" for issue in issues),

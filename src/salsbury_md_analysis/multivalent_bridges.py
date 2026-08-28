@@ -8,6 +8,8 @@ separately labeled projection for network interoperability.
 
 from __future__ import annotations
 
+import hashlib
+import heapq
 import math
 from collections import Counter, defaultdict
 from itertools import combinations
@@ -358,7 +360,15 @@ def multivalent_molecular_bridges_project(
         raise MultivalentBridgeError("maximum_frames gate exceeded by frame selection")
 
     frame_summaries: List[Dict[str, object]] = []
-    bridge_records: List[Dict[str, object]] = []
+    # Detailed per-mediator hyperedges are useful for inspection but can be
+    # several orders of magnitude larger than the aggregate science products.
+    # Retain a deterministic min-hash sample while computing occupancies,
+    # events, projected edges, and the frame feature matrix from every bridge.
+    bridge_record_heap: List[Tuple[int, int, Dict[str, object]]] = []
+    total_bridge_record_count = 0
+    bridge_record_count_by_system: Counter[str] = Counter()
+    bridge_feature_indices: Dict[Tuple[str, str, Tuple[str, ...]], int] = {}
+    bridge_feature_dictionary: List[Dict[str, object]] = []
     bridge_events: List[Dict[str, object]] = []
     segment_reports: List[Dict[str, object]] = []
     mediator_states: Dict[Tuple[str, str, str, str], List[Tuple[Mapping[str, object], bool]]] = {}
@@ -505,6 +515,7 @@ def multivalent_molecular_bridges_project(
                             (solute_position, distance)
                         )
                     frame_edges: set[EdgeKey] = set()
+                    frame_bridge_feature_indices: set[int] = set()
                     frame_bridge_types: set[str] = set()
                     frame_bridge_count = 0
                     interchain_count = 0
@@ -546,12 +557,44 @@ def multivalent_molecular_bridges_project(
                             "interchain_bridge": is_interchain,
                             "contacted_residues": contacted_rows,
                         }
-                        bridge_records.append(bridge)
+                        total_bridge_record_count += 1
+                        bridge_record_count_by_system[system_id] += 1
+                        residue_ids = tuple(sorted(
+                            str(solutes[position]["residue_id"])
+                            for position, _ in contacts
+                        ))
+                        feature_key = (
+                            str(mediator["mediator_type"]),
+                            str(mediator["mediator_kind"]),
+                            residue_ids,
+                        )
+                        feature_index = bridge_feature_indices.get(feature_key)
+                        if feature_index is None:
+                            feature_index = len(bridge_feature_dictionary)
+                            bridge_feature_indices[feature_key] = feature_index
+                            bridge_feature_dictionary.append({
+                                "feature_index": feature_index,
+                                "mediator_type": feature_key[0],
+                                "mediator_kind": feature_key[1],
+                                "contacted_residue_ids": list(feature_key[2]),
+                            })
+                        frame_bridge_feature_indices.add(feature_index)
+                        identity = "|".join((
+                            system_id, replica_id, segment_id,
+                            str(frame.frame_index), str(mediator["mediator_id"]),
+                            feature_key[0], feature_key[1], *feature_key[2],
+                        ))
+                        score = int.from_bytes(
+                            hashlib.sha256(identity.encode("utf-8")).digest()[:16],
+                            "big",
+                        )
+                        retained_limit = int(settings["maximum_bridge_records"])
+                        candidate = (-score, total_bridge_record_count, bridge)
+                        if len(bridge_record_heap) < retained_limit:
+                            heapq.heappush(bridge_record_heap, candidate)
+                        elif score < -bridge_record_heap[0][0]:
+                            heapq.heapreplace(bridge_record_heap, candidate)
                         segment_bridge_records += 1
-                        if len(bridge_records) > int(settings["maximum_bridge_records"]):
-                            raise MultivalentBridgeError(
-                                "maximum_bridge_records gate exceeded"
-                            )
                         for left, right in combinations(
                             sorted(
                                 str(solutes[position]["residue_id"])
@@ -573,6 +616,9 @@ def multivalent_molecular_bridges_project(
                         "active_bridge_count": frame_bridge_count,
                         "active_interchain_bridge_count": interchain_count,
                         "active_projected_edge_count": len(frame_edges),
+                        "active_bridge_feature_indices": sorted(
+                            frame_bridge_feature_indices
+                        ),
                     })
                 for mediator_id, rows in states_by_mediator.items():
                     mediator_states[(system_id, replica_id, segment_id, mediator_id)] = rows
@@ -599,6 +645,13 @@ def multivalent_molecular_bridges_project(
             )
     if not frame_summaries:
         raise MultivalentBridgeError("no trajectory frames were evaluated")
+
+    bridge_records = [row[2] for row in bridge_record_heap]
+    bridge_records.sort(key=lambda row: (
+        str(row["system_id"]), str(row["replica_id"]),
+        str(row["segment_id"]), int(row["source_frame_index"]),
+        str(row["mediator"]["mediator_id"]),  # type: ignore[index]
+    ))
 
     events_by_mediator: Dict[Tuple[str, str, str], List[Dict[str, object]]] = defaultdict(list)
     for (system_id, replica_id, segment_id, mediator_id), rows in sorted(
@@ -681,9 +734,6 @@ def multivalent_molecular_bridges_project(
         frames = [
             row for row in frame_summaries if row["system_id"] == system_id
         ]
-        records = [
-            row for row in bridge_records if row["system_id"] == system_id
-        ]
         inventory: Counter[str] = Counter()
         for topology in topology_reports:
             if topology["system_id"] != system_id:
@@ -699,7 +749,7 @@ def multivalent_molecular_bridges_project(
             "topology_mediator_type_counts_across_replicas": dict(
                 sorted(inventory.items())
             ),
-            "bridge_hyperedge_record_count": len(records),
+            "bridge_hyperedge_record_count": bridge_record_count_by_system[system_id],
             "mean_active_bridges_per_frame": (
                 sum(int(row["active_bridge_count"]) for row in frames) / evaluated
             ),
@@ -740,11 +790,22 @@ def multivalent_molecular_bridges_project(
                 "runs describe consecutive selected observations"
             ),
         })
-    if not bridge_records:
+    if total_bridge_record_count == 0:
         issues.append({
             "severity": "warning",
             "code": "NO_MULTIVALENT_BRIDGES_OBSERVED",
             "message": "no configured mediator contacted the required number of residues",
+        })
+    if len(bridge_records) < total_bridge_record_count:
+        issues.append({
+            "severity": "warning",
+            "code": "BRIDGE_HYPEREDGE_DETAILS_SAMPLED",
+            "message": (
+                f"Retained {len(bridge_records)} deterministic min-hash detailed "
+                f"hyperedges from {total_bridge_record_count} observed records. "
+                "All-frame occupancies, residence summaries, projected edges, and "
+                "frame feature assignments use every observed bridge."
+            ),
         })
     return {
         "module_id": "multivalent_molecular_bridges",
@@ -763,6 +824,16 @@ def multivalent_molecular_bridges_project(
         "segment_reports": segment_reports,
         "frame_summaries": frame_summaries,
         "bridge_hyperedges": bridge_records,
+        "bridge_feature_dictionary": bridge_feature_dictionary,
+        "bridge_hyperedge_retention": {
+            "observed_record_count": total_bridge_record_count,
+            "retained_detailed_record_count": len(bridge_records),
+            "maximum_retained_detailed_records": int(
+                settings["maximum_bridge_records"]
+            ),
+            "retention_policy": "deterministic_sha256_min_hash_v1",
+            "all_frame_feature_assignments_complete": True,
+        },
         "bridge_events": bridge_events,
         "system_summaries": system_summaries,
         "mediator_summaries": mediator_summaries,

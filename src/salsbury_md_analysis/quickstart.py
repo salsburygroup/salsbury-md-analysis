@@ -983,7 +983,10 @@ def _generic_definitions(
             "water_contact_cutoff_angstrom": 3.5,
             "minimum_distinct_residues": 2,
             "maximum_neighbor_pairs_per_frame": 2_000_000,
-            "maximum_bridge_records": 1_000_000,
+            # Detailed hyperedges are retained as a deterministic min-hash
+            # sample; aggregate occupancies and compact frame features still
+            # use every observed bridge.
+            "maximum_bridge_records": 100_000,
             "minimum_evaluated_frames_per_system": 10,
         },
         "hydration_density_channels": {
@@ -1006,8 +1009,8 @@ def _generic_definitions(
             "minimum_component_voxels": 1,
             "minimum_channel_depth_angstrom": 4.5,
             "maximum_grid_voxels": 500_000,
-            "maximum_particle_observations": 100_000_000,
-            "maximum_sparse_frame_voxels": 50_000_000,
+            "maximum_particle_observations": 500_000_000,
+            "maximum_sparse_frame_voxels": 250_000_000,
             "minimum_evaluated_frames_per_system": 10,
         },
         "ensemble_pocket_dynamics": {
@@ -1039,8 +1042,8 @@ def _generic_definitions(
             "residue_jaccard_threshold": 0.50,
             "maximum_centroid_distance_angstrom": 6.0,
             "maximum_grid_voxels": 250_000,
-            "maximum_pocket_instances": 50_000,
-            "maximum_tracking_comparisons": 5_000_000,
+            "maximum_pocket_instances": 2_000_000,
+            "maximum_tracking_comparisons": 100_000_000,
             "minimum_evaluated_frames_per_system": 10,
         },
         "interaction_fingerprints": {
