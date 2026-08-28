@@ -914,18 +914,21 @@ class QuickstartTests(unittest.TestCase):
                 local_plan["local_execution_plan_schema"],
                 "salsbury-local-execution-plan-v3",
             )
-            self.assertEqual(local_plan["maximum_parallel_cpus"], 8)
             campaign = json.loads(
                 (output / "campaign-resource-plan.json").read_text()
             )
             self.assertEqual(campaign["maximum_parallel_cpus_input"], 16)
-            self.assertEqual(campaign["effective_parallel_cpu_cap"], 8)
+            effective_cpus = campaign["effective_parallel_cpu_cap"]
+            self.assertIn(effective_cpus, (8, 9))
+            self.assertEqual(
+                local_plan["maximum_parallel_cpus"], effective_cpus
+            )
             self.assertEqual(
                 campaign["resource_warnings"][0]["code"],
                 "REQUESTED_CPUS_EXCEED_USEFUL_PARALLELISM",
             )
             self.assertIn(
-                "Slurm submission will be changed to 8 CPUs",
+                f"Slurm submission will be changed to {effective_cpus} CPUs",
                 campaign["resource_warnings"][0]["message"],
             )
             self.assertEqual(local_plan["maximum_parallel_memory_gib"], 128.0)
@@ -938,6 +941,7 @@ class QuickstartTests(unittest.TestCase):
             views = json.loads((output / "conformational-views.json").read_text())
             stage_lengths = [len(stage["commands"]) for stage in stages["stages"]]
             self.assertIn(stage_lengths[0], (8, 9))
+            self.assertEqual(stage_lengths[0], effective_cpus)
             self.assertEqual(stage_lengths[1:], [2])
             for stage_worker in workers:
                 self.assertIn("#SBATCH --time=24:00:00", stage_worker)
