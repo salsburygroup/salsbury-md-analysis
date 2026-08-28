@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 
 from salsbury_md_analysis.hydration_density import (
-    _component_record, _components,
+    _component_record, _components, _flat_voxel,
 )
 from salsbury_md_analysis.interaction_fingerprints import (
     build_interaction_fingerprints,
@@ -11,6 +11,18 @@ from salsbury_md_analysis.interaction_fingerprints import (
 
 
 class HydrationDensityTests(unittest.TestCase):
+    def test_flat_voxel_encoding_is_unique_within_the_grid(self):
+        shape = (7, 8, 9)
+        values = {
+            _flat_voxel((i, j, k), shape)
+            for i in range(shape[0])
+            for j in range(shape[1])
+            for k in range(shape[2])
+        }
+        self.assertEqual(len(values), int(np.prod(shape)))
+        self.assertEqual(min(values), 0)
+        self.assertEqual(max(values), int(np.prod(shape)) - 1)
+
     def test_face_connected_components_and_channel_label_are_explicit(self):
         voxels = {
             (0, 3, 3), (1, 3, 3), (2, 3, 3), (3, 3, 3), (6, 6, 6)
