@@ -7,6 +7,9 @@ from salsbury_md_analysis.multivalent_bridges import (
     multivalent_molecular_bridges_project,
     multivalent_molecular_bridges_project_safe,
 )
+from salsbury_md_analysis.interaction_fingerprints import (
+    build_interaction_fingerprints,
+)
 
 
 def _atom(record, serial, name, residue, chain, number, x, element):
@@ -107,6 +110,45 @@ def _write_project(
 
 
 class MultivalentMolecularBridgeTests(unittest.TestCase):
+    def test_detailed_hyperedge_retention_does_not_truncate_frame_features(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = _write_project(Path(temporary))
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["definitions"]["multivalent_molecular_bridges"][
+                "maximum_bridge_records"
+            ] = 1
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            report = multivalent_molecular_bridges_project(path)
+        self.assertEqual(report["technical_status"], "complete")
+        self.assertEqual(len(report["bridge_hyperedges"]), 1)
+        self.assertEqual(
+            report["bridge_hyperedge_retention"]["observed_record_count"], 2
+        )
+        self.assertTrue(
+            report["bridge_hyperedge_retention"][
+                "all_frame_feature_assignments_complete"
+            ]
+        )
+        self.assertIn(
+            "BRIDGE_HYPEREDGE_DETAILS_SAMPLED",
+            {issue["code"] for issue in report["issues"]},
+        )
+        fingerprints = build_interaction_fingerprints(
+            {"multivalent_molecular_bridges": report},
+            {
+                "source_modules": ["multivalent_molecular_bridges"],
+                "maximum_features": 10,
+                "maximum_pair_comparisons": 10,
+                "minimum_feature_occupancy": 0.0,
+                "minimum_pair_observations": 1,
+                "minimum_cooccurrence_count": 1,
+            },
+        )
+        self.assertEqual(fingerprints["availability_status"], "available")
+        self.assertAlmostEqual(
+            fingerprints["feature_occupancies"][0]["occupancy_fraction"], 0.5
+        )
+
     def test_supported_ion_hyperedges_edges_and_segment_safe_residence(self):
         with tempfile.TemporaryDirectory() as temporary:
             report = multivalent_molecular_bridges_project(
