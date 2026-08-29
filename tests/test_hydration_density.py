@@ -1,9 +1,12 @@
 import unittest
+import tempfile
+from array import array
 
 import numpy as np
 
 from salsbury_md_analysis.hydration_density import (
     _component_record, _components, _flat_voxel,
+    _iter_sparse_frame_records, _write_sparse_frame_record,
 )
 from salsbury_md_analysis.interaction_fingerprints import (
     build_interaction_fingerprints,
@@ -11,6 +14,24 @@ from salsbury_md_analysis.interaction_fingerprints import (
 
 
 class HydrationDensityTests(unittest.TestCase):
+    def test_sparse_frame_records_stream_and_replay_exactly(self):
+        key = ("control", "r1", "s1", 7)
+        metadata = {
+            "system_id": "control", "replica_id": "r1",
+            "segment_id": "s1", "source_frame_index": 7,
+        }
+        per_species = {
+            "water": array("I", [1, 3, 9]),
+            "ion:K": array("I", [4]),
+        }
+        with tempfile.TemporaryFile(mode="w+b") as handle:
+            _write_sparse_frame_record(handle, key, metadata, per_species)
+            records = list(_iter_sparse_frame_records(handle))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0][0], key)
+        self.assertEqual(records[0][1], metadata)
+        self.assertEqual(records[0][2], per_species)
+
     def test_flat_voxel_encoding_is_unique_within_the_grid(self):
         shape = (7, 8, 9)
         values = {

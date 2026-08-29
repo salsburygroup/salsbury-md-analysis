@@ -271,9 +271,15 @@ to the common reference, images each recognized water oxygen or supported ion
 to the nearest solute image, and accumulates species-resolved frame occupancy
 on one explicit three-dimensional grid. The report retains the full grid
 contract, two-dimensional projections, exact frame identities, and pairwise
-common-grid differences. Per-frame occupied voxels are held during computation
-as sorted flat 32-bit indices rather than Python coordinate tuples; this changes
-storage cost, not voxel identity or occupancy.
+common-grid differences. Per-frame occupied voxels are written to
+process-private temporary storage as sorted flat 32-bit indices and replayed
+after aggregate density components are defined. This changes storage cost, not
+voxel identity, occupancy, frame coverage, or frame-to-feature assignment.
+
+`maximum_sparse_frame_voxels` bounds the compact voxel membership of any one
+selected frame. The total temporary stream volume is bounded separately by
+`maximum_particle_observations`; selected frames are not dropped to satisfy an
+in-memory accumulation limit.
 
 Voxels above the configured frame-occupancy threshold are grouped with
 six-face connectivity. A component that reaches the bounded grid exterior and
