@@ -180,10 +180,26 @@ def _apply_measured_resource_calibrations(
                     f"task {task.get('task_id')} {label} must be finite and positive"
                 )
         measured_rate = (
-            float(calibration["conservative_cpu_seconds_per_frame"])
+            float(calibration.get(
+                "conservative_affine_cpu_seconds_per_frame",
+                calibration["conservative_cpu_seconds_per_frame"],
+            ))
             * time_safety_factor
             * float(rate_multiplier)
         )
+        measured_fixed_hours = (
+            float(calibration.get("conservative_fixed_cpu_seconds", 0.0))
+            * time_safety_factor
+            * float(rate_multiplier)
+            / 3600.0
+        )
+        current_fixed = task.get("fixed_cpu_hours", 0.0)
+        if isinstance(current_fixed, (int, float)) and not isinstance(
+            current_fixed, bool
+        ):
+            task["fixed_cpu_hours"] = max(
+                float(current_fixed), measured_fixed_hours
+            )
         current_rate = task.get("cpu_seconds_per_physical_frame")
         if (
             "power_law_cost_model" not in task
@@ -247,6 +263,9 @@ def _apply_measured_resource_calibrations(
                 "maximum_resident_memory_mib"
             ],
             "cpu_rate_workload_multiplier": float(rate_multiplier),
+            "affine_fixed_cpu_hours_after_workload_scaling": (
+                measured_fixed_hours
+            ),
             "memory_workload_multiplier": float(memory_multiplier),
             "policy": (
                 "conservative maximum after the task's declared workload scaling; "
@@ -736,10 +755,30 @@ def _view_pca_task(
         if balance_family != view_id
         else f"view:{view_id}:shared_observations"
     )
-    # 11,640.163299 CPU seconds for 30,000 physical frames, 5,616
-    # Cartesian features, and two canonical member observations per frame.
+    # 11,640.163299 CPU seconds for 30,000 projected physical frames, a
+    # 1,500-frame basis, 5,616 Cartesian features, and two canonical member
+    # observations per frame.  The TBA validation showed that treating basis
+    # fitting as free underestimated the global job by about threefold.  The
+    # retained empirical conversion makes one basis frame equivalent to 25
+    # projection frames, while keeping the two counts explicit for future
+    # multi-point calibration.
     feature_factor = max(0.1, (features / 5_616.0) ** 0.75)
-    rate = (11_640.163299 / 30_000.0) * feature_factor * (multiplier / 2.0)
+    basis_equivalent_projection_weight = 25.0
+    reference_equivalent_frames = 30_000 + (
+        basis_equivalent_projection_weight * 1_500
+    )
+    base_rate = 11_640.163299 / reference_equivalent_frames
+    rate = base_rate * feature_factor * (multiplier / 2.0)
+    basis_counts = _basis_physical_counts(project, source_counts)
+    basis_cpu_hours = (
+        base_rate
+        * basis_equivalent_projection_weight
+        * sum(basis_counts)
+        * feature_factor
+        * (multiplier / 2.0)
+        * time_safety_factor
+        / 3600.0
+    )
     technical_pilot = max(5, min(50, math.ceil(50 / feature_factor)))
     scientific = _scientific_task_contract(
         "common_pca", source_counts,
@@ -772,7 +811,14 @@ def _view_pca_task(
         "maximum_frames_per_replica": max(minimum, max(source_counts)),
         "maximum_frame_role": "all_source_frames_subject_to_campaign_resources",
         "cpu_seconds_per_physical_frame": rate * time_safety_factor,
-        "fixed_cpu_hours": 0.0,
+        "fixed_cpu_hours": basis_cpu_hours,
+        "basis_selected_physical_frames_per_replica": basis_counts,
+        "basis_selected_physical_frame_count": sum(basis_counts),
+        "basis_member_observation_count": sum(basis_counts) * multiplier,
+        "basis_equivalent_projection_weight": (
+            basis_equivalent_projection_weight
+        ),
+        "pca_workload_accounting": "basis_plus_projection_v1",
         "estimated_peak_memory_gib": max(
             2.0, min(32.0, 4.0 * feature_factor)
         ),
@@ -789,8 +835,45 @@ def _view_pca_task(
             "feature_exponent": 0.75,
             "reference_member_observation_multiplier": 2,
             "member_observation_multiplier": multiplier,
+            "reference_basis_selected_physical_frame_count": 1_500,
+            "reference_projection_selected_physical_frame_count": 30_000,
+            "basis_equivalent_projection_weight": (
+                basis_equivalent_projection_weight
+            ),
         },
     }
+
+
+def _basis_physical_counts(
+    project: Mapping[str, object], source_counts: Sequence[int]
+) -> List[int]:
+    """Return the fixed PCA basis-fit count for each physical replica."""
+
+    definitions = project.get("definitions")
+    common_pca = definitions.get("common_pca") if isinstance(definitions, dict) else None
+    if not isinstance(common_pca, dict):
+        raise CampaignPlanningError("view has no common_pca definition")
+    basis_stride = int(common_pca.get("frame_stride", 1))
+    selection = common_pca.get("frame_selection", {"mode": "fixed_stride_v1"})
+    if not isinstance(selection, dict):
+        raise CampaignPlanningError("PCA frame_selection is invalid")
+    mode = selection.get("mode")
+    if mode == "fixed_stride_v1":
+        stride = basis_stride
+    elif mode == "integer_stride_per_replica_v1":
+        if basis_stride != 1:
+            raise CampaignPlanningError(
+                "integer PCA basis selection requires frame_stride 1"
+            )
+        stride = int(selection["stride"])
+    else:
+        raise CampaignPlanningError(
+            "campaign planning requires an exact integer PCA basis stride"
+        )
+    return [
+        integer_stride_selected_count(int(value), stride)
+        for value in source_counts
+    ]
 
 
 def _projected_physical_counts(
@@ -1473,7 +1556,7 @@ def _view_tasks(
                     ),
                     "cpu_seconds_per_physical_frame": 0.0,
                     "fixed_cpu_hours": 0.0,
-                    "estimated_peak_memory_gib": 2.3 * 1.5,
+                    "estimated_peak_memory_gib": 4.0,
                     "priority_weight": float(model["priority"]),
                     "member_observation_multiplier": multiplier,
                     "balance_group": (
@@ -1481,7 +1564,7 @@ def _view_tasks(
                     ),
                     "replica_sampling_mode": "balanced_pooled",
                     "calibration_status": (
-                        "globally_coupled_provisional_family_scaling_v2"
+                        "completed_bundle_memory_linear_fit_v3"
                     ),
                     "calibration_id": str(model["calibration"]),
                     "power_law_cost_model": {
@@ -1490,11 +1573,20 @@ def _view_tasks(
                             (268.201244 / 6.0) * time_safety_factor / 3600.0
                         ),
                         "time_exponent": float(profile["time_exponent"]),
-                        "calibration_memory_gib": 2.3 * 1.5,
-                        "memory_exponent": min(
-                            2.0, float(profile["time_exponent"])
-                        ),
+                        # The algorithms run sequentially in one executable
+                        # bundle and reuse its large work arrays.  The completed
+                        # TBA bundle peaked at 27.0 GiB for 40,000 fit
+                        # observations; applying a quadratic memory exponent to
+                        # each algorithm separately produced 98--147 GiB
+                        # requests.  A conservative linear observation model is
+                        # used for bundle peak memory; runtime keeps the
+                        # algorithm-specific complexity exponent.
+                        "calibration_memory_gib": 4.0,
+                        "memory_exponent": 1.0,
                     },
+                    "execution_bundle_memory_policy": (
+                        "sequential_shared_buffers_linear_observation_v1"
+                    ),
                     "complexity_class": profile["complexity_class"],
                     "full_fit_only": full_fit_only,
                     "projection_source_counts_iteration_input": list(

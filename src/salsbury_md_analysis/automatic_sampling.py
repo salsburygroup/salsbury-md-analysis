@@ -338,10 +338,10 @@ CONCATENATED_SELECTION_MODULES = {
 # conspicuously labeled conservative proxy and should be recalibrated from the
 # first completed project-local pilot.  A 1.5 safety factor is applied later.
 RUNTIME_CALIBRATIONS: Tuple[RuntimeCalibration, ...] = (
-    RuntimeCalibration("structural_integrity_qc", 4.430551041687528, 0.0,
-                       "apollo-trex-chemical-qc-300of30k-20260813",
-                       "completed_300_timing_only_failed_qc_gates",
-                       "1,329.165 seconds for 300 uniformly distributed frames with all chemical-integrity checks evaluated; the trajectory failed omega and displacement gates, so this is runtime evidence only, not scientific validation"),
+    RuntimeCalibration("structural_integrity_qc", 51.47445170275944, 0.0,
+                       "apollo-tba-structural-qc-10k-20260829",
+                       "completed_10k_runtime_only",
+                       "91,519.266 seconds for 10,000 uniformly distributed frames on a 15,148-atom TBA campaign, normalized to the 85,199-atom reference by the structural-QC profile's linear atom scaling; runtime evidence only, not scientific validation"),
     RuntimeCalibration("replica_rmsd_rg", 0.347933, 0.0,
                        "apollo-trex-rmsd-rg-30k-20260812", "completed_30k",
                        "10,437.99 seconds for 30,000 frames"),
@@ -548,10 +548,26 @@ def _campaign_direct_resource_plan(
                 * float(execution.get("memory_safety_factor", 1.25)) / 1024.0,
             )
         memory_gib = max(1.0, reference_memory_gib * memory_atom_scale)
-        seconds_per_frame = (
-            float(measured["conservative_cpu_seconds_per_frame"])
-            if measured is not None else calibration.seconds_per_frame
-        )
+        seconds_per_frame = calibration.seconds_per_frame
+        calibration_source_policy = "built_in_completed_calibration"
+        if measured is not None:
+            measured_rate = float(
+                measured["conservative_cpu_seconds_per_frame"]
+            )
+            # A right-censored timeout is a lower bound, not a reason to
+            # discard a later completed calibration.  Completed catalog data
+            # remains authoritative when available; otherwise retain the
+            # larger of the completed built-in rate and the censored bound.
+            if int(measured["complete_measurement_count"]) > 0:
+                seconds_per_frame = measured_rate
+                calibration_source_policy = "completed_catalog_measurement"
+            else:
+                seconds_per_frame = max(
+                    calibration.seconds_per_frame, measured_rate
+                )
+                calibration_source_policy = (
+                    "completed_builtin_over_censored_catalog_lower_bound"
+                )
         calibration_id = (
             "measured-catalog:" + str(measured["catalog_sha256"]) + f":{module_id}"
             if measured is not None else calibration.calibration_id
@@ -560,6 +576,16 @@ def _campaign_direct_resource_plan(
             str(measured["calibration_evidence_status"])
             if measured is not None else calibration.evidence_level
         )
+        if calibration_source_policy == (
+            "completed_builtin_over_censored_catalog_lower_bound"
+        ):
+            calibration_id = (
+                f"{calibration.calibration_id}+censored-catalog:"
+                f"{measured['catalog_sha256']}:{module_id}"
+            )
+            calibration_status = (
+                "completed_builtin_with_censored_catalog_lower_bound"
+            )
         tasks.append({
             "task_id": f"direct:{module_id}",
             "module_id": module_id,
@@ -625,6 +651,7 @@ def _campaign_direct_resource_plan(
             "priority_weight": _CAMPAIGN_PRIORITY.get(module_id, 4.0),
             "calibration_status": calibration_status,
             "calibration_id": calibration_id,
+            "calibration_source_policy": calibration_source_policy,
             "calibration_selected_frame_coverage": (
                 int(measured["maximum_measured_selected_frame_count"])
                 if measured is not None else None

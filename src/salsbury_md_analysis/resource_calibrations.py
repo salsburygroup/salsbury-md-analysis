@@ -65,6 +65,15 @@ def _entry_from_sidecar(path: Path) -> Dict[str, object]:
     module_id = str(sidecar.get("module_id", "")).strip()
     if not module_id:
         raise ResourceCalibrationError(f"sidecar lacks module_id: {path}")
+    workload_fields = {
+        key: evidence.get(key)
+        for key in (
+            "basis_selected_physical_frames", "basis_member_observations",
+            "model_fit_observations", "model_fit_equivalent_physical_frames",
+            "full_assignment_observations", "silhouette_evaluation_observations",
+        )
+        if evidence.get(key) is not None
+    }
     return {
         "evidence_status": "complete_execution",
         "frame_coverage_status": "technically_complete",
@@ -79,9 +88,11 @@ def _entry_from_sidecar(path: Path) -> Dict[str, object]:
         "source_sidecar_sha256": _sha256(path),
         "source_report_path": str(report_path),
         "source_report_sha256": str(sidecar["report_sha256"]),
+        "source_report_size_bytes": sidecar.get("report_size_bytes"),
         "computer_hostname": resources.get("computer_hostname"),
         "platform": resources.get("platform"),
         "requested_cpu_count": resources.get("requested_cpu_count"),
+        **workload_fields,
     }
 
 
@@ -148,6 +159,44 @@ def _entry_from_timeout(path: Path) -> Dict[str, object]:
         "source_timeout_sha256": _sha256(path),
         "scientific_status": record.get("scientific_status", "not evaluated"),
     }
+
+
+def _conservative_affine_cpu_model(
+    complete_rows: Sequence[Mapping[str, object]],
+    timeout_rows: Sequence[Mapping[str, object]],
+    timeout_safety: float,
+) -> tuple[float, float]:
+    """Return a nonnegative affine envelope over completed/censored evidence."""
+
+    by_frames: Dict[int, float] = {}
+    for row in complete_rows:
+        frames = int(row["selected_source_physical_frames"])
+        by_frames[frames] = max(
+            by_frames.get(frames, 0.0), float(row["total_cpu_seconds"])
+        )
+    for row in timeout_rows:
+        frames = int(row["selected_source_physical_frames"])
+        by_frames[frames] = max(
+            by_frames.get(frames, 0.0),
+            float(row["total_cpu_seconds_lower_bound"]) * timeout_safety,
+        )
+    points = sorted(by_frames.items())
+    if not points:
+        return 0.0, 0.0
+    if len(points) == 1:
+        frames, cpu = points[0]
+        return 0.0, cpu / frames
+    positive_slopes = [
+        (right_cpu - left_cpu) / (right_frames - left_frames)
+        for (left_frames, left_cpu), (right_frames, right_cpu)
+        in zip(points, points[1:])
+        if right_cpu > left_cpu
+    ]
+    slope = max(positive_slopes, default=0.0)
+    if slope <= 0.0:
+        slope = max(cpu / frames for frames, cpu in points)
+    intercept = max(0.0, max(cpu - slope * frames for frames, cpu in points))
+    return intercept, slope
 
 
 def build_resource_calibration_catalog(
@@ -370,6 +419,9 @@ def load_resource_calibration_catalog(
         ]
         planning_rates = list(completed_rates)
         planning_rates.extend(rate * timeout_safety for rate in timeout_rates)
+        affine_fixed, affine_rate = _conservative_affine_cpu_model(
+            complete_rows, timeout_rows, timeout_safety
+        )
         memories = [
             float(row["maximum_resident_memory_mib"])
             for row in rows if row.get("maximum_resident_memory_mib") is not None
@@ -377,6 +429,8 @@ def load_resource_calibration_catalog(
         result[module_id] = {
             "module_id": module_id,
             "conservative_cpu_seconds_per_frame": max(planning_rates),
+            "conservative_fixed_cpu_seconds": affine_fixed,
+            "conservative_affine_cpu_seconds_per_frame": affine_rate,
             "maximum_completed_cpu_seconds_per_frame": (
                 max(completed_rates) if completed_rates else None
             ),
@@ -385,6 +439,15 @@ def load_resource_calibration_catalog(
             ),
             "censored_timeout_safety_factor": timeout_safety,
             "maximum_resident_memory_mib": max(memories) if memories else 0.0,
+            "maximum_source_report_size_bytes": max(
+                (
+                    int(row["source_report_size_bytes"])
+                    for row in rows
+                    if isinstance(row.get("source_report_size_bytes"), int)
+                    and not isinstance(row.get("source_report_size_bytes"), bool)
+                ),
+                default=0,
+            ),
             "maximum_measured_selected_frame_count": (
                 max(int(row["selected_source_physical_frames"]) for row in complete_rows)
                 if complete_rows else 0

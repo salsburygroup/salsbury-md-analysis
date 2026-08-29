@@ -131,6 +131,156 @@ def pack_resource_waves(
     return waves
 
 
+def pack_resource_lanes(
+    items: Sequence[Mapping[str, object]],
+    *,
+    maximum_parallel_cpus: int,
+    maximum_parallel_memory_gib: float,
+) -> list[Dict[str, object]]:
+    """Assign tasks to independent, aggregate-resource-bounded serial lanes.
+
+    One task may run at a time in each lane.  A lane therefore reserves the
+    maximum CPU and memory request of any task assigned to it, while its wall
+    estimate is the sum of its tasks.  The sum of the lane reservations never
+    exceeds the campaign caps.  Unlike whole-wave barriers, a slow task delays
+    only later work in its own lane; scientific prerequisites remain separate
+    task-level dependencies.
+
+    Input order is retained within every lane.  Callers must provide tasks in
+    dependency-safe order.
+    """
+
+    if maximum_parallel_cpus <= 0 or maximum_parallel_memory_gib <= 0.0:
+        raise ResourcePlanningError("resource-lane limits must be positive")
+    normalized: list[Dict[str, object]] = []
+    for index, item in enumerate(items):
+        item_id = str(item.get("item_id", f"item-{index}"))
+        cpus = int(item.get("cpu_slots", 1))
+        memory = float(item.get("memory_gib", 0.0))
+        wall = float(item.get("wall_hours", 0.0))
+        if cpus <= 0 or memory <= 0.0 or wall < 0.0:
+            raise ResourcePlanningError(
+                f"resource-lane item {item_id} has invalid resources"
+            )
+        if cpus > maximum_parallel_cpus:
+            raise ResourcePlanningError(
+                f"resource-lane item {item_id} requests {cpus} CPUs, exceeding "
+                f"the campaign limit {maximum_parallel_cpus}"
+            )
+        if memory > maximum_parallel_memory_gib + 1.0e-12:
+            raise ResourcePlanningError(
+                f"resource-lane item {item_id} requests {memory:g} GiB, "
+                f"exceeding the campaign limit {maximum_parallel_memory_gib:g} GiB"
+            )
+        normalized.append({
+            **dict(item),
+            "item_id": item_id,
+            "cpu_slots": cpus,
+            "memory_gib": memory,
+            "wall_hours": wall,
+            "_input_index": index,
+        })
+
+    # Establish lane envelopes with the largest requests first.  This prevents
+    # many small lanes from consuming aggregate capacity that a later large
+    # task needs.  Items are restored to caller order within each lane below.
+    ordered = sorted(
+        normalized,
+        key=lambda row: (
+            -float(row["memory_gib"]),
+            -int(row["cpu_slots"]),
+            -float(row["wall_hours"]),
+            str(row["item_id"]),
+        ),
+    )
+    lanes: list[Dict[str, object]] = []
+
+    def totals() -> tuple[int, float]:
+        return (
+            sum(int(lane["cpu_slots"]) for lane in lanes),
+            sum(float(lane["memory_gib"]) for lane in lanes),
+        )
+
+    for item in ordered:
+        total_cpu, total_memory = totals()
+        can_open = (
+            total_cpu + int(item["cpu_slots"]) <= maximum_parallel_cpus
+            and total_memory + float(item["memory_gib"])
+            <= maximum_parallel_memory_gib + 1.0e-12
+        )
+        candidates: list[tuple[float, float, int, Dict[str, object]]] = []
+        for lane in lanes:
+            new_cpu = max(int(lane["cpu_slots"]), int(item["cpu_slots"]))
+            new_memory = max(
+                float(lane["memory_gib"]), float(item["memory_gib"])
+            )
+            cpu_delta = new_cpu - int(lane["cpu_slots"])
+            memory_delta = new_memory - float(lane["memory_gib"])
+            if (
+                total_cpu + cpu_delta <= maximum_parallel_cpus
+                and total_memory + memory_delta
+                <= maximum_parallel_memory_gib + 1.0e-12
+            ):
+                candidates.append((
+                    float(lane["wall_hours"]) + float(item["wall_hours"]),
+                    memory_delta + float(cpu_delta),
+                    int(lane["lane_index"]),
+                    lane,
+                ))
+        # Prefer a new lane when it reduces the predicted makespan.  Otherwise
+        # grow the least-loaded compatible lane by the smallest reservation.
+        selected: Optional[Dict[str, object]] = None
+        if can_open:
+            existing_finish = min(
+                (candidate[0] for candidate in candidates), default=math.inf
+            )
+            if float(item["wall_hours"]) < existing_finish - 1.0e-12:
+                selected = {
+                    "lane_index": len(lanes),
+                    "cpu_slots": int(item["cpu_slots"]),
+                    "memory_gib": float(item["memory_gib"]),
+                    "wall_hours": 0.0,
+                    "items": [],
+                }
+                lanes.append(selected)
+        if selected is None:
+            if not candidates:
+                if not can_open:
+                    raise ResourcePlanningError(
+                        f"resource-lane item {item['item_id']} cannot be assigned "
+                        "within the aggregate CPU and memory caps"
+                    )
+                selected = {
+                    "lane_index": len(lanes),
+                    "cpu_slots": int(item["cpu_slots"]),
+                    "memory_gib": float(item["memory_gib"]),
+                    "wall_hours": 0.0,
+                    "items": [],
+                }
+                lanes.append(selected)
+            else:
+                selected = min(candidates, key=lambda value: value[:3])[3]
+                selected["cpu_slots"] = max(
+                    int(selected["cpu_slots"]), int(item["cpu_slots"])
+                )
+                selected["memory_gib"] = max(
+                    float(selected["memory_gib"]), float(item["memory_gib"])
+                )
+        selected["wall_hours"] = (
+            float(selected["wall_hours"]) + float(item["wall_hours"])
+        )
+        selected["items"].append(dict(item))  # type: ignore[union-attr]
+
+    for lane in lanes:
+        lane_items = sorted(
+            lane["items"], key=lambda row: int(row["_input_index"])
+        )
+        for row in lane_items:
+            row.pop("_input_index", None)
+        lane["items"] = lane_items
+    return lanes
+
+
 def _permissive_minimum_resource_request(
     *,
     request_scope: str,
@@ -150,7 +300,7 @@ def _permissive_minimum_resource_request(
 ) -> Dict[str, object]:
     """Describe a padded scheduler request for one modeled minimum schedule.
 
-    The request preserves the wave packing produced under the caller's CPU and
+    The request preserves the lane packing produced under the caller's CPU and
     aggregate-memory caps. It is intentionally a permissive execution floor,
     not a convergence or scientific-sufficiency claim.
     """
@@ -160,20 +310,27 @@ def _permissive_minimum_resource_request(
         - pilot_budget_fraction
         - finalization_headroom_fraction
     )
-    waves = [
-        wave
+    stage_lanes = [
+        [lane for lane in (
+            stage.get("resource_lanes", stage.get("resource_waves", []))
+            if isinstance(
+                stage.get("resource_lanes", stage.get("resource_waves", [])),
+                list,
+            ) else []
+        ) if isinstance(lane, Mapping)]
         for stage in minimum_stages
-        for wave in (
-            stage.get("resource_waves", [])
-            if isinstance(stage.get("resource_waves"), list) else []
-        )
-        if isinstance(wave, Mapping)
     ]
+    lanes = [lane for stage in stage_lanes for lane in stage]
     parallel_cpus = max(
-        (int(wave.get("cpu_slots", 0)) for wave in waves), default=0
+        (sum(int(lane.get("cpu_slots", 0)) for lane in stage) for stage in stage_lanes),
+        default=0,
     )
     aggregate_memory = max(
-        (float(wave.get("memory_gib", 0.0)) for wave in waves), default=0.0
+        (
+            sum(float(lane.get("memory_gib", 0.0)) for lane in stage)
+            for stage in stage_lanes
+        ),
+        default=0.0,
     )
     exact_requested_wall = (
         float(minimum_wall_hours) / science_wall_fraction
@@ -186,7 +343,7 @@ def _permissive_minimum_resource_request(
     )
     resource_schedule_available = (
         minimum_wall_hours is not None
-        and bool(waves)
+        and bool(lanes)
         and parallel_cpus <= maximum_parallel_cpus
         and aggregate_memory <= maximum_memory_gib + 1.0e-12
         and minimum_single_task_memory_gib <= maximum_memory_gib + 1.0e-12
@@ -249,7 +406,7 @@ def _permissive_minimum_resource_request(
             ),
         },
         "interpretation": (
-            "CPU and memory preserve the modeled minimum resource-wave schedule "
+            "CPU and memory preserve the modeled minimum resource-lane schedule "
             "under the supplied caps. Wall time reverses the configured campaign "
             "utilization and pilot/finalization reserves, then rounds up to a "
             "whole scheduler hour."
@@ -1015,7 +1172,7 @@ def plan_campaign_resource_budget(
                 ),
                 "wall_hours": bundle_walls[bundle_id],
             })
-        resource_waves = pack_resource_waves(
+        resource_lanes = pack_resource_lanes(
             bundle_resources,
             maximum_parallel_cpus=maximum_parallel_cpus,
             maximum_parallel_memory_gib=memory_gib,
@@ -1025,8 +1182,9 @@ def plan_campaign_resource_budget(
             stage_cpu_hours / maximum_parallel_cpus,
             longest,
         )
-        packed_wall = sum(
-            float(wave["wall_hours"]) for wave in resource_waves
+        packed_wall = max(
+            (float(lane["wall_hours"]) for lane in resource_lanes),
+            default=0.0,
         )
         useful = sum(
             max(int(row["effective_cpu_cap"]) for row in bundle_rows)
@@ -1040,8 +1198,13 @@ def plan_campaign_resource_budget(
             "maximum_useful_parallel_cpus": useful,
             "planned_parallel_cpus": min(maximum_parallel_cpus, useful),
             "estimated_wall_hours_lower_bound": lower_bound,
+            "estimated_wall_hours_with_resource_lanes": packed_wall,
+            # Compatibility fields retain the old name while carrying the new
+            # non-convoy lane schedule.  New consumers should use
+            # resource_lanes and estimated_wall_hours_with_resource_lanes.
             "estimated_wall_hours_with_resource_waves": packed_wall,
-            "resource_waves": resource_waves,
+            "resource_lanes": resource_lanes,
+            "resource_waves": resource_lanes,
             "task_ids": [str(row["task_id"]) for row in rows],
             "execution_bundle_wall_hours": bundle_walls,
         }
@@ -1059,7 +1222,7 @@ def plan_campaign_resource_budget(
                 stage_report = schedule_stage(stage, selection, costs)
                 stages.append(stage_report)
                 total_wall += float(
-                    stage_report["estimated_wall_hours_with_resource_waves"]
+                    stage_report["estimated_wall_hours_with_resource_lanes"]
                 )
         except ResourcePlanningError:
             return None, []
@@ -1388,6 +1551,14 @@ def plan_campaign_resource_budget(
             **row,
             "selected_physical_frames_per_replica": counts,
             "selected_physical_frame_count": physical_count,
+            **({
+                "projection_selected_physical_frames_per_replica": counts,
+                "projection_selected_physical_frame_count": physical_count,
+                "projection_member_observation_count": (
+                    physical_count
+                    * int(row["member_observation_multiplier"])
+                ),
+            } if row.get("module_id") == "common_pca" else {}),
             "selected_member_observation_count": (
                 physical_count * int(row["member_observation_multiplier"])
             ),
