@@ -23,7 +23,10 @@ class ExecutionResourceError(ValueError):
     """Raised when execution evidence is missing or malformed."""
 
 
-_REPORTING_ONLY_MODULES = frozenset({"integrated_comparison"})
+_REPORTING_ONLY_MODULES = frozenset({
+    "integrated_comparison",
+    "rmsf_permutation_inference",
+})
 
 
 def _maximum_rss_mib(raw: float) -> float:
@@ -705,6 +708,10 @@ def summarize_execution_resources(root: Path) -> Dict[str, object]:
                     f"analysis report is not technically complete: {path}"
                 )
             module_id = report.get("module_id")
+            # These reports are created by the reporting layer rather than an
+            # instrumented analysis worker. Their source analyses remain in the
+            # table; counting the derived reporting artifacts as measured jobs
+            # would misstate both resources and frame coverage.
             if module_id in _REPORTING_ONLY_MODULES:
                 continue
             resources = report.get("execution_resources")
