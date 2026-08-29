@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import gzip
+import hashlib
+import json
 import math
+import os
+import time
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -55,7 +60,7 @@ _REQUIRED_THRESHOLDS = {
 _ALLOWED_THRESHOLDS = _REQUIRED_THRESHOLDS | {
     "maximum_frame_atom_displacement_angstrom",
     "frame_displacement_selection",
-    "chemical_integrity", "frame_selection",
+    "chemical_integrity", "frame_selection", "checkpointing",
 }
 class StructuralQCError(ValueError):
     """Raised when structural-QC configuration cannot be interpreted safely."""
@@ -171,6 +176,23 @@ def _thresholds(project: Mapping[str, object]) -> Dict[str, object]:
             "allow_cis_proline": chemical["allow_cis_proline"],
             "declared_covalent_links": normalized_links,
         }
+    checkpointing = raw.get("checkpointing", {
+        "enabled": True,
+        "within_segment_interval_seconds": 7200.0,
+    })
+    if not isinstance(checkpointing, dict) or set(checkpointing) != {
+        "enabled", "within_segment_interval_seconds"
+    }:
+        raise StructuralQCError(
+            "checkpointing must contain exactly enabled and "
+            "within_segment_interval_seconds"
+        )
+    if not isinstance(checkpointing["enabled"], bool):
+        raise StructuralQCError("checkpointing.enabled must be boolean")
+    checkpoint_interval = _positive_number(
+        checkpointing["within_segment_interval_seconds"],
+        "checkpointing.within_segment_interval_seconds",
+    )
     return {
         "near_coincident_distance_angstrom": _positive_number(
             raw["near_coincident_distance_angstrom"],
@@ -190,7 +212,125 @@ def _thresholds(project: Mapping[str, object]) -> Dict[str, object]:
             error_type=StructuralQCError,
         ),
         "chemical_integrity": chemical,
+        "checkpointing": {
+            "enabled": checkpointing["enabled"],
+            "within_segment_interval_seconds": checkpoint_interval,
+            "segment_completion_checkpoints": True,
+        },
     }
+
+
+def _checkpoint_payload_bytes(payload: Mapping[str, object]) -> bytes:
+    return json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def _package_source_signature_sha256() -> str:
+    """Conservatively invalidate checkpoints after any package-code change."""
+
+    package_root = Path(__file__).resolve().parent
+    digest = hashlib.sha256()
+    try:
+        for source in sorted(package_root.glob("*.py"), key=lambda path: path.name):
+            digest.update(source.name.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(source.read_bytes())
+            digest.update(b"\0")
+    except OSError as exc:
+        raise StructuralQCError(
+            f"structural-QC package source identity could not be read: {exc}"
+        ) from exc
+    return digest.hexdigest()
+
+
+def _input_inventory_signature_sha256(inventory: Mapping[str, object]) -> str:
+    """Identify the declared files without forcing a second full trajectory read."""
+
+    entries = inventory.get("entries")
+    if not isinstance(entries, list):
+        raise StructuralQCError("input inventory entries are unavailable")
+    normalized = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise StructuralQCError("input inventory contains an invalid entry")
+        normalized.append({
+            "role": entry.get("role"),
+            "system_id": entry.get("system_id"),
+            "replica_id": entry.get("replica_id"),
+            "segment_id": entry.get("segment_id"),
+            "resolved_path": entry.get("resolved_path"),
+            "size_bytes": entry.get("size_bytes"),
+            "modified_utc": entry.get("modified_utc"),
+            "sha256": entry.get("sha256"),
+        })
+    return hashlib.sha256(
+        _checkpoint_payload_bytes({"entries": normalized})
+    ).hexdigest()
+
+
+def _checkpoint_path(
+    checkpoint_root: Path, system_id: str, replica_id: str, segment_id: str,
+) -> Path:
+    identity = hashlib.sha256(
+        (system_id + "\0" + replica_id + "\0" + segment_id).encode("utf-8")
+    ).hexdigest()[:20]
+    return checkpoint_root / f"segment-{identity}.json.gz"
+
+
+def _write_structural_qc_checkpoint(
+    path: Path, identity: str, payload: Mapping[str, object],
+) -> None:
+    body = dict(payload)
+    encoded = _checkpoint_payload_bytes(body)
+    wrapper = {
+        "schema": "structural_qc_checkpoint_v1",
+        "checkpoint_identity": identity,
+        "payload_sha256": hashlib.sha256(encoded).hexdigest(),
+        "payload": body,
+    }
+    serialized = _checkpoint_payload_bytes(wrapper)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + f".tmp.{os.getpid()}")
+    try:
+        with temporary.open("wb") as raw:
+            with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as compressed:
+                compressed.write(serialized)
+            raw.flush()
+            os.fsync(raw.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _load_structural_qc_checkpoint(
+    path: Path, identity: str,
+) -> Optional[Dict[str, object]]:
+    if not path.exists():
+        return None
+    try:
+        with gzip.open(path, "rb") as handle:
+            wrapper = json.loads(handle.read().decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise StructuralQCError(f"structural-QC checkpoint is unreadable: {exc}") from exc
+    if (
+        not isinstance(wrapper, dict)
+        or wrapper.get("schema") != "structural_qc_checkpoint_v1"
+        or wrapper.get("checkpoint_identity") != identity
+        or not isinstance(wrapper.get("payload"), dict)
+    ):
+        raise StructuralQCError(
+            "structural-QC checkpoint identity or schema does not match"
+        )
+    payload = wrapper["payload"]
+    encoded = _checkpoint_payload_bytes(payload)
+    if wrapper.get("payload_sha256") != hashlib.sha256(encoded).hexdigest():
+        raise StructuralQCError("structural-QC checkpoint payload hash does not match")
+    return payload
 
 
 def _near_coincident_pairs(
@@ -298,6 +438,36 @@ def structural_qc_project(
     time_unit = str(units["time"])
     system_path = Path(str(context["system_manifest_path"]))
     system_manifest = load_json(system_path)
+    checkpointing = thresholds["checkpointing"]
+    assert isinstance(checkpointing, dict)
+    inventory = context["input_inventory"]
+    assert isinstance(inventory, dict)
+    checkpoint_identity = hashlib.sha256(
+        _checkpoint_payload_bytes({
+            "project_manifest_sha256": context["project_manifest_sha256"],
+            "system_manifest_sha256": context["system_manifest_sha256"],
+            "input_content_signature_sha256": context[
+                "input_content_signature_sha256"
+            ],
+            "input_inventory_signature_sha256": (
+                _input_inventory_signature_sha256(inventory)
+            ),
+            "package_source_signature_sha256": (
+                _package_source_signature_sha256()
+            ),
+        })
+    ).hexdigest()
+    checkpoint_root: Optional[Path] = None
+    if bool(checkpointing["enabled"]):
+        output_value = project.get("analysis_output_root")
+        if not isinstance(output_value, str) or not output_value.strip():
+            raise StructuralQCError(
+                "analysis_output_root is required when structural-QC checkpointing is enabled"
+            )
+        checkpoint_root = (
+            resolve_manifest_path(output_value, project_source)
+            / "structural-qc" / "checkpoints" / checkpoint_identity
+        )
     frame_selection_plan, frame_selection_report = plan_frame_selection(
         system_manifest,
         system_path,
@@ -307,8 +477,6 @@ def structural_qc_project(
         error_type=StructuralQCError,
     )
 
-    inventory = context["input_inventory"]
-    assert isinstance(inventory, dict)
     inventory_entries = inventory["entries"]
     assert isinstance(inventory_entries, list)
     inventory_by_path = {
@@ -442,6 +610,54 @@ def structural_qc_project(
                 selected_indices = frame_selection_plan[
                     (system_id, replica_id, segment_id)
                 ]
+                checkpoint_file = (
+                    _checkpoint_path(
+                        checkpoint_root, system_id, replica_id, segment_id
+                    )
+                    if checkpoint_root is not None else None
+                )
+                checkpoint = (
+                    _load_structural_qc_checkpoint(
+                        checkpoint_file, checkpoint_identity
+                    )
+                    if checkpoint_file is not None else None
+                )
+                if checkpoint is not None:
+                    if (
+                        checkpoint.get("location") != location
+                        or checkpoint.get("source_frame_count") != source_frames
+                    ):
+                        raise StructuralQCError(
+                            f"structural-QC checkpoint does not match {location}"
+                        )
+                    checkpoint_status = checkpoint.get("status")
+                    if checkpoint_status == "complete":
+                        report_value = checkpoint.get("segment_report")
+                        issue_value = checkpoint.get("issues")
+                        processor_value = checkpoint.get("processor_state")
+                        if (
+                            not isinstance(report_value, dict)
+                            or not isinstance(issue_value, list)
+                            or not isinstance(processor_value, dict)
+                            or processor is None
+                        ):
+                            raise StructuralQCError(
+                                f"completed structural-QC checkpoint is invalid for {location}"
+                            )
+                        try:
+                            processor.restore_checkpoint_state(processor_value)
+                        except PeriodicReconstructionError as exc:
+                            raise StructuralQCError(
+                                f"completed structural-QC checkpoint has invalid "
+                                f"periodic state for {location}: {exc}"
+                            ) from exc
+                        issues.extend(issue_value)
+                        segment_reports.append(report_value)
+                        continue
+                    if checkpoint_status != "in_progress":
+                        raise StructuralQCError(
+                            f"structural-QC checkpoint status is invalid for {location}"
+                        )
                 decoded_frames = 0
                 evaluated_frames = 0
                 periodic_cell_frames = 0
@@ -473,32 +689,179 @@ def structural_qc_project(
                 previous_displacement_coordinates: Optional[
                     Sequence[Tuple[float, float, float]]
                 ] = None
+                last_decoded_frame_index = -1
+                segment_issue_start = len(issues)
+                if checkpoint is not None:
+                    state = checkpoint.get("segment_state")
+                    processor_value = checkpoint.get("processor_state")
+                    issue_value = checkpoint.get("issues")
+                    if (
+                        not isinstance(state, dict)
+                        or not isinstance(processor_value, dict)
+                        or not isinstance(issue_value, list)
+                        or processor is None
+                    ):
+                        raise StructuralQCError(
+                            f"in-progress structural-QC checkpoint is invalid for {location}"
+                        )
+                    try:
+                        decoded_frames = int(state["decoded_frames"])
+                        evaluated_frames = int(state["evaluated_frames"])
+                        periodic_cell_frames = int(state["periodic_cell_frames"])
+                        maximum_absolute_coordinate = float(
+                            state["maximum_absolute_coordinate"]
+                        )
+                        maximum_frame_displacement = state[
+                            "maximum_frame_displacement"
+                        ]
+                        if maximum_frame_displacement is not None:
+                            maximum_frame_displacement = float(
+                                maximum_frame_displacement
+                            )
+                        total_near_pairs = int(state["total_near_pairs"])
+                        maximum_near_pairs = int(state["maximum_near_pairs"])
+                        minimum_near_distance = state["minimum_near_distance"]
+                        if minimum_near_distance is not None:
+                            minimum_near_distance = float(minimum_near_distance)
+                        near_pair_examples = list(state["near_pair_examples"])
+                        chemical_frame_count = int(state["chemical_frame_count"])
+                        chemical_totals = {
+                            str(key): int(value)
+                            for key, value in dict(state["chemical_totals"]).items()
+                        }
+                        chemical_examples = {
+                            str(key): list(value)
+                            for key, value in dict(state["chemical_examples"]).items()
+                        }
+                        source_units = set(state["source_units"])
+                        first_evaluated_time = state["first_evaluated_time"]
+                        last_evaluated_time = state["last_evaluated_time"]
+                        last_decoded_frame_index = int(
+                            state["last_decoded_frame_index"]
+                        )
+                        previous_value = state[
+                            "previous_displacement_coordinates"
+                        ]
+                        previous_displacement_coordinates = (
+                            tuple(
+                                tuple(float(coordinate) for coordinate in point)
+                                for point in previous_value
+                            )
+                            if previous_value is not None else None
+                        )
+                    except (KeyError, TypeError, ValueError) as exc:
+                        raise StructuralQCError(
+                            f"in-progress structural-QC checkpoint state is invalid for {location}"
+                        ) from exc
+                    if (
+                        decoded_frames < 0 or evaluated_frames < 0
+                        or last_decoded_frame_index < 0
+                        or last_decoded_frame_index >= source_frames
+                    ):
+                        raise StructuralQCError(
+                            f"in-progress structural-QC checkpoint range is invalid for {location}"
+                        )
+                    try:
+                        processor.restore_checkpoint_state(processor_value)
+                    except PeriodicReconstructionError as exc:
+                        raise StructuralQCError(
+                            f"in-progress structural-QC checkpoint has invalid "
+                            f"periodic state for {location}: {exc}"
+                        ) from exc
+                    issues.extend(issue_value)
+                elif processor is not None:
+                    processor.begin_segment(
+                        bool(segment.get("continuous_with_previous", False))
+                    )
+
+                def save_checkpoint(
+                    status: str, segment_report: Optional[Dict[str, object]] = None,
+                ) -> None:
+                    if checkpoint_file is None or processor is None:
+                        return
+                    previous_value = (
+                        [list(point) for point in previous_displacement_coordinates]
+                        if previous_displacement_coordinates is not None else None
+                    )
+                    payload: Dict[str, object] = {
+                        "status": status,
+                        "location": location,
+                        "source_frame_count": source_frames,
+                        "processor_state": processor.checkpoint_state(),
+                        "issues": issues[segment_issue_start:],
+                        "segment_report": segment_report,
+                        "segment_state": {
+                            "decoded_frames": decoded_frames,
+                            "evaluated_frames": evaluated_frames,
+                            "periodic_cell_frames": periodic_cell_frames,
+                            "maximum_absolute_coordinate": maximum_absolute_coordinate,
+                            "maximum_frame_displacement": maximum_frame_displacement,
+                            "total_near_pairs": total_near_pairs,
+                            "maximum_near_pairs": maximum_near_pairs,
+                            "minimum_near_distance": minimum_near_distance,
+                            "near_pair_examples": near_pair_examples,
+                            "chemical_frame_count": chemical_frame_count,
+                            "chemical_totals": chemical_totals,
+                            "chemical_examples": chemical_examples,
+                            "source_units": sorted(source_units),
+                            "first_evaluated_time": first_evaluated_time,
+                            "last_evaluated_time": last_evaluated_time,
+                            "last_decoded_frame_index": last_decoded_frame_index,
+                            "previous_displacement_coordinates": previous_value,
+                        },
+                    }
+                    _write_structural_qc_checkpoint(
+                        checkpoint_file, checkpoint_identity, payload
+                    )
+
+                checkpoint_clock = time.monotonic()
+
+                def save_timed_checkpoint_if_due() -> None:
+                    nonlocal checkpoint_clock
+                    if checkpoint_file is None:
+                        return
+                    now = time.monotonic()
+                    if now - checkpoint_clock >= float(
+                        checkpointing["within_segment_interval_seconds"]
+                    ):
+                        save_checkpoint("in_progress")
+                        checkpoint_clock = now
+
                 try:
                     if processor is None:
                         raise PeriodicReconstructionError(
                             "periodic frame processor could not be initialized"
                         )
-                    processor.begin_segment(
-                        bool(segment.get("continuous_with_previous", False))
+                    reader_indices = reader_frame_indices(
+                        selected_indices,
+                        str(contract["periodic_coordinate_policy"]),
                     )
+                    if last_decoded_frame_index >= 0:
+                        remaining = set(
+                            range(last_decoded_frame_index + 1, source_frames)
+                        )
+                        reader_indices = (
+                            remaining
+                            if reader_indices is None
+                            else set(reader_indices).intersection(remaining)
+                        )
                     frames = iter_coordinate_frames(
                         trajectory_path,
                         declared_coordinate_unit,
-                        reader_frame_indices(
-                            selected_indices,
-                            str(contract["periodic_coordinate_policy"]),
-                        ),
+                        reader_indices,
                     )
                     for raw_frame in frames:
                         frame = processor.process(
                             raw_frame, f"{location}/frame-{raw_frame.frame_index}"
                         )
                         decoded_frames += 1
+                        last_decoded_frame_index = int(frame.frame_index)
                         if not frame_selected(
                             frame.frame_index,
                             selected_indices,
                             int(thresholds["frame_stride"]),
                         ):
+                            save_timed_checkpoint_if_due()
                             continue
                         source_units.add(frame.source_unit)
                         if frame.periodic_cell_present:
@@ -651,6 +1014,7 @@ def structural_qc_project(
                                     "warning", "STERIC_CLASH_THRESHOLD_EXCEEDED", f"{location}/frame-{frame.frame_index}",
                                     f"found {clash_count} inter-residue element-radius clashes; allowed maximum is {maximum_clashes}",
                                 ))
+                        save_timed_checkpoint_if_due()
                     if decoded_frames == 0:
                         issues.append(issue_record(
                             "error", "NO_COORDINATE_FRAMES", location,
@@ -665,7 +1029,7 @@ def structural_qc_project(
                     ))
 
                 inventory_record = inventory_by_path.get(str(trajectory_path), {})
-                segment_reports.append({
+                segment_report = {
                     "segment_id": segment_id,
                     "trajectory_path": str(trajectory_path),
                     "trajectory_format": (
@@ -713,7 +1077,9 @@ def structural_qc_project(
                     "chemical_connectivity": chemical_connectivity,
                     "chemical_integrity_totals": chemical_totals,
                     "chemical_integrity_examples": chemical_examples,
-                })
+                }
+                save_checkpoint("complete", segment_report)
+                segment_reports.append(segment_report)
             replica_reports.append({
                 "replica_id": replica_id,
                 "topology_path": str(topology_path),
@@ -757,6 +1123,14 @@ def structural_qc_project(
         "input_content_signature_sha256": context["input_content_signature_sha256"],
         "content_hashes_included": hash_content,
         "thresholds": thresholds,
+        "checkpointing": {
+            "enabled": checkpoint_root is not None,
+            "within_segment_interval_seconds": checkpointing[
+                "within_segment_interval_seconds"
+            ],
+            "segment_completion_checkpoints": True,
+            "checkpoint_identity": checkpoint_identity,
+        },
         "frame_selection": frame_selection_report,
         "periodic_coordinate_policy": contract["periodic_coordinate_policy"],
         "time_unit": time_unit,
