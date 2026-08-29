@@ -720,19 +720,21 @@ def _tier_parallelism(counts: Sequence[int], cap: int) -> List[int]:
     return allocations
 
 
-def _append_afterok_dependencies(options: str, variables: Sequence[str]) -> str:
+def _append_afterany_dependencies(options: str, variables: Sequence[str]) -> str:
     if not variables:
         return options
     suffix = ":".join(f"${{{variable}}}" for variable in variables)
-    pattern = r'--dependency="afterok:([^"]*)"'
+    pattern = r'--dependency="([^"]*)"'
     if re.search(pattern, options):
         return re.sub(
             pattern,
-            lambda match: f'--dependency="afterok:{match.group(1)}:{suffix}"',
+            lambda match: (
+                f'--dependency="{match.group(1)},afterany:{suffix}"'
+            ),
             options,
             count=1,
         )
-    return f'{options} --dependency="afterok:{suffix}"'
+    return f'{options} --dependency="afterany:{suffix}"'
 
 
 def _split_tiered_array_submissions(
@@ -786,7 +788,7 @@ def _split_tiered_array_submissions(
                     wave_width = 0
                     wave_index += 1
                 tier_variable = f"{variable}_TIER_{tier_index}"
-                tier_options = _append_afterok_dependencies(options, previous_wave)
+                tier_options = _append_afterany_dependencies(options, previous_wave)
                 scheduler_options = [
                     tier_options,
                     f"--array={tier['array_expression']}%{parallelism}",
@@ -1145,7 +1147,7 @@ def _render_resource_bounded_submit(
                     options.append('--dependency="' + ",".join(clauses) + '"')
             elif previous_jobs:
                 options.append(
-                    '--dependency="afterok:'
+                    '--dependency="afterany:'
                     + ":".join(f"${{{name}}}" for name in previous_jobs)
                     + '"'
                 )
@@ -1330,8 +1332,8 @@ def apply_slurm_profile(
             "within campaign CPU "
             "and safety-adjusted memory limits"
             if execution_plan.get("dependency_model") == "task_dag_v1" else
-            "tasks in one wave may run concurrently; every later wave depends "
-            "afterok on every job in the preceding wave, and each wave stays "
+            "tasks in one wave may run concurrently; every later wave waits "
+            "afterany for every job in the preceding wave, and each wave stays "
             "within both campaign CPU and safety-adjusted memory limits"
         ),
         "large_memory_routing": (

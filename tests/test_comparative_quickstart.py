@@ -693,13 +693,13 @@ class ComparativeQuickstartTests(unittest.TestCase):
             self.assertTrue(workflow["coordinate_cache"]["enabled"])
             self.assertEqual(workflow["coordinate_cache"]["worker_processes"], 6)
             self.assertTrue((output / "run_coordinate_cache.slurm").is_file())
-            self.assertIn(
+            self.assertNotIn(
                 '--dependency="afterok:$CACHE_JOB"', main_submit
             )
             view_submit = (output / "submit-conformational-views.sh").read_text()
             self.assertIn("--array=0-0%1", view_submit)
             self.assertIn(
-                "afterok:$SYSTEM_PREFLIGHT_0_JOB:$SYSTEM_PREFLIGHT_1_JOB:"
+                "afterany:$SYSTEM_PREFLIGHT_0_JOB:$SYSTEM_PREFLIGHT_1_JOB:"
                 "$SYSTEM_PREFLIGHT_2_JOB",
                 view_submit,
             )
