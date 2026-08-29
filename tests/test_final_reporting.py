@@ -102,19 +102,66 @@ class FinalReportingTests(unittest.TestCase):
                 "technical_status": "complete",
                 "systems": systems,
             }), encoding="utf-8")
+            standard_report = prioritize_findings(root)
+            self.assertEqual(standard_report["headline_count"], 10)
+            self.assertEqual(standard_report["secondary_count"], 40)
+            self.assertEqual(standard_report["reported_count"], 50)
+            self.assertEqual(
+                standard_report["additional_candidate_count"], 160
+            )
+            self.assertEqual(
+                standard_report["searchable_candidate_count"], 210
+            )
+            self.assertEqual(
+                standard_report["presentation_contract"]["status"],
+                "satisfied",
+            )
+            self.assertEqual(
+                standard_report["presentation_contract"][
+                    "headline_selection"
+                ],
+                "bh_significance_at_boundary",
+            )
+            self.assertEqual(len(standard_report["all_candidates"]), 210)
+            persisted = json.loads(
+                (root / "prioritized_findings.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(persisted["all_candidates"]), 210)
+            self.assertEqual(
+                len((root / "prioritized_findings.csv").read_text(
+                    encoding="utf-8"
+                ).splitlines()),
+                211,
+            )
+
+            (root / "analysis-config.json").write_text(json.dumps({
+                "reporting": {
+                    "minimum_headline_findings": 10,
+                    "headline_findings": 10,
+                    "maximum_findings": 50,
+                },
+            }), encoding="utf-8")
+            ten_headline_report = prioritize_findings(root)
+            self.assertEqual(ten_headline_report["headline_count"], 10)
+            self.assertEqual(ten_headline_report["secondary_count"], 40)
+            self.assertEqual(
+                ten_headline_report["presentation_contract"]["status"],
+                "satisfied",
+            )
+
             report = prioritize_findings(root, maximum_findings=500)
             self.assertEqual(report["scientific_status"], "not evaluated")
-            self.assertEqual(report["headline_count"], 12)
-            self.assertEqual(report["secondary_count"], 198)
+            self.assertEqual(report["headline_count"], 10)
+            self.assertEqual(report["secondary_count"], 200)
             self.assertEqual(report["searchable_candidate_count"], 210)
             self.assertEqual(len(report["all_candidates"]), 210)
             self.assertTrue(all(
                 row["presentation_tier"] == "headline"
-                for row in report["all_candidates"][:12]
+                for row in report["all_candidates"][:10]
             ))
             self.assertTrue(all(
                 row["presentation_tier"] == "secondary"
-                for row in report["all_candidates"][12:]
+                for row in report["all_candidates"][10:]
             ))
             pairwise = [
                 row for row in report["findings"]
@@ -137,6 +184,47 @@ class FinalReportingTests(unittest.TestCase):
             ]
             self.assertEqual(len(reference_pairs), 19)
             self.assertTrue(all("variant-00" in row["system_ids"] for row in reference_pairs))
+
+    def test_picker_uses_supported_significance_to_choose_ten_to_twelve_headlines(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report_path = root / "results" / "observables" / "report.json"
+            report_path.parent.mkdir(parents=True)
+
+            def write(significant_count):
+                report_path.write_text(json.dumps({
+                    "module_id": "optional_observables",
+                    "technical_status": "complete",
+                    "finding_candidates": [
+                        {
+                            "category": "other_physical",
+                            "statement": f"Candidate {index:02d}",
+                            "effect_value": float(60 - index),
+                            "p_value": (
+                                0.001 if index < significant_count else None
+                            ),
+                            "evidence_level": "inferential",
+                            "comparison_family": "fixture:headline_boundary",
+                        }
+                        for index in range(60)
+                    ],
+                }), encoding="utf-8")
+
+            for significant_count, expected_headlines in (
+                (0, 10), (11, 11), (12, 12)
+            ):
+                write(significant_count)
+                report = prioritize_findings(root)
+                self.assertEqual(report["headline_count"], expected_headlines)
+                self.assertEqual(
+                    report["secondary_count"], 50 - expected_headlines
+                )
+                self.assertEqual(report["searchable_candidate_count"], 60)
+                self.assertEqual(report["additional_candidate_count"], 10)
+                self.assertEqual(
+                    report["presentation_contract"]["selected_headline_count"],
+                    expected_headlines,
+                )
 
     def test_picker_names_residue_and_interaction_level_findings(self):
         with tempfile.TemporaryDirectory() as temporary:
