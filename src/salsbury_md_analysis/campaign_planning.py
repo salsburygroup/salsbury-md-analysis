@@ -513,6 +513,9 @@ def _automatic_context_tasks(
             frame_intervals_ns_per_replica=frame_intervals_ns_per_replica,
             source_time_spans_ns_per_replica=source_time_spans_ns_per_replica,
         )
+        materialized_working_set_gib = float(
+            model.get("minimum_materialized_working_set_gib", 0.0)
+        )
         tasks.append({
             "task_id": f"{resolved_task_namespace}:{module}",
             "workflow_id": resolved_context_id,
@@ -531,7 +534,17 @@ def _automatic_context_tasks(
                 float(model["seconds_per_frame"]) * time_safety_factor
             ),
             "fixed_cpu_hours": 0.0,
-            "estimated_peak_memory_gib": float(model["memory_gib"]),
+            "estimated_peak_memory_gib": max(
+                float(model["memory_gib"]), materialized_working_set_gib
+            ),
+            **({
+                "minimum_materialized_working_set_gib": (
+                    materialized_working_set_gib
+                ),
+                "memory_cost_basis": (
+                    "fixed_upstream_artifact_materialization_floor"
+                ),
+            } if materialized_working_set_gib > 0.0 else {}),
             "priority_weight": float(model["priority"]),
             "member_observation_multiplier": 1,
             "balance_group": balance_group,
