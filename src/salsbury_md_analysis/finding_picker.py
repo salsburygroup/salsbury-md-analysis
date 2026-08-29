@@ -2314,16 +2314,17 @@ def prioritize_findings(
             reporting_config.get("maximum_findings", 50)
             if isinstance(reporting_config, dict) else 50
         )
+    headline_override_supplied = headline_findings is not None
     if headline_findings is None:
-        headline_findings = int(
+        headline_findings = min(maximum_findings, int(
             reporting_config.get("headline_findings", 12)
             if isinstance(reporting_config, dict) else 12
-        )
+        ))
     if maximum_findings < 1:
         raise FindingPickerError("maximum_findings must be positive")
     if headline_findings < 1:
         raise FindingPickerError("headline_findings must be positive")
-    if headline_findings > maximum_findings:
+    if headline_override_supplied and headline_findings > maximum_findings:
         raise FindingPickerError(
             "headline_findings cannot exceed maximum_findings"
         )
