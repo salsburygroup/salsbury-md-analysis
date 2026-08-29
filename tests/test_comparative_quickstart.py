@@ -93,6 +93,20 @@ class ComparativeQuickstartTests(unittest.TestCase):
             self.assertIn(
                 "SALSBURY_MD_ANALYSIS_TRAJECTORY_FEATURES_REPORT", stage_one
             )
+            self.assertIn(
+                "Validated cache unavailable for trajectory_features; recomputing",
+                stage_one,
+            )
+            self.assertIn(
+                "unset SALSBURY_MD_ANALYSIS_TRAJECTORY_FEATURES_REPORT",
+                stage_one,
+            )
+            for filename in generated:
+                syntax = subprocess.run(
+                    ["bash", "-n", str(root / filename)],
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(syntax.returncode, 0, syntax.stderr)
 
     def test_per_system_conformational_branches_can_be_disabled(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -527,22 +541,16 @@ class ComparativeQuickstartTests(unittest.TestCase):
             )
             self.assertIn(
                 "rmsf-permutation-from-report",
-                (output / "run_finalize_reporting.slurm").read_text(),
+                (output / "run_reporting_rmsf_permutation_inference.slurm").read_text(),
             )
             self.assertIn(
                 "integrate-comparison-results",
-                (output / "run_finalize_reporting.slurm").read_text(),
+                (output / "run_reporting_integrated_comparison.slurm").read_text(),
             )
             finalizer = (output / "run_finalize_reporting.slurm").read_text()
             self.assertIn("FINAL_REPORTING_STATUS=0", finalizer)
-            self.assertIn(
-                "Final reporting component failed: rmsf_permutation_inference",
-                finalizer,
-            )
-            self.assertIn(
-                "Final reporting component failed: integrated_comparison",
-                finalizer,
-            )
+            self.assertNotIn("rmsf-permutation-from-report", finalizer)
+            self.assertNotIn("integrate-comparison-results", finalizer)
             self.assertIn('exit "$FINAL_REPORTING_STATUS"', finalizer)
             planning = json.loads((output / "planning-report.json").read_text())
             rmsf_family = next(

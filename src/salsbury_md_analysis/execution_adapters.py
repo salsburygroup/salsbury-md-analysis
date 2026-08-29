@@ -1022,9 +1022,10 @@ def _slurm_submission_preview(
         "dependency_waves": wave_summaries,
         "resource_contract": (
             "Each later resource wave waits for completion, not success, of the "
-            "preceding wave. Only depends_on_task_ids create success-only "
-            "scientific prerequisites; wait_for_task_ids create completion-only "
-            "ordering. CPU slots and safety-adjusted memory "
+            "preceding wave. Only depends_on_task_ids create success-required "
+            "inputs without a recompute path; wait_for_task_ids create "
+            "failure-tolerant cache-reuse or completion ordering. CPU slots and "
+            "safety-adjusted memory "
             "summed within every wave stay at or below the configured aggregate caps."
             if execution_plan.get("dependency_model") == "task_dag_v1" else
             "Each later dependency wave waits for successful completion of every "
@@ -1324,8 +1325,9 @@ def apply_slurm_profile(
         ),
         "aggregate_resource_contract": (
             "tasks in one wave may run concurrently; later waves use afterany "
-            "only as resource barriers, while each task uses afterok only for its "
-            "declared data prerequisites; every wave stays within campaign CPU "
+            "only as resource barriers, while each task uses afterok only for "
+            "success-required inputs that it cannot reconstruct; every wave stays "
+            "within campaign CPU "
             "and safety-adjusted memory limits"
             if execution_plan.get("dependency_model") == "task_dag_v1" else
             "tasks in one wave may run concurrently; every later wave depends "
@@ -1385,6 +1387,11 @@ def _script_scalar(path: Path, name: str) -> Optional[str]:
 def _task_command(root: Path, task: Mapping[str, object]) -> Optional[str]:
     array_task_id = task.get("array_task_id")
     if array_task_id is None:
+        match = re.fullmatch(
+            r"run_reporting_(.+)\.slurm", str(task["script"])
+        )
+        if match:
+            return match.group(1)
         return None
     values = _bash_array_values(root / str(task["script"]), "COMMANDS")
     index = int(array_task_id)
@@ -1424,10 +1431,15 @@ def _task_project_filename(root: Path, task: Mapping[str, object]) -> Optional[s
     return None
 
 
-def _project_required_modules(
+def _project_cached_modules(
     root: Path, project_filename: Optional[str], module_id: str,
 ) -> set[str]:
-    """Resolve data-producing modules consumed by project-driven aggregators."""
+    """Resolve upstream reports that a project task can reuse after completion.
+
+    Project runners retain a validated compute-from-project fallback when an
+    upstream report is absent or unusable.  These relationships therefore
+    order cache reuse, but they are not success-only scientific gates.
+    """
 
     if not project_filename:
         return set()
@@ -1456,6 +1468,25 @@ def _project_required_modules(
     return set()
 
 
+def _view_preflight_requires_coordinate_cache(
+    root: Path, task: Mapping[str, object]
+) -> bool:
+    """Return whether one generated view preflight validates cache-built input."""
+
+    manifest = _script_scalar(root / str(task["script"]), "MANIFEST")
+    if not manifest:
+        return False
+    source = Path(manifest)
+    if not source.is_absolute():
+        source = root / source
+    cache_root = (root / "coordinate-cache").resolve(strict=False)
+    try:
+        source.resolve(strict=False).relative_to(cache_root)
+    except ValueError:
+        return False
+    return True
+
+
 def _apply_task_dependency_graph(
     root: Path, phases: Sequence[Mapping[str, object]],
 ) -> List[Dict[str, object]]:
@@ -1479,7 +1510,10 @@ def _apply_task_dependency_graph(
             task["source_phase_task_index"] = source_index
             command = _task_command(root, task)
             task["command"] = command
-            task["module_id"] = COMMAND_MODULES.get(command) if command else None
+            task["module_id"] = (
+                command if script.startswith("run_reporting_")
+                else COMMAND_MODULES.get(command) if command else None
+            )
             project_filename = _task_project_filename(root, task)
             task["project_filename"] = project_filename
             view = _view_id(script)
@@ -1522,11 +1556,28 @@ def _apply_task_dependency_graph(
         if task is cache_task:
             pass
         elif task is preflight_task:
-            if cache_task is not None:
-                dependencies.add(str(cache_task["task_id"]))
+            # Base analyses use the original system manifest and can proceed
+            # while the optional all-frame coordinate cache is being built.
+            pass
         elif script.startswith("run_view_preflight_"):
-            if cache_task is not None:
+            if (
+                cache_task is not None
+                and _view_preflight_requires_coordinate_cache(root, task)
+            ):
                 dependencies.add(str(cache_task["task_id"]))
+        elif task.get("module_id") == "rmsf_permutation_inference":
+            dependencies.update(module_tasks.get(("base", "pooled_rmsf"), []))
+        elif task.get("module_id") == "integrated_comparison":
+            completion_waits.update(
+                str(candidate["task_id"])
+                for candidate in tasks
+                if isinstance(candidate.get("module_id"), str)
+                and candidate.get("module_id") not in {
+                    "structural_integrity_qc", "rmsf_permutation_inference",
+                    "integrated_comparison",
+                }
+                and not str(candidate["script"]).startswith("run_reporting_")
+            )
         elif task is final_task:
             completion_waits.update(all_nonfinal)
         else:
@@ -1561,7 +1612,7 @@ def _apply_task_dependency_graph(
                 row = module_config.get(module_id)
                 if isinstance(row, dict) and isinstance(row.get("depends_on"), list):
                     required_modules.update(map(str, row["depends_on"]))
-                required_modules.update(_project_required_modules(
+                required_modules.update(_project_cached_modules(
                     root, task.get("project_filename"), module_id
                 ))
                 if module_id in {
@@ -1569,7 +1620,12 @@ def _apply_task_dependency_graph(
                 }:
                     required_modules.add("trajectory_features")
             for requirement in required_modules:
-                dependencies.update(module_tasks.get(
+                # Generated workers validate and reuse these reports when they
+                # are complete.  If the producer fails, the consumer unsets
+                # the cache variable and recomputes from its project inputs.
+                # Waiting for completion avoids duplicate work without making
+                # an unrelated producer failure a false afterok gate.
+                completion_waits.update(module_tasks.get(
                     (str(task["scope_id"]), requirement), []
                 ))
         dependencies.discard(str(task["task_id"]))
@@ -1670,6 +1726,26 @@ def build_local_execution_plan(
     for stage, tasks in sorted(view_stages.items()):
         phases.append({"phase_id": f"conformational_view_stage_{stage}", "tasks": tasks})
 
+    reporting_components = []
+    reporting_outputs = {
+        "rmsf_permutation_inference": (
+            "results/rmsf-permutation-inference/report.json"
+        ),
+        "integrated_comparison": "results/integrated-comparison/report.json",
+    }
+    for path in sorted(root.glob("run_reporting_*.slurm")):
+        task = _task(path)
+        reporting_id = _task_command(root, task)
+        output = reporting_outputs.get(str(reporting_id))
+        if output:
+            task["completion_reports"] = [output]
+        reporting_components.append(task)
+    if reporting_components:
+        phases.append({
+            "phase_id": "independent_reporting",
+            "tasks": reporting_components,
+        })
+
     finalizer = root / "run_finalize_reporting.slurm"
     if not finalizer.is_file():
         raise ExecutionAdapterError("generated workflow lacks run_finalize_reporting.slurm")
@@ -1707,10 +1783,11 @@ def build_local_execution_plan(
         "resource_policy": policy,
         "phases": phases,
         "dependency_policy": (
-            "depends_on_task_ids contains only report or data prerequisites; "
-            "wait_for_task_ids contains completion-only ordering such as final "
-            "report collation; resource waves may serialize otherwise independent "
-            "tasks without creating scientific dependencies"
+            "depends_on_task_ids contains only success-required inputs that a task "
+            "cannot reconstruct; wait_for_task_ids covers validated cache reuse, "
+            "completion-only report collation, and other failure-tolerant ordering; "
+            "resource waves may serialize otherwise independent tasks without "
+            "creating scientific dependencies"
         ),
     }
 
@@ -1796,8 +1873,9 @@ def prepare_execution_artifacts(
             "maximum_campaign_wall_hours": plan["maximum_campaign_wall_hours"],
         },
         "dependency_policy": (
-            "depends_on_task_ids are success-only data prerequisites; phase order "
-            "is topological metadata, and wait_for_task_ids delay a task until "
+            "depends_on_task_ids are success-required inputs without a local "
+            "recompute path; phase order is topological metadata, and "
+            "wait_for_task_ids delay a task for validated cache reuse or other "
             "completion without requiring upstream success"
         ),
         "task_success_policy": (

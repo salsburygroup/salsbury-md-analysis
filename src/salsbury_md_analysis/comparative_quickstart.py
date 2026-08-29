@@ -58,6 +58,7 @@ from .quickstart import (
     _require_new_directory,
     _safe_id,
     _slurm_files,
+    _validated_cache_export_shell,
     _validate_reference_connectivity,
 )
 from .coordinate_cache import validate_reusable_coordinate_cache
@@ -310,7 +311,11 @@ export OMP_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 if [[ "$COMMAND" == "scalar-distributions" || "$COMMAND" == "scalar-threshold-states" ]]; then
-  export SALSBURY_MD_ANALYSIS_TRAJECTORY_FEATURES_REPORT="${{OUTPUT%/*}}/trajectory-features/report.json"
+  {_validated_cache_export_shell(
+      "SALSBURY_MD_ANALYSIS_TRAJECTORY_FEATURES_REPORT", None,
+      "trajectory_features",
+      report_shell_expression='"${OUTPUT%/*}/trajectory-features/report.json"',
+  )}
 fi
 mkdir -p "$OUTPUT" "$ROOT/logs"
 FINAL="$OUTPUT/report.json"
