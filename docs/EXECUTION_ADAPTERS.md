@@ -102,16 +102,18 @@ engine, container service, or another scheduler should start the generated work:
 }
 ```
 
-Preparation writes `launcher-contract.json`. Each task has a stable ID and a
-`depends_on_task_ids` list containing only reports or data it consumes. The
+Preparation writes `launcher-contract.json`. Each task has a stable ID, a
+`depends_on_task_ids` list containing only reports or data it consumes, and an
+optional `wait_for_task_ids` list for completion-only ordering. The
 numbered levels are a topological presentation of that graph, not a rule that
 all work in one level succeeds or fails together. A launcher may run ready tasks
 concurrently while their summed `cpu_slots` and `requested_memory_gib` remain
 within the contract envelope. For each task the contract supplies the script,
 argument vector, working directory, compatibility environment, timeout, planner
 task IDs, true prerequisites, and expected completion reports. A nonzero exit,
-timeout, or missing accepted report skips only descendants that name that task;
-unrelated work remains eligible.
+timeout, or missing accepted report skips only descendants that name that task
+in `depends_on_task_ids`; completion-only consumers such as final report
+collation still run, and unrelated work remains eligible.
 
 The user-supplied executable receives the contract path as its only argument:
 

@@ -720,6 +720,17 @@ class ComparativeQuickstartTests(unittest.TestCase):
                 "integrate-comparison-results",
                 (output / "run_finalize_reporting.slurm").read_text(),
             )
+            finalizer = (output / "run_finalize_reporting.slurm").read_text()
+            self.assertIn("FINAL_REPORTING_STATUS=0", finalizer)
+            self.assertIn(
+                "Final reporting component failed: rmsf_permutation_inference",
+                finalizer,
+            )
+            self.assertIn(
+                "Final reporting component failed: integrated_comparison",
+                finalizer,
+            )
+            self.assertIn('exit "$FINAL_REPORTING_STATUS"', finalizer)
             planning = json.loads((output / "planning-report.json").read_text())
             rmsf_family = next(
                 row for row in planning["sampling"]["analysis_families"]

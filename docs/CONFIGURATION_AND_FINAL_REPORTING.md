@@ -306,8 +306,9 @@ PC axes were identical.
 
 Every generated analysis runs in one fresh instrumented process. Its JSON
 report records host, execution job/task identity, requested CPUs/memory/time, wall
-time, CPU time, and peak resident memory. Final acceptance depends on every
-enabled task, verifies all expected reports exist, and
+time, CPU time, and peak resident memory. Final report collation waits for every
+enabled task to finish without treating unrelated failures as prerequisites. It
+records incomplete or failed inputs rather than hiding them and
 writes:
 
 - `analysis_resource_and_frame_table.csv`, `.json`, and `.md`;
@@ -322,6 +323,12 @@ method reports remain the scientific record.
 Root-level `*-availability.json` records are included alongside completed
 module reports, so an optional method that cannot run is shown as unavailable
 rather than silently absent.
+
+The resource summary, integrated comparison, finding picker, and optional RMSF
+permutation inference run as isolated final-reporting components. One component
+may report failure without preventing the others from examining completed
+upstream reports; the finalizer still returns a failed technical status when
+any component fails.
 
 Each instrumented report also contains a `planner_benchmark` adapter accepted
 directly by `plan-frame-resources`. It uses original selected physical frames

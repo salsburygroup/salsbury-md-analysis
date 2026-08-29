@@ -827,6 +827,7 @@ def _task_resource_requests(plan: Mapping[str, object]) -> List[Dict[str, object
                 "phase_id": phase["phase_id"],
                 "task_id": task.get("task_id"),
                 "depends_on_task_ids": list(task.get("depends_on_task_ids", [])),
+                "wait_for_task_ids": list(task.get("wait_for_task_ids", [])),
                 "source_phase_id": task.get("source_phase_id"),
                 "module_id": task.get("module_id"),
                 "command": task.get("command"),
@@ -890,6 +891,7 @@ def _slurm_resource_waves(
                 "item_id": item_id,
                 "task_id": task.get("task_id"),
                 "depends_on_task_ids": list(task.get("depends_on_task_ids", [])),
+                "wait_for_task_ids": list(task.get("wait_for_task_ids", [])),
                 "source_phase_id": task.get("source_phase_id"),
                 "module_id": task.get("module_id"),
                 "command": task.get("command"),
@@ -944,6 +946,10 @@ def _slurm_submission_preview(
         len(item.get("depends_on_task_ids", []))
         for wave in resource_waves for item in wave.get("items", [])
     )
+    completion_wait_edge_count = sum(
+        len(item.get("wait_for_task_ids", []))
+        for wave in resource_waves for item in wave.get("items", [])
+    )
     peak_cpus = max(
         (int(wave["cpu_slots"]) for wave in resource_waves), default=0
     )
@@ -995,6 +1001,7 @@ def _slurm_submission_preview(
         "task_count": task_count,
         "dependency_model": execution_plan.get("dependency_model", "legacy_phase_chain"),
         "scientific_dependency_edge_count": scientific_dependency_edge_count,
+        "completion_wait_edge_count": completion_wait_edge_count,
         "dependency_wave_count": len(resource_waves),
         "resource_wave_count": len(resource_waves),
         "maximum_parallel_cpus_configured": maximum_cpus,
@@ -1016,7 +1023,8 @@ def _slurm_submission_preview(
         "resource_contract": (
             "Each later resource wave waits for completion, not success, of the "
             "preceding wave. Only depends_on_task_ids create success-only "
-            "scientific prerequisites. CPU slots and safety-adjusted memory "
+            "scientific prerequisites; wait_for_task_ids create completion-only "
+            "ordering. CPU slots and safety-adjusted memory "
             "summed within every wave stay at or below the configured aggregate caps."
             if execution_plan.get("dependency_model") == "task_dag_v1" else
             "Each later dependency wave waits for successful completion of every "
@@ -1106,11 +1114,23 @@ def _render_resource_bounded_submit(
                             f"prerequisite {required_task_id}"
                         )
                     scientific_job_variables.append(required)
+                completion_job_variables = []
+                for waited_task_id in item.get("wait_for_task_ids", []):
+                    waited = task_jobs.get(str(waited_task_id))
+                    if waited is None:
+                        raise ExecutionAdapterError(
+                            f"task {item.get('task_id')} is scheduled before its "
+                            f"completion wait {waited_task_id}"
+                        )
+                    completion_job_variables.append(waited)
                 clauses = []
-                if previous_jobs:
+                afterany_variables = list(dict.fromkeys(
+                    [*previous_jobs, *completion_job_variables]
+                ))
+                if afterany_variables:
                     clauses.append(
                         "afterany:" + ":".join(
-                            f"${{{name}}}" for name in previous_jobs
+                            f"${{{name}}}" for name in afterany_variables
                         )
                     )
                 if scientific_job_variables:
@@ -1497,6 +1517,7 @@ def _apply_task_dependency_graph(
     ]
     for task in tasks:
         dependencies: set[str] = set()
+        completion_waits: set[str] = set()
         script = str(task["script"])
         if task is cache_task:
             pass
@@ -1507,7 +1528,7 @@ def _apply_task_dependency_graph(
             if cache_task is not None:
                 dependencies.add(str(cache_task["task_id"]))
         elif task is final_task:
-            dependencies.update(all_nonfinal)
+            completion_waits.update(all_nonfinal)
         else:
             view = _view_id(script)
             if view:
@@ -1552,7 +1573,9 @@ def _apply_task_dependency_graph(
                     (str(task["scope_id"]), requirement), []
                 ))
         dependencies.discard(str(task["task_id"]))
+        completion_waits.discard(str(task["task_id"]))
         task["depends_on_task_ids"] = sorted(dependencies)
+        task["wait_for_task_ids"] = sorted(completion_waits)
 
     task_by_id = {str(task["task_id"]): task for task in tasks}
     if len(task_by_id) != len(tasks):
@@ -1567,7 +1590,9 @@ def _apply_task_dependency_graph(
             raise ExecutionAdapterError("generated task dependency graph contains a cycle")
         visiting.add(task_id)
         task = task_by_id[task_id]
-        requirements = task.get("depends_on_task_ids", [])
+        requirements = list(task.get("depends_on_task_ids", [])) + list(
+            task.get("wait_for_task_ids", [])
+        )
         missing = [value for value in requirements if value not in task_by_id]
         if missing:
             raise ExecutionAdapterError(
@@ -1683,8 +1708,9 @@ def build_local_execution_plan(
         "phases": phases,
         "dependency_policy": (
             "depends_on_task_ids contains only report or data prerequisites; "
-            "resource waves may serialize otherwise independent tasks without "
-            "creating scientific dependencies"
+            "wait_for_task_ids contains completion-only ordering such as final "
+            "report collation; resource waves may serialize otherwise independent "
+            "tasks without creating scientific dependencies"
         ),
     }
 
@@ -1737,6 +1763,7 @@ def prepare_execution_artifacts(
             tasks.append({
                 "launcher_task_id": task.get("task_id", f"{phase_id}:{index}"),
                 "depends_on_task_ids": task.get("depends_on_task_ids", []),
+                "wait_for_task_ids": task.get("wait_for_task_ids", []),
                 "source_phase_id": task.get("source_phase_id"),
                 "module_id": task.get("module_id"),
                 "command": task.get("command"),
@@ -1770,7 +1797,8 @@ def prepare_execution_artifacts(
         },
         "dependency_policy": (
             "depends_on_task_ids are success-only data prerequisites; phase order "
-            "is topological metadata, not a requirement that unrelated tasks fail together"
+            "is topological metadata, and wait_for_task_ids delay a task until "
+            "completion without requiring upstream success"
         ),
         "task_success_policy": (
             "a task succeeds only with exit code zero; skip only tasks whose own "
@@ -1949,6 +1977,7 @@ def _run_local_task(
     identity = {
         "task_id": task.get("task_id"),
         "depends_on_task_ids": list(task.get("depends_on_task_ids", [])),
+        "wait_for_task_ids": list(task.get("wait_for_task_ids", [])),
     }
     if isinstance(completion_reports, list) and completion_reports and _reports_complete(
         root, [str(value) for value in completion_reports]
@@ -2068,6 +2097,9 @@ def run_local_workflow(root: Path) -> Dict[str, object]:
         for phase in plan.get("phases", []):
             for task in phase.get("tasks", []):
                 missing = set(map(str, task.get("depends_on_task_ids", []))).difference(known)
+                missing.update(
+                    set(map(str, task.get("wait_for_task_ids", []))).difference(known)
+                )
                 if missing:
                     raise ExecutionAdapterError(
                         f"task {task['task_id']} has unknown dependencies: "
@@ -2091,6 +2123,7 @@ def run_local_workflow(root: Path) -> Dict[str, object]:
                 results.append({
                     "task_id": task.get("task_id"),
                     "depends_on_task_ids": list(task.get("depends_on_task_ids", [])),
+                    "wait_for_task_ids": list(task.get("wait_for_task_ids", [])),
                     "script": task["script"],
                     "array_task_id": task.get("array_task_id"),
                     "cpu_slots": task.get("cpu_slots"),
@@ -2119,6 +2152,9 @@ def run_local_workflow(root: Path) -> Dict[str, object]:
                         "task_id": tasks[futures[future]].get("task_id"),
                         "depends_on_task_ids": list(
                             tasks[futures[future]].get("depends_on_task_ids", [])
+                        ),
+                        "wait_for_task_ids": list(
+                            tasks[futures[future]].get("wait_for_task_ids", [])
                         ),
                         "script": str(tasks[futures[future]].get("script", "unknown")),
                         "array_task_id": tasks[futures[future]].get("array_task_id"),
