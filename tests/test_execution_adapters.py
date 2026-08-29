@@ -362,8 +362,9 @@ class ExecutionAdapterTests(unittest.TestCase):
             set(fes["depends_on_task_ids"]),
             {preflight["task_id"], pca["task_id"]},
         )
+        self.assertEqual(finalizer["depends_on_task_ids"], [])
         self.assertEqual(
-            set(finalizer["depends_on_task_ids"]),
+            set(finalizer["wait_for_task_ids"]),
             {
                 preflight["task_id"], qc["task_id"], pca["task_id"],
                 fes["task_id"],
@@ -618,10 +619,11 @@ class ExecutionAdapterTests(unittest.TestCase):
                 "#!/usr/bin/env bash\nset -euo pipefail\n", encoding="utf-8"
             )
 
-            def task(task_id, script, requirements):
+            def task(task_id, script, requirements, waits=()):
                 return {
                     "task_id": task_id,
                     "depends_on_task_ids": requirements,
+                    "wait_for_task_ids": list(waits),
                     "script": script,
                     "array_task_id": None,
                     "requested_wall_minutes": 60,
@@ -644,7 +646,7 @@ class ExecutionAdapterTests(unittest.TestCase):
                         task("a", "a.slurm", []), task("b", "b.slurm", []),
                     ]},
                     {"phase_id": "level1", "tasks": [
-                        task("c", "c.slurm", ["a"]),
+                        task("c", "c.slurm", ["a"], ["b"]),
                     ]},
                 ],
             })
@@ -664,6 +666,9 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertEqual(scheduler["dependency_model"], "task_dag_v1")
         self.assertEqual(
             scheduler["submission_preview"]["scientific_dependency_edge_count"], 1,
+        )
+        self.assertEqual(
+            scheduler["submission_preview"]["completion_wait_edge_count"], 1,
         )
 
     def test_local_runner_preserves_dependencies_and_stops_after_failure(self):
@@ -775,10 +780,11 @@ class ExecutionAdapterTests(unittest.TestCase):
             for name, content in scripts.items():
                 (root / name).write_text(content, encoding="utf-8")
 
-            def task(task_id, script, requirements):
+            def task(task_id, script, requirements, waits=()):
                 return {
                     "task_id": task_id,
                     "depends_on_task_ids": requirements,
+                    "wait_for_task_ids": list(waits),
                     "script": script,
                     "array_task_id": None,
                     "cpu_slots": 1,
@@ -797,7 +803,7 @@ class ExecutionAdapterTests(unittest.TestCase):
                         task("failed", "fails.slurm", []),
                     ]},
                     {"phase_id": "level1", "tasks": [
-                        task("independent", "independent.slurm", []),
+                        task("independent", "independent.slurm", [], ["failed"]),
                         task("dependent", "dependent.slurm", ["failed"]),
                     ]},
                 ],
