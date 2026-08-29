@@ -23,6 +23,12 @@ class ExecutionResourceError(ValueError):
     """Raised when execution evidence is missing or malformed."""
 
 
+_REPORTING_ONLY_MODULES = frozenset({
+    "integrated_comparison",
+    "rmsf_permutation_inference",
+})
+
+
 def _maximum_rss_mib(raw: float) -> float:
     # Linux reports KiB; macOS reports bytes.
     return raw / (1024.0 * 1024.0) if sys.platform == "darwin" else raw / 1024.0
@@ -701,6 +707,13 @@ def summarize_execution_resources(root: Path) -> Dict[str, object]:
                 raise ExecutionResourceError(
                     f"analysis report is not technically complete: {path}"
                 )
+            module_id = report.get("module_id")
+            # These reports are created by the reporting layer rather than an
+            # instrumented analysis worker. Their source analyses remain in the
+            # table; counting the derived reporting artifacts as measured jobs
+            # would misstate both resources and frame coverage.
+            if module_id in _REPORTING_ONLY_MODULES:
+                continue
             resources = report.get("execution_resources")
             project = None
             project_path_value = report.get("project_manifest_path")
@@ -708,7 +721,6 @@ def summarize_execution_resources(root: Path) -> Dict[str, object]:
                 project = load_json(Path(project_path_value))
             physical, observations = _observation_counts(report, project)
             workload = _analysis_workload_counts(report, physical, observations)
-            module_id = report.get("module_id")
         if not isinstance(resources, dict):
             raise ExecutionResourceError(
                 f"analysis report lacks measured execution resources: {path}"

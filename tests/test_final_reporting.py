@@ -13,6 +13,53 @@ from salsbury_md_analysis.finding_picker import FindingPickerError, prioritize_f
 
 
 class FinalReportingTests(unittest.TestCase):
+    def test_resource_table_excludes_uninstrumented_integrated_reporting_artifact(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            analysis_path = root / "results" / "rmsd" / "report.json"
+            analysis_path.parent.mkdir(parents=True)
+            analysis_path.write_text(json.dumps({
+                "module_id": "rmsd",
+                "technical_status": "complete",
+                "frame_count": 20,
+                "observation_accounting": {
+                    "source_physical_frame_count": 20,
+                    "symmetry_expanded_observation_count": 20,
+                },
+                "execution_resources": {
+                    "computer_hostname": "node1",
+                    "requested_cpu_count": 1,
+                    "requested_memory": "1024",
+                    "wall_seconds": 1.0,
+                    "total_cpu_seconds": 1.0,
+                    "maximum_resident_memory_mib": 1.0,
+                },
+            }), encoding="utf-8")
+            integrated_path = root / "results" / "integrated-comparison" / "report.json"
+            integrated_path.parent.mkdir(parents=True)
+            integrated_path.write_text(json.dumps({
+                "module_id": "integrated_comparison",
+                "technical_status": "complete",
+                "scientific_status": "not evaluated",
+            }), encoding="utf-8")
+            rmsf_inference_path = (
+                root / "results" / "rmsf-permutation-inference" / "report.json"
+            )
+            rmsf_inference_path.parent.mkdir(parents=True)
+            rmsf_inference_path.write_text(json.dumps({
+                "module_id": "rmsf_permutation_inference",
+                "technical_status": "complete",
+                "scientific_status": "not evaluated",
+            }), encoding="utf-8")
+
+            resource_report = summarize_execution_resources(root)
+
+            self.assertEqual(resource_report["row_count"], 1)
+            payload = json.loads(
+                Path(resource_report["json_path"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(payload["rows"][0]["module_id"], "rmsd")
+
     def test_picker_accounts_for_every_complete_report_without_promoting_qc(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -2271,7 +2271,7 @@ def _validated_cache_export_shell(
         report = json.dumps(str(report_path))
         summary = json.dumps(str(report_path) + ".summary.json")
     else:
-        prefix = f"CACHE_REPORT={report_shell_expression}\\n"
+        prefix = f"CACHE_REPORT={report_shell_expression}\n"
         report = '"$CACHE_REPORT"'
         summary = '"$CACHE_REPORT.summary.json"'
     return f"""{prefix}unset {variable}
@@ -2460,21 +2460,38 @@ rm "$TMP" "$SUMMARY_TMP"
         preflight_submission = (
             'PREFLIGHT_JOB=$(sbatch --parsable "$ROOT/run_preflight.slurm")'
         )
+    interaction_source_definitions = (
+        ("hydrogen-bond-discovery", "SALSBURY_MD_ANALYSIS_HYDROGEN_BOND_DISCOVERY_REPORT", "hydrogen_bond_discovery"),
+        ("water-mediated-hydrogen-bonds", "SALSBURY_MD_ANALYSIS_WATER_HYDROGEN_BOND_REPORT", "water_mediated_hydrogen_bond_networks"),
+        ("ion-geometry", "SALSBURY_MD_ANALYSIS_ION_GEOMETRY_REPORT", "ion_coordination_geometry"),
+        ("ion-atmosphere", "SALSBURY_MD_ANALYSIS_ION_ATMOSPHERE_REPORT", "ion_atmosphere"),
+        ("multivalent-bridges", "SALSBURY_MD_ANALYSIS_MULTIVALENT_BRIDGES_REPORT", "multivalent_molecular_bridges"),
+        ("hydration-density-channels", "SALSBURY_MD_ANALYSIS_HYDRATION_DENSITY_REPORT", "hydration_density_channels"),
+        ("nucleic-acid-structure", "SALSBURY_MD_ANALYSIS_NUCLEIC_ACID_STRUCTURE_REPORT", "nucleic_acid_structure"),
+    )
+    active_interaction_source_definitions = tuple(
+        definition
+        for definition in interaction_source_definitions
+        if definition[0] in commands
+    )
     interaction_source_exports = "\n".join(
         _validated_cache_export_shell(
             variable, root / f"results/{command}/report.json", module_id,
             fallback_action="continuing without that optional source report",
         )
-        for command, variable, module_id in (
-            ("hydrogen-bond-discovery", "SALSBURY_MD_ANALYSIS_HYDROGEN_BOND_DISCOVERY_REPORT", "hydrogen_bond_discovery"),
-            ("water-mediated-hydrogen-bonds", "SALSBURY_MD_ANALYSIS_WATER_HYDROGEN_BOND_REPORT", "water_mediated_hydrogen_bond_networks"),
-            ("ion-geometry", "SALSBURY_MD_ANALYSIS_ION_GEOMETRY_REPORT", "ion_coordination_geometry"),
-            ("ion-atmosphere", "SALSBURY_MD_ANALYSIS_ION_ATMOSPHERE_REPORT", "ion_atmosphere"),
-            ("multivalent-bridges", "SALSBURY_MD_ANALYSIS_MULTIVALENT_BRIDGES_REPORT", "multivalent_molecular_bridges"),
-            ("hydration-density-channels", "SALSBURY_MD_ANALYSIS_HYDRATION_DENSITY_REPORT", "hydration_density_channels"),
-            ("nucleic-acid-structure", "SALSBURY_MD_ANALYSIS_NUCLEIC_ACID_STRUCTURE_REPORT", "nucleic_acid_structure"),
-        )
-        if command in commands
+        for command, variable, module_id in active_interaction_source_definitions
+    )
+    interaction_source_unsets = "\n".join(
+        f"unset {variable}"
+        for _, variable, _ in active_interaction_source_definitions
+    )
+    conditional_interaction_source_exports = (
+        'if [[ "$COMMAND" == "interaction-fingerprints" ]]; then\n'
+        f"{interaction_source_exports}\n"
+        "else\n"
+        f"{interaction_source_unsets}\n"
+        "fi"
+        if interaction_source_exports else ""
     )
     cache_exports = {
         0: "",
@@ -2497,7 +2514,7 @@ rm "$TMP" "$SUMMARY_TMP"
                 root / "results/trajectory-features/report.json",
                 "trajectory_features",
             ),
-            interaction_source_exports,
+            conditional_interaction_source_exports,
         )),
         2: "\n".join((
             f"export SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT={json.dumps(str(root / 'preflight.report.json'))}",
