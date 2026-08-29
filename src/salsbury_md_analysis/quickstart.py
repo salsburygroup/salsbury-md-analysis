@@ -453,6 +453,10 @@ def _generic_definitions(
             "frame_selection": _frame_selection(
                 rows, "structural_integrity_qc"
             ),
+            "checkpointing": {
+                "enabled": True,
+                "within_segment_interval_seconds": 7200.0,
+            },
         },
         "replica_rmsd_rg": {
             "alignment_selection": "alignment",

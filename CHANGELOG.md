@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Make structural-integrity QC restartable at exact frame boundaries. Every
+  completed trajectory segment receives an atomic checkpoint; an in-progress
+  checkpoint is written only when one segment runs longer than the configured
+  7,200-second interval, with continuous-unwrapping state restored on resume.
+- Recalculate only the affected dependency stages while testing planner
+  upgrades, preserving the same resource-wave decisions with less repeated
+  campaign-scheduling work.
+
 - Regenerate each shared or per-system PCA projection allocation during resource
   replanning and feed its exact selected counts into every downstream clustering
   fit. Coupling now iterates to equality, stabilizes discrete stride cycles with

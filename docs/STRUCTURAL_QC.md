@@ -12,9 +12,11 @@ PYTHONPATH=src python3 -m salsbury_md_analysis \
   structural-qc path/to/project.json --hash-content
 ```
 
-The command is read-only and emits JSON to standard output. It consumes the
-compiled project context, preserving system, replica, segment, and
-manifest-declared physical-time identities.
+The command never modifies trajectory, topology, connectivity, or manifest
+inputs. It emits JSON to standard output and, when checkpointing is enabled,
+writes restart records under the declared analysis output directory. It
+preserves system, replica, segment, and manifest-declared physical-time
+identities.
 
 ## Supported coordinate records
 
@@ -51,7 +53,11 @@ The project manifest must declare the following under
       "maximum_near_coincident_pairs_per_frame": 0,
       "maximum_absolute_coordinate_angstrom": 1000000.0,
       "maximum_frame_atom_displacement_angstrom": null,
-      "frame_stride": 1
+      "frame_stride": 1,
+      "checkpointing": {
+        "enabled": true,
+        "within_segment_interval_seconds": 7200.0
+      }
     }
   }
 }
@@ -60,9 +66,32 @@ The project manifest must declare the following under
 No scientific threshold is silently chosen by the command. The displacement
 gate is optional and applies after the declared periodic preprocessing policy;
 it should remain `null` under wrapped diagnostic execution when coordinates can
-cross a boundary. `frame_stride` affects near-coincident-pair evaluation only;
-atom count, finite-coordinate, extent, and displacement checks still inspect
-every streamed frame.
+cross a boundary. `frame_stride` defines the exact integer-stride sample used by
+the coordinate and chemical gates. DCD preflight still validates every record
+envelope, including records whose coordinate payload is not decoded.
+
+## Checkpoint and restart behavior
+
+Checkpointing is enabled by default. The module writes one atomic, compressed
+checkpoint whenever it completes a trajectory segment. If a single segment is
+still running after 7,200 seconds (2 hours), it also writes an in-progress
+checkpoint and refreshes it after each additional 2 hours of work in that same
+segment. A segment that finishes in less than 2 hours receives only its normal
+completion checkpoint.
+
+Run the same command again after an interruption. Completed segments are loaded
+without reopening their trajectories, and an interrupted segment resumes after
+its last recorded frame. Continuous periodic reconstruction state is restored
+with the segment accumulators, so resume does not create a new unwrapping
+boundary.
+
+Checkpoints are stored at
+`ANALYSIS_OUTPUT_ROOT/structural-qc/checkpoints/CHECKPOINT_ID/`. Each record is
+content-hashed and tied to the project manifest, system manifest, declared input
+signature, and structural-QC implementation. A damaged or mismatched checkpoint
+fails closed; changed inputs or code receive a different checkpoint identity.
+Set `checkpointing.enabled` to `false` when restart files are not wanted. The
+interval remains explicit in the configuration even when checkpointing is off.
 
 ## Current gates
 
