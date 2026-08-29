@@ -480,8 +480,9 @@ class QuickstartTests(unittest.TestCase):
             )
             self.assertEqual(
                 local_plan["local_execution_plan_schema"],
-                "salsbury-local-execution-plan-v3",
+                "salsbury-local-execution-plan-v4",
             )
+            self.assertEqual(local_plan["dependency_model"], "task_dag_v1")
             self.assertEqual(local_plan["maximum_parallel_cpus"], 8)
             campaign = json.loads(
                 (output / "campaign-resource-plan.json").read_text()

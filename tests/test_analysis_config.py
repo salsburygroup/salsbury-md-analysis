@@ -23,6 +23,8 @@ class AnalysisConfigTests(unittest.TestCase):
         self.assertTrue(all(row["enabled"] for row in config["views"].values()))
         self.assertTrue(config["reporting"]["resource_table_enabled"])
         self.assertTrue(config["reporting"]["finding_picker_enabled"])
+        self.assertEqual(config["reporting"]["headline_findings"], 12)
+        self.assertEqual(config["reporting"]["maximum_findings"], 50)
         self.assertEqual(config["comparisons"]["mode"], "all_pairs")
         self.assertTrue(config["inference"]["automatic_chemical_context"])
         self.assertTrue(config["inference"]["ion_site_classification_enabled"])

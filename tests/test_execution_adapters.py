@@ -303,6 +303,73 @@ class ExecutionAdapterTests(unittest.TestCase):
             "large_memory",
         )
 
+    def test_generated_plan_uses_only_true_task_dependencies(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            worker = (
+                "#!/usr/bin/env bash\n#SBATCH --time=01:00:00\n"
+                "#SBATCH --cpus-per-task=1\n#SBATCH --mem=2G\n"
+                "set -euo pipefail\n"
+            )
+            (root / "run_preflight.slurm").write_text(worker, encoding="utf-8")
+            (root / "run_stage_0_array.slurm").write_text(
+                worker + "COMMANDS=(\n  'structural-qc'\n  'common-pca'\n)\n",
+                encoding="utf-8",
+            )
+            (root / "run_stage_1_array.slurm").write_text(
+                worker + "COMMANDS=(\n  'pca-fes-basins'\n)\n",
+                encoding="utf-8",
+            )
+            (root / "run_finalize_reporting.slurm").write_text(
+                worker, encoding="utf-8"
+            )
+            (root / "analysis-config.json").write_text(json.dumps({
+                "modules": {
+                    "structural_integrity_qc": {"depends_on": []},
+                    "common_pca": {"depends_on": []},
+                    "pca_fes_basins": {"depends_on": ["common_pca"]},
+                }
+            }), encoding="utf-8")
+            plan = build_local_execution_plan(root, {
+                "maximum_parallel_cpus": 2,
+                "maximum_hours_per_cpu": 8,
+                "maximum_memory_gib": 8,
+            }, {
+                "resource_table_enabled": False,
+                "finding_picker_enabled": False,
+            })
+
+        tasks = {
+            task.get("module_id") or task.get("source_phase_id"): task
+            for phase in plan["phases"] for task in phase["tasks"]
+        }
+        preflight = next(
+            task for phase in plan["phases"] for task in phase["tasks"]
+            if task["script"] == "run_preflight.slurm"
+        )
+        qc = tasks["structural_integrity_qc"]
+        pca = tasks["common_pca"]
+        fes = tasks["pca_fes_basins"]
+        finalizer = next(
+            task for phase in plan["phases"] for task in phase["tasks"]
+            if task["script"] == "run_finalize_reporting.slurm"
+        )
+        self.assertEqual(plan["dependency_model"], "task_dag_v1")
+        self.assertEqual(qc["depends_on_task_ids"], [preflight["task_id"]])
+        self.assertEqual(pca["depends_on_task_ids"], [preflight["task_id"]])
+        self.assertNotIn(qc["task_id"], fes["depends_on_task_ids"])
+        self.assertEqual(
+            set(fes["depends_on_task_ids"]),
+            {preflight["task_id"], pca["task_id"]},
+        )
+        self.assertEqual(
+            set(finalizer["depends_on_task_ids"]),
+            {
+                preflight["task_id"], qc["task_id"], pca["task_id"],
+                fes["task_id"],
+            },
+        )
+
     def test_mixed_resource_array_is_split_into_scheduler_tiers(self):
         repository = Path(__file__).resolve().parents[1]
         profile = load_slurm_profile(repository / "profiles/slurm/deac.json")
@@ -534,6 +601,71 @@ class ExecutionAdapterTests(unittest.TestCase):
             "slurm-submission-preview.json",
         )
 
+    def test_task_dag_uses_afterany_resource_barriers_and_afterok_inputs(self):
+        repository = Path(__file__).resolve().parents[1]
+        profile = load_slurm_profile(repository / "profiles/slurm/deac.json")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "slurm-profile.json").write_text("{}\n", encoding="utf-8")
+            for name in ("a.slurm", "b.slurm", "c.slurm"):
+                (root / name).write_text(
+                    "#!/usr/bin/env bash\n#SBATCH --time=01:00:00\n"
+                    "#SBATCH --cpus-per-task=1\n#SBATCH --mem=100G\n"
+                    "set -euo pipefail\n",
+                    encoding="utf-8",
+                )
+            (root / "submit.sh").write_text(
+                "#!/usr/bin/env bash\nset -euo pipefail\n", encoding="utf-8"
+            )
+
+            def task(task_id, script, requirements):
+                return {
+                    "task_id": task_id,
+                    "depends_on_task_ids": requirements,
+                    "script": script,
+                    "array_task_id": None,
+                    "requested_wall_minutes": 60,
+                    "requested_memory_gib": 100,
+                    "planner_task_ids": [],
+                    "cpu_slots": 1,
+                    "planned_wall_hours": 1,
+                    "planned_peak_memory_gib": 100,
+                    "resource_request_source": "unit_test",
+                    "wall_request_limited_by_campaign_cap": False,
+                    "memory_request_limited_by_campaign_cap": False,
+                }
+
+            scheduler = apply_slurm_profile(root, profile, {
+                "dependency_model": "task_dag_v1",
+                "maximum_parallel_cpus": 2,
+                "maximum_parallel_memory_gib": 100,
+                "phases": [
+                    {"phase_id": "level0", "tasks": [
+                        task("a", "a.slurm", []), task("b", "b.slurm", []),
+                    ]},
+                    {"phase_id": "level1", "tasks": [
+                        task("c", "c.slurm", ["a"]),
+                    ]},
+                ],
+            })
+            submit = (root / "submit.sh").read_text(encoding="utf-8")
+            syntax = subprocess.run(
+                ["bash", "-n", str(root / "submit.sh")], check=False,
+                capture_output=True, text=True,
+            )
+
+        self.assertEqual(syntax.returncode, 0, syntax.stderr)
+        self.assertIn('--dependency="afterany:${JOB_W000_T000}"', submit)
+        self.assertIn(
+            '--kill-on-invalid-dep=yes '
+            '--dependency="afterany:${JOB_W001_T000},afterok:${JOB_W000_T000}"',
+            submit,
+        )
+        self.assertEqual(scheduler["dependency_model"], "task_dag_v1")
+        self.assertEqual(
+            scheduler["submission_preview"]["scientific_dependency_edge_count"], 1,
+        )
+
     def test_local_runner_preserves_dependencies_and_stops_after_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -626,6 +758,64 @@ class ExecutionAdapterTests(unittest.TestCase):
             "reused_complete",
         )
         self.assertEqual(len(retained), 2)
+
+    def test_task_dag_local_runner_continues_unrelated_work_after_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "logs").mkdir()
+            scripts = {
+                "fails.slurm": "#!/usr/bin/env bash\nexit 9\n",
+                "independent.slurm": (
+                    "#!/usr/bin/env bash\nprintf complete > independent-marker\n"
+                ),
+                "dependent.slurm": (
+                    "#!/usr/bin/env bash\nprintf bad > dependent-marker\n"
+                ),
+            }
+            for name, content in scripts.items():
+                (root / name).write_text(content, encoding="utf-8")
+
+            def task(task_id, script, requirements):
+                return {
+                    "task_id": task_id,
+                    "depends_on_task_ids": requirements,
+                    "script": script,
+                    "array_task_id": None,
+                    "cpu_slots": 1,
+                    "requested_memory_gib": 1,
+                    "requested_wall_minutes": 1,
+                }
+
+            plan = {
+                "local_execution_plan_schema": "salsbury-local-execution-plan-v4",
+                "dependency_model": "task_dag_v1",
+                "maximum_parallel_cpus": 1,
+                "maximum_parallel_memory_gib": 1,
+                "maximum_campaign_wall_hours": 1,
+                "phases": [
+                    {"phase_id": "level0", "tasks": [
+                        task("failed", "fails.slurm", []),
+                    ]},
+                    {"phase_id": "level1", "tasks": [
+                        task("independent", "independent.slurm", []),
+                        task("dependent", "dependent.slurm", ["failed"]),
+                    ]},
+                ],
+            }
+            (root / "local-execution-plan.json").write_text(
+                json.dumps(plan), encoding="utf-8"
+            )
+            report = run_local_workflow(root)
+            independent_exists = (root / "independent-marker").exists()
+            dependent_exists = (root / "dependent-marker").exists()
+
+        second = {row["task_id"]: row for row in report["phase_reports"][1]["tasks"]}
+        self.assertEqual(report["technical_status"], "failed")
+        self.assertEqual(report["remaining_phases_not_run"], [])
+        self.assertEqual(second["independent"]["status"], "complete")
+        self.assertEqual(second["dependent"]["status"], "skipped_dependency")
+        self.assertTrue(independent_exists)
+        self.assertFalse(dependent_exists)
 
     def test_local_runner_reserves_memory_across_parallel_tasks(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -157,8 +157,9 @@ class PlanningReportTests(unittest.TestCase):
             self.assertEqual(result["next_command"].rsplit("/", 1)[-1], "run-custom.sh")
             self.assertEqual(contract["resource_envelope"]["maximum_parallel_cpus"], 2)
             self.assertEqual([row["phase_id"] for row in contract["phases"]], [
-                "preflight", "final_reporting",
+                "dependency_level_000", "dependency_level_001",
             ])
+            self.assertEqual(contract["dependency_model"], "task_dag_v1")
 
 
 if __name__ == "__main__":
