@@ -14,6 +14,7 @@ from salsbury_md_analysis.quickstart import (
     _discover_dssp_executable,
     _hydrogen_bond_feature_observation_gate,
     _secondary_structure_applicable,
+    _slurm_files,
     prepare_standard_analysis,
     prepare_standard_analysis_memory_fit,
 )
@@ -147,6 +148,38 @@ def _write_oligomer_inputs(root: Path):
 
 
 class QuickstartTests(unittest.TestCase):
+    def test_independent_reporting_workers_are_generated_separately(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "logs").mkdir()
+            generated = _slurm_files(
+                root, "reporting-components", ("rmsf",),
+                target_wall_hours=8.0,
+                python_executable="/usr/bin/python3",
+                package_root="/tmp/package",
+                rmsf_permutation_enabled=True,
+                integrated_comparison_enabled=True,
+                resource_table_enabled=True,
+                finding_picker_enabled=True,
+            )
+            rmsf_worker = root / "run_reporting_rmsf_permutation_inference.slurm"
+            integrated_worker = root / "run_reporting_integrated_comparison.slurm"
+            finalizer = (root / "run_finalize_reporting.slurm").read_text(
+                encoding="utf-8"
+            )
+            for worker in (rmsf_worker, integrated_worker):
+                syntax = subprocess.run(
+                    ["bash", "-n", str(worker)], capture_output=True, text=True,
+                    check=False,
+                )
+                self.assertEqual(syntax.returncode, 0, syntax.stderr)
+        self.assertIn(rmsf_worker.name, generated)
+        self.assertIn(integrated_worker.name, generated)
+        self.assertNotIn("rmsf-permutation-from-report", finalizer)
+        self.assertNotIn("integrate-comparison-results", finalizer)
+        self.assertIn("summarize-execution-resources", finalizer)
+        self.assertIn("prioritize-findings", finalizer)
+
     def test_deac_config_activates_profiled_slurm_launcher(self):
         repository = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as temporary:
@@ -553,6 +586,13 @@ class QuickstartTests(unittest.TestCase):
             self.assertIn("SALSBURY_MD_ANALYSIS_DCCM_REPORT", workers[1])
             self.assertIn("SALSBURY_MD_ANALYSIS_RMSD_RG_REPORT", workers[1])
             self.assertIn("SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT", workers[1])
+            self.assertIn(
+                "Validated cache unavailable for common_pca; recomputing",
+                workers[1],
+            )
+            self.assertIn(
+                "unset SALSBURY_MD_ANALYSIS_COMMON_PCA_REPORT", workers[1]
+            )
             view_workers = [
                 path.read_text(encoding="utf-8")
                 for path in output.glob("run_view_*_stage_*.slurm")
@@ -567,6 +607,10 @@ class QuickstartTests(unittest.TestCase):
             )
             self.assertIn(
                 "SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT", combined_view_workers
+            )
+            self.assertIn(
+                "Validated cache unavailable for clustering_kmeans; recomputing",
+                combined_view_workers,
             )
             for view_worker in view_workers:
                 if "SALSBURY_MD_ANALYSIS_COMMON_PCA_REPORT" in view_worker:
