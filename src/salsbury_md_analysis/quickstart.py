@@ -1362,7 +1362,7 @@ fi
         )
         submission_lines.extend([
             f'{variable}=$(sbatch --parsable '
-            f'--dependency="afterok:{preflight_dependency_expression}" '
+            f'--dependency="afterany:{preflight_dependency_expression}" '
             f'"$ROOT/{filename}")',
             f'{variable}="${{{variable}%%;*}}"',
             f"printf 'Submitted per-system preflight %s.\\n' \"${variable}\"",
@@ -1539,7 +1539,7 @@ rm "$TMP" "$SUMMARY_TMP"
                 width = int(spec["command_count"])
                 submission_lines.extend([
                     f'{variable}=$(sbatch --parsable '
-                    f'--dependency="afterok:{dependency_expression}" '
+                    f'--dependency="afterany:{dependency_expression}" '
                     f'--array=0-{width - 1}%{min(width, maximum_parallel_cpus)} '
                     f'"$ROOT/{spec["filename"]}")',
                     f'{variable}="${{{variable}%%;*}}"',
@@ -1802,8 +1802,7 @@ rm "$TMP" "$SUMMARY_TMP"
             'CACHE_JOB="${CACHE_JOB%%;*}"',
         ]
         preflight_submission = (
-            'PREFLIGHT_JOB=$(sbatch --parsable '
-            '--dependency="afterok:$CACHE_JOB" "$ROOT/run_preflight.slurm")'
+            'PREFLIGHT_JOB=$(sbatch --parsable "$ROOT/run_preflight.slurm")'
         )
     cache_exports = {
         0: "",
@@ -1977,8 +1976,9 @@ rm "$TMP"
     previous_job = "PREFLIGHT_JOB"
     for stage in sorted(stages):
         variable = f"STAGE_{stage}_JOB"
+        dependency_kind = "afterok" if previous_job == "PREFLIGHT_JOB" else "afterany"
         stage_submit_lines.extend([
-            f'{variable}=$(sbatch --parsable --dependency="afterok:${previous_job}" '
+            f'{variable}=$(sbatch --parsable --dependency="{dependency_kind}:${previous_job}" '
             f'--array=0-{len(stages[stage]) - 1}%{maximum_parallel_cpus} '
             f'"$ROOT/run_stage_{stage}_array.slurm")',
             f'{variable}="${{{variable}%%;*}}"',
@@ -1999,9 +1999,12 @@ rm "$TMP"
         if count <= 0:
             continue
         variable = f"CONTEXT_STAGE_{context_stage}_JOB"
+        dependency_kind = (
+            "afterok" if context_previous_job == "PREFLIGHT_JOB" else "afterany"
+        )
         context_submit_lines.extend([
             f'{variable}=$(sbatch --parsable '
-            f'--dependency="afterok:${context_previous_job}" '
+            f'--dependency="{dependency_kind}:${context_previous_job}" '
             f'--array=0-{count - 1}%{min(count, context_parallel_cap)} '
             f'"$ROOT/run_automatic_context_stage_{context_stage}_array.slurm")',
             f'{variable}="${{{variable}%%;*}}"',
@@ -2191,7 +2194,7 @@ PREFLIGHT_JOB="${{PREFLIGHT_JOB%%;*}}"
 {context_submit_text}
 FINAL_DEPENDENCIES="${{{previous_job}}}{context_final_dependency}"
 {view_submit_line}
-FINAL_JOB=$(sbatch --parsable --dependency="afterok:$FINAL_DEPENDENCIES" "$ROOT/run_finalize_reporting.slurm")
+FINAL_JOB=$(sbatch --parsable --dependency="afterany:$FINAL_DEPENDENCIES" "$ROOT/run_finalize_reporting.slurm")
 FINAL_JOB="${{FINAL_JOB%%;*}}"
 {cache_status_text}
 printf 'Submitted preflight/hash job %s.\\n' "$PREFLIGHT_JOB"
