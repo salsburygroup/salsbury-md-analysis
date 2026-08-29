@@ -42,6 +42,15 @@ class FinalReportingTests(unittest.TestCase):
                 "technical_status": "complete",
                 "scientific_status": "not evaluated",
             }), encoding="utf-8")
+            rmsf_inference_path = (
+                root / "results" / "rmsf-permutation-inference" / "report.json"
+            )
+            rmsf_inference_path.parent.mkdir(parents=True)
+            rmsf_inference_path.write_text(json.dumps({
+                "module_id": "rmsf_permutation_inference",
+                "technical_status": "complete",
+                "scientific_status": "not evaluated",
+            }), encoding="utf-8")
 
             resource_report = summarize_execution_resources(root)
 
