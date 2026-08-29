@@ -293,7 +293,19 @@ def _apply_system_memory_scaling(
         current = task.get("estimated_peak_memory_gib")
         if isinstance(current, (int, float)) and not isinstance(current, bool):
             task["reference_peak_memory_gib"] = float(current)
-            task["estimated_peak_memory_gib"] = max(1.0, float(current) * scale)
+            materialization_floor = task.get(
+                "minimum_materialized_working_set_gib", 0.0
+            )
+            if not isinstance(materialization_floor, (int, float)) or isinstance(
+                materialization_floor, bool
+            ):
+                raise CampaignPlanningError(
+                    f"task {task.get('task_id')} has an invalid fixed "
+                    "artifact-materialization memory floor"
+                )
+            task["estimated_peak_memory_gib"] = max(
+                1.0, float(current) * scale, float(materialization_floor)
+            )
         power_model = task.get("power_law_cost_model")
         if isinstance(power_model, dict):
             calibration_memory = power_model.get("calibration_memory_gib")
