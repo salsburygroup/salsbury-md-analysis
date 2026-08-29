@@ -156,6 +156,14 @@ next allocation. It uses `afterok` only for a task's `depends_on_task_ids` and
 asks Slurm to terminate a descendant whose required job failed instead of
 leaving it pending indefinitely. The complete mapping remains visible in
 `scheduler-resource-requests.json`.
+
+Ordinary module relationships appear as `wait_for_task_ids`. They delay a
+consumer until a possible cache producer finishes, but they do not require that
+producer to succeed. The worker validates any completed cache against the
+current project, system, content signature, report hash, and sidecar; otherwise
+it unsets the cache and recomputes from the project inputs. RMSF permutation is
+submitted separately with RMSF as its only success-required report.
+Integrated comparison is also separate and does not wait for structural QC.
 Before submission, run:
 
 ```bash
