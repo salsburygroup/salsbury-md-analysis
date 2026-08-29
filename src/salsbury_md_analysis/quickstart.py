@@ -1596,7 +1596,9 @@ def _execution_config_for_parallel_cpu_cap(
 
 
 def _validated_cache_export_shell(
-    variable: str, report_path: Path, module_id: str,
+    variable: str, report_path: Optional[Path], module_id: str, *,
+    report_shell_expression: Optional[str] = None,
+    fallback_action: str = "recomputing from project inputs",
 ) -> str:
     """Render a cache export that falls back to project recomputation safely.
 
@@ -1606,9 +1608,17 @@ def _validated_cache_export_shell(
     preflight before leaving the environment variable set.
     """
 
-    report = json.dumps(str(report_path))
-    summary = json.dumps(str(report_path) + ".summary.json")
-    return f"""unset {variable}
+    if report_shell_expression is None:
+        if report_path is None:
+            raise QuickstartError("cache report path is required")
+        prefix = ""
+        report = json.dumps(str(report_path))
+        summary = json.dumps(str(report_path) + ".summary.json")
+    else:
+        prefix = f"CACHE_REPORT={report_shell_expression}\\n"
+        report = '"$CACHE_REPORT"'
+        summary = '"$CACHE_REPORT.summary.json"'
+    return f"""{prefix}unset {variable}
 if [[ -f {report} && -f {summary} ]]; then
   export {variable}={report}
   if ! "$PYTHON" - "$PROJECT" {report} {summary} <<'PY'
@@ -1642,7 +1652,7 @@ PY
   fi
 fi
 if [[ -z "${{{variable}:-}}" ]]; then
-  printf 'Validated cache unavailable for {module_id}; recomputing from project inputs.\\n' >&2
+  printf 'Validated cache unavailable for {module_id}; {fallback_action}.\\n' >&2
 fi"""
 
 
