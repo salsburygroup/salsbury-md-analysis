@@ -825,6 +825,11 @@ def _task_resource_requests(plan: Mapping[str, object]) -> List[Dict[str, object
         for task in phase.get("tasks", []):
             rows.append({
                 "phase_id": phase["phase_id"],
+                "task_id": task.get("task_id"),
+                "depends_on_task_ids": list(task.get("depends_on_task_ids", [])),
+                "source_phase_id": task.get("source_phase_id"),
+                "module_id": task.get("module_id"),
+                "command": task.get("command"),
                 "script": task["script"],
                 "array_task_id": task.get("array_task_id"),
                 "cpu_slots": task["cpu_slots"],
@@ -877,12 +882,17 @@ def _slurm_resource_waves(
                 partition_limits,
                 resource_policy,
             )
-            item_id = (
+            item_id = str(task.get("task_id") or (
                 f"{phase_id}:{script}:"
                 f"{'single' if array_task_id is None else array_task_id}"
-            )
+            ))
             items.append({
                 "item_id": item_id,
+                "task_id": task.get("task_id"),
+                "depends_on_task_ids": list(task.get("depends_on_task_ids", [])),
+                "source_phase_id": task.get("source_phase_id"),
+                "module_id": task.get("module_id"),
+                "command": task.get("command"),
                 "task_index": task_index,
                 "script": script,
                 "array_task_id": array_task_id,
@@ -929,6 +939,10 @@ def _slurm_submission_preview(
     maximum_memory = float(execution_plan["maximum_parallel_memory_gib"])
     task_count = sum(
         len(wave.get("items", [])) for wave in resource_waves
+    )
+    scientific_dependency_edge_count = sum(
+        len(item.get("depends_on_task_ids", []))
+        for wave in resource_waves for item in wave.get("items", [])
     )
     peak_cpus = max(
         (int(wave["cpu_slots"]) for wave in resource_waves), default=0
@@ -979,7 +993,10 @@ def _slurm_submission_preview(
         "execution_started": False,
         "jobs_submitted": False,
         "task_count": task_count,
+        "dependency_model": execution_plan.get("dependency_model", "legacy_phase_chain"),
+        "scientific_dependency_edge_count": scientific_dependency_edge_count,
         "dependency_wave_count": len(resource_waves),
+        "resource_wave_count": len(resource_waves),
         "maximum_parallel_cpus_configured": maximum_cpus,
         "maximum_parallel_cpus_in_generated_waves": peak_cpus,
         "maximum_parallel_memory_gib_configured": maximum_memory,
@@ -997,9 +1014,14 @@ def _slurm_submission_preview(
         ),
         "dependency_waves": wave_summaries,
         "resource_contract": (
-            "Each later dependency wave waits for every job in the preceding "
-            "wave. CPU slots and safety-adjusted memory summed within every "
-            "wave stay at or below the configured aggregate caps."
+            "Each later resource wave waits for completion, not success, of the "
+            "preceding wave. Only depends_on_task_ids create success-only "
+            "scientific prerequisites. CPU slots and safety-adjusted memory "
+            "summed within every wave stay at or below the configured aggregate caps."
+            if execution_plan.get("dependency_model") == "task_dag_v1" else
+            "Each later dependency wave waits for successful completion of every "
+            "job in the preceding wave. CPU slots and safety-adjusted memory summed "
+            "within every wave stay at or below the configured aggregate caps."
         ),
         "time_interpretation": (
             "Planner hours are estimated execution time. Scheduler reservation "
@@ -1019,7 +1041,7 @@ def _render_resource_bounded_submit(
     profile_path: Path,
     resource_waves: Sequence[Mapping[str, object]],
 ) -> str:
-    """Render one canonical Slurm launcher whose waves enforce aggregate limits."""
+    """Render one launcher with separate scientific and resource dependencies."""
 
     submit_command = shlex.quote(str(profile["submit_command"]))
     lines = [
@@ -1046,6 +1068,11 @@ def _render_resource_bounded_submit(
     ]
     previous_jobs: List[str] = []
     submitted_jobs: List[str] = []
+    task_jobs: Dict[str, str] = {}
+    dependency_dag = any(
+        item.get("task_id")
+        for wave in resource_waves for item in wave.get("items", [])
+    )
     for global_wave_index, wave in enumerate(resource_waves):
         items = wave.get("items", [])
         if not isinstance(items, list) or not items:
@@ -1054,13 +1081,6 @@ def _render_resource_bounded_submit(
         lines.append(
             f"# {wave['phase_id']} resource wave {int(wave['wave_index']) + 1}: "
             f"{int(wave['cpu_slots'])} CPUs, {float(wave['memory_gib']):g} GiB"
-        )
-        dependency = (
-            ""
-            if not previous_jobs
-            else ' --dependency="afterok:'
-            + ":".join(f"${{{name}}}" for name in previous_jobs)
-            + '"'
         )
         for item_index, item in enumerate(items):
             variable = f"JOB_W{global_wave_index:03d}_T{item_index:03d}"
@@ -1076,15 +1096,49 @@ def _render_resource_bounded_submit(
                 )
             if item.get("array_task_id") is not None:
                 options.append(f"--array={int(item['array_task_id'])}")
+            if dependency_dag:
+                scientific_job_variables = []
+                for required_task_id in item.get("depends_on_task_ids", []):
+                    required = task_jobs.get(str(required_task_id))
+                    if required is None:
+                        raise ExecutionAdapterError(
+                            f"task {item.get('task_id')} is scheduled before its "
+                            f"prerequisite {required_task_id}"
+                        )
+                    scientific_job_variables.append(required)
+                clauses = []
+                if previous_jobs:
+                    clauses.append(
+                        "afterany:" + ":".join(
+                            f"${{{name}}}" for name in previous_jobs
+                        )
+                    )
+                if scientific_job_variables:
+                    clauses.append(
+                        "afterok:" + ":".join(
+                            f"${{{name}}}" for name in scientific_job_variables
+                        )
+                    )
+                    options.append("--kill-on-invalid-dep=yes")
+                if clauses:
+                    options.append('--dependency="' + ",".join(clauses) + '"')
+            elif previous_jobs:
+                options.append(
+                    '--dependency="afterok:'
+                    + ":".join(f"${{{name}}}" for name in previous_jobs)
+                    + '"'
+                )
             command_options = " ".join(options)
             script = shlex.quote(str(item["script"]))
             lines.extend([
-                f'{variable}=$("$SUBMIT_COMMAND" {command_options}{dependency} '
+                f'{variable}=$("$SUBMIT_COMMAND" {command_options} '
                 f'"$ROOT"/{script})',
                 f'{variable}="${{{variable}%%;*}}"',
             ])
             current_jobs.append(variable)
             submitted_jobs.append(variable)
+            if item.get("task_id"):
+                task_jobs[str(item["task_id"])] = variable
         previous_jobs = current_jobs
         lines.append("")
     if submitted_jobs:
@@ -1227,7 +1281,10 @@ def apply_slurm_profile(
         )
         os.chmod(canonical_submit, 0o755)
     return {
-        "scheduler_resource_requests_schema": "salsbury-scheduler-resource-requests-v3",
+        "scheduler_resource_requests_schema": "salsbury-scheduler-resource-requests-v4",
+        "dependency_model": execution_plan.get(
+            "dependency_model", "legacy_phase_chain"
+        ),
         "profile_id": profile["profile_id"],
         "cluster_name": profile["cluster_name"],
         "resource_policy": dict(resource_policy),
@@ -1246,6 +1303,11 @@ def apply_slurm_profile(
             "submit.sh" if canonical_submit.is_file() else None
         ),
         "aggregate_resource_contract": (
+            "tasks in one wave may run concurrently; later waves use afterany "
+            "only as resource barriers, while each task uses afterok only for its "
+            "declared data prerequisites; every wave stays within campaign CPU "
+            "and safety-adjusted memory limits"
+            if execution_plan.get("dependency_model") == "task_dag_v1" else
             "tasks in one wave may run concurrently; every later wave depends "
             "afterok on every job in the preceding wave, and each wave stays "
             "within both campaign CPU and safety-adjusted memory limits"
@@ -1279,6 +1341,260 @@ def _task(path: Path, array_id: Optional[int] = None) -> Dict[str, object]:
         "array_task_id": array_id,
         "cpu_slots": _cpu_slots(path),
     }
+
+
+def _script_scalar(path: Path, name: str) -> Optional[str]:
+    """Read one generated, literal shell assignment without executing it."""
+
+    match = re.search(
+        rf"^{re.escape(name)}=(.+)$",
+        path.read_text(encoding="utf-8"),
+        flags=re.MULTILINE,
+    )
+    if match is None:
+        return None
+    try:
+        values = shlex.split(match.group(1), posix=True)
+    except ValueError as exc:
+        raise ExecutionAdapterError(
+            f"cannot parse {name} assignment in {path.name}"
+        ) from exc
+    return values[0] if len(values) == 1 else None
+
+
+def _task_command(root: Path, task: Mapping[str, object]) -> Optional[str]:
+    array_task_id = task.get("array_task_id")
+    if array_task_id is None:
+        return None
+    values = _bash_array_values(root / str(task["script"]), "COMMANDS")
+    index = int(array_task_id)
+    if index < 0 or index >= len(values):
+        raise ExecutionAdapterError(
+            f"array task {index} is outside COMMANDS in {task['script']}"
+        )
+    return values[index]
+
+
+def _view_id(script: str) -> Optional[str]:
+    match = re.fullmatch(r"run_view_(.+)_stage_\d+\.slurm", script)
+    return match.group(1) if match else None
+
+
+def _task_project_filename(root: Path, task: Mapping[str, object]) -> Optional[str]:
+    script = str(task["script"])
+    path = root / script
+    array_task_id = task.get("array_task_id")
+    if script.startswith("run_automatic_context_stage_") and array_task_id is not None:
+        projects = _bash_array_values(path, "PROJECTS")
+        index = int(array_task_id)
+        if index >= len(projects):
+            raise ExecutionAdapterError(
+                f"array task {index} is outside PROJECTS in {script}"
+            )
+        return projects[index]
+    project = _script_scalar(path, "PROJECT")
+    if project:
+        candidate = Path(project)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        try:
+            return str(candidate.resolve(strict=False).relative_to(root))
+        except ValueError:
+            return str(candidate.resolve(strict=False))
+    return None
+
+
+def _project_required_modules(
+    root: Path, project_filename: Optional[str], module_id: str,
+) -> set[str]:
+    """Resolve data-producing modules consumed by project-driven aggregators."""
+
+    if not project_filename:
+        return set()
+    project_path = Path(project_filename)
+    if not project_path.is_absolute():
+        project_path = root / project_path
+    if not project_path.is_file():
+        return set()
+    project = load_json(project_path)
+    definitions = project.get("definitions") if isinstance(project, dict) else None
+    if not isinstance(definitions, dict):
+        return set()
+    if module_id == "markov_state_models":
+        return {
+            candidate for candidate in (
+                "pca_fes_basins", "clustering_kmeans", "clustering_hdbscan",
+                "clustering_imwkmeans", "alternative_clustering",
+            ) if candidate in definitions
+        }
+    if module_id in {"representative_frames", "state_coordinate_exports"}:
+        definition = definitions.get(module_id)
+        source = definition.get("source") if isinstance(definition, dict) else None
+        return {str(source)} if isinstance(source, str) else set()
+    if module_id == "grouped_ml":
+        return {"clustering_kmeans"}
+    return set()
+
+
+def _apply_task_dependency_graph(
+    root: Path, phases: Sequence[Mapping[str, object]],
+) -> List[Dict[str, object]]:
+    """Assign stable task IDs and only the report-producing prerequisites used."""
+
+    config_path = root / "analysis-config.json"
+    config = load_json(config_path) if config_path.is_file() else {}
+    module_config = config.get("modules", {}) if isinstance(config, dict) else {}
+    if not isinstance(module_config, dict):
+        module_config = {}
+    tasks: List[Dict[str, object]] = []
+    for phase in phases:
+        source_phase = str(phase["phase_id"])
+        for source_index, raw in enumerate(phase.get("tasks", [])):
+            task = dict(raw)
+            script = str(task["script"])
+            array_id = task.get("array_task_id")
+            suffix = "single" if array_id is None else str(array_id)
+            task["task_id"] = f"task:{script}:{suffix}"
+            task["source_phase_id"] = source_phase
+            task["source_phase_task_index"] = source_index
+            command = _task_command(root, task)
+            task["command"] = command
+            task["module_id"] = COMMAND_MODULES.get(command) if command else None
+            project_filename = _task_project_filename(root, task)
+            task["project_filename"] = project_filename
+            view = _view_id(script)
+            task["scope_id"] = (
+                f"view:{view}" if view else
+                f"project:{project_filename}" if project_filename else
+                "base"
+            )
+            tasks.append(task)
+
+    by_script = {str(task["script"]): task for task in tasks if task.get("array_task_id") is None}
+    cache_task = by_script.get("run_coordinate_cache.slurm")
+    preflight_task = by_script.get("run_preflight.slurm")
+    final_task = by_script.get("run_finalize_reporting.slurm")
+    module_tasks: Dict[tuple[str, str], List[str]] = {}
+    for task in tasks:
+        module_id = task.get("module_id")
+        if isinstance(module_id, str):
+            module_tasks.setdefault(
+                (str(task["scope_id"]), module_id), []
+            ).append(str(task["task_id"]))
+
+    view_preflights: Dict[str, str] = {}
+    for task in tasks:
+        if not str(task["script"]).startswith("run_view_preflight_"):
+            continue
+        final_path = _script_scalar(root / str(task["script"]), "FINAL")
+        if final_path:
+            view_preflights[str(Path(final_path).resolve(strict=False))] = str(
+                task["task_id"]
+            )
+
+    all_nonfinal = [
+        str(task["task_id"]) for task in tasks if task is not final_task
+    ]
+    for task in tasks:
+        dependencies: set[str] = set()
+        script = str(task["script"])
+        if task is cache_task:
+            pass
+        elif task is preflight_task:
+            if cache_task is not None:
+                dependencies.add(str(cache_task["task_id"]))
+        elif script.startswith("run_view_preflight_"):
+            if cache_task is not None:
+                dependencies.add(str(cache_task["task_id"]))
+        elif task is final_task:
+            dependencies.update(all_nonfinal)
+        else:
+            view = _view_id(script)
+            if view:
+                project_filename = task.get("project_filename")
+                project_path = (
+                    Path(str(project_filename)) if project_filename else None
+                )
+                if project_path is not None and not project_path.is_absolute():
+                    project_path = root / project_path
+                system_manifest = None
+                if project_path is not None and project_path.is_file():
+                    project = load_json(project_path)
+                    if isinstance(project, dict):
+                        system_manifest = project.get("system_manifest")
+                if system_manifest == "system.json" and preflight_task is not None:
+                    dependencies.add(str(preflight_task["task_id"]))
+                elif isinstance(system_manifest, str):
+                    report_path = root / f"preflight-{Path(system_manifest).stem}.report.json"
+                    preflight_id = view_preflights.get(
+                        str(report_path.resolve(strict=False))
+                    )
+                    if preflight_id:
+                        dependencies.add(preflight_id)
+            elif preflight_task is not None:
+                dependencies.add(str(preflight_task["task_id"]))
+
+            module_id = task.get("module_id")
+            required_modules: set[str] = set()
+            if isinstance(module_id, str):
+                row = module_config.get(module_id)
+                if isinstance(row, dict) and isinstance(row.get("depends_on"), list):
+                    required_modules.update(map(str, row["depends_on"]))
+                required_modules.update(_project_required_modules(
+                    root, task.get("project_filename"), module_id
+                ))
+                if module_id in {
+                    "scalar_feature_distributions", "scalar_threshold_states",
+                }:
+                    required_modules.add("trajectory_features")
+            for requirement in required_modules:
+                dependencies.update(module_tasks.get(
+                    (str(task["scope_id"]), requirement), []
+                ))
+        dependencies.discard(str(task["task_id"]))
+        task["depends_on_task_ids"] = sorted(dependencies)
+
+    task_by_id = {str(task["task_id"]): task for task in tasks}
+    if len(task_by_id) != len(tasks):
+        raise ExecutionAdapterError("generated workflow contains duplicate task IDs")
+    depth_cache: Dict[str, int] = {}
+    visiting: set[str] = set()
+
+    def depth(task_id: str) -> int:
+        if task_id in depth_cache:
+            return depth_cache[task_id]
+        if task_id in visiting:
+            raise ExecutionAdapterError("generated task dependency graph contains a cycle")
+        visiting.add(task_id)
+        task = task_by_id[task_id]
+        requirements = task.get("depends_on_task_ids", [])
+        missing = [value for value in requirements if value not in task_by_id]
+        if missing:
+            raise ExecutionAdapterError(
+                f"task {task_id} has unknown dependencies: {', '.join(missing)}"
+            )
+        value = 0 if not requirements else 1 + max(depth(str(item)) for item in requirements)
+        visiting.remove(task_id)
+        depth_cache[task_id] = value
+        return value
+
+    levels: Dict[int, List[Dict[str, object]]] = {}
+    for task in tasks:
+        level = depth(str(task["task_id"]))
+        task["dependency_level"] = level
+        levels.setdefault(level, []).append(task)
+    return [
+        {
+            "phase_id": f"dependency_level_{level:03d}",
+            "tasks": sorted(
+                levels[level],
+                key=lambda task: (
+                    str(task["script"]), str(task.get("array_task_id"))
+                ),
+            ),
+        }
+        for level in sorted(levels)
+    ]
 
 
 def build_local_execution_plan(
@@ -1344,6 +1660,7 @@ def build_local_execution_plan(
     final_task = _task(finalizer)
     final_task["completion_reports"] = completion_reports
     phases.append({"phase_id": "final_reporting", "tasks": [final_task]})
+    phases = _apply_task_dependency_graph(root, phases)
     maximum_cpus = int(execution["maximum_parallel_cpus"])
     if any(int(task["cpu_slots"]) > maximum_cpus for phase in phases for task in phase["tasks"]):
         raise ExecutionAdapterError("a local task requests more CPUs than the campaign limit")
@@ -1357,14 +1674,17 @@ def build_local_execution_plan(
             for task in phase["tasks"]
         ]
     return {
-        "local_execution_plan_schema": "salsbury-local-execution-plan-v3",
+        "local_execution_plan_schema": "salsbury-local-execution-plan-v4",
+        "dependency_model": "task_dag_v1",
         "maximum_parallel_cpus": maximum_cpus,
         "maximum_campaign_wall_hours": float(execution["maximum_hours_per_cpu"]),
         "maximum_parallel_memory_gib": float(execution["maximum_memory_gib"]),
         "resource_policy": policy,
         "phases": phases,
         "dependency_policy": (
-            "phases are serial; tasks within one phase share atomic CPU and memory caps"
+            "depends_on_task_ids contains only report or data prerequisites; "
+            "resource waves may serialize otherwise independent tasks without "
+            "creating scientific dependencies"
         ),
     }
 
@@ -1399,7 +1719,6 @@ def prepare_execution_artifacts(
         json.dumps(plan, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     contract_phases = []
-    previous_phase_id: Optional[str] = None
     for phase in plan["phases"]:
         phase_id = str(phase["phase_id"])
         tasks = []
@@ -1416,7 +1735,11 @@ def prepare_execution_artifacts(
             if array_task_id is not None:
                 environment["SLURM_ARRAY_TASK_ID"] = str(array_task_id)
             tasks.append({
-                "launcher_task_id": f"{phase_id}:{index}",
+                "launcher_task_id": task.get("task_id", f"{phase_id}:{index}"),
+                "depends_on_task_ids": task.get("depends_on_task_ids", []),
+                "source_phase_id": task.get("source_phase_id"),
+                "module_id": task.get("module_id"),
+                "command": task.get("command"),
                 "argv": ["bash", str(task["script"])],
                 "working_directory": str(root),
                 "environment": environment,
@@ -1433,12 +1756,12 @@ def prepare_execution_artifacts(
             })
         contract_phases.append({
             "phase_id": phase_id,
-            "depends_on": [] if previous_phase_id is None else [previous_phase_id],
+            "depends_on": [],
             "tasks": tasks,
         })
-        previous_phase_id = phase_id
     launcher_contract = {
-        "launcher_contract_schema": "salsbury-external-launcher-contract-v1",
+        "launcher_contract_schema": "salsbury-external-launcher-contract-v2",
+        "dependency_model": plan.get("dependency_model"),
         "analysis_root": str(root),
         "resource_envelope": {
             "maximum_parallel_cpus": plan["maximum_parallel_cpus"],
@@ -1446,13 +1769,12 @@ def prepare_execution_artifacts(
             "maximum_campaign_wall_hours": plan["maximum_campaign_wall_hours"],
         },
         "dependency_policy": (
-            "phases are serial and fail closed; tasks within one phase may run "
-            "concurrently only while their summed CPU and memory requests stay "
-            "within the resource envelope"
+            "depends_on_task_ids are success-only data prerequisites; phase order "
+            "is topological metadata, not a requirement that unrelated tasks fail together"
         ),
         "task_success_policy": (
-            "a task succeeds only with exit code zero; do not launch dependent "
-            "phases after a failure or timeout"
+            "a task succeeds only with exit code zero; skip only tasks whose own "
+            "depends_on_task_ids failed or timed out, and continue unrelated tasks"
         ),
         "environment_contract": {
             "compatibility_note": (
@@ -1624,10 +1946,15 @@ def _run_local_task(
     memory_gib = float(task.get("requested_memory_gib", 1.0))
     wall_minutes = float(task.get("requested_wall_minutes", 30.0))
     completion_reports = task.get("completion_reports", [])
+    identity = {
+        "task_id": task.get("task_id"),
+        "depends_on_task_ids": list(task.get("depends_on_task_ids", [])),
+    }
     if isinstance(completion_reports, list) and completion_reports and _reports_complete(
         root, [str(value) for value in completion_reports]
     ):
         return {
+            **identity,
             "script": task["script"], "array_task_id": task.get("array_task_id"),
             "cpu_slots": cpu_slots, "requested_memory_gib": memory_gib,
             "requested_wall_minutes": wall_minutes,
@@ -1658,6 +1985,7 @@ def _run_local_task(
         timeout_seconds = min(deadline - start, wall_minutes * 60.0)
         if timeout_seconds <= 0.0:
             return {
+                **identity,
                 "script": task["script"], "array_task_id": task.get("array_task_id"),
                 "cpu_slots": cpu_slots, "requested_memory_gib": memory_gib,
                 "requested_wall_minutes": wall_minutes,
@@ -1681,6 +2009,7 @@ def _run_local_task(
                     os.killpg(process.pid, signal.SIGKILL)
                     exit_code = process.wait()
         return {
+            **identity,
             "script": task["script"], "array_task_id": task.get("array_task_id"),
             "cpu_slots": cpu_slots, "requested_memory_gib": memory_gib,
             "requested_wall_minutes": wall_minutes,
@@ -1705,6 +2034,7 @@ def run_local_workflow(root: Path) -> Dict[str, object]:
         "salsbury-local-execution-plan-v1",
         "salsbury-local-execution-plan-v2",
         "salsbury-local-execution-plan-v3",
+        "salsbury-local-execution-plan-v4",
     }
     if not isinstance(plan, dict) or plan.get("local_execution_plan_schema") not in accepted_schemas:
         raise ExecutionAdapterError("local execution plan is invalid")
@@ -1723,25 +2053,73 @@ def run_local_workflow(root: Path) -> Dict[str, object]:
     technical_status = "complete"
     slots = _ResourcePool(maximum_cpus, maximum_memory_gib)
     deadline = time.monotonic() + campaign_seconds
+    dependency_dag = plan.get("dependency_model") == "task_dag_v1"
+    task_statuses: Dict[str, str] = {}
+    if dependency_dag:
+        task_ids = [
+            str(task.get("task_id"))
+            for phase in plan.get("phases", []) for task in phase.get("tasks", [])
+        ]
+        if any(value == "None" for value in task_ids) or len(set(task_ids)) != len(task_ids):
+            raise ExecutionAdapterError(
+                "task-DAG execution plans require unique nonempty task IDs"
+            )
+        known = set(task_ids)
+        for phase in plan.get("phases", []):
+            for task in phase.get("tasks", []):
+                missing = set(map(str, task.get("depends_on_task_ids", []))).difference(known)
+                if missing:
+                    raise ExecutionAdapterError(
+                        f"task {task['task_id']} has unknown dependencies: "
+                        + ", ".join(sorted(missing))
+                    )
     for phase in plan.get("phases", []):
         phase_id = str(phase["phase_id"])
         tasks = phase["tasks"]
         if not isinstance(tasks, list) or not tasks:
             raise ExecutionAdapterError(f"local phase {phase_id} has no tasks")
         results = []
+        runnable = []
+        for index, task in enumerate(tasks):
+            failed_requirements = [
+                str(required) for required in task.get("depends_on_task_ids", [])
+                if task_statuses.get(str(required)) not in {
+                    "complete", "reused_complete"
+                }
+            ] if dependency_dag else []
+            if failed_requirements:
+                results.append({
+                    "task_id": task.get("task_id"),
+                    "depends_on_task_ids": list(task.get("depends_on_task_ids", [])),
+                    "script": task["script"],
+                    "array_task_id": task.get("array_task_id"),
+                    "cpu_slots": task.get("cpu_slots"),
+                    "requested_memory_gib": task.get("requested_memory_gib", 1.0),
+                    "requested_wall_minutes": task.get("requested_wall_minutes", 30.0),
+                    "status": "skipped_dependency",
+                    "failed_dependency_task_ids": failed_requirements,
+                    "exit_code": None,
+                    "wall_seconds": 0.0,
+                })
+            else:
+                runnable.append((index, task))
         with ThreadPoolExecutor(max_workers=min(len(tasks), maximum_cpus)) as executor:
             futures = {
                 executor.submit(
                     _run_local_task, resolved, task, phase_id, index,
                     attempt_id, deadline, slots,
                 ): index
-                for index, task in enumerate(tasks)
+                for index, task in runnable
             }
             for future in as_completed(futures):
                 try:
                     results.append(future.result())
                 except Exception as exc:  # preserve a machine-readable failed attempt
                     results.append({
+                        "task_id": tasks[futures[future]].get("task_id"),
+                        "depends_on_task_ids": list(
+                            tasks[futures[future]].get("depends_on_task_ids", [])
+                        ),
                         "script": str(tasks[futures[future]].get("script", "unknown")),
                         "array_task_id": tasks[futures[future]].get("array_task_id"),
                         "cpu_slots": tasks[futures[future]].get("cpu_slots"),
@@ -1764,13 +2142,20 @@ def run_local_workflow(root: Path) -> Dict[str, object]:
         phase_reports.append({
             "phase_id": phase_id, "technical_status": phase_status, "tasks": results
         })
+        if dependency_dag:
+            task_statuses.update({
+                str(row["task_id"]): str(row["status"])
+                for row in results if row.get("task_id")
+            })
         if phase_status != "complete":
             technical_status = "failed"
-            break
+            if not dependency_dag:
+                break
     report = {
         "local_execution_status_schema": "salsbury-local-execution-status-v1",
         "technical_status": technical_status,
         "scientific_status": "not evaluated",
+        "dependency_model": plan.get("dependency_model", "legacy_phase_chain"),
         "attempt_id": attempt_id,
         "analysis_root": str(resolved),
         "maximum_parallel_cpus": maximum_cpus,

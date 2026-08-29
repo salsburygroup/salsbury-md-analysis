@@ -256,8 +256,8 @@ feature count and member-observation expansion. Methods driven by projected
 observations rather than raw atoms keep their observation-based model. The
 applied multiplier and reference workload remain in
 `campaign-resource-plan.json`.
-The generated local, Slurm, and custom-launcher adapters run base stages before
-conformational stages. `execution.submission_adapter` selects `local`, `slurm`,
+The generated local, Slurm, and custom-launcher adapters derive a task graph
+from each module's real report inputs. `execution.submission_adapter` selects `local`, `slurm`,
 or `custom`; local is the default.
 Slurm mode requires a validated `execution.slurm_profile`, which keeps account,
 partition, QoS, environment, command, and storage conventions outside scientific
@@ -268,9 +268,10 @@ same workers and output contracts.
 The Slurm adapter records task-specific scheduler requests in
 `scheduler-resource-requests.json` and routes sufficiently large requests through
 the profile's large-memory role. Its canonical launcher submits deterministic
-dependency waves. Each wave stays within both `maximum_parallel_cpus` and the
-aggregate `maximum_memory_gib`; downstream work waits for all jobs in the preceding
-wave. This controls active compute allocation; queue
+resource waves. Each wave stays within both `maximum_parallel_cpus` and the
+aggregate `maximum_memory_gib`; the next wave waits for completion of the preceding
+wave only to control allocation. A task waits for successful completion only of
+its declared data prerequisites. This controls active compute allocation; queue
 wait and scheduler backfill are not counted as analysis wall time.
 
 `advise-slurm-capacity` is an optional, read-only step for prepared Slurm
@@ -305,8 +306,8 @@ PC axes were identical.
 
 Every generated analysis runs in one fresh instrumented process. Its JSON
 report records host, execution job/task identity, requested CPUs/memory/time, wall
-time, CPU time, and peak resident memory. A final `afterok` job waits for every
-base and conformational-view stage, verifies all expected reports exist, and
+time, CPU time, and peak resident memory. Final acceptance depends on every
+enabled task, verifies all expected reports exist, and
 writes:
 
 - `analysis_resource_and_frame_table.csv`, `.json`, and `.md`;

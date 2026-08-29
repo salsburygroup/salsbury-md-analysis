@@ -102,12 +102,16 @@ engine, container service, or another scheduler should start the generated work:
 }
 ```
 
-Preparation writes `launcher-contract.json`. Its phases are ordered dependencies.
-Tasks in one phase may run concurrently only while their summed `cpu_slots` and
-`requested_memory_gib` remain within the contract envelope. For each task the
-contract supplies the script, argument vector, working directory, compatibility
-environment, timeout, planner task IDs, and expected completion reports. A
-nonzero exit, timeout, or missing accepted report stops dependent phases.
+Preparation writes `launcher-contract.json`. Each task has a stable ID and a
+`depends_on_task_ids` list containing only reports or data it consumes. The
+numbered levels are a topological presentation of that graph, not a rule that
+all work in one level succeeds or fails together. A launcher may run ready tasks
+concurrently while their summed `cpu_slots` and `requested_memory_gib` remain
+within the contract envelope. For each task the contract supplies the script,
+argument vector, working directory, compatibility environment, timeout, planner
+task IDs, true prerequisites, and expected completion reports. A nonzero exit,
+timeout, or missing accepted report skips only descendants that name that task;
+unrelated work remains eligible.
 
 The user-supplied executable receives the contract path as its only argument:
 
@@ -145,8 +149,11 @@ profile adds explicit safety margins. Preparation applies those margins before
 testing memory feasibility. It then packs individual array elements and ordinary
 jobs into deterministic resource waves. The sum of CPU slots and the sum of
 buffered memory requests in one wave cannot exceed the two campaign caps.
-`submit.sh` submits each wave with `afterok` dependencies on the preceding wave;
-the complete mapping remains visible in `scheduler-resource-requests.json`.
+`submit.sh` uses `afterany` between resource waves so a failed job releases the
+next allocation. It uses `afterok` only for a task's `depends_on_task_ids` and
+asks Slurm to terminate a descendant whose required job failed instead of
+leaving it pending indefinitely. The complete mapping remains visible in
+`scheduler-resource-requests.json`.
 Before submission, run:
 
 ```bash
