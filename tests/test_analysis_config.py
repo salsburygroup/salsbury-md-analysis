@@ -23,6 +23,7 @@ class AnalysisConfigTests(unittest.TestCase):
         self.assertTrue(all(row["enabled"] for row in config["views"].values()))
         self.assertTrue(config["reporting"]["resource_table_enabled"])
         self.assertTrue(config["reporting"]["finding_picker_enabled"])
+        self.assertEqual(config["reporting"]["minimum_headline_findings"], 10)
         self.assertEqual(config["reporting"]["headline_findings"], 12)
         self.assertEqual(config["reporting"]["maximum_findings"], 50)
         self.assertEqual(config["comparisons"]["mode"], "all_pairs")
@@ -72,6 +73,63 @@ class AnalysisConfigTests(unittest.TestCase):
                 path, module_ids, ["global_common_heavy"]
             )
         self.assertEqual(observed, expected)
+
+    def test_reporting_contract_requires_ten_to_twelve_of_fifty(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "analysis-config.json"
+            for headline_findings in (10, 11, 12):
+                path.write_text(json.dumps({
+                    "config_schema": "salsbury-analysis-config-v1",
+                    "reporting": {
+                        "minimum_headline_findings": 10,
+                        "headline_findings": headline_findings,
+                        "maximum_findings": 50,
+                    },
+                }), encoding="utf-8")
+                config = load_analysis_config(
+                    path, ["provenance_manifest"], ["global"]
+                )
+                self.assertEqual(
+                    config["reporting"]["headline_findings"],
+                    headline_findings,
+                )
+
+            for headline_findings in (9, 13):
+                path.write_text(json.dumps({
+                    "config_schema": "salsbury-analysis-config-v1",
+                    "reporting": {"headline_findings": headline_findings},
+                }), encoding="utf-8")
+                with self.assertRaisesRegex(
+                    AnalysisConfigError, "integer from 10 through 12"
+                ):
+                    load_analysis_config(
+                        path, ["provenance_manifest"], ["global"]
+                    )
+
+            path.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "reporting": {"maximum_findings": 49},
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(
+                AnalysisConfigError, "maximum_findings must be 50"
+            ):
+                load_analysis_config(
+                    path, ["provenance_manifest"], ["global"]
+                )
+
+            path.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "reporting": {
+                    "minimum_headline_findings": 12,
+                    "headline_findings": 10,
+                },
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(
+                AnalysisConfigError, "cannot exceed"
+            ):
+                load_analysis_config(
+                    path, ["provenance_manifest"], ["global"]
+                )
 
     def test_minimums_and_reusable_cache_paths_resolve_from_config(self):
         with tempfile.TemporaryDirectory() as temporary:

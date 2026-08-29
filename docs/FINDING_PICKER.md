@@ -49,14 +49,19 @@ Single-system extrema, state populations, silhouettes, correlations,
 information measures, and threshold-state occupancies are normally descriptive
 or exploratory.
 
-The first `reporting.headline_findings` entries form the short opening section.
-The remaining entries through `reporting.maximum_findings` are secondary
-findings. The defaults are 12 headline findings and 50 total highlights. Every
-ranked candidate, including candidates below the highlight boundary, remains
-searchable in the interactive report and is written to the JSON and CSV
-outputs. The output reports the headline, secondary, searchable-candidate, and
-not-highlighted counts so presentation limits cannot be mistaken for complete
-candidate coverage. The raw module reports remain the scientific record.
+The opening section contains 10, 11, or 12 findings. The first 10 are always
+shown. Ranks 11 and 12 extend the opening section only when a finding at that
+boundary is statistically significant after Benjamini-Hochberg correction.
+The highlighted report always contains 50 findings when at least 50 candidates
+exist, so the secondary section contains 40, 39, or 38 findings respectively.
+The JSON records the selected count, any boundary promotions, and the selection
+reason. A smaller campaign is marked
+`candidate_limited` and presents every available candidate without inventing
+entries. Every candidate beyond the first 50 remains searchable in the
+interactive report and is written to the JSON and CSV outputs. The output
+reports headline, secondary, additional-candidate, and total searchable counts
+so the 50-item presentation limit cannot be mistaken for full candidate
+coverage. The raw module reports remain the scientific record.
 
 Quality-control and interpretation records remain in the JSON and interactive
 report and are also written to `prioritized_findings_qc.md`. Keeping the full
@@ -78,6 +83,7 @@ The picker is enabled by default:
 {
   "reporting": {
     "finding_picker_enabled": true,
+    "minimum_headline_findings": 10,
     "headline_findings": 12,
     "maximum_findings": 50
   }
@@ -86,3 +92,11 @@ The picker is enabled by default:
 
 Turning the picker off does not disable the underlying analyses or remove their
 reports. It only suppresses the consolidated prioritized-finding outputs.
+
+`minimum_headline_findings` and `headline_findings` set the allowed range. Both
+must be from 10 through 12, and the minimum cannot exceed the maximum. The
+defaults let the evidence choose among 10, 11, and 12. `maximum_findings` is
+fixed at 50 in campaign configuration. The command-line headline override fixes
+the count only for bounded diagnostics and compatibility testing; reports
+created with an override identify the presentation-contract status as
+`explicit_override`.
