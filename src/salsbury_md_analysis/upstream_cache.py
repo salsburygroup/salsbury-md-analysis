@@ -39,6 +39,13 @@ _ENVIRONMENT_VARIABLES = {
 }
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _PREFLIGHT_ENVIRONMENT_VARIABLE = "SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT"
+_RESOURCE_ONLY_DEFINITION_FIELDS = {
+    "hydration_density_channels": {
+        "maximum_grid_voxels",
+        "maximum_particle_observations",
+        "maximum_sparse_frame_voxels",
+    },
+}
 
 
 def project_module_contract_sha256(
@@ -58,7 +65,10 @@ def project_module_contract_sha256(
     contract = {
         key: value for key, value in project.items() if key not in excluded
     }
-    contract["definitions"] = {module_id: definitions[module_id]}
+    module_definition = dict(definitions[module_id])
+    for field in _RESOURCE_ONLY_DEFINITION_FIELDS.get(module_id, set()):
+        module_definition.pop(field, None)
+    contract["definitions"] = {module_id: module_definition}
     for key in (
         "system_manifest", "reference_structure", "reference_connectivity"
     ):

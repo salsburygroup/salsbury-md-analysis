@@ -501,15 +501,15 @@ def hydration_density_channels_project(
                     peak_resident_sparse_voxels = max(
                         peak_resident_sparse_voxels, resident_sparse_voxels
                     )
-                    if resident_sparse_voxels > int(
+                    total_sparse_voxels += resident_sparse_voxels
+                    if total_sparse_voxels > int(
                         settings["maximum_sparse_frame_voxels"]
                     ):
                         raise HydrationDensityError(
-                            "maximum_sparse_frame_voxels gate exceeded: one frame "
-                            f"contains {resident_sparse_voxels} distinct species-frame "
+                            "maximum_sparse_frame_voxels gate exceeded: observed "
+                            f"{total_sparse_voxels} cumulative distinct species-frame "
                             f"voxels; maximum is {settings['maximum_sparse_frame_voxels']}"
                         )
-                    total_sparse_voxels += resident_sparse_voxels
                     _write_sparse_frame_record(
                         frame_voxel_stream, key, meta, per_species
                     )
@@ -679,7 +679,7 @@ def hydration_density_channels_project(
             "sparse_frame_voxel_storage": (
                 "temporary_streamed_sorted_uint32_flat_indices_v2"
             ),
-            "sparse_stream_volume_bound": "maximum_particle_observations",
+            "sparse_stream_volume_bound": "maximum_sparse_frame_voxels",
         },
         "error_count": 0,
         "warning_count": sum(issue["severity"] == "warning" for issue in issues),
@@ -688,7 +688,7 @@ def hydration_density_channels_project(
             "Aligned voxel occupancy supplements RDFs, bridges, and interaction fingerprints; it does not replace their radial or chemical definitions.",
             "A connected boundary-reaching high-occupancy component is a geometric channel candidate, not evidence of diffusion, flux, permeability, free energy, or mechanism.",
             "Grid spacing, padding, alignment, occupancy threshold, species identity, and frame selection require sensitivity analysis.",
-            "maximum_sparse_frame_voxels bounds one streamed frame; total temporary stream volume is bounded separately by maximum_particle_observations.",
+            "maximum_sparse_frame_voxels bounds cumulative temporary stream volume; maximum_particle_observations independently bounds particle processing work.",
             "Frame occupancies are descriptive and are not independent-replica uncertainty.",
         ],
     }
