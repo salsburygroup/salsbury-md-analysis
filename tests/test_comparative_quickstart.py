@@ -101,6 +101,10 @@ class ComparativeQuickstartTests(unittest.TestCase):
                 "unset SALSBURY_MD_ANALYSIS_TRAJECTORY_FEATURES_REPORT",
                 stage_one,
             )
+            self.assertNotIn(
+                r"\nunset SALSBURY_MD_ANALYSIS_TRAJECTORY_FEATURES_REPORT",
+                stage_one,
+            )
             for filename in generated:
                 syntax = subprocess.run(
                     ["bash", "-n", str(root / filename)],
