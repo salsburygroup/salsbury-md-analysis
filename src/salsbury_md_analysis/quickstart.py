@@ -2048,31 +2048,52 @@ fi
             cache_exports = ""
             if stage >= 1:
                 cache_exports += (
-                    f"export SALSBURY_MD_ANALYSIS_COMMON_PCA_REPORT="
-                    f"{json.dumps(str(output_root / 'common-pca/report.json'))}\n"
                     f"export SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT="
                     f"{json.dumps(preflight_report_path)}\n"
                 )
+                cache_exports += _validated_cache_export_shell(
+                    "SALSBURY_MD_ANALYSIS_COMMON_PCA_REPORT",
+                    output_root / "common-pca/report.json", "common_pca",
+                ) + "\n"
             if stage >= 2:
-                cache_exports += (
-                    f"export SALSBURY_MD_ANALYSIS_TICA_REPORT="
-                    f"{json.dumps(str(output_root / 'tica/report.json'))}\n"
-                    f"export SALSBURY_MD_ANALYSIS_KMEANS_REPORT="
-                    f"{json.dumps(str(output_root / 'cluster-kmeans/report.json'))}\n"
-                    f"export SALSBURY_MD_ANALYSIS_HDBSCAN_REPORT="
-                    f"{json.dumps(str(output_root / 'cluster-hdbscan/report.json'))}\n"
-                    f"export SALSBURY_MD_ANALYSIS_IMWKMEANS_REPORT="
-                    f"{json.dumps(str(output_root / 'cluster-imwkmeans/report.json'))}\n"
-                    f"export SALSBURY_MD_ANALYSIS_ALTERNATIVE_CLUSTERING_REPORT="
-                    f"{json.dumps(str(output_root / 'alternative-clustering/report.json'))}\n"
-                    f"export SALSBURY_MD_ANALYSIS_FES_REPORT="
-                    f"{json.dumps(str(output_root / 'pca-fes-basins/report.json'))}\n"
-                )
+                cache_exports += "\n".join((
+                    _validated_cache_export_shell(
+                        "SALSBURY_MD_ANALYSIS_TICA_REPORT",
+                        output_root / "tica/report.json",
+                        "time_lagged_independent_component_analysis",
+                    ),
+                    _validated_cache_export_shell(
+                        "SALSBURY_MD_ANALYSIS_KMEANS_REPORT",
+                        output_root / "cluster-kmeans/report.json",
+                        "clustering_kmeans",
+                    ),
+                    _validated_cache_export_shell(
+                        "SALSBURY_MD_ANALYSIS_HDBSCAN_REPORT",
+                        output_root / "cluster-hdbscan/report.json",
+                        "clustering_hdbscan",
+                    ),
+                    _validated_cache_export_shell(
+                        "SALSBURY_MD_ANALYSIS_IMWKMEANS_REPORT",
+                        output_root / "cluster-imwkmeans/report.json",
+                        "clustering_imwkmeans",
+                    ),
+                    _validated_cache_export_shell(
+                        "SALSBURY_MD_ANALYSIS_ALTERNATIVE_CLUSTERING_REPORT",
+                        output_root / "alternative-clustering/report.json",
+                        "alternative_clustering",
+                    ),
+                    _validated_cache_export_shell(
+                        "SALSBURY_MD_ANALYSIS_FES_REPORT",
+                        output_root / "pca-fes-basins/report.json",
+                        "pca_fes_basins",
+                    ),
+                )) + "\n"
             if stage >= 3 and "markov_state_models" in requested_modules:
-                cache_exports += (
-                    f"export SALSBURY_MD_ANALYSIS_MSM_REPORT="
-                    f"{json.dumps(str(output_root / 'markov-models/report.json'))}\n"
-                )
+                cache_exports += _validated_cache_export_shell(
+                    "SALSBURY_MD_ANALYSIS_MSM_REPORT",
+                    output_root / "markov-models/report.json",
+                    "markov_state_models",
+                ) + "\n"
             worker = f"""#!/usr/bin/env bash
 #SBATCH --job-name=sma-{project_id[:12]}-{view_index}-v{stage}
 #SBATCH --time={wall_limit}
@@ -2236,6 +2257,51 @@ def _execution_config_for_parallel_cpu_cap(
     return resolved
 
 
+def _validated_cache_export_shell(
+    variable: str, report_path: Path, module_id: str,
+) -> str:
+    """Export a matching cache or leave the consumer free to recompute it."""
+
+    report = json.dumps(str(report_path))
+    summary = json.dumps(str(report_path) + ".summary.json")
+    return f"""unset {variable}
+if [[ -f {report} && -f {summary} ]]; then
+  export {variable}={report}
+  if ! "$PYTHON" - "$PROJECT" {report} {summary} <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+from salsbury_md_analysis.upstream_cache import load_cached_project_report
+project_path, report_path, summary_path = sys.argv[1:]
+with open(report_path, encoding='utf-8') as handle:
+    report = json.load(handle)
+with open(summary_path, encoding='utf-8') as handle:
+    summary = json.load(handle)
+digest = hashlib.sha256()
+with open(report_path, 'rb') as handle:
+    for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+        digest.update(chunk)
+if report.get('technical_status') != 'complete':
+    raise SystemExit(1)
+if report.get('module_id') != {json.dumps(module_id)}:
+    raise SystemExit(1)
+if summary.get('technical_status') != 'complete':
+    raise SystemExit(1)
+if summary.get('report_sha256') != digest.hexdigest():
+    raise SystemExit(1)
+load_cached_project_report(
+    {json.dumps(module_id)}, Path(project_path), hash_content=True,
+    error_type=ValueError,
+)
+PY
+  then
+    unset {variable}
+  fi
+fi
+if [[ -z "${{{variable}:-}}" ]]; then
+  printf 'Validated cache unavailable for {module_id}; recomputing from project inputs.\\n' >&2
+fi"""
+
+
 def _slurm_files(
     root: Path, project_id: str, commands: Sequence[str], *, target_wall_hours: float,
     python_executable: str, package_root: str,
@@ -2386,35 +2452,80 @@ rm "$TMP" "$SUMMARY_TMP"
             '--dependency="afterok:$CACHE_JOB" "$ROOT/run_preflight.slurm")'
         )
     interaction_source_exports = "\n".join(
-        f"export {variable}={json.dumps(str(root / f'results/{command}/report.json'))}"
-        for command, variable in (
-            ("hydrogen-bond-discovery", "SALSBURY_MD_ANALYSIS_HYDROGEN_BOND_DISCOVERY_REPORT"),
-            ("water-mediated-hydrogen-bonds", "SALSBURY_MD_ANALYSIS_WATER_HYDROGEN_BOND_REPORT"),
-            ("ion-geometry", "SALSBURY_MD_ANALYSIS_ION_GEOMETRY_REPORT"),
-            ("ion-atmosphere", "SALSBURY_MD_ANALYSIS_ION_ATMOSPHERE_REPORT"),
-            ("multivalent-bridges", "SALSBURY_MD_ANALYSIS_MULTIVALENT_BRIDGES_REPORT"),
-            ("hydration-density-channels", "SALSBURY_MD_ANALYSIS_HYDRATION_DENSITY_REPORT"),
-            ("nucleic-acid-structure", "SALSBURY_MD_ANALYSIS_NUCLEIC_ACID_STRUCTURE_REPORT"),
+        _validated_cache_export_shell(
+            variable, root / f"results/{command}/report.json", module_id,
+        )
+        for command, variable, module_id in (
+            ("hydrogen-bond-discovery", "SALSBURY_MD_ANALYSIS_HYDROGEN_BOND_DISCOVERY_REPORT", "hydrogen_bond_discovery"),
+            ("water-mediated-hydrogen-bonds", "SALSBURY_MD_ANALYSIS_WATER_HYDROGEN_BOND_REPORT", "water_mediated_hydrogen_bond_networks"),
+            ("ion-geometry", "SALSBURY_MD_ANALYSIS_ION_GEOMETRY_REPORT", "ion_coordination_geometry"),
+            ("ion-atmosphere", "SALSBURY_MD_ANALYSIS_ION_ATMOSPHERE_REPORT", "ion_atmosphere"),
+            ("multivalent-bridges", "SALSBURY_MD_ANALYSIS_MULTIVALENT_BRIDGES_REPORT", "multivalent_molecular_bridges"),
+            ("hydration-density-channels", "SALSBURY_MD_ANALYSIS_HYDRATION_DENSITY_REPORT", "hydration_density_channels"),
+            ("nucleic-acid-structure", "SALSBURY_MD_ANALYSIS_NUCLEIC_ACID_STRUCTURE_REPORT", "nucleic_acid_structure"),
         )
         if command in commands
     )
     cache_exports = {
         0: "",
-        1: f"""export SALSBURY_MD_ANALYSIS_COMMON_PCA_REPORT={json.dumps(str(root / 'results/common-pca/report.json'))}
-export SALSBURY_MD_ANALYSIS_DCCM_REPORT={json.dumps(str(root / 'results/dccm/report.json'))}
-export SALSBURY_MD_ANALYSIS_RMSD_RG_REPORT={json.dumps(str(root / 'results/rmsd-rg/report.json'))}
-export SALSBURY_MD_ANALYSIS_TRAJECTORY_FEATURES_REPORT={json.dumps(str(root / 'results/trajectory-features/report.json'))}
-export SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT={json.dumps(str(root / 'preflight.report.json'))}
-{interaction_source_exports}""",
-        2: f"""export SALSBURY_MD_ANALYSIS_COMMON_PCA_REPORT={json.dumps(str(root / 'results/common-pca/report.json'))}
-export SALSBURY_MD_ANALYSIS_TICA_REPORT={json.dumps(str(root / 'results/tica/report.json'))}
-export SALSBURY_MD_ANALYSIS_KMEANS_REPORT={json.dumps(str(root / 'results/cluster-kmeans/report.json'))}
-export SALSBURY_MD_ANALYSIS_HDBSCAN_REPORT={json.dumps(str(root / 'results/cluster-hdbscan/report.json'))}
-export SALSBURY_MD_ANALYSIS_IMWKMEANS_REPORT={json.dumps(str(root / 'results/cluster-imwkmeans/report.json'))}
-export SALSBURY_MD_ANALYSIS_ALTERNATIVE_CLUSTERING_REPORT={json.dumps(str(root / 'results/alternative-clustering/report.json'))}
-export SALSBURY_MD_ANALYSIS_FES_REPORT={json.dumps(str(root / 'results/pca-fes-basins/report.json'))}
-export SALSBURY_MD_ANALYSIS_INTERACTION_FINGERPRINTS_REPORT={json.dumps(str(root / 'results/interaction-fingerprints/report.json'))}
-export SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT={json.dumps(str(root / 'preflight.report.json'))}""",
+        1: "\n".join((
+            f"export SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT={json.dumps(str(root / 'preflight.report.json'))}",
+            _validated_cache_export_shell(
+                "SALSBURY_MD_ANALYSIS_COMMON_PCA_REPORT",
+                root / "results/common-pca/report.json", "common_pca",
+            ),
+            _validated_cache_export_shell(
+                "SALSBURY_MD_ANALYSIS_DCCM_REPORT",
+                root / "results/dccm/report.json", "dccm",
+            ),
+            _validated_cache_export_shell(
+                "SALSBURY_MD_ANALYSIS_RMSD_RG_REPORT",
+                root / "results/rmsd-rg/report.json", "replica_rmsd_rg",
+            ),
+            _validated_cache_export_shell(
+                "SALSBURY_MD_ANALYSIS_TRAJECTORY_FEATURES_REPORT",
+                root / "results/trajectory-features/report.json",
+                "trajectory_features",
+            ),
+            interaction_source_exports,
+        )),
+        2: "\n".join((
+            f"export SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT={json.dumps(str(root / 'preflight.report.json'))}",
+            _validated_cache_export_shell(
+                "SALSBURY_MD_ANALYSIS_COMMON_PCA_REPORT",
+                root / "results/common-pca/report.json", "common_pca",
+            ),
+            _validated_cache_export_shell(
+                "SALSBURY_MD_ANALYSIS_TICA_REPORT",
+                root / "results/tica/report.json",
+                "time_lagged_independent_component_analysis",
+            ),
+            _validated_cache_export_shell(
+                "SALSBURY_MD_ANALYSIS_KMEANS_REPORT",
+                root / "results/cluster-kmeans/report.json", "clustering_kmeans",
+            ),
+            _validated_cache_export_shell(
+                "SALSBURY_MD_ANALYSIS_HDBSCAN_REPORT",
+                root / "results/cluster-hdbscan/report.json", "clustering_hdbscan",
+            ),
+            _validated_cache_export_shell(
+                "SALSBURY_MD_ANALYSIS_IMWKMEANS_REPORT",
+                root / "results/cluster-imwkmeans/report.json", "clustering_imwkmeans",
+            ),
+            _validated_cache_export_shell(
+                "SALSBURY_MD_ANALYSIS_ALTERNATIVE_CLUSTERING_REPORT",
+                root / "results/alternative-clustering/report.json", "alternative_clustering",
+            ),
+            _validated_cache_export_shell(
+                "SALSBURY_MD_ANALYSIS_FES_REPORT",
+                root / "results/pca-fes-basins/report.json", "pca_fes_basins",
+            ),
+            _validated_cache_export_shell(
+                "SALSBURY_MD_ANALYSIS_INTERACTION_FINGERPRINTS_REPORT",
+                root / "results/interaction-fingerprints/report.json",
+                "interaction_fingerprints",
+            ),
+        )),
     }
 
     def worker_text(stage: int, stage_commands: Sequence[str]) -> str:
@@ -2430,6 +2541,7 @@ export SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT={json.dumps(str(root / 'preflight.r
 #SBATCH --error={root}/logs/%A_%a.err
 set -euo pipefail
 ROOT={json.dumps(str(root))}
+PROJECT="$ROOT/project.json"
 COMMANDS=(
 {command_lines}
 )
@@ -2460,7 +2572,7 @@ PY
   exit 0
 fi
 SUMMARY_TMP="$TMP.summary.json"
-"$PYTHON" -m salsbury_md_analysis run-instrumented "$COMMAND" "$ROOT/project.json" \
+"$PYTHON" -m salsbury_md_analysis run-instrumented "$COMMAND" "$PROJECT" \
   --hash-content --summary-sidecar "$SUMMARY_TMP" --installed-report-path "$FINAL" > "$TMP"
 "$PYTHON" - "$TMP" "$SUMMARY_TMP" <<'PY'
 import hashlib, json, sys
@@ -2657,6 +2769,33 @@ PY
 ln "$FINDING_TMP" "$FINDING_FINAL"
 rm "$FINDING_TMP"
 """))
+    early_reporting_ids = {
+        "rmsf_permutation_inference", "integrated_comparison",
+    }
+    early_reporting_workers: Dict[str, str] = {}
+    retained_reporting_commands: list[tuple[str, str]] = []
+    for reporting_id, reporting_command in reporting_commands:
+        if reporting_id not in early_reporting_ids:
+            retained_reporting_commands.append((reporting_id, reporting_command))
+            continue
+        filename = f"run_reporting_{reporting_id}.slurm"
+        early_reporting_workers[filename] = f"""#!/usr/bin/env bash
+#SBATCH --job-name=sma-{project_id[:16]}-{reporting_id[:8]}
+#SBATCH --time=00:30:00
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=2G
+#SBATCH --output={root}/logs/%j-{reporting_id}.out
+#SBATCH --error={root}/logs/%j-{reporting_id}.err
+set -euo pipefail
+ROOT={json.dumps(str(root))}
+PYTHON_DEFAULT={json.dumps(python_executable)}
+PYTHON="${{SALSBURY_MD_ANALYSIS_PYTHON:-$PYTHON_DEFAULT}}"
+PACKAGE_ROOT_DEFAULT={json.dumps(package_root)}
+PACKAGE_ROOT="${{SALSBURY_MD_ANALYSIS_PYTHONPATH:-$PACKAGE_ROOT_DEFAULT}}"
+export PYTHONPATH="$PACKAGE_ROOT${{PYTHONPATH:+:$PYTHONPATH}}"
+{reporting_command}
+"""
+    reporting_commands = retained_reporting_commands
     if reporting_commands:
         wrapped_reporting_commands = ["FINAL_REPORTING_STATUS=0"]
         for reporting_id, reporting_command in reporting_commands:
@@ -2736,6 +2875,9 @@ printf 'Results will appear under %s/results.\\n' "$ROOT"
         (root / coordinate_cache_filename).write_text(
             coordinate_cache_worker, encoding="utf-8"
         )
+    for filename, worker in sorted(early_reporting_workers.items()):
+        (root / filename).write_text(worker, encoding="utf-8")
+        generated.append(filename)
     (root / "run_finalize_reporting.slurm").write_text(finalizer, encoding="utf-8")
     (root / "submit.sh").write_text(submit, encoding="utf-8")
     _json_write(
@@ -2746,7 +2888,7 @@ printf 'Results will appear under %s/results.\\n' "$ROOT"
             "dependency_policy": (
                 "stage numbers group generated commands; they do not make every "
                 "task depend on the preceding stage. The execution adapter derives "
-                "success-only edges from each task's real report inputs."
+                "success-only edges from each task's irreplaceable inputs."
             ),
             "maximum_parallel_cpus": maximum_parallel_cpus,
             "coordinate_cache": {
@@ -2754,7 +2896,10 @@ printf 'Results will appear under %s/results.\\n' "$ROOT"
                 "worker_processes": (
                     coordinate_cache_workers if coordinate_cache_enabled else 0
                 ),
-                "dependency": "before base preflight and every conformational view",
+                "dependency": (
+                    "only before preflights whose manifests are built inside the "
+                    "coordinate cache; base-input preflight and analyses are independent"
+                ),
                 "source_scope": "all original physical frames",
             },
             "automatic_context_stages": {

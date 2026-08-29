@@ -299,8 +299,10 @@ DEAC profile this is `ceil(1.5 × working set + 1 GiB)`, with a 2 GiB minimum.
 It then packs independent tasks into resource waves whose summed CPU and
 memory requests stay within the configured campaign caps. Resource waves wait
 for completion of the preceding wave so a failure releases the allocation;
-success-only dependencies are added separately for the reports a task truly
-consumes. A lower memory cap
+success-only dependencies are reserved for inputs a task cannot reconstruct.
+Reusable upstream reports use completion-only ordering, are validated against
+the current project and input hashes, and fall back to recomputation when they
+are missing, failed, or incompatible. A lower memory cap
 can therefore increase the integer strides or serialize work even when every
 individual task fits. The local executor and the generated `submit.sh` enforce
 the same limits.

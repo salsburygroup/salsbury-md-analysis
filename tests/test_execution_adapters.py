@@ -360,8 +360,9 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertNotIn(qc["task_id"], fes["depends_on_task_ids"])
         self.assertEqual(
             set(fes["depends_on_task_ids"]),
-            {preflight["task_id"], pca["task_id"]},
+            {preflight["task_id"]},
         )
+        self.assertEqual(fes["wait_for_task_ids"], [pca["task_id"]])
         self.assertEqual(finalizer["depends_on_task_ids"], [])
         self.assertEqual(
             set(finalizer["wait_for_task_ids"]),
@@ -370,6 +371,166 @@ class ExecutionAdapterTests(unittest.TestCase):
                 fes["task_id"],
             },
         )
+
+    def test_coordinate_cache_gates_only_cache_backed_view_preflight(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            worker = (
+                "#!/usr/bin/env bash\n#SBATCH --time=01:00:00\n"
+                "#SBATCH --cpus-per-task=1\n#SBATCH --mem=2G\n"
+                "set -euo pipefail\n"
+            )
+            (root / "run_coordinate_cache.slurm").write_text(worker, encoding="utf-8")
+            (root / "run_preflight.slurm").write_text(worker, encoding="utf-8")
+            (root / "run_stage_0_array.slurm").write_text(
+                worker + "COMMANDS=(\n  'structural-qc'\n)\n", encoding="utf-8"
+            )
+            cache_manifest = root / "coordinate-cache/system-cache.json"
+            preflight_report = root / "preflight-system-cache.report.json"
+            (root / "run_view_preflight_0.slurm").write_text(
+                worker + f"MANIFEST={cache_manifest}\nFINAL={preflight_report}\n",
+                encoding="utf-8",
+            )
+            (root / "project-cached.json").write_text(json.dumps({
+                "system_manifest": "coordinate-cache/system-cache.json",
+                "definitions": {"common_pca": {}},
+            }), encoding="utf-8")
+            (root / "run_view_cached_stage_0.slurm").write_text(
+                worker + f"PROJECT={root / 'project-cached.json'}\n"
+                + "COMMANDS=(\n  'common-pca'\n)\n",
+                encoding="utf-8",
+            )
+            (root / "run_finalize_reporting.slurm").write_text(worker, encoding="utf-8")
+            (root / "analysis-config.json").write_text(json.dumps({
+                "modules": {
+                    "structural_integrity_qc": {"depends_on": []},
+                    "common_pca": {"depends_on": []},
+                }
+            }), encoding="utf-8")
+            plan = build_local_execution_plan(root, {
+                "maximum_parallel_cpus": 2,
+                "maximum_hours_per_cpu": 8,
+                "maximum_memory_gib": 8,
+            }, {"resource_table_enabled": False, "finding_picker_enabled": False})
+
+        tasks = {
+            (task["script"], task.get("array_task_id")): task
+            for phase in plan["phases"] for task in phase["tasks"]
+        }
+        cache = tasks[("run_coordinate_cache.slurm", None)]
+        preflight = tasks[("run_preflight.slurm", None)]
+        qc = tasks[("run_stage_0_array.slurm", 0)]
+        view_preflight = tasks[("run_view_preflight_0.slurm", None)]
+        view_pca = tasks[("run_view_cached_stage_0.slurm", 0)]
+        self.assertEqual(preflight["depends_on_task_ids"], [])
+        self.assertEqual(qc["depends_on_task_ids"], [preflight["task_id"]])
+        self.assertEqual(view_preflight["depends_on_task_ids"], [cache["task_id"]])
+        self.assertEqual(view_pca["depends_on_task_ids"], [view_preflight["task_id"]])
+
+    def test_experimental_aggregators_wait_without_false_success_gates(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            worker = (
+                "#!/usr/bin/env bash\n#SBATCH --time=01:00:00\n"
+                "#SBATCH --cpus-per-task=1\n#SBATCH --mem=2G\n"
+                "set -euo pipefail\n"
+            )
+            project = root / "project.json"
+            project.write_text(json.dumps({
+                "system_manifest": "system.json",
+                "definitions": {
+                    "hydrogen_bond_discovery": {},
+                    "ion_atmosphere": {},
+                    "interaction_fingerprints": {
+                        "source_modules": [
+                            "hydrogen_bond_discovery", "ion_atmosphere",
+                        ]
+                    },
+                },
+            }), encoding="utf-8")
+            (root / "run_preflight.slurm").write_text(worker, encoding="utf-8")
+            (root / "run_stage_0_array.slurm").write_text(
+                worker + f"PROJECT={project}\nCOMMANDS=(\n"
+                "  'hydrogen-bond-discovery'\n  'ion-atmosphere'\n)\n",
+                encoding="utf-8",
+            )
+            (root / "run_stage_1_array.slurm").write_text(
+                worker + f"PROJECT={project}\nCOMMANDS=(\n"
+                "  'interaction-fingerprints'\n)\n",
+                encoding="utf-8",
+            )
+            (root / "run_finalize_reporting.slurm").write_text(worker, encoding="utf-8")
+            (root / "analysis-config.json").write_text(json.dumps({
+                "modules": {
+                    "hydrogen_bond_discovery": {"depends_on": []},
+                    "ion_atmosphere": {"depends_on": []},
+                    "interaction_fingerprints": {"depends_on": []},
+                }
+            }), encoding="utf-8")
+            plan = build_local_execution_plan(root, {
+                "maximum_parallel_cpus": 2,
+                "maximum_hours_per_cpu": 8,
+                "maximum_memory_gib": 8,
+            }, {"resource_table_enabled": False, "finding_picker_enabled": False})
+
+        tasks = {
+            task.get("module_id"): task
+            for phase in plan["phases"] for task in phase["tasks"]
+            if task.get("module_id")
+        }
+        fingerprints = tasks["interaction_fingerprints"]
+        self.assertEqual(fingerprints["depends_on_task_ids"], [
+            next(
+                task for phase in plan["phases"] for task in phase["tasks"]
+                if task["script"] == "run_preflight.slurm"
+            )["task_id"]
+        ])
+        self.assertEqual(set(fingerprints["wait_for_task_ids"]), {
+            tasks["hydrogen_bond_discovery"]["task_id"],
+            tasks["ion_atmosphere"]["task_id"],
+        })
+
+    def test_reporting_components_do_not_wait_for_structural_qc(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            worker = (
+                "#!/usr/bin/env bash\n#SBATCH --time=01:00:00\n"
+                "#SBATCH --cpus-per-task=1\n#SBATCH --mem=2G\nset -euo pipefail\n"
+            )
+            (root / "run_preflight.slurm").write_text(worker, encoding="utf-8")
+            (root / "run_stage_0_array.slurm").write_text(
+                worker + "COMMANDS=(\n  'structural-qc'\n  'rmsf'\n  'common-pca'\n)\n",
+                encoding="utf-8",
+            )
+            (root / "run_reporting_rmsf_permutation_inference.slurm").write_text(worker, encoding="utf-8")
+            (root / "run_reporting_integrated_comparison.slurm").write_text(worker, encoding="utf-8")
+            (root / "run_finalize_reporting.slurm").write_text(worker, encoding="utf-8")
+            (root / "analysis-config.json").write_text(json.dumps({
+                "modules": {
+                    "structural_integrity_qc": {"depends_on": []},
+                    "pooled_rmsf": {"depends_on": []},
+                    "common_pca": {"depends_on": []},
+                }
+            }), encoding="utf-8")
+            plan = build_local_execution_plan(root, {
+                "maximum_parallel_cpus": 3,
+                "maximum_hours_per_cpu": 8,
+                "maximum_memory_gib": 12,
+            }, {"resource_table_enabled": False, "finding_picker_enabled": False})
+
+        tasks = {
+            task.get("module_id") or task["script"]: task
+            for phase in plan["phases"] for task in phase["tasks"]
+        }
+        qc = tasks["structural_integrity_qc"]
+        rmsf = tasks["pooled_rmsf"]
+        permutation = tasks["rmsf_permutation_inference"]
+        integrated = tasks["integrated_comparison"]
+        self.assertEqual(permutation["depends_on_task_ids"], [rmsf["task_id"]])
+        self.assertNotIn(qc["task_id"], permutation["depends_on_task_ids"])
+        self.assertNotIn(qc["task_id"], integrated["wait_for_task_ids"])
+        self.assertIn(rmsf["task_id"], integrated["wait_for_task_ids"])
+        self.assertIn(tasks["common_pca"]["task_id"], integrated["wait_for_task_ids"])
 
     def test_mixed_resource_array_is_split_into_scheduler_tiers(self):
         repository = Path(__file__).resolve().parents[1]
