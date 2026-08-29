@@ -1,12 +1,16 @@
 import io
+import gzip
 import json
 import math
 import random
+import shutil
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
+import salsbury_md_analysis.structural_qc as structural_qc_module
 from salsbury_md_analysis.cli import main
 from salsbury_md_analysis.structural_qc import (
     _maximum_rigid_body_aligned_displacement,
@@ -145,7 +149,12 @@ class StructuralQCTests(unittest.TestCase):
         )
 
     def test_teaching_fixture_passes_technical_gates_only(self):
-        report = structural_qc_project(EXAMPLE / "project.json", hash_content=True)
+        with patch.object(
+            structural_qc_module, "_write_structural_qc_checkpoint"
+        ):
+            report = structural_qc_project(
+                EXAMPLE / "project.json", hash_content=True
+            )
         self.assertEqual(report["technical_status"], "complete")
         self.assertEqual(report["scientific_status"], "not evaluated")
         self.assertTrue(report["input_content_signature_sha256"])
@@ -237,6 +246,90 @@ class StructuralQCTests(unittest.TestCase):
         self.assertEqual(segment["evaluated_frame_count"], 2)
         self.assertIn("FRAME_SUBSAMPLING", {issue["code"] for issue in report["issues"]})
 
+    def test_segment_completion_checkpoint_is_reused_without_decoding(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project = _write_project(
+                root,
+                "1\nf0\nC 0 0 0\n1\nf1\nC 1 0 0\n",
+                atom_count=1,
+            )
+            first = structural_qc_project(project)
+            checkpoint_files = list(
+                root.glob("outputs/structural-qc/checkpoints/*/*.json.gz")
+            )
+            self.assertEqual(len(checkpoint_files), 1)
+            with gzip.open(checkpoint_files[0], "rt", encoding="utf-8") as handle:
+                wrapper = json.load(handle)
+            self.assertEqual(wrapper["payload"]["status"], "complete")
+            self.assertEqual(
+                first["checkpointing"]["within_segment_interval_seconds"],
+                7200.0,
+            )
+
+            with patch.object(
+                structural_qc_module,
+                "iter_coordinate_frames",
+                side_effect=AssertionError("completed segment was decoded again"),
+            ):
+                second = structural_qc_project(project)
+            self.assertEqual(first, second)
+
+    def test_within_segment_checkpoint_resumes_equivalently_after_two_hours(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project = _write_project(
+                root,
+                "1\nf0\nC 0 0 0\n1\nf1\nC 1 0 0\n1\nf2\nC 2 0 0\n",
+                atom_count=1,
+            )
+            original_writer = structural_qc_module._write_structural_qc_checkpoint
+            observed_statuses = []
+
+            def write_then_interrupt(path, identity, payload):
+                original_writer(path, identity, payload)
+                observed_statuses.append(payload["status"])
+                if payload["status"] == "in_progress":
+                    raise KeyboardInterrupt("simulated scheduler interruption")
+
+            with patch.object(
+                structural_qc_module.time,
+                "monotonic",
+                side_effect=[0.0, 7201.0],
+            ), patch.object(
+                structural_qc_module,
+                "_write_structural_qc_checkpoint",
+                side_effect=write_then_interrupt,
+            ):
+                with self.assertRaisesRegex(
+                    KeyboardInterrupt, "simulated scheduler interruption"
+                ):
+                    structural_qc_project(project)
+            self.assertEqual(observed_statuses, ["in_progress"])
+
+            checkpoint_files = list(
+                root.glob("outputs/structural-qc/checkpoints/*/*.json.gz")
+            )
+            self.assertEqual(len(checkpoint_files), 1)
+            with gzip.open(checkpoint_files[0], "rt", encoding="utf-8") as handle:
+                interrupted_wrapper = json.load(handle)
+            self.assertEqual(interrupted_wrapper["payload"]["status"], "in_progress")
+            self.assertEqual(
+                interrupted_wrapper["payload"]["segment_state"][
+                    "last_decoded_frame_index"
+                ],
+                0,
+            )
+
+            resumed = structural_qc_project(project)
+            with gzip.open(checkpoint_files[0], "rt", encoding="utf-8") as handle:
+                completed_wrapper = json.load(handle)
+            self.assertEqual(completed_wrapper["payload"]["status"], "complete")
+
+            shutil.rmtree(root / "outputs" / "structural-qc" / "checkpoints")
+            uninterrupted = structural_qc_project(project)
+            self.assertEqual(resumed, uninterrupted)
+
     def test_missing_explicit_thresholds_returns_machine_report(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -250,7 +343,9 @@ class StructuralQCTests(unittest.TestCase):
 
     def test_cli_emits_machine_readable_qc(self):
         output = io.StringIO()
-        with redirect_stdout(output):
+        with redirect_stdout(output), patch.object(
+            structural_qc_module, "_write_structural_qc_checkpoint"
+        ):
             status = main(["structural-qc", str(EXAMPLE / "project.json")])
         report = json.loads(output.getvalue())
         self.assertEqual(status, 0)

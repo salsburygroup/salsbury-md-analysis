@@ -630,6 +630,102 @@ class PeriodicFrameProcessor:
             self._previous_anchors = None
             self._previous_component_signature = None
 
+    def checkpoint_state(self) -> Dict[str, object]:
+        """Return the mutable reconstruction state at a frame boundary."""
+
+        return {
+            "schema": "periodic_frame_processor_checkpoint_v1",
+            "policy": self.policy,
+            "atom_count": self.atom_count,
+            "previous_anchors": (
+                [list(point) for point in self._previous_anchors]
+                if self._previous_anchors is not None else None
+            ),
+            "previous_component_signature": (
+                list(self._previous_component_signature)
+                if self._previous_component_signature is not None else None
+            ),
+            "periodic_frame_count": self.periodic_frame_count,
+            "reconstructed_frame_count": self.reconstructed_frame_count,
+            "reconstructed_component_count": self.reconstructed_component_count,
+            "reconstructed_atom_count": self.reconstructed_atom_count,
+            "maximum_anchor_displacement_observed": (
+                self.maximum_anchor_displacement_observed
+            ),
+        }
+
+    def restore_checkpoint_state(self, state: Mapping[str, object]) -> None:
+        """Restore a state produced by :meth:`checkpoint_state` fail-closed."""
+
+        expected = {
+            "schema", "policy", "atom_count", "previous_anchors",
+            "previous_component_signature", "periodic_frame_count",
+            "reconstructed_frame_count", "reconstructed_component_count",
+            "reconstructed_atom_count", "maximum_anchor_displacement_observed",
+        }
+        if not isinstance(state, Mapping) or set(state) != expected:
+            raise PeriodicReconstructionError(
+                "periodic checkpoint state has an unsupported schema"
+            )
+        if (
+            state["schema"] != "periodic_frame_processor_checkpoint_v1"
+            or state["policy"] != self.policy
+            or state["atom_count"] != self.atom_count
+        ):
+            raise PeriodicReconstructionError(
+                "periodic checkpoint state does not match this processor"
+            )
+        anchors = state["previous_anchors"]
+        if anchors is None:
+            self._previous_anchors = None
+        elif isinstance(anchors, list) and all(
+            isinstance(point, list) and len(point) == 3
+            and all(
+                isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(float(value))
+                for value in point
+            )
+            for point in anchors
+        ):
+            self._previous_anchors = tuple(
+                tuple(float(value) for value in point) for point in anchors
+            )
+        else:
+            raise PeriodicReconstructionError(
+                "periodic checkpoint anchors are invalid"
+            )
+        signature = state["previous_component_signature"]
+        if signature is None:
+            self._previous_component_signature = None
+        elif isinstance(signature, list) and all(
+            isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            for value in signature
+        ):
+            self._previous_component_signature = tuple(signature)
+        else:
+            raise PeriodicReconstructionError(
+                "periodic checkpoint component signature is invalid"
+            )
+        for field in (
+            "periodic_frame_count", "reconstructed_frame_count",
+            "reconstructed_component_count", "reconstructed_atom_count",
+        ):
+            value = state[field]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise PeriodicReconstructionError(
+                    f"periodic checkpoint {field} is invalid"
+                )
+            setattr(self, field, value)
+        maximum = state["maximum_anchor_displacement_observed"]
+        if (
+            isinstance(maximum, bool) or not isinstance(maximum, (int, float))
+            or not math.isfinite(float(maximum)) or float(maximum) < 0.0
+        ):
+            raise PeriodicReconstructionError(
+                "periodic checkpoint maximum anchor displacement is invalid"
+            )
+        self.maximum_anchor_displacement_observed = float(maximum)
+
     def process(
         self,
         frame: CoordinateFrame,
