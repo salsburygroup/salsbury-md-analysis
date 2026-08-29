@@ -986,14 +986,14 @@ class QuickstartTests(unittest.TestCase):
             self.assertIn("SALSBURY_MD_ANALYSIS_PYTHONPATH", preflight)
             self.assertIn("SALSBURY_MD_ANALYSIS_PYTHONPATH", submit)
             self.assertIn("preflight-system", preflight)
-            self.assertIn(
+            self.assertNotIn(
                 '--dependency="afterok:$CACHE_JOB"', submit
             )
             self.assertIn("--dependency=\"afterok:$PREFLIGHT_JOB\"", submit)
-            self.assertIn("--dependency=\"afterok:$STAGE_0_JOB\"", submit)
+            self.assertIn("--dependency=\"afterany:$STAGE_0_JOB\"", submit)
             self.assertIn('FINAL_DEPENDENCIES="${STAGE_1_JOB}"', submit)
             self.assertIn(
-                '--dependency="afterok:$FINAL_DEPENDENCIES"', submit
+                '--dependency="afterany:$FINAL_DEPENDENCIES"', submit
             )
             self.assertIn('PREFLIGHT_JOB="${PREFLIGHT_JOB%%;*}"', submit)
             self.assertIn("submit-conformational-views.sh", submit)
