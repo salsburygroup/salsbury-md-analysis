@@ -276,10 +276,10 @@ process-private temporary storage as sorted flat 32-bit indices and replayed
 after aggregate density components are defined. This changes storage cost, not
 voxel identity, occupancy, frame coverage, or frame-to-feature assignment.
 
-`maximum_sparse_frame_voxels` bounds the compact voxel membership of any one
-selected frame. The total temporary stream volume is bounded separately by
-`maximum_particle_observations`; selected frames are not dropped to satisfy an
-in-memory accumulation limit.
+`maximum_sparse_frame_voxels` bounds the cumulative compact temporary stream,
+while `maximum_particle_observations` independently bounds particle-processing
+work. Neither ceiling changes the scientific contract or drops selected frames;
+the module fails closed when either resource ceiling is exceeded.
 
 Voxels above the configured frame-occupancy threshold are grouped with
 six-face connectivity. A component that reaches the bounded grid exterior and
