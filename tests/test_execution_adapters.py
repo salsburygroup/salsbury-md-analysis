@@ -8,6 +8,7 @@ from unittest.mock import patch
 from salsbury_md_analysis.execution_adapters import (
     ExecutionAdapterError,
     _active_python_executable,
+    _append_afterany_dependencies,
     apply_slurm_profile,
     build_local_execution_plan,
     load_slurm_profile,
@@ -16,6 +17,20 @@ from salsbury_md_analysis.execution_adapters import (
 
 
 class ExecutionAdapterTests(unittest.TestCase):
+    def test_resource_barrier_does_not_turn_an_input_gate_into_a_success_chain(self):
+        self.assertEqual(
+            _append_afterany_dependencies(
+                '--parsable --dependency="afterok:$INPUT_JOB"',
+                ["FIRST_TIER", "SECOND_TIER"],
+            ),
+            '--parsable --dependency="afterok:$INPUT_JOB,'
+            'afterany:${FIRST_TIER}:${SECOND_TIER}"',
+        )
+        self.assertEqual(
+            _append_afterany_dependencies("--parsable", ["FIRST_TIER"]),
+            '--parsable --dependency="afterany:${FIRST_TIER}"',
+        )
+
     def test_active_python_path_preserves_virtual_environment_symlink(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -626,7 +641,7 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertEqual(syntax.returncode, 0, syntax.stderr)
         self.assertIn("--mem=128G --partition=large --array=1", submit)
         self.assertIn("--mem=4G --partition=small --array=0", submit)
-        self.assertIn('--dependency="afterok:${JOB_W000_T000}"', submit)
+        self.assertIn('--dependency="afterany:${JOB_W000_T000}"', submit)
         self.assertEqual(
             [wave["memory_gib"] for wave in scheduler["resource_waves"]],
             [128.0, 4.0],
@@ -695,7 +710,7 @@ class ExecutionAdapterTests(unittest.TestCase):
             wave["memory_gib"] <= 185.0
             for wave in scheduler["resource_waves"]
         ))
-        self.assertIn('--dependency="afterok:${JOB_W000_T000}:${JOB_W000_T001}"', submit)
+        self.assertIn('--dependency="afterany:${JOB_W000_T000}:${JOB_W000_T001}"', submit)
         self.assertFalse(preview["execution_started"])
         self.assertFalse(preview["jobs_submitted"])
         self.assertEqual(preview["task_count"], 3)
