@@ -502,6 +502,14 @@ class QuickstartTests(unittest.TestCase):
         self.assertIn("SALSBURY_MD_ANALYSIS_MSM_REPORT", reactive_worker)
         self.assertIn('"allosteric-pathways"', base_worker)
         self.assertIn('"interaction-fingerprints"', base_worker)
+        self.assertIn(
+            'if [[ "$COMMAND" == "interaction-fingerprints" ]]; then',
+            base_worker,
+        )
+        self.assertIn(
+            "SALSBURY_MD_ANALYSIS_WATER_HYDROGEN_BOND_REPORT",
+            base_worker,
+        )
         self.assertNotIn('"interaction-persistence"', base_worker)
         self.assertIn('"spatial-interaction-ensembles"', persistence_worker)
         self.assertIn('"interaction-persistence"', persistence_worker)
