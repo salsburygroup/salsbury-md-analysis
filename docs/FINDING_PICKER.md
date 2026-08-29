@@ -49,10 +49,18 @@ Single-system extrema, state populations, silhouettes, correlations,
 information measures, and threshold-state occupancies are normally descriptive
 or exploratory.
 
-`reporting.maximum_findings` limits the ranked list. The output separately
-reports `candidate_count`, `reported_count`, and
-`unreported_candidate_count`, so truncation cannot be mistaken for complete
-candidate coverage. The raw reports remain the scientific record.
+The first `reporting.headline_findings` entries form the short opening section.
+The remaining entries through `reporting.maximum_findings` are secondary
+findings. The defaults are 12 headline findings and 50 total highlights. Every
+ranked candidate, including candidates below the highlight boundary, remains
+searchable in the interactive report and is written to the JSON and CSV
+outputs. The output reports the headline, secondary, searchable-candidate, and
+not-highlighted counts so presentation limits cannot be mistaken for complete
+candidate coverage. The raw module reports remain the scientific record.
+
+Quality-control and interpretation records remain in the JSON and interactive
+report and are also written to `prioritized_findings_qc.md`. Keeping the full
+QC ledger separate prevents it from overwhelming the shorter findings report.
 
 ## QC channel
 
@@ -70,6 +78,7 @@ The picker is enabled by default:
 {
   "reporting": {
     "finding_picker_enabled": true,
+    "headline_findings": 12,
     "maximum_findings": 50
   }
 }

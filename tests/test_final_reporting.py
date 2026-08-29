@@ -67,6 +67,12 @@ class FinalReportingTests(unittest.TestCase):
                 "reviewed_no_automatic_highlight",
             )
             self.assertEqual(report["quality_control_record_count"], 1)
+            self.assertEqual(report["headline_count"], 1)
+            self.assertEqual(report["secondary_count"], 0)
+            self.assertEqual(report["searchable_candidate_count"], 1)
+            self.assertEqual(
+                report["headline_findings"], report["findings"]
+            )
             self.assertFalse(any(
                 row["module_id"] == "structural_integrity_qc"
                 for row in report["findings"]
@@ -98,6 +104,18 @@ class FinalReportingTests(unittest.TestCase):
             }), encoding="utf-8")
             report = prioritize_findings(root, maximum_findings=500)
             self.assertEqual(report["scientific_status"], "not evaluated")
+            self.assertEqual(report["headline_count"], 12)
+            self.assertEqual(report["secondary_count"], 198)
+            self.assertEqual(report["searchable_candidate_count"], 210)
+            self.assertEqual(len(report["all_candidates"]), 210)
+            self.assertTrue(all(
+                row["presentation_tier"] == "headline"
+                for row in report["all_candidates"][:12]
+            ))
+            self.assertTrue(all(
+                row["presentation_tier"] == "secondary"
+                for row in report["all_candidates"][12:]
+            ))
             pairwise = [
                 row for row in report["findings"]
                 if row["comparison_family"] == "pooled_rmsf:pairwise_atom_difference"

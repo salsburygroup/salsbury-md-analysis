@@ -1083,9 +1083,15 @@ def _summarize_execution_resources_command(root: Path) -> int:
     return 0 if report.get("technical_status") == "complete" else 2
 
 
-def _prioritize_findings_command(root: Path, maximum_findings: Optional[int]) -> int:
+def _prioritize_findings_command(
+    root: Path, maximum_findings: Optional[int], headline_findings: Optional[int],
+) -> int:
     try:
-        report = prioritize_findings(root, maximum_findings=maximum_findings)
+        report = prioritize_findings(
+            root,
+            maximum_findings=maximum_findings,
+            headline_findings=headline_findings,
+        )
     except (FindingPickerError, OSError, ValueError) as exc:
         report = {
             "technical_status": "failed",
@@ -1954,6 +1960,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     finding_parser.add_argument("root", type=Path, help="Generated analysis root.")
     finding_parser.add_argument("--maximum-findings", type=int)
+    finding_parser.add_argument("--headline-findings", type=int)
 
     rmsf_export_parser = subparsers.add_parser(
         "export-rmsf-visualization",
@@ -2336,7 +2343,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.redact_source_paths,
         )
     if args.command == "prioritize-findings":
-        return _prioritize_findings_command(args.root, args.maximum_findings)
+        return _prioritize_findings_command(
+            args.root, args.maximum_findings, args.headline_findings
+        )
     if args.command == "export-rmsf-visualization":
         return _export_rmsf_visualization_command(
             args.report,

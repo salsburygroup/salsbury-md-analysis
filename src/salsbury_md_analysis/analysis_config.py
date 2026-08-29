@@ -320,6 +320,7 @@ def default_analysis_config(
         "reporting": {
             "resource_table_enabled": True,
             "finding_picker_enabled": True,
+            "headline_findings": 12,
             "maximum_findings": 50,
         },
         "comparisons": {
@@ -556,7 +557,7 @@ def load_analysis_config(
     for section, allowed in (
         ("reporting", {
             "resource_table_enabled", "finding_picker_enabled",
-            "maximum_findings",
+            "headline_findings", "maximum_findings",
         }),
         ("comparisons", {
             "mode", "reference_system_id", "multiple_testing", "alpha",
@@ -579,6 +580,12 @@ def load_analysis_config(
         raise AnalysisConfigError("reporting enable flags must be boolean")
     if isinstance(reporting["maximum_findings"], bool) or not isinstance(reporting["maximum_findings"], int) or reporting["maximum_findings"] <= 0:
         raise AnalysisConfigError("reporting.maximum_findings must be positive integer")
+    if isinstance(reporting["headline_findings"], bool) or not isinstance(reporting["headline_findings"], int) or reporting["headline_findings"] <= 0:
+        raise AnalysisConfigError("reporting.headline_findings must be positive integer")
+    if reporting["headline_findings"] > reporting["maximum_findings"]:
+        raise AnalysisConfigError(
+            "reporting.headline_findings cannot exceed reporting.maximum_findings"
+        )
     if comparisons["mode"] not in {"all_pairs", "reference_vs_all"}:
         raise AnalysisConfigError("comparisons.mode must be all_pairs or reference_vs_all")
     if comparisons["multiple_testing"] != "benjamini_hochberg":

@@ -2299,6 +2299,7 @@ def _benjamini_hochberg(findings: List[Dict[str, object]]) -> None:
 
 def prioritize_findings(
     root: Path, *, maximum_findings: int | None = None,
+    headline_findings: int | None = None,
     write_outputs: bool = True,
 ) -> Dict[str, object]:
     analysis_root = Path(root).expanduser().resolve(strict=True)
@@ -2312,6 +2313,19 @@ def prioritize_findings(
         maximum_findings = int(
             reporting_config.get("maximum_findings", 50)
             if isinstance(reporting_config, dict) else 50
+        )
+    if headline_findings is None:
+        headline_findings = int(
+            reporting_config.get("headline_findings", 12)
+            if isinstance(reporting_config, dict) else 12
+        )
+    if maximum_findings < 1:
+        raise FindingPickerError("maximum_findings must be positive")
+    if headline_findings < 1:
+        raise FindingPickerError("headline_findings must be positive")
+    if headline_findings > maximum_findings:
+        raise FindingPickerError(
+            "headline_findings cannot exceed maximum_findings"
         )
     alpha = float(comparison_config.get("alpha", 0.05))
     mode = str(comparison_config.get("mode", "all_pairs"))
@@ -2410,7 +2424,14 @@ def prioritize_findings(
     ))
     for index, row in enumerate(findings, start=1):
         row["finding_id"] = f"finding-{index:06d}"
+        row["presentation_tier"] = (
+            "headline" if index <= headline_findings else
+            "secondary" if index <= maximum_findings else
+            "additional_candidate"
+        )
     selected = findings[:maximum_findings]
+    headlines = selected[:headline_findings]
+    secondary = selected[len(headlines):]
     module_accounting = _aggregate_module_accounting(
         module_reviews, findings, selected
     )
@@ -2420,6 +2441,9 @@ def prioritize_findings(
         "scientific_status": "not evaluated",
         "candidate_count": len(findings),
         "reported_count": len(selected),
+        "headline_count": len(headlines),
+        "secondary_count": len(secondary),
+        "searchable_candidate_count": len(findings),
         "unreported_candidate_count": len(findings) - len(selected),
         "reviewed_report_count": len(module_reviews),
         "reviewed_module_count": len(module_accounting),
@@ -2429,6 +2453,9 @@ def prioritize_findings(
         "multiple_testing": "benjamini_hochberg",
         "alpha": alpha,
         "findings": selected,
+        "headline_findings": headlines,
+        "secondary_findings": secondary,
+        "all_candidates": findings,
         "module_accounting": module_accounting,
         "quality_control_records": quality_control_records,
         "ranking_contract": (
@@ -2443,7 +2470,9 @@ def prioritize_findings(
         "interpretation": (
             "Only findings with adjusted p values are labeled statistically significant. "
             "All other ranked differences and correlations remain descriptive or exploratory. "
-            "Every completed report is accounted for as a ranked candidate source, quality-control "
+            "Headline and secondary tiers control presentation only; every ranked candidate remains "
+            "available in the JSON, CSV, and interactive report. Every completed report is accounted "
+            "for as a ranked candidate source, quality-control "
             "evidence, interpretive context, technical support, or an explicit no-highlight result."
         ),
     }
@@ -2456,12 +2485,12 @@ def prioritize_findings(
         "finding_id", "category", "module_id", "evidence_level", "statement",
         "system_ids", "effect_value", "p_value", "adjusted_p_value",
         "statistically_significant", "report_path",
-        "report_paths",
+        "report_paths", "presentation_tier",
     ]
     with csv_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
-        for row in selected:
+        for row in findings:
             writer.writerow({
                 **row,
                 "system_ids": ";".join(row["system_ids"]),
@@ -2471,14 +2500,32 @@ def prioritize_findings(
     lines = [
         "# Prioritized findings", "",
         "Technical status is complete; scientific status is not evaluated.", "",
+        (
+            f"The report presents {len(headlines)} headline findings first and "
+            f"{len(secondary)} secondary findings afterward. All {len(findings)} "
+            "ranked candidates remain available in the JSON, CSV, and interactive report."
+        ), "", "## Headline findings", "",
     ]
-    for rank, row in enumerate(selected, start=1):
+    for rank, row in enumerate(headlines, start=1):
         qualifier = (
             "statistically significant after BH correction"
             if row["statistically_significant"] is True else
             str(row["evidence_level"])
         )
         lines.append(f"{rank}. {row['statement']} ({qualifier}; `{row['module_id']}`)")
+    lines.extend(["", "## Secondary findings", ""])
+    if secondary:
+        for rank, row in enumerate(secondary, start=len(headlines) + 1):
+            qualifier = (
+                "statistically significant after BH correction"
+                if row["statistically_significant"] is True else
+                str(row["evidence_level"])
+            )
+            lines.append(
+                f"{rank}. {row['statement']} ({qualifier}; `{row['module_id']}`)"
+            )
+    else:
+        lines.append("No secondary findings were selected.")
     lines.extend([
         "", "## Module accounting", "",
         "Every completed report is represented here even when it produced no ranked finding.", "",
@@ -2491,18 +2538,29 @@ def prioritize_findings(
             f"{row['candidate_count']} | {row['reported_finding_count']} | "
             f"{row['disposition']} |"
         )
-    lines.extend(["", "## Quality-control and interpretation records", ""])
+    qc_markdown_path = analysis_root / "prioritized_findings_qc.md"
+    qc_lines = [
+        "# Quality-control and interpretation records", "",
+        "These records are kept separate from scientific finding ranks.", "",
+    ]
     if quality_control_records:
         for row in quality_control_records:
-            lines.append(
+            qc_lines.append(
                 f"- **{row['severity']}** — {row['statement']} (`{row['module_id']}`)"
             )
     else:
-        lines.append("No separate QC or interpretation records were reported.")
+        qc_lines.append("No separate QC or interpretation records were reported.")
+    qc_markdown_path.write_text("\n".join(qc_lines) + "\n", encoding="utf-8")
+    lines.extend([
+        "", "## Quality-control and interpretation records", "",
+        f"{len(quality_control_records)} records are retained in "
+        "`prioritized_findings_qc.md`, the JSON output, and the interactive report.",
+    ])
     markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {
         **output,
         "json_path": str(json_path),
         "csv_path": str(csv_path),
         "markdown_path": str(markdown_path),
+        "qc_markdown_path": str(qc_markdown_path),
     }
