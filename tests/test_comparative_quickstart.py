@@ -168,6 +168,11 @@ class ComparativeQuickstartTests(unittest.TestCase):
         self.assertIn(
             "SALSBURY_MD_ANALYSIS_NUCLEIC_ACID_STRUCTURE_REPORT", worker
         )
+        self.assertIn(
+            "Validated cache unavailable for nucleic_acid_structure; "
+            "continuing without that prerequisite report",
+            worker,
+        )
         self.assertEqual(
             energetic_availability["availability_status"], "not_available"
         )
@@ -256,6 +261,20 @@ class ComparativeQuickstartTests(unittest.TestCase):
             self.assertIn(
                 "SALSBURY_MD_ANALYSIS_TRAJECTORY_FEATURES_REPORT", stage_one
             )
+            self.assertIn(
+                "Validated cache unavailable for trajectory_features; recomputing",
+                stage_one,
+            )
+            self.assertIn(
+                "unset SALSBURY_MD_ANALYSIS_TRAJECTORY_FEATURES_REPORT",
+                stage_one,
+            )
+            for filename in generated:
+                syntax = subprocess.run(
+                    ["bash", "-n", str(root / filename)],
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(syntax.returncode, 0, syntax.stderr)
 
     def test_per_system_conformational_branches_can_be_disabled(self):
         with tempfile.TemporaryDirectory() as temporary:
