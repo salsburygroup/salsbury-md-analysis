@@ -481,9 +481,15 @@ _AUTOMATIC_CONTEXT_MODELS: Mapping[str, Mapping[str, object]] = {
         "calibration": "conservative-external-dssr-proxy-v1",
     },
     "interaction_fingerprints": {
+        # The sparse result itself is small, but validating and joining the
+        # configured upstream interaction reports materialized a 13.70-GiB
+        # working set in the completed TBA retry (Slurm job 8288001).  Model
+        # that as a fixed task working set rather than pretending it scales
+        # with the tiny output report or with fingerprint frame count.
         "seconds_per_frame": 0.002, "memory_gib": 2.0,
+        "minimum_materialized_working_set_gib": 16.0,
         "stage": 2, "priority": 6.0,
-        "calibration": "provisional-sparse-interaction-join-v1",
+        "calibration": "apollo-tba-upstream-materialization-20260829",
     },
     "spatial_interaction_ensembles": {
         "seconds_per_frame": 0.02, "memory_gib": 4.0,
@@ -670,6 +676,9 @@ def _automatic_context_tasks(
             frame_intervals_ns_per_replica=frame_intervals_ns_per_replica,
             source_time_spans_ns_per_replica=source_time_spans_ns_per_replica,
         )
+        materialized_working_set_gib = float(
+            model.get("minimum_materialized_working_set_gib", 0.0)
+        )
         tasks.append({
             "task_id": f"{resolved_task_namespace}:{module}",
             "workflow_id": resolved_context_id,
@@ -688,7 +697,17 @@ def _automatic_context_tasks(
                 float(model["seconds_per_frame"]) * time_safety_factor
             ),
             "fixed_cpu_hours": 0.0,
-            "estimated_peak_memory_gib": float(model["memory_gib"]),
+            "estimated_peak_memory_gib": max(
+                float(model["memory_gib"]), materialized_working_set_gib
+            ),
+            **({
+                "minimum_materialized_working_set_gib": (
+                    materialized_working_set_gib
+                ),
+                "memory_cost_basis": (
+                    "fixed_upstream_artifact_materialization_floor"
+                ),
+            } if materialized_working_set_gib > 0.0 else {}),
             "priority_weight": float(model["priority"]),
             "member_observation_multiplier": 1,
             "balance_group": balance_group,

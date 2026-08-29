@@ -200,6 +200,15 @@ class CampaignPlanningTests(unittest.TestCase):
             row for row in tasks
             if row["module_id"] == "interaction_persistence"
         )
+        fingerprint = next(
+            row for row in tasks
+            if row["module_id"] == "interaction_fingerprints"
+        )
+        self.assertEqual(fingerprint["estimated_peak_memory_gib"], 16.0)
+        self.assertEqual(
+            fingerprint["memory_cost_basis"],
+            "fixed_upstream_artifact_materialization_floor",
+        )
         self.assertEqual(task["upstream_module_id"], "interaction_fingerprints")
         self.assertEqual(task["gap_tolerance_observations"], [0, 1])
         self.assertEqual(task["primary_gap_tolerance_observations"], 0)
