@@ -10,7 +10,12 @@ import math
 from pathlib import Path
 from typing import Dict, List, Mapping, Sequence
 
-from .analysis_config import DEFAULT_DISABLED_MODULES
+from .analysis_config import (
+    DEFAULT_DISABLED_MODULES,
+    HIGHLIGHTED_FINDINGS_TOTAL,
+    MAXIMUM_HEADLINE_FINDINGS,
+    MINIMUM_HEADLINE_FINDINGS,
+)
 from .manifests import load_json
 
 
@@ -2309,16 +2314,30 @@ def prioritize_findings(
     reporting_config = config.get("reporting", {}) if isinstance(config, dict) else {}
     if not isinstance(comparison_config, dict):
         comparison_config = {}
+    minimum_headline_findings = int(
+        reporting_config.get(
+            "minimum_headline_findings", MINIMUM_HEADLINE_FINDINGS
+        )
+        if isinstance(reporting_config, dict)
+        else MINIMUM_HEADLINE_FINDINGS
+    )
+    maximum_override_supplied = maximum_findings is not None
     if maximum_findings is None:
         maximum_findings = int(
-            reporting_config.get("maximum_findings", 50)
-            if isinstance(reporting_config, dict) else 50
+            reporting_config.get(
+                "maximum_findings", HIGHLIGHTED_FINDINGS_TOTAL
+            )
+            if isinstance(reporting_config, dict)
+            else HIGHLIGHTED_FINDINGS_TOTAL
         )
     headline_override_supplied = headline_findings is not None
     if headline_findings is None:
         headline_findings = min(maximum_findings, int(
-            reporting_config.get("headline_findings", 12)
-            if isinstance(reporting_config, dict) else 12
+            reporting_config.get(
+                "headline_findings", MAXIMUM_HEADLINE_FINDINGS
+            )
+            if isinstance(reporting_config, dict)
+            else MAXIMUM_HEADLINE_FINDINGS
         ))
     if maximum_findings < 1:
         raise FindingPickerError("maximum_findings must be positive")
@@ -2327,6 +2346,34 @@ def prioritize_findings(
     if headline_override_supplied and headline_findings > maximum_findings:
         raise FindingPickerError(
             "headline_findings cannot exceed maximum_findings"
+        )
+    if not maximum_override_supplied and maximum_findings != HIGHLIGHTED_FINDINGS_TOTAL:
+        raise FindingPickerError(
+            "reporting.maximum_findings must be 50 for the standard "
+            "headline/secondary presentation contract"
+        )
+    if (
+        not headline_override_supplied
+        and maximum_findings >= MINIMUM_HEADLINE_FINDINGS
+        and not MINIMUM_HEADLINE_FINDINGS
+        <= headline_findings
+        <= MAXIMUM_HEADLINE_FINDINGS
+    ):
+        raise FindingPickerError(
+            "reporting.headline_findings must be an integer from 10 through 12"
+        )
+    if (
+        not headline_override_supplied
+        and not maximum_override_supplied
+        and (
+            minimum_headline_findings < MINIMUM_HEADLINE_FINDINGS
+            or minimum_headline_findings > MAXIMUM_HEADLINE_FINDINGS
+            or minimum_headline_findings > headline_findings
+        )
+    ):
+        raise FindingPickerError(
+            "reporting.minimum_headline_findings must be from 10 through 12 "
+            "and cannot exceed reporting.headline_findings"
         )
     alpha = float(comparison_config.get("alpha", 0.05))
     mode = str(comparison_config.get("mode", "all_pairs"))
@@ -2423,16 +2470,65 @@ def prioritize_findings(
         -float(row["absolute_effect_value"]) if isinstance(row.get("absolute_effect_value"), (int, float)) else 0.0,
         str(row["module_id"]), str(row["statement"]),
     ))
+    selected = findings[:maximum_findings]
+    boundary_promotions = []
+    if headline_override_supplied:
+        selected_headline_count = min(headline_findings, len(selected))
+        headline_selection_reason = (
+            "A direct diagnostic override fixed the headline count."
+        )
+    else:
+        selected_headline_count = min(
+            minimum_headline_findings, len(selected)
+        )
+        for rank in range(
+            minimum_headline_findings + 1,
+            min(headline_findings, len(selected)) + 1,
+        ):
+            row = selected[rank - 1]
+            if row.get("statistically_significant") is True:
+                selected_headline_count = rank
+                boundary_promotions.append({
+                    "rank": rank,
+                    "finding_id": f"finding-{rank:06d}",
+                    "adjusted_p_value": row.get("adjusted_p_value"),
+                    "comparison_family": row.get("comparison_family"),
+                })
+        if minimum_headline_findings == headline_findings:
+            headline_selection_reason = (
+                f"The configured presentation range fixes the opening section "
+                f"at {minimum_headline_findings} findings."
+            )
+        else:
+            headline_selection_reason = (
+                f"The first {minimum_headline_findings} ranked findings are "
+                f"always headlines. Ranks {minimum_headline_findings + 1} "
+                f"through {headline_findings} extend the opening section only "
+                "when a boundary finding is statistically significant after "
+                "Benjamini-Hochberg correction."
+            )
     for index, row in enumerate(findings, start=1):
         row["finding_id"] = f"finding-{index:06d}"
         row["presentation_tier"] = (
-            "headline" if index <= headline_findings else
+            "headline" if index <= selected_headline_count else
             "secondary" if index <= maximum_findings else
             "additional_candidate"
         )
-    selected = findings[:maximum_findings]
-    headlines = selected[:headline_findings]
+    headlines = selected[:selected_headline_count]
     secondary = selected[len(headlines):]
+    standard_contract_requested = (
+        maximum_findings == HIGHLIGHTED_FINDINGS_TOTAL
+        and not headline_override_supplied
+        and MINIMUM_HEADLINE_FINDINGS
+        <= headline_findings
+        <= MAXIMUM_HEADLINE_FINDINGS
+    )
+    candidate_limited = len(findings) < HIGHLIGHTED_FINDINGS_TOTAL
+    presentation_contract_status = (
+        "candidate_limited" if standard_contract_requested and candidate_limited
+        else "satisfied" if standard_contract_requested
+        else "explicit_override"
+    )
     module_accounting = _aggregate_module_accounting(
         module_reviews, findings, selected
     )
@@ -2445,6 +2541,7 @@ def prioritize_findings(
         "headline_count": len(headlines),
         "secondary_count": len(secondary),
         "searchable_candidate_count": len(findings),
+        "additional_candidate_count": len(findings) - len(selected),
         "unreported_candidate_count": len(findings) - len(selected),
         "reviewed_report_count": len(module_reviews),
         "reviewed_module_count": len(module_accounting),
@@ -2457,6 +2554,26 @@ def prioritize_findings(
         "headline_findings": headlines,
         "secondary_findings": secondary,
         "all_candidates": findings,
+        "presentation_contract": {
+            "contract_id": "headline-secondary-50-v1",
+            "headline_count_range": [
+                MINIMUM_HEADLINE_FINDINGS, MAXIMUM_HEADLINE_FINDINGS,
+            ],
+            "highlighted_findings_total": HIGHLIGHTED_FINDINGS_TOTAL,
+            "secondary_count_range": [
+                HIGHLIGHTED_FINDINGS_TOTAL - MAXIMUM_HEADLINE_FINDINGS,
+                HIGHLIGHTED_FINDINGS_TOTAL - MINIMUM_HEADLINE_FINDINGS,
+            ],
+            "configured_headline_count": headline_findings,
+            "configured_minimum_headline_count": minimum_headline_findings,
+            "selected_headline_count": selected_headline_count,
+            "configured_highlighted_total": maximum_findings,
+            "status": presentation_contract_status,
+            "candidate_limited": candidate_limited,
+            "headline_selection": "bh_significance_at_boundary",
+            "boundary_promotions": boundary_promotions,
+            "selection_reason": headline_selection_reason,
+        },
         "module_accounting": module_accounting,
         "quality_control_records": quality_control_records,
         "ranking_contract": (

@@ -4,7 +4,9 @@
   "reporting": {
     "resource_table_enabled": true,
     "finding_picker_enabled": true,
-    "maximum_findings": 20
+    "minimum_headline_findings": 10,
+    "headline_findings": 12,
+    "maximum_findings": 50
   },
   "views": {
     "global_common_heavy": {

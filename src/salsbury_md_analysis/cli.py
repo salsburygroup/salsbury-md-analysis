@@ -1959,8 +1959,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Rank transparent single- and multi-system findings without an opaque score.",
     )
     finding_parser.add_argument("root", type=Path, help="Generated analysis root.")
-    finding_parser.add_argument("--maximum-findings", type=int)
-    finding_parser.add_argument("--headline-findings", type=int)
+    finding_parser.add_argument(
+        "--maximum-findings", type=int,
+        help=(
+            "Diagnostic override for the standard 50 highlighted findings; "
+            "campaign configs require 50."
+        ),
+    )
+    finding_parser.add_argument(
+        "--headline-findings", type=int,
+        help=(
+            "Diagnostic override for the standard 10-12 opening-page findings."
+        ),
+    )
 
     rmsf_export_parser = subparsers.add_parser(
         "export-rmsf-visualization",
