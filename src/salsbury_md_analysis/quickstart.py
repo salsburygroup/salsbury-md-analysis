@@ -2577,9 +2577,9 @@ rm "$TMP"
             'FINAL_DEPENDENCIES="${FINAL_DEPENDENCIES}:$VIEW_FINAL_JOBS"',
         ]) if conformational_view_ids else ""
     )
-    reporting_commands = []
+    reporting_commands: list[tuple[str, str]] = []
     if rmsf_permutation_enabled:
-        reporting_commands.append("""RMSF_INFERENCE_DIR="$ROOT/results/rmsf-permutation-inference"
+        reporting_commands.append(("rmsf_permutation_inference", """RMSF_INFERENCE_DIR="$ROOT/results/rmsf-permutation-inference"
 mkdir -p "$RMSF_INFERENCE_DIR"
 RMSF_INFERENCE_TMP="$RMSF_INFERENCE_DIR/report.json.tmp.$SLURM_JOB_ID"
 RMSF_INFERENCE_FINAL="$RMSF_INFERENCE_DIR/report.json"
@@ -2597,9 +2597,9 @@ if report.get('technical_status') != 'complete':
 PY
 ln "$RMSF_INFERENCE_TMP" "$RMSF_INFERENCE_FINAL"
 rm "$RMSF_INFERENCE_TMP"
-""")
+"""))
     if integrated_comparison_enabled:
-        reporting_commands.append("""INTEGRATED_DIR="$ROOT/results/integrated-comparison"
+        reporting_commands.append(("integrated_comparison", """INTEGRATED_DIR="$ROOT/results/integrated-comparison"
 mkdir -p "$INTEGRATED_DIR"
 INTEGRATED_TMP="$INTEGRATED_DIR/report.json.tmp.$SLURM_JOB_ID"
 INTEGRATED_FINAL="$INTEGRATED_DIR/report.json"
@@ -2622,9 +2622,9 @@ if contract.get('all_completed_reports_reviewed') is not True:
 PY
 ln "$INTEGRATED_TMP" "$INTEGRATED_FINAL"
 rm "$INTEGRATED_TMP"
-""")
+"""))
     if resource_table_enabled:
-        reporting_commands.append("""RESOURCE_TMP="$ROOT/final-resource-summary.json.tmp.$SLURM_JOB_ID"
+        reporting_commands.append(("resource_summary", """RESOURCE_TMP="$ROOT/final-resource-summary.json.tmp.$SLURM_JOB_ID"
 RESOURCE_FINAL="$ROOT/final-resource-summary.json"
 if [[ -e "$RESOURCE_FINAL" ]]; then
   printf 'Final resource summary already exists; refusing overwrite: %s\\n' "$RESOURCE_FINAL" >&2
@@ -2639,10 +2639,9 @@ if report.get('technical_status') != 'complete' or report.get('scientific_status
 PY
 ln "$RESOURCE_TMP" "$RESOURCE_FINAL"
 rm "$RESOURCE_TMP"
-"""
-        )
+"""))
     if finding_picker_enabled:
-        reporting_commands.append("""FINDING_TMP="$ROOT/final-findings-summary.json.tmp.$SLURM_JOB_ID"
+        reporting_commands.append(("finding_picker", """FINDING_TMP="$ROOT/final-findings-summary.json.tmp.$SLURM_JOB_ID"
 FINDING_FINAL="$ROOT/final-findings-summary.json"
 if [[ -e "$FINDING_FINAL" ]]; then
   printf 'Final finding summary already exists; refusing overwrite: %s\\n' "$FINDING_FINAL" >&2
@@ -2657,12 +2656,28 @@ if report.get('technical_status') != 'complete' or report.get('scientific_status
 PY
 ln "$FINDING_TMP" "$FINDING_FINAL"
 rm "$FINDING_TMP"
-"""
+"""))
+    if reporting_commands:
+        wrapped_reporting_commands = ["FINAL_REPORTING_STATUS=0"]
+        for reporting_id, reporting_command in reporting_commands:
+            wrapped_reporting_commands.append(f"""set +e
+(
+set -euo pipefail
+{reporting_command}
+)
+REPORTING_COMPONENT_STATUS=$?
+set -e
+if (( REPORTING_COMPONENT_STATUS != 0 )); then
+  printf 'Final reporting component failed: {reporting_id} (exit %s)\\n' "$REPORTING_COMPONENT_STATUS" >&2
+  FINAL_REPORTING_STATUS=1
+fi""")
+        wrapped_reporting_commands.append('exit "$FINAL_REPORTING_STATUS"')
+        reporting_command_text = "\n".join(wrapped_reporting_commands)
+    else:
+        reporting_command_text = (
+            "printf '{\"technical_status\":\"complete\",\"scientific_status\":\"not evaluated\",\"reporting_disabled\":true}\\n' "
+            '"> \"$ROOT/final-reporting-disabled.json\"'
         )
-    reporting_command_text = "\n".join(reporting_commands) or (
-        "printf '{\"technical_status\":\"complete\",\"scientific_status\":\"not evaluated\",\"reporting_disabled\":true}\\n' "
-        '"> \"$ROOT/final-reporting-disabled.json\"'
-    )
     finalizer = f"""#!/usr/bin/env bash
 #SBATCH --job-name=sma-{project_id[:20]}-final
 #SBATCH --time=00:30:00
@@ -2726,7 +2741,13 @@ printf 'Results will appear under %s/results.\\n' "$ROOT"
     _json_write(
         root / "workflow-stages.json",
         {
-            "workflow_schema": "salsbury-staged-workflow-v1",
+            "workflow_schema": "salsbury-staged-workflow-v2",
+            "authoritative_dependency_graph": "local-execution-plan.json",
+            "dependency_policy": (
+                "stage numbers group generated commands; they do not make every "
+                "task depend on the preceding stage. The execution adapter derives "
+                "success-only edges from each task's real report inputs."
+            ),
             "maximum_parallel_cpus": maximum_parallel_cpus,
             "coordinate_cache": {
                 "enabled": coordinate_cache_enabled,
@@ -2740,29 +2761,22 @@ printf 'Results will appear under %s/results.\\n' "$ROOT"
                 str(stage): {
                     "task_count": count,
                     "array_parallelism_cap": min(count, context_parallel_cap),
-                    "dependency": (
-                        "base preflight" if stage == min(
-                            automatic_context_stage_counts or {stage: count}
-                        ) else "previous automatic-context stage"
-                    ),
+                    "dependency": "per-task graph in local-execution-plan.json",
                 }
                 for stage, count in sorted(
                     (automatic_context_stage_counts or {}).items()
                 )
             },
             "slurm_array_parallelism_contract": (
-                "Concurrent base and automatic-context arrays plus dependency-"
-                "batched conformational-view arrays reserve no more than "
-                "maximum_parallel_cpus at one time."
+                "Resource waves reserve no more than maximum_parallel_cpus and "
+                "aggregate memory at one time; resource barriers do not create "
+                "scientific success dependencies."
             ),
             "stages": [
                 {
                     "stage": stage,
                     "commands": stages[stage],
-                    "dependency": (
-                        "preflight" if stage == min(stages)
-                        else f"stage-{sorted(stages)[sorted(stages).index(stage) - 1]}"
-                    ),
+                    "dependency": "per-task graph in local-execution-plan.json",
                     "upstream_report_reuse": {
                         0: [],
                         1: [
@@ -3453,8 +3467,9 @@ frame selections, and scientific definitions. `execution-adapter.json` records t
 choice and `local-execution-plan.json` records the workstation dependency plan.
 
 The generated workflow covers generic structure, motion, FES, clustering, interactions,
-surface, and convergence analyses. It is split into dependency-safe stages so expensive
-PCA, DCCM, RMSD/Rg, and K-means reports are computed once and reused only after their
+surface, and convergence analyses. Every task declares the reports it consumes, so a
+failure skips only its true descendants while unrelated work continues. Expensive PCA,
+DCCM, RMSD/Rg, and K-means reports are computed once and reused only after their
 project, system, and input-content hashes match. `module-coverage.json` names every
 deferred capability and why it was not guessed. Residue-specific questions are
 intentionally outside this first zero-configuration workflow. `conformational-views.json`
