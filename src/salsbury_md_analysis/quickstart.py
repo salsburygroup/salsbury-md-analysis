@@ -1903,9 +1903,9 @@ rm "$TMP"
             'FINAL_DEPENDENCIES="${FINAL_DEPENDENCIES}:$VIEW_FINAL_JOBS"',
         ]) if conformational_view_ids else ""
     )
-    reporting_commands = []
+    reporting_commands: list[tuple[str, str]] = []
     if rmsf_permutation_enabled:
-        reporting_commands.append("""RMSF_INFERENCE_DIR="$ROOT/results/rmsf-permutation-inference"
+        reporting_commands.append(("rmsf_permutation_inference", """RMSF_INFERENCE_DIR="$ROOT/results/rmsf-permutation-inference"
 mkdir -p "$RMSF_INFERENCE_DIR"
 RMSF_INFERENCE_TMP="$RMSF_INFERENCE_DIR/report.json.tmp.$SLURM_JOB_ID"
 RMSF_INFERENCE_FINAL="$RMSF_INFERENCE_DIR/report.json"
@@ -1923,9 +1923,9 @@ if report.get('technical_status') != 'complete':
 PY
 ln "$RMSF_INFERENCE_TMP" "$RMSF_INFERENCE_FINAL"
 rm "$RMSF_INFERENCE_TMP"
-""")
+"""))
     if integrated_comparison_enabled:
-        reporting_commands.append("""INTEGRATED_DIR="$ROOT/results/integrated-comparison"
+        reporting_commands.append(("integrated_comparison", """INTEGRATED_DIR="$ROOT/results/integrated-comparison"
 mkdir -p "$INTEGRATED_DIR"
 INTEGRATED_TMP="$INTEGRATED_DIR/report.json.tmp.$SLURM_JOB_ID"
 INTEGRATED_FINAL="$INTEGRATED_DIR/report.json"
@@ -1948,9 +1948,9 @@ if contract.get('all_completed_reports_reviewed') is not True:
 PY
 ln "$INTEGRATED_TMP" "$INTEGRATED_FINAL"
 rm "$INTEGRATED_TMP"
-""")
+"""))
     if resource_table_enabled:
-        reporting_commands.append("""RESOURCE_TMP="$ROOT/final-resource-summary.json.tmp.$SLURM_JOB_ID"
+        reporting_commands.append(("resource_summary", """RESOURCE_TMP="$ROOT/final-resource-summary.json.tmp.$SLURM_JOB_ID"
 RESOURCE_FINAL="$ROOT/final-resource-summary.json"
 if [[ -e "$RESOURCE_FINAL" ]]; then
   printf 'Final resource summary already exists; refusing overwrite: %s\\n' "$RESOURCE_FINAL" >&2
@@ -1965,10 +1965,9 @@ if report.get('technical_status') != 'complete' or report.get('scientific_status
 PY
 ln "$RESOURCE_TMP" "$RESOURCE_FINAL"
 rm "$RESOURCE_TMP"
-"""
-        )
+"""))
     if finding_picker_enabled:
-        reporting_commands.append("""FINDING_TMP="$ROOT/final-findings-summary.json.tmp.$SLURM_JOB_ID"
+        reporting_commands.append(("finding_picker", """FINDING_TMP="$ROOT/final-findings-summary.json.tmp.$SLURM_JOB_ID"
 FINDING_FINAL="$ROOT/final-findings-summary.json"
 if [[ -e "$FINDING_FINAL" ]]; then
   printf 'Final finding summary already exists; refusing overwrite: %s\\n' "$FINDING_FINAL" >&2
@@ -1983,12 +1982,28 @@ if report.get('technical_status') != 'complete' or report.get('scientific_status
 PY
 ln "$FINDING_TMP" "$FINDING_FINAL"
 rm "$FINDING_TMP"
-"""
+"""))
+    if reporting_commands:
+        wrapped_reporting_commands = ["FINAL_REPORTING_STATUS=0"]
+        for reporting_id, reporting_command in reporting_commands:
+            wrapped_reporting_commands.append(f"""set +e
+(
+set -euo pipefail
+{reporting_command}
+)
+REPORTING_COMPONENT_STATUS=$?
+set -e
+if (( REPORTING_COMPONENT_STATUS != 0 )); then
+  printf 'Final reporting component failed: {reporting_id} (exit %s)\\n' "$REPORTING_COMPONENT_STATUS" >&2
+  FINAL_REPORTING_STATUS=1
+fi""")
+        wrapped_reporting_commands.append('exit "$FINAL_REPORTING_STATUS"')
+        reporting_command_text = "\n".join(wrapped_reporting_commands)
+    else:
+        reporting_command_text = (
+            "printf '{\"technical_status\":\"complete\",\"scientific_status\":\"not evaluated\",\"reporting_disabled\":true}\\n' "
+            '"> \"$ROOT/final-reporting-disabled.json\"'
         )
-    reporting_command_text = "\n".join(reporting_commands) or (
-        "printf '{\"technical_status\":\"complete\",\"scientific_status\":\"not evaluated\",\"reporting_disabled\":true}\\n' "
-        '"> \"$ROOT/final-reporting-disabled.json\"'
-    )
     finalizer = f"""#!/usr/bin/env bash
 #SBATCH --job-name=sma-{project_id[:20]}-final
 #SBATCH --time=00:30:00
