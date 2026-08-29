@@ -1615,7 +1615,7 @@ def _validated_cache_export_shell(
         report = json.dumps(str(report_path))
         summary = json.dumps(str(report_path) + ".summary.json")
     else:
-        prefix = f"CACHE_REPORT={report_shell_expression}\\n"
+        prefix = f"CACHE_REPORT={report_shell_expression}\n"
         report = '"$CACHE_REPORT"'
         summary = '"$CACHE_REPORT.summary.json"'
     return f"""{prefix}unset {variable}
