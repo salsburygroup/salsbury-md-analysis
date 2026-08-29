@@ -185,6 +185,55 @@ class UpstreamCacheTests(unittest.TestCase):
                         error_type=ValueError,
                     )
 
+    def test_hydration_resource_ceilings_do_not_change_scientific_contract(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            system = root / "system.json"
+            system.write_text('{"systems": []}\n', encoding="utf-8")
+            project = root / "project.json"
+            payload = {
+                "project_id": "hydration-original",
+                "system_manifest": "system.json",
+                "analysis_output_root": "original-results",
+                "requested_modules": ["hydration_density_channels"],
+                "definitions": {"hydration_density_channels": {
+                    "frame_selection": {"mode": "stride", "stride": 2},
+                    "grid_spacing_angstrom": 1.5,
+                    "minimum_voxel_frame_occupancy": 0.05,
+                    "maximum_grid_voxels": 1_000_000,
+                    "maximum_particle_observations": 100_000_000,
+                    "maximum_sparse_frame_voxels": 50_000_000,
+                }},
+            }
+            project.write_text(json.dumps(payload), encoding="utf-8")
+            original = project_module_contract_sha256(
+                "hydration_density_channels", project
+            )
+
+            payload["definitions"]["hydration_density_channels"].update({
+                "maximum_grid_voxels": 2_000_000,
+                "maximum_particle_observations": 500_000_000,
+                "maximum_sparse_frame_voxels": 250_000_000,
+            })
+            project.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertEqual(
+                original,
+                project_module_contract_sha256(
+                    "hydration_density_channels", project
+                ),
+            )
+
+            payload["definitions"]["hydration_density_channels"][
+                "minimum_voxel_frame_occupancy"
+            ] = 0.10
+            project.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertNotEqual(
+                original,
+                project_module_contract_sha256(
+                    "hydration_density_channels", project
+                ),
+            )
+
     def test_legacy_report_without_contract_reuses_hash_matched_original_project(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

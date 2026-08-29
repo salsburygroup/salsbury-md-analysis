@@ -10,10 +10,12 @@ flux, free energy, or transport mechanism is inferred.
 from __future__ import annotations
 
 import math
+import pickle
+import tempfile
 from array import array
 from collections import Counter, defaultdict, deque
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
+from typing import BinaryIO, Dict, Iterable, Iterator, List, Mapping, Sequence, Tuple
 
 import numpy as np
 
@@ -44,11 +46,37 @@ class HydrationDensityError(ValueError):
 
 Voxel = Tuple[int, int, int]
 FrameKey = Tuple[str, str, str, int]
+SparseFrameRecord = Tuple[FrameKey, Dict[str, object], Dict[str, array]]
 
 
 def _flat_voxel(voxel: Voxel, shape: Tuple[int, int, int]) -> int:
     """Encode one grid voxel compactly for retained per-frame occupancy."""
     return (voxel[0] * shape[1] + voxel[1]) * shape[2] + voxel[2]
+
+
+def _write_sparse_frame_record(
+    handle: BinaryIO, key: FrameKey, metadata: Mapping[str, object],
+    per_species: Mapping[str, array],
+) -> None:
+    """Append one compact frame record to a process-private temporary stream."""
+
+    pickle.dump(
+        (key, dict(metadata), dict(per_species)),
+        handle,
+        protocol=pickle.HIGHEST_PROTOCOL,
+    )
+
+
+def _iter_sparse_frame_records(handle: BinaryIO) -> Iterator[SparseFrameRecord]:
+    """Replay records written by :func:`_write_sparse_frame_record`."""
+
+    handle.seek(0)
+    while True:
+        try:
+            record = pickle.load(handle)
+        except EOFError:
+            return
+        yield record
 
 
 def _finite(
@@ -353,18 +381,18 @@ def hydration_density_channels_project(
 
     voxel_frames: Dict[Tuple[str, str], Counter[Voxel]] = defaultdict(Counter)
     particle_counts: Dict[Tuple[str, str], Counter[Voxel]] = defaultdict(Counter)
-    # Per-frame occupancy is needed after the aggregate density components are
-    # known.  Keeping Python sets of three-integer tuples for every frame used
-    # tens of bytes per occupied voxel and exhausted practical campaign limits.
-    # Sorted uint32 flat indices preserve exact occupancy while using four bytes
-    # per retained voxel.  maximum_grid_voxels is already well below uint32.
-    frame_voxels: Dict[FrameKey, Dict[str, array]] = {}
-    frame_metadata: Dict[FrameKey, Dict[str, object]] = {}
+    # Per-frame occupancy is needed only after aggregate components are known.
+    # Stream sorted uint32 indices to process-private temporary storage instead
+    # of retaining cumulative species-frame voxels in Python containers. Total
+    # stream volume remains bounded by maximum_particle_observations because a
+    # frame cannot occupy more distinct voxels than it contains particles.
+    frame_voxel_stream = tempfile.TemporaryFile(mode="w+b")
     system_frames: Counter[str] = Counter()
     observed_species: Dict[str, set[str]] = defaultdict(set)
     topology_inventory = []
     total_particle_observations = 0
     total_sparse_voxels = 0
+    peak_resident_sparse_voxels = 0
     outside_grid = Counter()
 
     for system in manifest["systems"]:
@@ -438,7 +466,6 @@ def hydration_density_channels_project(
                         "axis_unit": project.get("time_unit") if axis["kind"] == "physical_time" else "sample",
                         "axis_value": frame_axis_value(axis, frame.frame_index),
                     }
-                    frame_metadata[key] = meta
                     per_species: Dict[str, array] = {}
                     for species, indices in particles.items():
                         imaged = []
@@ -468,17 +495,28 @@ def hydration_density_channels_project(
                         per_species[species] = array(
                             "I", sorted(_flat_voxel(voxel, shape) for voxel in occupied)
                         )
-                        total_sparse_voxels += len(occupied)
-                        if total_sparse_voxels > int(settings["maximum_sparse_frame_voxels"]):
-                            raise HydrationDensityError(
-                                "maximum_sparse_frame_voxels gate exceeded: "
-                                f"observed more than {settings['maximum_sparse_frame_voxels']} "
-                                "distinct species-frame voxels"
-                            )
-                    frame_voxels[key] = per_species
+                    resident_sparse_voxels = sum(
+                        len(values) for values in per_species.values()
+                    )
+                    peak_resident_sparse_voxels = max(
+                        peak_resident_sparse_voxels, resident_sparse_voxels
+                    )
+                    total_sparse_voxels += resident_sparse_voxels
+                    if total_sparse_voxels > int(
+                        settings["maximum_sparse_frame_voxels"]
+                    ):
+                        raise HydrationDensityError(
+                            "maximum_sparse_frame_voxels gate exceeded: observed "
+                            f"{total_sparse_voxels} cumulative distinct species-frame "
+                            f"voxels; maximum is {settings['maximum_sparse_frame_voxels']}"
+                        )
+                    _write_sparse_frame_record(
+                        frame_voxel_stream, key, meta, per_species
+                    )
                     system_frames[system_id] += 1
 
     if not system_frames:
+        frame_voxel_stream.close()
         return {
             "module_id": "hydration_density_channels",
             "technical_status": "complete", "scientific_status": "not evaluated",
@@ -541,18 +579,27 @@ def hydration_density_channels_project(
             })
 
     frame_records = []
-    for key in sorted(frame_voxels):
+    for key, metadata, per_species in _iter_sparse_frame_records(
+        frame_voxel_stream
+    ):
         active_ids = []
         for feature_id, voxels in component_voxels.items():
             species = feature_id.split("|", 2)[1]
-            occupied = frame_voxels[key].get(species)
+            occupied = per_species.get(species)
             if (
                 feature_id.startswith(key[0] + "|")
                 and occupied is not None
                 and any(flat in voxels for flat in occupied)
             ):
                 active_ids.append(feature_id)
-        frame_records.append({**frame_metadata[key], "active_feature_ids": sorted(active_ids)})
+        frame_records.append({
+            **metadata, "active_feature_ids": sorted(active_ids)
+        })
+    frame_voxel_stream.close()
+    frame_records.sort(key=lambda row: (
+        str(row["system_id"]), str(row["replica_id"]),
+        str(row["segment_id"]), int(row["source_frame_index"]),
+    ))
 
     pairwise = []
     systems = sorted(system_frames)
@@ -628,7 +675,11 @@ def hydration_density_channels_project(
             "selected_physical_frame_count": sum(system_frames.values()),
             "particle_observation_count": total_particle_observations,
             "sparse_frame_voxel_count": total_sparse_voxels,
-            "sparse_frame_voxel_storage": "sorted_uint32_flat_indices_v1",
+            "peak_resident_sparse_frame_voxel_count": peak_resident_sparse_voxels,
+            "sparse_frame_voxel_storage": (
+                "temporary_streamed_sorted_uint32_flat_indices_v2"
+            ),
+            "sparse_stream_volume_bound": "maximum_sparse_frame_voxels",
         },
         "error_count": 0,
         "warning_count": sum(issue["severity"] == "warning" for issue in issues),
@@ -637,6 +688,7 @@ def hydration_density_channels_project(
             "Aligned voxel occupancy supplements RDFs, bridges, and interaction fingerprints; it does not replace their radial or chemical definitions.",
             "A connected boundary-reaching high-occupancy component is a geometric channel candidate, not evidence of diffusion, flux, permeability, free energy, or mechanism.",
             "Grid spacing, padding, alignment, occupancy threshold, species identity, and frame selection require sensitivity analysis.",
+            "maximum_sparse_frame_voxels bounds cumulative temporary stream volume; maximum_particle_observations independently bounds particle processing work.",
             "Frame occupancies are descriptive and are not independent-replica uncertainty.",
         ],
     }

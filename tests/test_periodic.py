@@ -178,6 +178,47 @@ class PeriodicReconstructionTests(unittest.TestCase):
         )
         self.assertAlmostEqual(reset.coordinates_angstrom[0][0], 0.2)
 
+    def test_continuous_unwrap_checkpoint_restores_exact_frame_boundary(self):
+        settings = {
+            "maximum_bond_length_angstrom": 2.0,
+            "cycle_closure_tolerance_angstrom": 1.0e-6,
+            "maximum_anchor_displacement_angstrom": 2.0,
+        }
+        original = PeriodicFrameProcessor(
+            "unwrap_continuous", 2, ((0, 1),), settings
+        )
+        original.begin_segment(False)
+        original.process(
+            CoordinateFrame(
+                0,
+                ((9.5, 1.0, 1.0), (0.5, 1.0, 1.0)),
+                "angstrom",
+                True,
+                ORTHORHOMBIC,
+            ),
+            "segment/frame-0",
+        )
+
+        restored = PeriodicFrameProcessor(
+            "unwrap_continuous", 2, ((0, 1),), settings
+        )
+        restored.restore_checkpoint_state(original.checkpoint_state())
+        next_frame = CoordinateFrame(
+            1,
+            ((0.2, 1.0, 1.0), (1.2, 1.0, 1.0)),
+            "angstrom",
+            True,
+            ORTHORHOMBIC,
+        )
+        uninterrupted = original.process(next_frame, "segment/frame-1")
+        resumed = restored.process(next_frame, "segment/frame-1")
+
+        self.assertEqual(
+            uninterrupted.coordinates_angstrom,
+            resumed.coordinates_angstrom,
+        )
+        self.assertEqual(original.report(), restored.report())
+
     def test_cycle_inconsistent_with_single_whole_image_fails(self):
         with self.assertRaises(PeriodicReconstructionError):
             make_whole_coordinates(

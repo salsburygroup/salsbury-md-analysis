@@ -1569,27 +1569,30 @@ Scientific limits:
 - Category: `md`
 - Status: **experimental**
 
-Detect locally enclosed solvent-sized empty regions with a deterministic reference-aligned grid, retain per-frame lining residues and volumes, track pocket identities through residue overlap and centroid gates, and compare persistence across systems.
+Accumulate reference-aligned geometric pocket-voxel frequencies, define recurrent connected spatial regions after all selected frames, retain exact frame identities and observed representatives, and compare region occupancy across systems; an optional legacy backend tracks discrete frame-pocket identities.
 
 Required inputs:
 
 - accepted trajectories and topology identities
 - alignment and solute-heavy selections
 - grid and geometric enclosure settings
-- tracking and resource gates
+- frequency-region thresholds and resource gates
 
 Declared outputs:
 
-- per-frame geometric pocket instances
-- tracked pocket clusters
-- lining-residue identities
-- volume and persistence summaries
+- voxel frequency maps
+- recurrent pocket regions
+- per-frame region volumes
+- lining-residue occurrence summaries
+- observed representative-frame identities
 - pairwise occupancy differences
 
 Scientific limits:
 
 - The native geometry screen does not predict druggability, ligand affinity, binding free energy, or opening kinetics.
-- Pocket identities are threshold-sensitive and require grid, atom-selection, tracking, and frame-selection sensitivity analysis.
+- The frequency-map backend is not an fpocket or MDpocket alpha-sphere reimplementation.
+- Region definitions are threshold-sensitive and require grid, atom-selection, frequency, and frame-selection sensitivity analysis.
+- The legacy discrete-tracking backend remains optional because transient identity assignment is threshold-sensitive.
 - Solvent occupancy is provided separately by the hydration-density module and is not treated as pocket wall material.
 - Frame persistence is descriptive and is not independent-replica uncertainty.
 

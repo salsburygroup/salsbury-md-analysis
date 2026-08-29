@@ -817,6 +817,10 @@ def _generic_definitions(
             "frame_selection": _frame_selection(
                 rows, "structural_integrity_qc"
             ),
+            "checkpointing": {
+                "enabled": True,
+                "within_segment_interval_seconds": 7200.0,
+            },
         },
         "replica_rmsd_rg": {
             "alignment_selection": "alignment",
@@ -1014,7 +1018,7 @@ def _generic_definitions(
             "minimum_evaluated_frames_per_system": 10,
         },
         "ensemble_pocket_dynamics": {
-            "backend": "native_grid_v1",
+            "backend": "native_frequency_grid_v2",
             "alignment_selection": "alignment",
             "solute_selection": "solute_heavy",
             "minimum_reference_coverage": 0.95,
@@ -1045,6 +1049,11 @@ def _generic_definitions(
             "maximum_pocket_instances": 2_000_000,
             "maximum_tracking_comparisons": 100_000_000,
             "minimum_evaluated_frames_per_system": 10,
+            "minimum_region_frequency_fraction": 0.05,
+            "minimum_region_voxels": 4,
+            "maximum_frequency_regions": 128,
+            "representative_frames_per_region": 2,
+            "maximum_sparse_frame_voxels": 250_000_000,
         },
         "interaction_fingerprints": {
             "source_modules": [

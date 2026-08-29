@@ -201,7 +201,6 @@ class ScientificSamplingTests(unittest.TestCase):
             if profile.maximum_uniform_spacing_ns > 0.0
         }
         self.assertEqual(temporal, {
-            "ensemble_pocket_dynamics",
             "information_dynamics",
             "interaction_persistence",
             "time_lagged_independent_component_analysis",
