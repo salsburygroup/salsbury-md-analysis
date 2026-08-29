@@ -641,10 +641,10 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertEqual(syntax.returncode, 0, syntax.stderr)
         self.assertIn("--mem=128G --partition=large --array=1", submit)
         self.assertIn("--mem=4G --partition=small --array=0", submit)
-        self.assertIn('--dependency="afterany:${JOB_W000_T000}"', submit)
+        self.assertIn('--dependency="afterany:${JOB_T0000}"', submit)
         self.assertEqual(
-            [wave["memory_gib"] for wave in scheduler["resource_waves"]],
-            [128.0, 4.0],
+            [lane["memory_gib"] for lane in scheduler["resource_lanes"]],
+            [128.0],
         )
 
     def test_canonical_slurm_launcher_enforces_aggregate_memory_waves(self):
@@ -703,18 +703,18 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertEqual(syntax.returncode, 0, syntax.stderr)
         self.assertEqual(preview_run.returncode, 0, preview_run.stderr)
         self.assertEqual(
-            [wave["memory_gib"] for wave in scheduler["resource_waves"]],
-            [180.0, 90.0],
+            [lane["memory_gib"] for lane in scheduler["resource_lanes"]],
+            [100.0, 80.0],
         )
         self.assertTrue(all(
-            wave["memory_gib"] <= 185.0
-            for wave in scheduler["resource_waves"]
+            lane["memory_gib"] <= 185.0
+            for lane in scheduler["resource_lanes"]
         ))
-        self.assertIn('--dependency="afterany:${JOB_W000_T000}:${JOB_W000_T001}"', submit)
+        self.assertIn('--dependency="afterany:${JOB_T0000}"', submit)
         self.assertFalse(preview["execution_started"])
         self.assertFalse(preview["jobs_submitted"])
         self.assertEqual(preview["task_count"], 3)
-        self.assertEqual(preview["dependency_wave_count"], 2)
+        self.assertEqual(preview["dependency_wave_count"], 1)
         self.assertEqual(preview["maximum_parallel_cpus_configured"], 3)
         self.assertEqual(preview["maximum_parallel_cpus_in_generated_waves"], 2)
         self.assertEqual(preview["maximum_parallel_memory_gib_configured"], 185)
@@ -790,10 +790,10 @@ class ExecutionAdapterTests(unittest.TestCase):
             )
 
         self.assertEqual(syntax.returncode, 0, syntax.stderr)
-        self.assertIn('--dependency="afterany:${JOB_W000_T000}"', submit)
+        self.assertIn('--dependency="afterany:${JOB_T0000}"', submit)
         self.assertIn(
             '--kill-on-invalid-dep=yes '
-            '--dependency="afterany:${JOB_W001_T000},afterok:${JOB_W000_T000}"',
+            '--dependency="afterany:${JOB_T0001},afterok:${JOB_T0000}"',
             submit,
         )
         self.assertEqual(scheduler["dependency_model"], "task_dag_v1")

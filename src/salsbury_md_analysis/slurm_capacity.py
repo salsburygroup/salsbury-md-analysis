@@ -440,7 +440,7 @@ def _scheduler_memory_request(
 def _planned_resource_wave_memory(
     plan: Mapping[str, object], tasks: Sequence[Mapping[str, object]]
 ) -> Dict[str, object]:
-    """Summarize the exact aggregate-memory waves chosen by the replanner."""
+    """Summarize concurrent lane memory with legacy wave field aliases."""
 
     working_by_bundle: Dict[str, float] = {}
     for row in tasks:
@@ -451,44 +451,60 @@ def _planned_resource_wave_memory(
         )
     stage_reports = []
     for stage in plan.get("stages", []):
-        waves = []
-        for wave in stage.get("resource_waves", []):
+        lanes = []
+        source_lanes = stage.get(
+            "resource_lanes", stage.get("resource_waves", [])
+        )
+        for lane_position, lane in enumerate(source_lanes):
             bundle_ids = [
-                str(item["item_id"]) for item in wave.get("items", [])
+                str(item["item_id"]) for item in lane.get("items", [])
             ]
-            waves.append({
-                "wave_index": int(wave["wave_index"]),
-                "cpu_slots": int(wave["cpu_slots"]),
-                "scheduler_memory_gib": float(wave["memory_gib"]),
-                "planned_working_set_gib": sum(
-                    working_by_bundle.get(bundle_id, 0.0)
-                    for bundle_id in bundle_ids
+            lanes.append({
+                "lane_index": int(lane.get("lane_index", lane_position)),
+                "cpu_slots": int(lane["cpu_slots"]),
+                "scheduler_memory_gib": float(lane["memory_gib"]),
+                "planned_working_set_gib": max(
+                    (working_by_bundle.get(bundle_id, 0.0)
+                     for bundle_id in bundle_ids),
+                    default=0.0,
                 ),
-                "wall_hours": float(wave["wall_hours"]),
+                "wall_hours": float(lane["wall_hours"]),
                 "bundle_ids": bundle_ids,
             })
         stage_reports.append({
             "dependency_stage": stage["dependency_stage"],
-            "resource_waves": waves,
+            "resource_lanes": lanes,
         })
-    all_waves = [
-        wave for stage in stage_reports for wave in stage["resource_waves"]
-    ]
     scheduler_peak = max(
-        (float(wave["scheduler_memory_gib"]) for wave in all_waves),
+        (sum(float(lane["scheduler_memory_gib"])
+             for lane in stage["resource_lanes"])
+         for stage in stage_reports),
         default=0.0,
     )
+    working_peak = max(
+        (sum(float(lane["planned_working_set_gib"])
+             for lane in stage["resource_lanes"])
+         for stage in stage_reports),
+        default=0.0,
+    )
+    cpu_peak = max(
+        (sum(int(lane["cpu_slots"])
+             for lane in stage["resource_lanes"])
+         for stage in stage_reports),
+        default=0,
+    )
+    lane_count = sum(
+        len(stage["resource_lanes"]) for stage in stage_reports
+    )
     return {
-        "maximum_concurrent_working_set_gib": max(
-            (float(wave["planned_working_set_gib"]) for wave in all_waves),
-            default=0.0,
-        ),
+        "maximum_concurrent_working_set_gib": working_peak,
         "maximum_concurrent_scheduler_request_gib": scheduler_peak,
         "maximum_planned_resource_wave_memory_gib": scheduler_peak,
-        "maximum_planned_resource_wave_cpus": max(
-            (int(wave["cpu_slots"]) for wave in all_waves), default=0
-        ),
-        "resource_wave_count": len(all_waves),
+        "maximum_planned_resource_wave_cpus": cpu_peak,
+        "maximum_planned_resource_lane_memory_gib": scheduler_peak,
+        "maximum_planned_resource_lane_cpus": cpu_peak,
+        "resource_wave_count": 0,
+        "resource_lane_count": lane_count,
         "stages": stage_reports,
     }
 

@@ -18,7 +18,7 @@ from typing import Dict, List, Mapping, Optional, Sequence
 
 from .analysis_config import COMMAND_MODULES
 from .manifests import load_json
-from .resource_planning import ResourcePlanningError, pack_resource_waves
+from .resource_planning import ResourcePlanningError, pack_resource_lanes
 
 
 class ExecutionAdapterError(ValueError):
@@ -852,13 +852,13 @@ def _task_resource_requests(plan: Mapping[str, object]) -> List[Dict[str, object
     return rows
 
 
-def _slurm_resource_waves(
+def _slurm_resource_lanes(
     execution_plan: Mapping[str, object],
     partitions: Mapping[str, object],
     partition_limits: Mapping[str, object],
     resource_policy: Mapping[str, object],
 ) -> List[Dict[str, object]]:
-    """Pack each dependency phase under the campaign CPU and memory limits."""
+    """Pack dependency-safe tasks into independent serial resource lanes."""
 
     maximum_cpus = int(execution_plan.get("maximum_parallel_cpus", 0))
     maximum_memory = float(
@@ -868,7 +868,7 @@ def _slurm_resource_waves(
         raise ExecutionAdapterError(
             "execution plan lacks positive aggregate CPU and memory limits"
         )
-    phase_waves: List[Dict[str, object]] = []
+    ordered_items: List[Dict[str, object]] = []
     for phase_index, phase in enumerate(execution_plan.get("phases", [])):
         phase_id = str(phase["phase_id"])
         items = []
@@ -911,58 +911,61 @@ def _slurm_resource_waves(
                 "planner_task_ids": list(task.get("planner_task_ids", [])),
                 **route,
             })
-        try:
-            waves = pack_resource_waves(
-                items,
-                maximum_parallel_cpus=maximum_cpus,
-                maximum_parallel_memory_gib=maximum_memory,
-            )
-        except ResourcePlanningError as exc:
-            raise ExecutionAdapterError(str(exc)) from exc
-        for wave in waves:
-            wave["planned_wall_hours"] = max(
-                (
-                    float(item.get("planned_wall_hours", 0.0))
-                    for item in wave.get("items", [])
-                ),
-                default=0.0,
-            )
-            wave["phase_index"] = phase_index
-            wave["phase_id"] = phase_id
-            phase_waves.append(wave)
-    return phase_waves
+        for item in items:
+            item["phase_index"] = phase_index
+            item["phase_id"] = phase_id
+            item["submission_index"] = len(ordered_items)
+            ordered_items.append(item)
+    try:
+        lanes = pack_resource_lanes(
+            ordered_items,
+            maximum_parallel_cpus=maximum_cpus,
+            maximum_parallel_memory_gib=maximum_memory,
+        )
+    except ResourcePlanningError as exc:
+        raise ExecutionAdapterError(str(exc)) from exc
+    for lane in lanes:
+        lane["planned_wall_hours"] = sum(
+            float(item.get("planned_wall_hours", 0.0))
+            for item in lane.get("items", [])
+        )
+        lane["phase_ids"] = list(dict.fromkeys(
+            str(item["phase_id"]) for item in lane.get("items", [])
+        ))
+    return lanes
 
 
 def _slurm_submission_preview(
     execution_plan: Mapping[str, object],
-    resource_waves: Sequence[Mapping[str, object]],
+    resource_lanes: Sequence[Mapping[str, object]],
 ) -> Dict[str, object]:
     """Return a bounded, machine-readable contract shown before submission."""
 
     maximum_cpus = int(execution_plan["maximum_parallel_cpus"])
     maximum_memory = float(execution_plan["maximum_parallel_memory_gib"])
     task_count = sum(
-        len(wave.get("items", [])) for wave in resource_waves
+        len(lane.get("items", [])) for lane in resource_lanes
     )
     scientific_dependency_edge_count = sum(
         len(item.get("depends_on_task_ids", []))
-        for wave in resource_waves for item in wave.get("items", [])
+        for lane in resource_lanes for item in lane.get("items", [])
     )
     completion_wait_edge_count = sum(
         len(item.get("wait_for_task_ids", []))
-        for wave in resource_waves for item in wave.get("items", [])
+        for lane in resource_lanes for item in lane.get("items", [])
     )
-    peak_cpus = max(
-        (int(wave["cpu_slots"]) for wave in resource_waves), default=0
+    peak_cpus = sum(int(lane["cpu_slots"]) for lane in resource_lanes)
+    peak_memory = sum(float(lane["memory_gib"]) for lane in resource_lanes)
+    planner_critical_path = max(
+        (
+            float(lane.get("planned_wall_hours", 0.0))
+            for lane in resource_lanes
+        ),
+        default=0.0,
     )
-    peak_memory = max(
-        (float(wave["memory_gib"]) for wave in resource_waves), default=0.0
-    )
-    planner_critical_path = sum(
-        float(wave.get("planned_wall_hours", 0.0)) for wave in resource_waves
-    )
-    scheduler_reservation_path = sum(
-        float(wave.get("wall_hours", 0.0)) for wave in resource_waves
+    scheduler_reservation_path = max(
+        (float(lane.get("wall_hours", 0.0)) for lane in resource_lanes),
+        default=0.0,
     )
     warnings: List[Dict[str, object]] = []
     if peak_cpus < maximum_cpus:
@@ -971,7 +974,7 @@ def _slurm_submission_preview(
             "code": "REQUESTED_CPUS_EXCEED_GENERATED_PARALLELISM",
             "message": (
                 f"The campaign allows {maximum_cpus} simultaneous CPUs, but its "
-                f"generated dependency and memory waves can use at most {peak_cpus}; "
+                f"generated dependency and memory lanes can use at most {peak_cpus}; "
                 f"the remaining {maximum_cpus - peak_cpus} CPUs cannot shorten "
                 "this prepared schedule."
             ),
@@ -979,20 +982,19 @@ def _slurm_submission_preview(
             "generated_parallel_cpu_ceiling": peak_cpus,
             "excess_cpus": maximum_cpus - peak_cpus,
         })
-    wave_summaries = [
+    lane_summaries = [
         {
-            "dependency_wave_index": index,
-            "phase_id": wave.get("phase_id"),
-            "phase_wave_index": wave.get("wave_index"),
-            "task_count": len(wave.get("items", [])),
-            "cpu_slots": int(wave["cpu_slots"]),
-            "aggregate_memory_gib": float(wave["memory_gib"]),
+            "resource_lane_index": int(lane.get("lane_index", index)),
+            "phase_ids": list(lane.get("phase_ids", [])),
+            "task_count": len(lane.get("items", [])),
+            "cpu_slots": int(lane["cpu_slots"]),
+            "reserved_memory_gib": float(lane["memory_gib"]),
             "planner_estimated_wall_hours": float(
-                wave.get("planned_wall_hours", 0.0)
+                lane.get("planned_wall_hours", 0.0)
             ),
-            "scheduler_time_limit_hours": float(wave.get("wall_hours", 0.0)),
+            "scheduler_time_limit_hours": float(lane.get("wall_hours", 0.0)),
         }
-        for index, wave in enumerate(resource_waves)
+        for index, lane in enumerate(resource_lanes)
     ]
     return {
         "slurm_submission_preview_schema": "salsbury-slurm-submission-preview-v1",
@@ -1004,8 +1006,12 @@ def _slurm_submission_preview(
         "dependency_model": execution_plan.get("dependency_model", "legacy_phase_chain"),
         "scientific_dependency_edge_count": scientific_dependency_edge_count,
         "completion_wait_edge_count": completion_wait_edge_count,
-        "dependency_wave_count": len(resource_waves),
-        "resource_wave_count": len(resource_waves),
+        "dependency_wave_count": len({
+            int(item.get("phase_index", 0))
+            for lane in resource_lanes for item in lane.get("items", [])
+        }),
+        "resource_wave_count": 0,
+        "resource_lane_count": len(resource_lanes),
         "maximum_parallel_cpus_configured": maximum_cpus,
         "maximum_parallel_cpus_in_generated_waves": peak_cpus,
         "maximum_parallel_memory_gib_configured": maximum_memory,
@@ -1021,14 +1027,16 @@ def _slurm_submission_preview(
             if execution_plan.get("maximum_campaign_wall_hours") is not None
             else None
         ),
-        "dependency_waves": wave_summaries,
+        "dependency_waves": [],
+        "resource_lanes": lane_summaries,
         "resource_contract": (
-            "Each later resource wave waits for completion, not success, of the "
-            "preceding wave. Only depends_on_task_ids create success-required "
+            "Each resource lane runs at most one task at a time. A task waits "
+            "only for the preceding task in its own lane plus its explicit "
+            "dependencies. Only depends_on_task_ids create success-required "
             "inputs without a recompute path; wait_for_task_ids create "
             "failure-tolerant cache-reuse or completion ordering. CPU slots and "
-            "safety-adjusted memory "
-            "summed within every wave stay at or below the configured aggregate caps."
+            "safety-adjusted lane-memory reservations summed across lanes stay "
+            "at or below the configured aggregate caps."
             if execution_plan.get("dependency_model") == "task_dag_v1" else
             "Each later dependency wave waits for successful completion of every "
             "job in the preceding wave. CPU slots and safety-adjusted memory summed "
@@ -1050,7 +1058,7 @@ def _render_resource_bounded_submit(
     root: Path,
     profile: Mapping[str, object],
     profile_path: Path,
-    resource_waves: Sequence[Mapping[str, object]],
+    resource_lanes: Sequence[Mapping[str, object]],
 ) -> str:
     """Render one launcher with separate scientific and resource dependencies."""
 
@@ -1074,101 +1082,102 @@ def _render_resource_bounded_submit(
         '    ;;',
         'esac',
         'cat "$PREVIEW"',
-        'printf "Submitting the reviewed Slurm resource waves now.\\n"',
+        'printf "Submitting the reviewed Slurm resource lanes now.\\n"',
         "",
     ]
-    previous_jobs: List[str] = []
     submitted_jobs: List[str] = []
     task_jobs: Dict[str, str] = {}
-    dependency_dag = any(
-        item.get("task_id")
-        for wave in resource_waves for item in wave.get("items", [])
+    previous_lane_jobs: Dict[int, str] = {}
+    ordered_items = sorted(
+        (
+            (int(lane.get("lane_index", lane_index)), item)
+            for lane_index, lane in enumerate(resource_lanes)
+            for item in lane.get("items", [])
+        ),
+        key=lambda pair: int(pair[1].get("submission_index", 0)),
     )
-    for global_wave_index, wave in enumerate(resource_waves):
-        items = wave.get("items", [])
-        if not isinstance(items, list) or not items:
-            continue
-        current_jobs: List[str] = []
+    for item_index, (lane_index, item) in enumerate(ordered_items):
+        if item_index == 0 or (
+            item_index > 0
+            and str(item.get("phase_id"))
+            != str(ordered_items[item_index - 1][1].get("phase_id"))
+        ):
+            lines.append(f"# dependency phase {item.get('phase_id')}")
         lines.append(
-            f"# {wave['phase_id']} resource wave {int(wave['wave_index']) + 1}: "
-            f"{int(wave['cpu_slots'])} CPUs, {float(wave['memory_gib']):g} GiB"
+            f"# resource lane {lane_index + 1}: "
+            f"{int(item['cpu_slots'])} CPUs, {float(item['memory_gib']):g} GiB"
         )
-        for item_index, item in enumerate(items):
-            variable = f"JOB_W{global_wave_index:03d}_T{item_index:03d}"
-            options = [
-                "--parsable",
-                f"--cpus-per-task={int(item['cpu_slots'])}",
-                f"--time={item['slurm_time']}",
-                f"--mem={item['slurm_memory']}",
-            ]
-            if item.get("selected_partition"):
-                options.append(
-                    f"--partition={shlex.quote(str(item['selected_partition']))}"
+        variable = f"JOB_T{item_index:04d}"
+        options = [
+            "--parsable",
+            f"--cpus-per-task={int(item['cpu_slots'])}",
+            f"--time={item['slurm_time']}",
+            f"--mem={item['slurm_memory']}",
+        ]
+        if item.get("selected_partition"):
+            options.append(
+                f"--partition={shlex.quote(str(item['selected_partition']))}"
+            )
+        if item.get("array_task_id") is not None:
+            options.append(f"--array={int(item['array_task_id'])}")
+        scientific_job_variables = []
+        for required_task_id in item.get("depends_on_task_ids", []):
+            required = task_jobs.get(str(required_task_id))
+            if required is None:
+                raise ExecutionAdapterError(
+                    f"task {item.get('task_id')} is scheduled before its "
+                    f"prerequisite {required_task_id}"
                 )
-            if item.get("array_task_id") is not None:
-                options.append(f"--array={int(item['array_task_id'])}")
-            if dependency_dag:
-                scientific_job_variables = []
-                for required_task_id in item.get("depends_on_task_ids", []):
-                    required = task_jobs.get(str(required_task_id))
-                    if required is None:
-                        raise ExecutionAdapterError(
-                            f"task {item.get('task_id')} is scheduled before its "
-                            f"prerequisite {required_task_id}"
-                        )
-                    scientific_job_variables.append(required)
-                completion_job_variables = []
-                for waited_task_id in item.get("wait_for_task_ids", []):
-                    waited = task_jobs.get(str(waited_task_id))
-                    if waited is None:
-                        raise ExecutionAdapterError(
-                            f"task {item.get('task_id')} is scheduled before its "
-                            f"completion wait {waited_task_id}"
-                        )
-                    completion_job_variables.append(waited)
-                clauses = []
-                afterany_variables = list(dict.fromkeys(
-                    [*previous_jobs, *completion_job_variables]
-                ))
-                if afterany_variables:
-                    clauses.append(
-                        "afterany:" + ":".join(
-                            f"${{{name}}}" for name in afterany_variables
-                        )
-                    )
-                if scientific_job_variables:
-                    clauses.append(
-                        "afterok:" + ":".join(
-                            f"${{{name}}}" for name in scientific_job_variables
-                        )
-                    )
-                    options.append("--kill-on-invalid-dep=yes")
-                if clauses:
-                    options.append('--dependency="' + ",".join(clauses) + '"')
-            elif previous_jobs:
-                options.append(
-                    '--dependency="afterany:'
-                    + ":".join(f"${{{name}}}" for name in previous_jobs)
-                    + '"'
+            scientific_job_variables.append(required)
+        completion_job_variables = []
+        for waited_task_id in item.get("wait_for_task_ids", []):
+            waited = task_jobs.get(str(waited_task_id))
+            if waited is None:
+                raise ExecutionAdapterError(
+                    f"task {item.get('task_id')} is scheduled before its "
+                    f"completion wait {waited_task_id}"
                 )
-            command_options = " ".join(options)
-            script = shlex.quote(str(item["script"]))
-            lines.extend([
-                f'{variable}=$("$SUBMIT_COMMAND" {command_options} '
-                f'"$ROOT"/{script})',
-                f'{variable}="${{{variable}%%;*}}"',
-            ])
-            current_jobs.append(variable)
-            submitted_jobs.append(variable)
-            if item.get("task_id"):
-                task_jobs[str(item["task_id"])] = variable
-        previous_jobs = current_jobs
+            completion_job_variables.append(waited)
+        clauses = []
+        lane_predecessor = previous_lane_jobs.get(lane_index)
+        afterany_variables = list(dict.fromkeys([
+            *([lane_predecessor] if lane_predecessor else []),
+            *completion_job_variables,
+        ]))
+        if afterany_variables:
+            clauses.append(
+                "afterany:" + ":".join(
+                    f"${{{name}}}" for name in afterany_variables
+                )
+            )
+        if scientific_job_variables:
+            clauses.append(
+                "afterok:" + ":".join(
+                    f"${{{name}}}" for name in scientific_job_variables
+                )
+            )
+            options.append("--kill-on-invalid-dep=yes")
+        if clauses:
+            options.append('--dependency="' + ",".join(clauses) + '"')
+        command_options = " ".join(options)
+        script = shlex.quote(str(item["script"]))
+        lines.extend([
+            f'{variable}=$("$SUBMIT_COMMAND" {command_options} '
+            f'"$ROOT"/{script})',
+            f'{variable}="${{{variable}%%;*}}"',
+        ])
+        previous_lane_jobs[lane_index] = variable
+        submitted_jobs.append(variable)
+        if item.get("task_id"):
+            task_jobs[str(item["task_id"])] = variable
         lines.append("")
     if submitted_jobs:
         lines.extend([
             'printf "Submitted %s jobs; final job IDs: %s\\n" '
             f'"{len(submitted_jobs)}" "'
-            + ":".join(f"${{{name}}}" for name in previous_jobs)
+            + ":".join(
+                f"${{{name}}}" for _, name in sorted(previous_lane_jobs.items())
+            )
             + '"',
         ])
     else:
@@ -1204,14 +1213,14 @@ def apply_slurm_profile(
         partition_limits,
         resource_policy,
     )
-    resource_waves = _slurm_resource_waves(
+    resource_lanes = _slurm_resource_lanes(
         execution_plan,
         partitions,
         partition_limits,
         resource_policy,
     )
     submission_preview = _slurm_submission_preview(
-        execution_plan, resource_waves
+        execution_plan, resource_lanes
     )
     (root / "slurm-submission-preview.json").write_text(
         json.dumps(submission_preview, indent=2, sort_keys=True) + "\n",
@@ -1298,7 +1307,7 @@ def apply_slurm_profile(
     if canonical_submit.is_file():
         canonical_submit.write_text(
             _render_resource_bounded_submit(
-                root, profile, profile_path, resource_waves
+                root, profile, profile_path, resource_lanes
             ),
             encoding="utf-8",
         )
@@ -1319,18 +1328,18 @@ def apply_slurm_profile(
         "maximum_parallel_memory_gib": execution_plan[
             "maximum_parallel_memory_gib"
         ],
-        "resource_waves": resource_waves,
+        "resource_waves": [],
+        "resource_lanes": resource_lanes,
         "submission_preview": submission_preview,
         "submission_preview_file": "slurm-submission-preview.json",
         "canonical_submit_script": (
             "submit.sh" if canonical_submit.is_file() else None
         ),
         "aggregate_resource_contract": (
-            "tasks in one wave may run concurrently; later waves use afterany "
-            "only as resource barriers, while each task uses afterok only for "
-            "success-required inputs that it cannot reconstruct; every wave stays "
-            "within campaign CPU "
-            "and safety-adjusted memory limits"
+            "each lane runs one task at a time; a task uses afterany only for "
+            "its preceding lane task and explicit completion waits, and afterok "
+            "only for success-required inputs it cannot reconstruct; summed lane "
+            "CPU and safety-adjusted memory reservations stay within campaign limits"
             if execution_plan.get("dependency_model") == "task_dag_v1" else
             "tasks in one wave may run concurrently; every later wave waits "
             "afterany for every job in the preceding wave, and each wave stays "

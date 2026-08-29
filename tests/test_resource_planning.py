@@ -12,6 +12,7 @@ from salsbury_md_analysis.resource_planning import (
     recommend_frame_budget,
     recommend_scientifically_valid_task_subset,
     recommend_quadratic_observation_budget,
+    pack_resource_lanes,
     pack_resource_waves,
     workflow_useful_parallel_cpu_ceiling,
 )
@@ -849,7 +850,7 @@ class ResourcePlanningTests(unittest.TestCase):
             memory["oversized_tasks"][0]["task_id"], "view:global:large"
         )
 
-    def test_buffered_memory_controls_feasibility_and_resource_waves(self):
+    def test_buffered_memory_controls_feasibility_and_resource_lanes(self):
         tasks = []
         for task_id in ("first", "second"):
             tasks.append({
@@ -873,10 +874,15 @@ class ResourcePlanningTests(unittest.TestCase):
             minimum_scheduler_memory_gib=2.0,
         )
         self.assertEqual(plan["feasibility_status"], "feasible")
-        waves = plan["stages"][0]["resource_waves"]
-        self.assertEqual(len(waves), 2)
-        self.assertTrue(all(wave["memory_gib"] == 91.0 for wave in waves))
-        self.assertTrue(all(wave["cpu_slots"] == 1 for wave in waves))
+        lanes = plan["stages"][0]["resource_lanes"]
+        self.assertEqual(len(lanes), 1)
+        self.assertEqual(lanes[0]["memory_gib"], 91.0)
+        self.assertEqual(lanes[0]["cpu_slots"], 1)
+        self.assertEqual(len(lanes[0]["items"]), 2)
+        self.assertEqual(
+            plan["stages"][0]["estimated_wall_hours_with_resource_lanes"],
+            200.0 / 3600.0,
+        )
 
     def test_deac_memory_margin_can_make_raw_working_set_infeasible(self):
         plan = plan_campaign_resource_budget(
@@ -919,6 +925,26 @@ class ResourcePlanningTests(unittest.TestCase):
                 maximum_parallel_cpus=2,
                 maximum_parallel_memory_gib=100,
             )
+
+    def test_resource_lane_packer_serializes_only_the_oversized_pair(self):
+        lanes = pack_resource_lanes(
+            [
+                {"item_id": "large", "cpu_slots": 1, "memory_gib": 100,
+                 "wall_hours": 1},
+                {"item_id": "medium", "cpu_slots": 1, "memory_gib": 90,
+                 "wall_hours": 1},
+                {"item_id": "small", "cpu_slots": 1, "memory_gib": 80,
+                 "wall_hours": 1},
+            ],
+            maximum_parallel_cpus=3,
+            maximum_parallel_memory_gib=185,
+        )
+        self.assertEqual(len(lanes), 2)
+        self.assertEqual(sum(lane["memory_gib"] for lane in lanes), 180)
+        self.assertEqual(max(lane["wall_hours"] for lane in lanes), 2)
+        self.assertEqual(
+            sorted(len(lane["items"]) for lane in lanes), [1, 2]
+        )
 
     def test_measured_memory_scales_from_observation_coverage(self):
         plan = plan_campaign_resource_budget(
