@@ -14,6 +14,11 @@ class AnalysisConfigError(ValueError):
     """Raised when a preparation configuration is ambiguous or unsafe."""
 
 
+MINIMUM_HEADLINE_FINDINGS = 10
+MAXIMUM_HEADLINE_FINDINGS = 12
+HIGHLIGHTED_FINDINGS_TOTAL = 50
+
+
 COMMAND_MODULES = {
     "structural-qc": "structural_integrity_qc",
     "rmsd-rg": "replica_rmsd_rg",
@@ -261,8 +266,9 @@ def default_analysis_config(
         "reporting": {
             "resource_table_enabled": True,
             "finding_picker_enabled": True,
-            "headline_findings": 12,
-            "maximum_findings": 50,
+            "minimum_headline_findings": MINIMUM_HEADLINE_FINDINGS,
+            "headline_findings": MAXIMUM_HEADLINE_FINDINGS,
+            "maximum_findings": HIGHLIGHTED_FINDINGS_TOTAL,
         },
         "comparisons": {
             "mode": "all_pairs",
@@ -456,7 +462,8 @@ def load_analysis_config(
     for section, allowed in (
         ("reporting", {
             "resource_table_enabled", "finding_picker_enabled",
-            "headline_findings", "maximum_findings",
+            "minimum_headline_findings", "headline_findings",
+            "maximum_findings",
         }),
         ("comparisons", {
             "mode", "reference_system_id", "multiple_testing", "alpha",
@@ -472,13 +479,40 @@ def load_analysis_config(
     assert isinstance(reporting, dict) and isinstance(comparisons, dict)
     if not all(isinstance(reporting[key], bool) for key in ("resource_table_enabled", "finding_picker_enabled")):
         raise AnalysisConfigError("reporting enable flags must be boolean")
-    if isinstance(reporting["maximum_findings"], bool) or not isinstance(reporting["maximum_findings"], int) or reporting["maximum_findings"] <= 0:
-        raise AnalysisConfigError("reporting.maximum_findings must be positive integer")
-    if isinstance(reporting["headline_findings"], bool) or not isinstance(reporting["headline_findings"], int) or reporting["headline_findings"] <= 0:
-        raise AnalysisConfigError("reporting.headline_findings must be positive integer")
-    if reporting["headline_findings"] > reporting["maximum_findings"]:
+    if (
+        isinstance(reporting["maximum_findings"], bool)
+        or not isinstance(reporting["maximum_findings"], int)
+        or reporting["maximum_findings"] != HIGHLIGHTED_FINDINGS_TOTAL
+    ):
         raise AnalysisConfigError(
-            "reporting.headline_findings cannot exceed reporting.maximum_findings"
+            "reporting.maximum_findings must be 50 so the highlighted report "
+            "contains 10-12 headlines and 38-40 secondary findings"
+        )
+    if (
+        isinstance(reporting["headline_findings"], bool)
+        or not isinstance(reporting["headline_findings"], int)
+        or not MINIMUM_HEADLINE_FINDINGS
+        <= reporting["headline_findings"]
+        <= MAXIMUM_HEADLINE_FINDINGS
+    ):
+        raise AnalysisConfigError(
+            "reporting.headline_findings must be an integer from 10 through 12"
+        )
+    if (
+        isinstance(reporting["minimum_headline_findings"], bool)
+        or not isinstance(reporting["minimum_headline_findings"], int)
+        or not MINIMUM_HEADLINE_FINDINGS
+        <= reporting["minimum_headline_findings"]
+        <= MAXIMUM_HEADLINE_FINDINGS
+    ):
+        raise AnalysisConfigError(
+            "reporting.minimum_headline_findings must be an integer from 10 "
+            "through 12"
+        )
+    if reporting["minimum_headline_findings"] > reporting["headline_findings"]:
+        raise AnalysisConfigError(
+            "reporting.minimum_headline_findings cannot exceed "
+            "reporting.headline_findings"
         )
     if comparisons["mode"] not in {"all_pairs", "reference_vs_all"}:
         raise AnalysisConfigError("comparisons.mode must be all_pairs or reference_vs_all")

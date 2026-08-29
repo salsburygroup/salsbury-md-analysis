@@ -65,8 +65,25 @@
       "properties": {
         "resource_table_enabled": {"type": "boolean", "default": true},
         "finding_picker_enabled": {"type": "boolean", "default": true},
-        "headline_findings": {"type": "integer", "minimum": 1, "default": 12},
-        "maximum_findings": {"type": "integer", "minimum": 1, "default": 50}
+        "minimum_headline_findings": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 12,
+          "default": 10,
+          "description": "Opening-page minimum before statistically significant boundary findings are considered."
+        },
+        "headline_findings": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 12,
+          "default": 12,
+          "description": "Opening-page maximum. Findings beyond the minimum are included only when supported significance reaches the boundary."
+        },
+        "maximum_findings": {
+          "const": 50,
+          "default": 50,
+          "description": "Total headline plus secondary findings. Candidates beyond 50 remain searchable and machine-readable."
+        }
       }
     },
     "comparisons": {
