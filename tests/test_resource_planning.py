@@ -1142,6 +1142,43 @@ class ResourcePlanningTests(unittest.TestCase):
         )
         self.assertEqual(plan["feasibility_status"], "feasible")
 
+    def test_parallel_worker_concurrency_is_reduced_without_dropping_work(self):
+        plan = plan_campaign_resource_budget(
+            [{
+                "task_id": "replica-analysis",
+                "module_id": "structural_integrity_qc",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 8,
+                "parallel_execution_model": (
+                    "replica_worker_exact_global_reducer_v1"
+                ),
+                "parallel_worker_count": 8,
+                "estimated_peak_memory_gib_per_parallel_worker": 4.0,
+                "reducer_memory_gib": 2.0,
+                "source_frames_per_replica": [100] * 8,
+                "minimum_frames_per_replica": 10,
+                "maximum_frames_per_replica": 100,
+                "cpu_seconds_per_physical_frame": 0.01,
+                "estimated_peak_memory_gib": 32.0,
+            }],
+            maximum_parallel_cpus=8,
+            maximum_wall_hours=1.0,
+            maximum_memory_gib=10.0,
+        )
+        row = plan["tasks"][0]
+        self.assertEqual(row["parallel_worker_count"], 8)
+        self.assertEqual(
+            row["active_parallel_workers_at_selected_observations"], 2
+        )
+        layout = row["parallel_node_layout_at_selected_observations"]
+        self.assertEqual(layout["worker_wave_count"], 4)
+        self.assertTrue(layout["concurrency_limited"])
+        self.assertIn("aggregate_memory_cap", layout["concurrency_limit_reasons"])
+        self.assertEqual(
+            row["estimated_peak_memory_gib_at_selected_observations"], 8.0
+        )
+        self.assertEqual(plan["feasibility_status"], "feasible")
+
     def test_measured_memory_scales_from_observation_coverage(self):
         plan = plan_campaign_resource_budget(
             [{

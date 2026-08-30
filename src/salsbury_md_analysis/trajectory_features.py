@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
-from typing import Dict, List, Mapping, Sequence, Tuple
+from typing import Dict, Iterator, List, Mapping, Sequence, Tuple
 
 import numpy as np
 
 from .atom_mapping import AtomMappingError, read_topology_atoms
+from .columnar_artifacts import (
+    AtomicColumnarBundle,
+    ColumnarArtifactError,
+    iter_columnar_records,
+)
 from .context import compile_project_context_file
 from .coordinates import CellVectors, CoordinateReadError, iter_coordinate_frames
 from .manifests import ManifestValidationError, load_json, resolve_manifest_path
@@ -30,6 +36,22 @@ from .validation import positive_integer
 
 class TrajectoryFeatureError(ValueError):
     """Raised when a trajectory-feature contract is invalid."""
+
+
+def iter_feature_records(
+    feature_report: Mapping[str, object],
+) -> Iterator[Mapping[str, object]]:
+    """Return an iterator over legacy inline or hash-bound columnar records."""
+
+    records = feature_report.get("records")
+    if isinstance(records, list):
+        return iter(records)
+    reference = feature_report.get("columnar_artifact")
+    if isinstance(reference, dict):
+        return iter_columnar_records(reference)
+    raise TrajectoryFeatureError(
+        "trajectory feature has neither inline records nor a columnar artifact"
+    )
 
 
 def flatten_coordinates(
@@ -286,6 +308,13 @@ def trajectory_features_project(
     system = load_json(system_path)
     coordinate_unit = str(project["coordinate_unit"])
     output_time_unit = project.get("time_unit")
+    artifact_root_text = os.environ.get(
+        "SALSBURY_MD_ANALYSIS_COLUMNAR_ARTIFACT_ROOT"
+    )
+    artifact_bundle = (
+        AtomicColumnarBundle(Path(artifact_root_text))
+        if artifact_root_text else None
+    )
     issues = [issue for issue in context.get("warnings", []) if isinstance(issue, dict)]
     segment_reports = []
     stored_values = 0
@@ -461,25 +490,93 @@ def trajectory_features_project(
                     stored_values += int(values.size)
                     if stored_values > settings["maximum_feature_values"]:
                         raise TrajectoryFeatureError("maximum_feature_values gate exceeded")
-                    rows = []
-                    for index, (frame_index, values_row) in enumerate(zip(frame_indices, values)):
-                        row = {
-                            "source_frame_index": frame_index,
-                            "axis_kind": axis["kind"],
-                            "axis_value": frame_axis_value(axis, frame_index),
-                            "values": values_row.tolist(),
-                        }
-                        if state["closest_pairs"]:
-                            row["closest_atom_indices"] = state["closest_pairs"][index]
-                        if state["auxiliary_records"]:
-                            row.update(state["auxiliary_records"][index])
-                        rows.append(row)
+                    axis_values = [
+                        frame_axis_value(axis, frame_index)
+                        for frame_index in frame_indices
+                    ]
                     feature_report = {
                         "feature_id": feature["feature_id"],
                         "kind": kind,
                         "dimension": int(values.shape[1]),
-                        "records": rows,
                     }
+                    if artifact_bundle is None:
+                        rows = []
+                        for index, (frame_index, values_row) in enumerate(
+                            zip(frame_indices, values)
+                        ):
+                            row = {
+                                "source_frame_index": frame_index,
+                                "axis_kind": axis["kind"],
+                                "axis_value": axis_values[index],
+                                "values": values_row.tolist(),
+                            }
+                            if state["closest_pairs"]:
+                                row["closest_atom_indices"] = (
+                                    state["closest_pairs"][index]
+                                )
+                            if state["auxiliary_records"]:
+                                row.update(state["auxiliary_records"][index])
+                            rows.append(row)
+                        feature_report["records"] = rows
+                        feature_report["record_storage"] = "inline_json"
+                    else:
+                        columns: Dict[str, object] = {
+                            "source_frame_index": np.asarray(
+                                frame_indices, dtype=np.int64
+                            ),
+                            "axis_value": np.asarray(axis_values, dtype=np.float64),
+                            "values": values,
+                        }
+                        if state["closest_pairs"]:
+                            columns["closest_atom_indices"] = np.asarray(
+                                state["closest_pairs"], dtype=np.int64
+                            )
+                        if state["auxiliary_records"]:
+                            auxiliary_keys = sorted(
+                                state["auxiliary_records"][0]
+                            )
+                            if any(
+                                sorted(record) != auxiliary_keys
+                                for record in state["auxiliary_records"]
+                            ):
+                                raise TrajectoryFeatureError(
+                                    "auxiliary feature columns are inconsistent"
+                                )
+                            for key in auxiliary_keys:
+                                columns[key] = np.asarray([
+                                    record[key]
+                                    for record in state["auxiliary_records"]
+                                ])
+                        segment_ordinal = len(segment_reports)
+                        feature_ordinal = len(feature_reports)
+                        feature_report["columnar_artifact"] = (
+                            artifact_bundle.write_table(
+                                f"segment-{segment_ordinal:05d}/"
+                                f"feature-{feature_ordinal:04d}",
+                                columns,
+                                constants={"axis_kind": axis["kind"]},
+                                provenance={
+                                    "module_id": "trajectory_features",
+                                    "project_manifest_sha256": context[
+                                        "project_manifest_sha256"
+                                    ],
+                                    "system_manifest_sha256": context[
+                                        "system_manifest_sha256"
+                                    ],
+                                    "input_content_signature_sha256": context[
+                                        "input_content_signature_sha256"
+                                    ],
+                                    "system_id": system_id,
+                                    "replica_id": replica_id,
+                                    "segment_id": segment_id,
+                                    "feature_id": feature["feature_id"],
+                                },
+                            )
+                        )
+                        feature_report["records"] = None
+                        feature_report["record_storage"] = (
+                            "hash_bound_numpy_columnar"
+                        )
                     if kind in _VALUE_LABELS:
                         feature_report["value_labels"] = _VALUE_LABELS[kind]
                     feature_reports.append(feature_report)
@@ -490,6 +587,8 @@ def trajectory_features_project(
                     "evaluated_frame_count": len(frame_indices),
                     "features": feature_reports,
                 })
+    if artifact_bundle is not None:
+        artifact_bundle.publish()
     return {
         "module_id": "trajectory_features",
         "technical_status": "complete",
@@ -505,6 +604,10 @@ def trajectory_features_project(
         "content_hashes_included": hash_content,
         "settings": settings,
         "stored_feature_value_count": stored_values,
+        "columnar_artifact_root": (
+            str(artifact_bundle.output_root)
+            if artifact_bundle is not None else None
+        ),
         "segments": segment_reports,
         "error_count": 0,
         "warning_count": sum(issue.get("severity") == "warning" for issue in issues),
@@ -524,7 +627,8 @@ def trajectory_features_project_safe(
     try:
         return trajectory_features_project(project_path, hash_content=hash_content)
     except (
-        TrajectoryFeatureError, ManifestValidationError, AtomMappingError,
+        TrajectoryFeatureError, ColumnarArtifactError,
+        ManifestValidationError, AtomMappingError,
         CoordinateReadError, PeriodicReconstructionError, TrajectoryContractError,
         RMSDRGError, OSError, KeyError, ValueError,
     ) as exc:

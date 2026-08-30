@@ -336,8 +336,20 @@ class AutomaticSamplingTests(unittest.TestCase):
             time_safety_factor=1.5,
         )
         row = plan["tasks"][0]
-        self.assertEqual(row["effective_cpu_cap"], 1)
-        self.assertEqual(row["estimated_peak_memory_gib"], 4.0)
+        self.assertEqual(row["effective_cpu_cap"], 3)
+        self.assertEqual(row["parallel_worker_count"], 3)
+        self.assertEqual(
+            row["active_parallel_workers_at_selected_observations"], 1
+        )
+        self.assertEqual(
+            row["parallel_node_layout_at_selected_observations"][
+                "worker_wave_count"
+            ],
+            3,
+        )
+        self.assertEqual(
+            row["estimated_peak_memory_gib_at_selected_observations"], 4.0
+        )
 
     def test_censored_only_memory_does_not_invent_observation_scaling(self):
         dimensions = self._reference_dimensions(frames_per_replica=1000)
@@ -381,13 +393,15 @@ class AutomaticSamplingTests(unittest.TestCase):
             "replica_rmsd_rg": {
                 "catalog_sha256": "b" * 64,
                 "conservative_cpu_seconds_per_frame": 0.1,
-                "maximum_resident_memory_mib": 100.0,
+                "maximum_resident_memory_mib": 8192.0,
+                "maximum_completed_resident_memory_mib": 8192.0,
                 "maximum_measured_selected_frame_count": 3000,
                 "maximum_measured_observation_count": 3000,
-                "measurement_count": 1,
-                "complete_measurement_count": 1,
+                "measurement_count": 2,
+                "complete_measurement_count": 2,
                 "censored_timeout_count": 0,
                 "calibration_evidence_status": "completed_execution",
+                "memory_replacement_qualified": True,
             }
         }
         plan = _campaign_direct_resource_plan(
@@ -407,7 +421,7 @@ class AutomaticSamplingTests(unittest.TestCase):
         row = plan["tasks"][0]
         self.assertAlmostEqual(
             row["measured_memory_cost_model"]["calibration_memory_gib"],
-            2.0,
+            5.0,
             places=3,
         )
 

@@ -35,7 +35,8 @@ def _maximum_rss_mib(raw: float) -> float:
 
 
 def run_instrumented_project_command(
-    command: str, project_path: Path, *, hash_content: bool
+    command: str, project_path: Path, *, hash_content: bool,
+    columnar_artifact_root: Path | None = None,
 ) -> Dict[str, object]:
     """Run one normal CLI analysis in a child and attach same-job measurements."""
 
@@ -44,7 +45,15 @@ def run_instrumented_project_command(
     if hash_content:
         argv.append("--hash-content")
     started = time.perf_counter()
-    completed = subprocess.run(argv, text=True, capture_output=True, check=False)
+    child_environment = os.environ.copy()
+    if columnar_artifact_root is not None:
+        child_environment["SALSBURY_MD_ANALYSIS_COLUMNAR_ARTIFACT_ROOT"] = str(
+            Path(columnar_artifact_root).expanduser().resolve(strict=False)
+        )
+    completed = subprocess.run(
+        argv, text=True, capture_output=True, check=False,
+        env=child_environment,
+    )
     elapsed = time.perf_counter() - started
     usage = resource.getrusage(resource.RUSAGE_CHILDREN)
     try:

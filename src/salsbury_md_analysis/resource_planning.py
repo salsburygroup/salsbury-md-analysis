@@ -1508,9 +1508,22 @@ def plan_campaign_resource_budget(
                 "workers_per_node": active_cpus,
                 "distributed_replica_execution": False,
             }
-        active_workers = min(
-            int(row["parallel_worker_count"]), active_cpus
+        declared_workers = int(row["parallel_worker_count"])
+        active_workers = min(declared_workers, active_cpus)
+        per_worker_memory = float(
+            row["estimated_peak_memory_gib_per_parallel_worker"]
         )
+        reducer_memory = float(row["reducer_memory_gib"])
+        aggregate_working_budget = max(
+            0.0, (memory_gib - memory_overhead) / memory_factor
+        )
+        aggregate_memory_worker_cap = math.floor(
+            aggregate_working_budget / per_worker_memory
+        )
+        if reducer_memory <= aggregate_working_budget:
+            active_workers = min(
+                active_workers, max(1, aggregate_memory_worker_cap)
+            )
         workers_per_node = active_workers
         if maximum_cpus_per_node is not None:
             workers_per_node = min(workers_per_node, maximum_cpus_per_node)
@@ -1518,26 +1531,46 @@ def plan_campaign_resource_budget(
             unpadded_node_budget = max(
                 0.0, (node_memory_gib - memory_overhead) / memory_factor
             )
-            if float(row["reducer_memory_gib"]) > unpadded_node_budget:
+            if reducer_memory > unpadded_node_budget:
                 workers_per_node = 0
             else:
                 workers_per_node = min(
                     workers_per_node,
                     math.floor(
                         unpadded_node_budget
-                        / float(row[
-                            "estimated_peak_memory_gib_per_parallel_worker"
-                        ])
+                        / per_worker_memory
                     ),
                 )
         workers_per_node = max(1, workers_per_node)
+        if maximum_nodes is not None:
+            active_workers = min(
+                active_workers, workers_per_node * maximum_nodes
+            )
+        workers_per_node = min(workers_per_node, active_workers)
         node_count = math.ceil(active_workers / workers_per_node)
         return {
+            "declared_worker_count": declared_workers,
             "active_worker_count": active_workers,
             "execution_cpu_slots": active_workers,
             "node_count": node_count,
             "workers_per_node": workers_per_node,
             "distributed_replica_execution": node_count > 1,
+            "worker_wave_count": math.ceil(declared_workers / active_workers),
+            "concurrency_limited": active_workers < declared_workers,
+            "concurrency_limit_reasons": [
+                reason for reason, limited in (
+                    ("campaign_cpu_cap", declared_workers > active_cpus),
+                    (
+                        "aggregate_memory_cap",
+                        declared_workers > aggregate_memory_worker_cap,
+                    ),
+                    (
+                        "node_count_or_per_node_memory_cap",
+                        maximum_nodes is not None
+                        and declared_workers > workers_per_node * maximum_nodes,
+                    ),
+                ) if limited
+            ],
         }
 
     def task_memory(row: Mapping[str, object], counts: Sequence[int]) -> float:
@@ -1548,15 +1581,7 @@ def plan_campaign_resource_budget(
                 float(row["estimated_peak_memory_gib_per_parallel_worker"])
                 * worker_count,
             )
-        power_model = row.get("power_law_cost_model")
         observations = sum(counts) * int(row["member_observation_multiplier"])
-        if isinstance(power_model, Mapping):
-            return float(power_model["calibration_memory_gib"]) * max(
-                1.0,
-                (
-                    observations / float(power_model["calibration_observations"])
-                ) ** float(power_model["memory_exponent"]),
-            )
         measured_model = row.get("measured_memory_cost_model")
         if isinstance(measured_model, Mapping):
             observation_scale = (
@@ -1569,6 +1594,14 @@ def plan_campaign_resource_budget(
                     float(measured_model["minimum_observation_scale"]),
                     observation_scale,
                 ),
+            )
+        power_model = row.get("power_law_cost_model")
+        if isinstance(power_model, Mapping):
+            return float(power_model["calibration_memory_gib"]) * max(
+                1.0,
+                (
+                    observations / float(power_model["calibration_observations"])
+                ) ** float(power_model["memory_exponent"]),
             )
         return float(row["estimated_peak_memory_gib"])
 
@@ -1625,7 +1658,7 @@ def plan_campaign_resource_budget(
         bundle_walls = {
             bundle_id: sum(
                 costs[str(row["task_id"])]
-                / min(maximum_parallel_cpus, int(row["effective_cpu_cap"]))
+                / int(task_parallel_layout(row)["execution_cpu_slots"])
                 for row in bundle_rows
             )
             for bundle_id, bundle_rows in bundles.items()

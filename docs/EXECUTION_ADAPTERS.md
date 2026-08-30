@@ -335,6 +335,11 @@ The measured-resource catalog accepts only hash-bound complete report sidecars
 and explicitly labeled right-censored timeout records. Timeout target frames are
 not completed frame coverage. Their elapsed CPU time is a cost lower bound that
 receives the configured censored-timeout safety factor before planning.
+Repeated complete measurements may replace a legacy memory baseline; one-off
+or censored evidence cannot lower it. Replica-parallel jobs declare the full
+worker population independently from active concurrency. CPU, aggregate memory,
+per-node memory, and node-count limits determine the active workers, and any
+remaining workers run in explicit waves without changing selected frames.
 
 The Unix group and path fields are retained provenance and operator configuration;
 the launcher does not run `chgrp`, move data, or change input permissions. Update the

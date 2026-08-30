@@ -79,6 +79,84 @@ class CampaignPlanningTests(unittest.TestCase):
             0.1,
         )
 
+    def test_qualified_memory_measurement_replaces_legacy_default(self):
+        calibration = {
+            "coordinate_cache": {
+                "conservative_cpu_seconds_per_frame": 0.5,
+                "maximum_resident_memory_mib": 1024.0,
+                "maximum_completed_resident_memory_mib": 1024.0,
+                "catalog_sha256": "b" * 64,
+                "measurement_count": 2,
+                "complete_measurement_count": 2,
+                "censored_timeout_count": 0,
+                "calibration_evidence_status": "completed_execution",
+                "censored_timeout_safety_factor": 1.5,
+                "maximum_measured_selected_frame_count": 100,
+                "maximum_measured_observation_count": 100,
+                "memory_replacement_qualified": True,
+                "memory_replacement_policy": (
+                    "replace_legacy_baseline_with_conservative_completed_measurement"
+                ),
+            }
+        }
+        task = {
+            "task_id": "preprocessing:coordinate_cache",
+            "module_id": "coordinate_cache",
+            "cpu_seconds_per_physical_frame": 0.01,
+            "estimated_peak_memory_gib": 24.0,
+        }
+        _apply_measured_resource_calibrations(
+            [task], calibration,
+            time_safety_factor=1.5, memory_safety_factor=1.25,
+        )
+        self.assertAlmostEqual(task["estimated_peak_memory_gib"], 1.25)
+        self.assertAlmostEqual(
+            task["measured_memory_cost_model"]["calibration_memory_gib"],
+            1.25,
+        )
+        self.assertTrue(
+            task["measured_resource_calibration"]["memory_replacement_qualified"]
+        )
+
+    def test_qualified_memory_recalibrates_power_model_at_measured_workload(self):
+        calibration = {
+            "alternative_clustering": {
+                "conservative_cpu_seconds_per_frame": 0.5,
+                "maximum_resident_memory_mib": 16384.0,
+                "maximum_completed_resident_memory_mib": 16384.0,
+                "catalog_sha256": "c" * 64,
+                "measurement_count": 2,
+                "complete_measurement_count": 2,
+                "censored_timeout_count": 0,
+                "calibration_evidence_status": "completed_execution",
+                "censored_timeout_safety_factor": 1.5,
+                "maximum_measured_selected_frame_count": 100_000,
+                "maximum_measured_observation_count": 100_000,
+                "memory_replacement_qualified": True,
+            }
+        }
+        task = {
+            "task_id": "clustering:alternative",
+            "module_id": "alternative_clustering",
+            "fixed_cpu_hours": 1.0,
+            "estimated_peak_memory_gib": 32.0,
+            "power_law_cost_model": {
+                "calibration_observations": 3_000,
+                "calibration_cpu_hours": 1.0,
+                "time_exponent": 2.0,
+                "calibration_memory_gib": 32.0,
+                "memory_exponent": 1.0,
+            },
+        }
+        _apply_measured_resource_calibrations(
+            [task], calibration,
+            time_safety_factor=1.5, memory_safety_factor=1.25,
+        )
+        model = task["measured_memory_cost_model"]
+        self.assertEqual(model["calibration_observations"], 100_000)
+        self.assertEqual(model["calibration_memory_gib"], 20.0)
+        self.assertEqual(model["memory_exponent"], 1.0)
+
     def test_base_automatic_chemistry_tasks_are_budgeted_in_dependency_order(self):
         project = {
             "requested_modules": [

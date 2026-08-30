@@ -19,6 +19,7 @@ class ResourceCalibrationError(ValueError):
 LEGACY_SCHEMA = "salsbury-measured-resource-calibration-catalog-v1"
 SCHEMA = "salsbury-measured-resource-calibration-catalog-v2"
 TIMEOUT_SCHEMA = "salsbury-censored-timeout-resource-evidence-v1"
+MEMORY_REPLACEMENT_MIN_COMPLETE_MEASUREMENTS = 2
 
 
 def _sha256(path: Path) -> str:
@@ -91,6 +92,7 @@ def _entry_from_sidecar(path: Path) -> Dict[str, object]:
         "source_report_size_bytes": sidecar.get("report_size_bytes"),
         "computer_hostname": resources.get("computer_hostname"),
         "platform": resources.get("platform"),
+        "measurement_scope": resources.get("measurement_scope"),
         "requested_cpu_count": resources.get("requested_cpu_count"),
         **workload_fields,
     }
@@ -277,7 +279,12 @@ def build_resource_calibration_catalog(
                 "right-censored timeout lower bounds after the configured "
                 "timeout safety factor"
             ),
-            "memory": "maximum observed RSS with a planner safety factor",
+            "memory": (
+                "two or more complete measurements qualify the maximum "
+                "completed RSS, after the planner safety factor, to replace "
+                "a legacy baseline; one-off and timeout-only measurements "
+                "remain conservative lower bounds and cannot lower it"
+            ),
             "frame_coverage": (
                 "maximum technically completed selected physical frames only; "
                 "timeout target coverage is retained but never counted complete"
@@ -426,6 +433,39 @@ def load_resource_calibration_catalog(
             float(row["maximum_resident_memory_mib"])
             for row in rows if row.get("maximum_resident_memory_mib") is not None
         ]
+        completed_memories = [
+            float(row["maximum_resident_memory_mib"])
+            for row in complete_rows
+            if row.get("maximum_resident_memory_mib") is not None
+        ]
+        complete_observation_counts = [
+            int(row["symmetry_expanded_observations"])
+            for row in complete_rows
+        ]
+        memory_replacement_qualified = (
+            len(completed_memories)
+            >= MEMORY_REPLACEMENT_MIN_COMPLETE_MEASUREMENTS
+        )
+        measurement_scopes = sorted({
+            str(row.get("measurement_scope", "unspecified"))
+            for row in complete_rows
+        })
+        completed_requested_cpu_counts = [
+            int(row["requested_cpu_count"])
+            for row in complete_rows
+            if isinstance(row.get("requested_cpu_count"), int)
+            and not isinstance(row.get("requested_cpu_count"), bool)
+            and int(row["requested_cpu_count"]) > 0
+        ]
+        per_worker_memory_replacement_qualified = (
+            memory_replacement_qualified
+            and measurement_scopes
+            and set(measurement_scopes) == {
+                "one fresh child process for one analysis command"
+            }
+            and completed_requested_cpu_counts
+            and max(completed_requested_cpu_counts) == 1
+        )
         result[module_id] = {
             "module_id": module_id,
             "conservative_cpu_seconds_per_frame": max(planning_rates),
@@ -439,6 +479,9 @@ def load_resource_calibration_catalog(
             ),
             "censored_timeout_safety_factor": timeout_safety,
             "maximum_resident_memory_mib": max(memories) if memories else 0.0,
+            "maximum_completed_resident_memory_mib": (
+                max(completed_memories) if completed_memories else 0.0
+            ),
             "maximum_source_report_size_bytes": max(
                 (
                     int(row["source_report_size_bytes"])
@@ -453,8 +496,12 @@ def load_resource_calibration_catalog(
                 if complete_rows else 0
             ),
             "maximum_measured_observation_count": (
-                max(int(row["symmetry_expanded_observations"]) for row in complete_rows)
-                if complete_rows else 0
+                max(complete_observation_counts)
+                if complete_observation_counts else 0
+            ),
+            "minimum_measured_observation_count": (
+                min(complete_observation_counts)
+                if complete_observation_counts else 0
             ),
             "maximum_timeout_target_frame_count": (
                 max(int(row["selected_source_physical_frames"]) for row in timeout_rows)
@@ -463,6 +510,23 @@ def load_resource_calibration_catalog(
             "measurement_count": len(rows),
             "complete_measurement_count": len(complete_rows),
             "censored_timeout_count": len(timeout_rows),
+            "memory_replacement_qualified": memory_replacement_qualified,
+            "memory_replacement_policy": (
+                "replace_legacy_baseline_with_conservative_completed_measurement"
+                if memory_replacement_qualified else
+                "retain_legacy_baseline_and_use_measurement_as_lower_bound"
+            ),
+            "memory_replacement_minimum_complete_measurements": (
+                MEMORY_REPLACEMENT_MIN_COMPLETE_MEASUREMENTS
+            ),
+            "completed_measurement_scopes": measurement_scopes,
+            "maximum_completed_requested_cpu_count": (
+                max(completed_requested_cpu_counts)
+                if completed_requested_cpu_counts else None
+            ),
+            "per_worker_memory_replacement_qualified": (
+                per_worker_memory_replacement_qualified
+            ),
             "calibration_evidence_status": (
                 "completed_plus_censored_lower_bound"
                 if complete_rows and timeout_rows else

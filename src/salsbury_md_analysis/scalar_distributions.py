@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
-from typing import Dict, List, Mapping, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 from .manifests import ManifestValidationError, load_json
 from .moments import sample_summary
-from .pca_fes import PCAFESAnalysisError, select_bin_counts
+from .pca_fes import PCAFESAnalysisError
 from .trajectory_features import (
     TrajectoryFeatureError,
+    iter_feature_records,
     trajectory_features_project,
 )
 from .upstream_cache import load_cached_project_report
@@ -103,7 +105,11 @@ def _settings(project: Mapping[str, object]) -> Dict[str, object]:
 
 
 def analyze_scalar_distribution(
-    segments: Sequence[Tuple[Mapping[str, object], Sequence[Mapping[str, object]]]],
+    segments: Sequence[Tuple[
+        Mapping[str, object],
+        Sequence[Mapping[str, object]]
+        | Callable[[], Iterable[Mapping[str, object]]],
+    ]],
     *,
     binning_rule: str,
     padding_fraction: float,
@@ -126,16 +132,35 @@ def analyze_scalar_distribution(
     ):
         raise ScalarDistributionError("retention controls must be boolean")
 
-    flattened = [
-        (identity, row)
-        for identity, records in segments for row in records
-    ]
-    values = [float(row["value"]) for _, row in flattened]
-    if len(values) < 2 or not all(math.isfinite(value) for value in values):
+    def records_from(source):
+        return iter(source() if callable(source) else source)
+
+    observation_count = 0
+    minimum = math.inf
+    maximum = -math.inf
+    mean = 0.0
+    centered_sum_squares = 0.0
+    quantile_values = [] if binning_rule == "freedman_diaconis" else None
+    for _, record_source in segments:
+        for row in records_from(record_source):
+            value = float(row["value"])
+            if not math.isfinite(value):
+                raise ScalarDistributionError(
+                    "scalar distribution contains a non-finite observation"
+                )
+            observation_count += 1
+            minimum = min(minimum, value)
+            maximum = max(maximum, value)
+            delta = value - mean
+            mean += delta / observation_count
+            centered_sum_squares += delta * (value - mean)
+            if quantile_values is not None:
+                quantile_values.append(value)
+    if observation_count < 2:
         raise ScalarDistributionError(
             "scalar distribution requires at least two finite observations"
         )
-    span = max(values) - min(values)
+    span = maximum - minimum
     if span <= 0.0:
         raise ScalarDistributionError("scalar distribution is constant")
     if binning_rule == "explicit":
@@ -145,33 +170,73 @@ def analyze_scalar_distribution(
         binning = {
             "rule": "explicit",
             "bins": bin_count,
-            "observation_count": len(values),
+            "observation_count": observation_count,
         }
     else:
-        try:
-            selected = select_bin_counts(
-                [(value, float(index)) for index, value in enumerate(values)],
-                binning_rule,
-                padding_fraction,
-                minimum_bins,
-                maximum_bins,
+        if binning_rule == "rice":
+            raw_bin_count = int(
+                math.ceil(2.0 * observation_count ** (1.0 / 3.0))
             )
-        except PCAFESAnalysisError as exc:
-            raise ScalarDistributionError(str(exc)) from exc
-        selected_bin_count = int(selected["bins_x"])
+            rule_width = (
+                span * (1.0 + 2.0 * padding_fraction) / raw_bin_count
+            )
+        elif binning_rule == "scott":
+            population_sd = math.sqrt(
+                centered_sum_squares / observation_count
+            )
+            rule_width = (
+                3.5 * population_sd * observation_count ** (-1.0 / 3.0)
+            )
+            if not math.isfinite(rule_width) or rule_width <= 0.0:
+                raise ScalarDistributionError(
+                    "scott bin width is undefined; use explicit bins"
+                )
+            raw_bin_count = int(math.ceil(
+                span * (1.0 + 2.0 * padding_fraction) / rule_width
+            ))
+        elif binning_rule == "freedman_diaconis":
+            assert quantile_values is not None
+            quantile_values.sort()
+            ordered = quantile_values
+            def percentile(fraction: float) -> float:
+                position = (observation_count - 1) * fraction
+                lower_index = int(math.floor(position))
+                upper_index = int(math.ceil(position))
+                if lower_index == upper_index:
+                    return ordered[lower_index]
+                weight = position - lower_index
+                return (
+                    ordered[lower_index] * (1.0 - weight)
+                    + ordered[upper_index] * weight
+                )
+            iqr = percentile(0.75) - percentile(0.25)
+            rule_width = 2.0 * iqr * observation_count ** (-1.0 / 3.0)
+            if not math.isfinite(rule_width) or rule_width <= 0.0:
+                raise ScalarDistributionError(
+                    "freedman_diaconis bin width is undefined; use explicit bins"
+                )
+            raw_bin_count = int(math.ceil(
+                span * (1.0 + 2.0 * padding_fraction) / rule_width
+            ))
+        else:
+            raise ScalarDistributionError("automatic binning rule is unsupported")
+        raw_bin_count = max(1, raw_bin_count)
+        selected_bin_count = min(
+            maximum_bins, max(minimum_bins, raw_bin_count)
+        )
         binning = {
-            "rule": selected["rule"],
-            "observation_count": selected["observation_count"],
-            "raw_bins": selected["raw_bins_x"],
+            "rule": binning_rule,
+            "observation_count": observation_count,
+            "raw_bins": raw_bin_count,
             "bins": selected_bin_count,
-            "rule_width": selected["rule_width_x"],
-            "minimum_bins": selected["minimum_bins_per_axis"],
-            "maximum_bins": selected["maximum_bins_per_axis"],
-            "bin_count_clamped": selected["bin_count_clamped"],
+            "rule_width": rule_width,
+            "minimum_bins": minimum_bins,
+            "maximum_bins": maximum_bins,
+            "bin_count_clamped": selected_bin_count != raw_bin_count,
             "axis_contract": "the declared scalar feature is binned independently",
         }
-    lower = min(values) - padding_fraction * span
-    upper = max(values) + padding_fraction * span
+    lower = minimum - padding_fraction * span
+    upper = maximum + padding_fraction * span
     width = (upper - lower) / selected_bin_count
 
     def assign(value: float) -> int:
@@ -182,40 +247,57 @@ def analyze_scalar_distribution(
     runs = []
     run_lengths_by_bin = [[] for _ in range(selected_bin_count)]
     complete_run_lengths_by_bin = [[] for _ in range(selected_bin_count)]
-    for identity, records in segments:
-        segment_assignments = [assign(float(row["value"])) for row in records]
-        for row, bin_id in zip(records, segment_assignments):
-            counts[bin_id] += 1
-            if retain_assignments:
-                assignments.append({**identity, **row, "bin_id": bin_id + 1})
-        run_start = 0
-        while run_start < len(records):
-            run_end = run_start + 1
-            while (
-                run_end < len(records)
-                and segment_assignments[run_end] == segment_assignments[run_start]
-            ):
-                run_end += 1
-            first = records[run_start]
-            last = records[run_end - 1]
-            zero_based_bin = segment_assignments[run_start]
-            length = run_end - run_start
-            left_censored = run_start == 0
-            right_censored = run_end == len(records)
-            run_lengths_by_bin[zero_based_bin].append(float(length))
+    for identity, record_source in segments:
+        run_bin = None
+        run_start_frame = None
+        run_last_frame = None
+        run_length = 0
+        run_ordinal = 0
+
+        def finish_run(*, right_censored: bool) -> None:
+            nonlocal run_ordinal
+            assert run_bin is not None
+            assert run_start_frame is not None and run_last_frame is not None
+            left_censored = run_ordinal == 0
+            run_lengths_by_bin[run_bin].append(float(run_length))
             if not left_censored and not right_censored:
-                complete_run_lengths_by_bin[zero_based_bin].append(float(length))
+                complete_run_lengths_by_bin[run_bin].append(float(run_length))
             if retain_residence_runs:
                 runs.append({
                     **identity,
-                    "bin_id": zero_based_bin + 1,
-                    "start_source_frame_index": first["source_frame_index"],
-                    "end_source_frame_index": last["source_frame_index"],
-                    "length_frames": length,
+                    "bin_id": run_bin + 1,
+                    "start_source_frame_index": run_start_frame,
+                    "end_source_frame_index": run_last_frame,
+                    "length_frames": run_length,
                     "left_boundary_censored": left_censored,
                     "right_boundary_censored": right_censored,
                 })
-            run_start = run_end
+            run_ordinal += 1
+
+        for row in records_from(record_source):
+            value = float(row["value"])
+            bin_id = assign(value)
+            counts[bin_id] += 1
+            if retain_assignments:
+                assignments.append({**identity, **row, "bin_id": bin_id + 1})
+            frame_index = row["source_frame_index"]
+            if run_bin is None:
+                run_bin = bin_id
+                run_start_frame = frame_index
+                run_length = 1
+            elif bin_id == run_bin:
+                run_length += 1
+            else:
+                finish_run(right_censored=False)
+                run_bin = bin_id
+                run_start_frame = frame_index
+                run_length = 1
+            run_last_frame = frame_index
+        if run_bin is None:
+            raise ScalarDistributionError(
+                "scalar distribution contains an empty trajectory segment"
+            )
+        finish_run(right_censored=True)
     histogram = [
         {
             "bin_id": index + 1,
@@ -223,7 +305,7 @@ def analyze_scalar_distribution(
             "upper_edge": lower + (index + 1) * width,
             "center": lower + (index + 0.5) * width,
             "count": count,
-            "fraction": count / len(values),
+            "fraction": count / observation_count,
         }
         for index, count in enumerate(counts)
     ]
@@ -244,6 +326,12 @@ def analyze_scalar_distribution(
         "binning": binning,
         "bounds": {"lower": lower, "upper": upper},
         "bin_width": width,
+        "observation_count": observation_count,
+        "reducer_mode": (
+            "two_pass_streaming_with_exact_quantile_buffer"
+            if binning_rule == "freedman_diaconis" else
+            "two_pass_streaming_constant_summary_memory"
+        ),
         "histogram": histogram,
         "assignments": assignments if retain_assignments else None,
         "assignments_retained": retain_assignments,
@@ -259,6 +347,13 @@ def scalar_feature_distributions_project(
     source = Path(project_path).expanduser().resolve(strict=False)
     project = load_json(source)
     settings = _settings(project)
+    artifact_root_text = os.environ.get(
+        "SALSBURY_MD_ANALYSIS_COLUMNAR_ARTIFACT_ROOT"
+    )
+    artifact_bundle = (
+        AtomicColumnarBundle(Path(artifact_root_text))
+        if artifact_root_text else None
+    )
     upstream = load_cached_project_report(
         "trajectory_features",
         source,
@@ -276,7 +371,7 @@ def scalar_feature_distributions_project(
         raise ScalarDistributionError("trajectory_features report has no segments")
     reports = []
     total = 0
-    for request in settings["distributions"]:
+    for request_ordinal, request in enumerate(settings["distributions"]):
         source_segments = []
         for segment in segments:
             assert isinstance(segment, dict)
@@ -294,23 +389,37 @@ def scalar_feature_distributions_project(
             feature = matches[0]
             if int(request["value_index"]) >= int(feature["dimension"]):
                 raise ScalarDistributionError("value_index exceeds feature dimension")
-            records = []
-            for row in feature["records"]:
-                value = float(row["values"][int(request["value_index"])])
-                records.append({
-                    "source_frame_index": row["source_frame_index"],
-                    "axis_kind": row["axis_kind"],
-                    "axis_value": row["axis_value"],
-                    "value": value,
-                })
-            total += len(records)
+            inline_records = feature.get("records")
+            artifact = feature.get("columnar_artifact")
+            if isinstance(inline_records, list):
+                feature_count = len(inline_records)
+            elif isinstance(artifact, dict) and isinstance(
+                artifact.get("row_count"), int
+            ):
+                feature_count = int(artifact["row_count"])
+            else:
+                raise ScalarDistributionError(
+                    "trajectory feature lacks exact record accounting"
+                )
+            total += feature_count
             if total > int(settings["maximum_observations"]):
                 raise ScalarDistributionError("maximum_observations gate exceeded")
+            value_index = int(request["value_index"])
+
+            def record_source(feature=feature, value_index=value_index):
+                for row in iter_feature_records(feature):
+                    yield {
+                        "source_frame_index": row["source_frame_index"],
+                        "axis_kind": row["axis_kind"],
+                        "axis_value": row["axis_value"],
+                        "value": float(row["values"][value_index]),
+                    }
+
             source_segments.append(({
                 "system_id": segment["system_id"],
                 "replica_id": segment["replica_id"],
                 "segment_id": segment["segment_id"],
-            }, records))
+            }, record_source))
         analysis = analyze_scalar_distribution(
             source_segments,
             binning_rule=str(request["binning_rule"]),
@@ -318,7 +427,140 @@ def scalar_feature_distributions_project(
             bin_count=(int(request["bin_count"]) if "bin_count" in request else None),
             minimum_bins=int(request.get("minimum_bins", 2)),
             maximum_bins=int(request.get("maximum_bins", 100)),
+            retain_assignments=artifact_bundle is None,
+            retain_residence_runs=artifact_bundle is None,
         )
+        if artifact_bundle is not None:
+            assignment_artifacts = []
+            residence_artifacts = []
+            lower = float(analysis["bounds"]["lower"])
+            width = float(analysis["bin_width"])
+            bin_total = int(analysis["binning"]["bins"])
+            for segment_ordinal, (identity, record_source) in enumerate(
+                source_segments
+            ):
+                frames = []
+                axis_values = []
+                values = []
+                bins = []
+                run_bins = []
+                run_starts = []
+                run_ends = []
+                run_lengths = []
+                run_left = []
+                run_right = []
+                active_bin = None
+                active_start = None
+                active_last = None
+                active_length = 0
+                run_ordinal = 0
+                axis_kind = None
+                for row in record_source():
+                    value = float(row["value"])
+                    bin_id = max(
+                        0,
+                        min(bin_total - 1, int((value - lower) / width)),
+                    )
+                    frame = int(row["source_frame_index"])
+                    frames.append(frame)
+                    axis_values.append(float(row["axis_value"]))
+                    if axis_kind is None:
+                        axis_kind = str(row["axis_kind"])
+                    elif str(row["axis_kind"]) != axis_kind:
+                        raise ScalarDistributionError(
+                            "axis kind changes within one trajectory segment"
+                        )
+                    values.append(value)
+                    bins.append(bin_id + 1)
+                    if active_bin is None:
+                        active_bin = bin_id
+                        active_start = frame
+                        active_length = 1
+                    elif bin_id == active_bin:
+                        active_length += 1
+                    else:
+                        run_bins.append(active_bin + 1)
+                        run_starts.append(active_start)
+                        run_ends.append(active_last)
+                        run_lengths.append(active_length)
+                        run_left.append(run_ordinal == 0)
+                        run_right.append(False)
+                        run_ordinal += 1
+                        active_bin = bin_id
+                        active_start = frame
+                        active_length = 1
+                    active_last = frame
+                if active_bin is None:
+                    raise ScalarDistributionError(
+                        "scalar distribution contains an empty trajectory segment"
+                    )
+                run_bins.append(active_bin + 1)
+                run_starts.append(active_start)
+                run_ends.append(active_last)
+                run_lengths.append(active_length)
+                run_left.append(run_ordinal == 0)
+                run_right.append(True)
+                prefix = (
+                    f"distribution-{request_ordinal:04d}/"
+                    f"segment-{segment_ordinal:05d}"
+                )
+                provenance = {
+                    "module_id": "scalar_feature_distributions",
+                    "project_manifest_sha256": upstream[
+                        "project_manifest_sha256"
+                    ],
+                    "input_content_signature_sha256": upstream[
+                        "input_content_signature_sha256"
+                    ],
+                    "distribution_id": request["distribution_id"],
+                    **identity,
+                }
+                constants = dict(identity)
+                constants["axis_kind"] = axis_kind
+                assignment_artifacts.append(artifact_bundle.write_table(
+                    f"{prefix}/assignments",
+                    {
+                        "source_frame_index": np.asarray(frames, dtype=np.int64),
+                        "axis_value": np.asarray(axis_values, dtype=np.float64),
+                        "value": np.asarray(values, dtype=np.float64),
+                        "bin_id": np.asarray(bins, dtype=np.int32),
+                    },
+                    constants=constants,
+                    provenance=provenance,
+                ))
+                residence_artifacts.append(artifact_bundle.write_table(
+                    f"{prefix}/residence-runs",
+                    {
+                        "bin_id": np.asarray(run_bins, dtype=np.int32),
+                        "start_source_frame_index": np.asarray(
+                            run_starts, dtype=np.int64
+                        ),
+                        "end_source_frame_index": np.asarray(
+                            run_ends, dtype=np.int64
+                        ),
+                        "length_frames": np.asarray(
+                            run_lengths, dtype=np.int64
+                        ),
+                        "left_boundary_censored": np.asarray(
+                            run_left, dtype=np.bool_
+                        ),
+                        "right_boundary_censored": np.asarray(
+                            run_right, dtype=np.bool_
+                        ),
+                    },
+                    constants=identity,
+                    provenance=provenance,
+                ))
+            analysis.update({
+                "assignments": None,
+                "assignments_retained": True,
+                "assignments_inline": False,
+                "assignment_artifacts": assignment_artifacts,
+                "residence_runs": None,
+                "residence_runs_retained": True,
+                "residence_runs_inline": False,
+                "residence_run_artifacts": residence_artifacts,
+            })
         reports.append({
             "distribution_id": request["distribution_id"],
             "question": request["question"],
@@ -329,6 +571,11 @@ def scalar_feature_distributions_project(
     issues = [
         issue for issue in upstream.get("issues", []) if isinstance(issue, dict)
     ]
+    if artifact_bundle is not None:
+        artifact_bundle.publish()
+    source_physical_frames = max(
+        int(report["observation_count"]) for report in reports
+    )
     return {
         "module_id": "scalar_feature_distributions",
         "technical_status": "complete",
@@ -342,6 +589,15 @@ def scalar_feature_distributions_project(
         "settings": settings,
         "trajectory_feature_source_mode": trajectory_feature_source_mode,
         "observation_count": total,
+        "observation_accounting": {
+            "selected_physical_frame_count": source_physical_frames,
+            "symmetry_expanded_observation_count": source_physical_frames,
+            "feature_observation_count": total,
+        },
+        "columnar_artifact_root": (
+            str(artifact_bundle.output_root)
+            if artifact_bundle is not None else None
+        ),
         "distribution_reports": reports,
         "error_count": 0,
         "warning_count": sum(issue.get("severity") == "warning" for issue in issues),
@@ -365,6 +621,7 @@ def scalar_feature_distributions_project_safe(
     except (
         ManifestValidationError,
         PCAFESAnalysisError,
+        ColumnarArtifactError,
         ScalarDistributionError,
         TrajectoryFeatureError,
         OSError,
@@ -390,3 +647,6 @@ def scalar_feature_distributions_project_safe(
                 for message in messages
             ],
         }
+import numpy as np
+
+from .columnar_artifacts import AtomicColumnarBundle, ColumnarArtifactError
