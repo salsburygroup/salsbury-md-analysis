@@ -111,8 +111,8 @@ Source: `profiles/slurm/generic-template.json`
 
 ## Measured resource calibration
 
-Source: `profiles/apollo_measured_resource_calibrations_v2.json`
+Source: `profiles/apollo_measured_resource_calibrations_v3.json`
 
-Measured entries: **109**.
-Completed executions: **106**.
+Measured entries: **248**.
+Completed executions: **245**.
 Right-censored timeouts: **3**.

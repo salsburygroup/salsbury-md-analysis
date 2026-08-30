@@ -1,5 +1,6 @@
 import math
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +10,8 @@ from salsbury_md_analysis.scalar_distributions import (
     analyze_scalar_distribution,
     scalar_feature_distributions_project,
 )
+from salsbury_md_analysis.columnar_artifacts import AtomicColumnarBundle
+import numpy as np
 
 
 def _records(values, start=0):
@@ -105,6 +108,82 @@ class ScalarDistributionTests(unittest.TestCase):
         )
         self.assertTrue(report["residence_runs"][1]["right_boundary_censored"])
         self.assertTrue(report["residence_runs"][2]["left_boundary_censored"])
+
+    def test_streaming_factory_is_reopened_without_materializing_records(self):
+        calls = []
+        def source():
+            calls.append(1)
+            yield from _records([1.0, 2.0, 3.0, 4.0])
+        report = analyze_scalar_distribution(
+            [({"system_id": "s", "replica_id": "r", "segment_id": "a"}, source)],
+            binning_rule="scott", padding_fraction=0.0,
+            minimum_bins=2, maximum_bins=20,
+            retain_assignments=False,
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(report["observation_count"], 4)
+        self.assertEqual(
+            report["reducer_mode"],
+            "two_pass_streaming_constant_summary_memory",
+        )
+
+    def test_project_reads_hash_bound_columnar_feature_records(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundle = AtomicColumnarBundle(root / "artifacts")
+            reference = bundle.write_table(
+                "segment/feature",
+                {
+                    "source_frame_index": np.asarray([0, 1]),
+                    "axis_value": np.asarray([0.0, 1.0]),
+                    "values": np.asarray([[1.0], [2.0]]),
+                },
+                constants={"axis_kind": "physical_time"},
+                provenance={"module_id": "trajectory_features"},
+            )
+            bundle.publish()
+            project = root / "project.json"
+            project.write_text(json.dumps({
+                "definitions": {"scalar_feature_distributions": {
+                    "source": "trajectory_features",
+                    "maximum_observations": 2,
+                    "distributions": [{
+                        "distribution_id": "d", "question": "q",
+                        "feature_id": "f", "value_index": 0,
+                        "binning_rule": "explicit", "bin_count": 2,
+                        "padding_fraction": 0.0,
+                    }],
+                }},
+            }), encoding="utf-8")
+            upstream = {
+                "project_manifest_sha256": "a" * 64,
+                "system_manifest_path": "/system.json",
+                "system_manifest_sha256": "b" * 64,
+                "input_content_signature_sha256": "c" * 64,
+                "segments": [{
+                    "system_id": "s", "replica_id": "r", "segment_id": "g",
+                    "features": [{
+                        "feature_id": "f", "dimension": 1,
+                        "records": None, "columnar_artifact": reference,
+                    }],
+                }],
+                "issues": [],
+            }
+            with patch(
+                "salsbury_md_analysis.scalar_distributions.load_cached_project_report",
+                return_value=upstream,
+            ), patch.dict(os.environ, {
+                "SALSBURY_MD_ANALYSIS_COLUMNAR_ARTIFACT_ROOT": str(
+                    root / "derived-artifacts"
+                )
+            }):
+                report = scalar_feature_distributions_project(project)
+        self.assertEqual(report["technical_status"], "complete")
+        self.assertEqual(report["observation_count"], 2)
+        distribution = report["distribution_reports"][0]
+        self.assertIsNone(distribution["assignments"])
+        self.assertTrue(distribution["assignments_retained"])
+        self.assertEqual(len(distribution["assignment_artifacts"]), 1)
 
 
 if __name__ == "__main__":

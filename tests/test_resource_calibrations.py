@@ -42,6 +42,49 @@ class ResourceCalibrationTests(unittest.TestCase):
         self.assertEqual(catalog["catalog_schema"], SCHEMA)
         self.assertEqual(resolved["complete_measurement_count"], 1)
         self.assertEqual(resolved["censored_timeout_count"], 0)
+        self.assertFalse(resolved["memory_replacement_qualified"])
+        self.assertEqual(
+            resolved["memory_replacement_policy"],
+            "retain_legacy_baseline_and_use_measurement_as_lower_bound",
+        )
+
+    def test_two_complete_measurements_qualify_memory_to_replace_legacy_floor(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sidecars = []
+            for index, memory in enumerate((100.0, 120.0), start=1):
+                report = root / f"report-{index}.json"
+                report.write_text(
+                    '{"technical_status":"complete"}\n', encoding="utf-8"
+                )
+                digest = hashlib.sha256(report.read_bytes()).hexdigest()
+                sidecar = root / f"report-{index}.summary.json"
+                sidecar.write_text(json.dumps({
+                    "technical_status": "complete",
+                    "module_id": "ion_atmosphere",
+                    "report_path": str(report),
+                    "report_sha256": digest,
+                    "resource_evidence": {
+                        "selected_source_physical_frames": index * 20,
+                        "symmetry_expanded_observations": index * 20,
+                        "execution_resources": {
+                            "total_cpu_seconds": float(index * 10),
+                            "wall_seconds": float(index * 11),
+                            "maximum_resident_memory_mib": memory,
+                        },
+                    },
+                }), encoding="utf-8")
+                sidecars.append(sidecar)
+            catalog = build_resource_calibration_catalog(sidecars)
+            catalog_path = root / "catalog.json"
+            catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+            resolved = load_resource_calibration_catalog(
+                catalog_path
+            )["ion_atmosphere"]
+        self.assertTrue(resolved["memory_replacement_qualified"])
+        self.assertEqual(resolved["maximum_completed_resident_memory_mib"], 120.0)
+        self.assertEqual(resolved["minimum_measured_observation_count"], 20)
+        self.assertEqual(resolved["maximum_measured_observation_count"], 40)
 
     def test_timeout_is_censored_lower_bound_not_completed_coverage(self):
         with tempfile.TemporaryDirectory() as temporary:

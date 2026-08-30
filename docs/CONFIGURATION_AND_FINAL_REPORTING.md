@@ -129,6 +129,13 @@ For a public or shared source tree, build the distributable catalog with
 retains measured CPU, memory, frame coverage, evidence hashes, and timeout
 censoring semantics while removing private paths, scheduler IDs, and hostnames.
 The full catalog remains separately hash-pinned as internal provenance.
+Two or more complete measurements for a module qualify the largest completed
+RSS, after the configured safety factor, to replace an older built-in memory
+baseline. A single completed run and timeout-only evidence can raise a memory
+floor but cannot lower it. The report records which rule was applied. A
+parallel task keeps its per-worker estimate separate from its intrinsic worker
+count; if the campaign cannot hold every worker at once, the planner schedules
+worker waves and increases the wall estimate without reducing frame coverage.
 Direct
 estimators receive small method-specific runtime pilots (normally 10--100
 frames per replica at the TREX reference size and fewer for substantially
@@ -382,6 +389,20 @@ SHA-256 and contains only resource accounting plus transparent finding
 evidence. Finalization streams the full-report hash but reads the compact
 sidecar, avoiding another multi-gigabyte JSON parse. Existing reports without
 a sidecar retain a backward-compatible full-report fallback.
+
+Instrumented trajectory-feature jobs store large numeric record tables as
+hash-bound NumPy columnar artifacts beside the installed report. The JSON report
+contains each artifact manifest path and SHA-256 instead of repeating every
+numeric value in Python dictionaries. Downstream scalar-distribution and
+threshold-state modules validate those hashes and read the arrays through
+read-only memory maps. Scott, Rice, and explicit-bin scalar summaries use
+constant-summary-memory streaming passes; exact Freedman-Diaconis quartiles
+retain only the scalar value buffer needed for the quantiles. Threshold
+populations, sensitivity counts, transitions, and residence summaries are
+reduced in one segment-safe pass. Their frame assignments and residence runs
+are also written as hash-bound numeric columns rather than rebuilt as large
+lists of dictionaries. Legacy inline trajectory-feature reports remain
+readable.
 
 The finding picker uses the documented presentation order (FES, FES
 conformations, silhouette-scored clustering, cluster conformations, RMSF, then

@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -63,7 +64,11 @@ class ScalarThresholdStateTests(unittest.TestCase):
             ), patch(
                 "salsbury_md_analysis.scalar_threshold_states.trajectory_features_project",
                 side_effect=AssertionError("trajectory must not be recomputed"),
-            ):
+            ), patch.dict(os.environ, {
+                "SALSBURY_MD_ANALYSIS_COLUMNAR_ARTIFACT_ROOT": str(
+                    Path(temporary) / "derived-artifacts"
+                )
+            }):
                 report = scalar_threshold_states_project(project)
         self.assertEqual(report["technical_status"], "complete")
         self.assertEqual(report["observation_count"], 2)
@@ -71,6 +76,10 @@ class ScalarThresholdStateTests(unittest.TestCase):
             report["trajectory_feature_source_mode"],
             "validated_upstream_report",
         )
+        state = report["state_reports"][0]
+        self.assertIsNone(state["assignments"])
+        self.assertTrue(state["assignments_retained"])
+        self.assertEqual(len(state["assignment_artifacts"]), 1)
 
     def test_ion_binding_threshold_has_segment_safe_runs_and_sensitivity(self):
         segments = [
@@ -101,6 +110,25 @@ class ScalarThresholdStateTests(unittest.TestCase):
             row["from_state_id"] in {1, 2} and row["to_state_id"] in {1, 2}
             for row in report["transition_counts_within_segments"]
         ))
+
+    def test_threshold_reducer_consumes_stream_once(self):
+        calls = []
+        def source():
+            calls.append(1)
+            yield from _records([2.8, 3.4, 2.9, 4.0])
+        report = analyze_threshold_state(
+            [({"system_id": "s", "replica_id": "r", "segment_id": "a"}, source)],
+            operator="less_than_or_equal", threshold=3.2,
+            sensitivity_thresholds=[3.0, 3.2, 3.5],
+            meets_threshold_label="bound",
+            does_not_meet_threshold_label="unbound",
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(report["observation_count"], 4)
+        self.assertEqual(
+            report["reducer_mode"],
+            "single_pass_streaming_state_and_sensitivity_reducers",
+        )
 
 
 if __name__ == "__main__":

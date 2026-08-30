@@ -518,11 +518,27 @@ def _campaign_direct_resource_plan(
             "expensive": 24.0,
         }.get(profile.tier, 12.0)
         if measured is not None:
-            reference_memory_gib = max(
-                reference_memory_gib,
-                float(measured["maximum_resident_memory_mib"])
-                * float(execution.get("memory_safety_factor", 1.25)) / 1024.0,
+            completed_memory_gib = (
+                float(measured.get(
+                    "maximum_completed_resident_memory_mib",
+                    measured["maximum_resident_memory_mib"],
+                ))
+                * float(execution.get("memory_safety_factor", 1.25))
+                / 1024.0
             )
+            memory_replacement_qualified = bool(
+                measured.get(
+                    "memory_replacement_qualified",
+                    int(measured.get("complete_measurement_count", 0)) >= 2,
+                )
+            )
+            reference_memory_gib = (
+                completed_memory_gib
+                if memory_replacement_qualified else
+                max(reference_memory_gib, completed_memory_gib)
+            )
+        else:
+            memory_replacement_qualified = False
         memory_gib = max(1.0, reference_memory_gib * memory_atom_scale)
         seconds_per_frame = calibration.seconds_per_frame
         calibration_source_policy = "built_in_completed_calibration"
@@ -569,22 +585,14 @@ def _campaign_direct_resource_plan(
                 or str(execution.get("coordinate_cache", "auto")) != "off"
             )
         )
-        # The campaign memory limit is aggregate across every simultaneously
-        # active node.  Physical-node placement is applied later by the
-        # resource planner, but the task may not declare more concurrent
-        # workers than the whole-campaign memory envelope can support.
-        memory_limited_workers = max(
-            1,
-            math.floor(
-                max(0.0, float(execution["maximum_memory_gib"]) - 1.0)
-                / (1.5 * memory_gib)
-            ),
-        )
+        # Declare the intrinsic replica-worker count independently of the
+        # campaign memory envelope.  The resource planner chooses the number
+        # of simultaneously active workers and schedules any remainder in
+        # waves, so reducing concurrency never changes frame coverage.
         parallel_workers = (
             min(
                 replica_count,
                 int(execution["maximum_parallel_cpus"]),
-                memory_limited_workers,
             )
             if replica_parallel_enabled else 1
         )
@@ -602,7 +610,7 @@ def _campaign_direct_resource_plan(
                 "parallel_execution_model": (
                     "replica_worker_exact_global_reducer_v1"
                 ),
-                "parallel_worker_count": parallel_workers,
+                "parallel_worker_count": replica_count,
                 "estimated_peak_memory_gib_per_parallel_worker": memory_gib,
                 "reducer_memory_gib": memory_gib,
                 "parallel_memory_model": (
@@ -645,6 +653,12 @@ def _campaign_direct_resource_plan(
                 * time_safety_factor / 3600.0
             ),
             "estimated_peak_memory_gib": aggregate_memory_gib,
+            "estimated_peak_memory_gib_per_worker": (
+                memory_gib if replica_parallel_enabled else None
+            ),
+            "estimated_peak_memory_gib_at_declared_cpu_cap": (
+                aggregate_memory_gib
+            ),
             "reference_peak_memory_gib": reference_memory_gib,
             "memory_atom_scale": memory_atom_scale,
             "memory_reference_atom_count": REFERENCE_ATOM_COUNT,
@@ -662,7 +676,7 @@ def _campaign_direct_resource_plan(
                 },
             } if (
                 measured is not None
-                and int(measured["complete_measurement_count"]) > 0
+                and memory_replacement_qualified
                 and int(measured["maximum_measured_observation_count"]) > 0
             ) else {}),
             "priority_weight": _CAMPAIGN_PRIORITY.get(module_id, 4.0),
@@ -681,6 +695,7 @@ def _campaign_direct_resource_plan(
                 int(measured["complete_measurement_count"])
                 if measured is not None else 0
             ),
+            "memory_replacement_qualified": memory_replacement_qualified,
             "calibration_censored_timeout_count": (
                 int(measured["censored_timeout_count"])
                 if measured is not None else 0

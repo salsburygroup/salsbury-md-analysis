@@ -973,7 +973,16 @@ def _run_instrumented_command(
 ) -> int:
     try:
         report = run_instrumented_project_command(
-            command, path, hash_content=hash_content
+            command, path, hash_content=hash_content,
+            columnar_artifact_root=(
+                installed_report_path.parent / "artifacts"
+                if command in {
+                    "trajectory-features",
+                    "scalar-distributions",
+                    "scalar-threshold-states",
+                }
+                and installed_report_path is not None else None
+            ),
         )
     except (ExecutionResourceError, OSError, ValueError) as exc:
         report = {
