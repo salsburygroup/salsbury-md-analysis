@@ -339,6 +339,38 @@ class AutomaticSamplingTests(unittest.TestCase):
         self.assertEqual(row["effective_cpu_cap"], 1)
         self.assertEqual(row["estimated_peak_memory_gib"], 4.0)
 
+    def test_experimental_replica_reducers_are_priced_by_active_workers(self):
+        dimensions = self._reference_dimensions(frames_per_replica=1_000)
+        plan = _campaign_direct_resource_plan(
+            dimensions,
+            ["multivalent_molecular_bridges", "nucleic_acid_structure"],
+            {
+                "maximum_parallel_cpus": 8,
+                "maximum_hours_per_cpu": 24,
+                "maximum_memory_gib": 185,
+                "planning_utilization": 0.85,
+                "pilot_budget_fraction": 0.05,
+                "memory_safety_factor": 1.25,
+                "coordinate_cache": "auto",
+            },
+            time_safety_factor=1.5,
+        )
+        rows = {row["module_id"]: row for row in plan["tasks"]}
+        for module_id in (
+            "multivalent_molecular_bridges", "nucleic_acid_structure",
+        ):
+            row = rows[module_id]
+            self.assertEqual(row["parallel_worker_count"], 3)
+            self.assertEqual(row["effective_cpu_cap"], 3)
+            self.assertEqual(
+                row["parallel_execution_model"],
+                "replica_worker_exact_global_reducer_v1",
+            )
+            self.assertAlmostEqual(
+                row["estimated_wall_hours_at_effective_cpu_cap"],
+                row["estimated_cpu_hours"] / 3.0,
+            )
+
     def test_censored_only_memory_does_not_invent_observation_scaling(self):
         dimensions = self._reference_dimensions(frames_per_replica=1000)
         measured = {

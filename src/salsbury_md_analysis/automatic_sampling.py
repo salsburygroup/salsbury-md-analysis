@@ -68,6 +68,7 @@ REPLICA_PARALLEL_DIRECT_MODULES = {
     "structural_integrity_qc", "replica_rmsd_rg", "pooled_rmsf", "dccm",
     "hydrogen_bond_discovery", "water_mediated_hydrogen_bond_networks",
     "secondary_structure", "solvent_accessible_surface_area",
+    "nucleic_acid_structure", "multivalent_molecular_bridges",
     "ion_coordination_geometry", "ion_atmosphere",
 }
 

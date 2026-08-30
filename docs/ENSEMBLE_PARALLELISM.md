@@ -19,6 +19,17 @@ reducer is method-specific: some concatenate identity-preserving observations,
 while RMSF and DCCM merge exact streaming moments with the between-replica mean
 correction.
 
+The experimental branch uses the same executor for DSSR frame geometry and
+multivalent bridge extraction. Multivalent occupancies are reduced after
+replica extraction, bridge residence runs remain inside their original
+segments, feature indices are harmonized globally, and the retained detailed
+hyperedges are selected from the pooled records. Experimental allosteric-contact
+and recurrent-pocket inputs use the validated molecular-payload cache when
+their atom and parameter contracts permit it. Hydration-density and recurrent
+pocket regions still finalize from pooled voxel counts; independently finalized
+replica regions are prohibited because their labels would not define one shared
+spatial model.
+
 ## Global coordinate estimators
 
 Common PCA, pooled RMSF, and DCCM use a common atom map and one declared

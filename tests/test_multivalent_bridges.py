@@ -183,6 +183,33 @@ class MultivalentMolecularBridgeTests(unittest.TestCase):
             2.0,
         )
 
+    def test_two_replica_reducer_preserves_pooled_counts_and_replica_events(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = _write_project(root)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["definitions"]["multivalent_molecular_bridges"][
+                "maximum_frames"
+            ] = 8
+            system_path = root / "system.json"
+            system = json.loads(system_path.read_text(encoding="utf-8"))
+            second = json.loads(json.dumps(system["systems"][0]["replicas"][0]))
+            second["replica_id"] = "r2"
+            system["systems"][0]["replicas"].append(second)
+            system_path.write_text(json.dumps(system), encoding="utf-8")
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            report = multivalent_molecular_bridges_project(path)
+        self.assertEqual(report["replica_execution"]["shard_count"], 2)
+        self.assertEqual(report["frame_selection"]["selected_frame_count"], 8)
+        self.assertEqual(
+            report["bridge_hyperedge_retention"]["observed_record_count"], 4
+        )
+        self.assertEqual(report["system_summaries"][0]["replica_count"], 2)
+        self.assertEqual(len(report["bridge_events"]), 2)
+        self.assertEqual(
+            {row["replica_id"] for row in report["bridge_events"]}, {"r1", "r2"}
+        )
+
     def test_explicit_ligand_residue_can_be_the_mediator(self):
         with tempfile.TemporaryDirectory() as temporary:
             report = multivalent_molecular_bridges_project(

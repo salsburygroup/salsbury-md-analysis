@@ -25,12 +25,16 @@ _CACHE_COMPATIBLE_BASE_MODULES = {
     "secondary_structure", "solvent_accessible_surface_area",
     "nucleic_acid_structure", "nucleic_acid_geometry",
     "ion_coordination_geometry", "ion_atmosphere", "trajectory_features",
-    "optional_observables",
+    "optional_observables", "allosteric_pathways",
+    "ensemble_pocket_dynamics",
 }
 
 _ORIGINAL_SOLVATED_MODULES = {
     "water_mediated_hydrogen_bond_networks",
     "radial_distribution_functions",
+    "multivalent_molecular_bridges",
+    "hydration_density_channels",
+    "spatial_interaction_ensembles",
 }
 
 
@@ -53,6 +57,15 @@ def cache_compatibility(
             "reason": (
                 "structural QC retains original-source provenance while its "
                 "replica workers consume the validated cache"
+            ),
+        }
+    if module_id == "energetic_network_embeddings":
+        return {
+            "module_id": module_id,
+            "cache_compatible": False,
+            "reason": (
+                "force-field parameters require the original atom-order-matched "
+                "PSF, PRMTOP/PARM7, or serialized OpenMM System connectivity"
             ),
         }
     if module_id not in _CACHE_COMPATIBLE_BASE_MODULES:

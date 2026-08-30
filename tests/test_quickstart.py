@@ -983,7 +983,8 @@ class QuickstartTests(unittest.TestCase):
                 (output / "campaign-resource-plan.json").read_text()
             )
             self.assertEqual(campaign["maximum_parallel_cpus_input"], 16)
-            self.assertEqual(campaign["effective_parallel_cpu_cap"], 16)
+            effective_cpus = campaign["effective_parallel_cpu_cap"]
+            self.assertEqual(effective_cpus, 16)
             self.assertFalse(campaign["resource_warnings"])
             self.assertEqual(local_plan["maximum_parallel_memory_gib"], 128.0)
             worker_paths = sorted(output.glob("run_stage_*_array.slurm"))

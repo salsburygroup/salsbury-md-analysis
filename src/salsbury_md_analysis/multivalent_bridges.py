@@ -29,6 +29,13 @@ from .frame_sampling import (
 from .manifests import ManifestValidationError, load_json, resolve_manifest_path
 from .moments import MomentError, sample_summary
 from .periodic import PeriodicFrameProcessor, PeriodicReconstructionError
+from .replica_execution import ReplicaPartial
+from .replica_module_execution import (
+    execute_replica_final_module,
+    merge_frame_selection_reports,
+    restore_source_provenance,
+    unique_issues,
+)
 from .trajectory_contracts import (
     TrajectoryContractError, frame_axis_value, normalize_segment_axis,
 )
@@ -339,8 +346,9 @@ def _distribution(counter: Mapping[int, int]) -> List[Dict[str, object]]:
     ]
 
 
-def multivalent_molecular_bridges_project(
-    project_path: Path, hash_content: bool = False
+def _multivalent_molecular_bridges_project_serial(
+    project_path: Path, hash_content: bool = False,
+    *, allow_incomplete_system_reference: bool = False,
 ) -> Dict[str, object]:
     source = Path(project_path).expanduser().resolve(strict=False)
     project = load_json(source)
@@ -632,12 +640,14 @@ def multivalent_molecular_bridges_project(
                     "bridge_record_count": segment_bridge_records,
                 })
 
-    if not mediator_info:
+    if not mediator_info and not allow_incomplete_system_reference:
         raise MultivalentBridgeError(
             "project contains no configured mediator residues, recognized waters, "
             "or supported ions"
         )
     for system_id in sorted(system_frames):
+        if allow_incomplete_system_reference:
+            continue
         if system_frames[system_id] < int(settings["minimum_evaluated_frames_per_system"]):
             raise MultivalentBridgeError(
                 f"system {system_id} produced {system_frames[system_id]} selected frames; "
@@ -869,6 +879,267 @@ def multivalent_molecular_bridges_project(
             "Replica and system identities remain explicit; pooled frame counts are not independent-replica uncertainty.",
         ],
     }
+
+
+def _bridge_record_score(row: Mapping[str, object]) -> int:
+    mediator = row["mediator"]
+    assert isinstance(mediator, Mapping)
+    residues = row.get("contacted_residues", [])
+    residue_ids = sorted(
+        str(item["residue"]["residue_id"])
+        for item in residues
+        if isinstance(item, Mapping) and isinstance(item.get("residue"), Mapping)
+    )
+    identity = "|".join((
+        str(row["system_id"]), str(row["replica_id"]),
+        str(row["segment_id"]), str(row["source_frame_index"]),
+        str(mediator["mediator_id"]), str(mediator["mediator_type"]),
+        str(mediator["mediator_kind"]), *residue_ids,
+    ))
+    return int.from_bytes(
+        hashlib.sha256(identity.encode("utf-8")).digest()[:16], "big"
+    )
+
+
+def _reduce_multivalent_bridge_reports(
+    partials: Sequence[ReplicaPartial[Dict[str, object]]],
+    source_context: Dict[str, object],
+) -> Dict[str, object]:
+    reports = [partial.value for partial in partials]
+    first = dict(reports[0])
+    for report in reports[1:]:
+        for key in ("module_id", "settings"):
+            if report.get(key) != first.get(key):
+                raise MultivalentBridgeError(
+                    f"replica multivalent-bridge reports disagree on {key}"
+                )
+
+    first["frame_selection"] = merge_frame_selection_reports([
+        report["frame_selection"] for report in reports
+        if isinstance(report.get("frame_selection"), Mapping)
+    ])
+    for key in ("topology_reports", "segment_reports", "bridge_events"):
+        first[key] = [
+            row for report in reports for row in report.get(key, [])
+        ]
+
+    feature_keys = sorted({
+        (
+            str(row["mediator_type"]), str(row["mediator_kind"]),
+            tuple(str(value) for value in row["contacted_residue_ids"]),
+        )
+        for report in reports
+        for row in report.get("bridge_feature_dictionary", [])
+        if isinstance(row, Mapping)
+    })
+    feature_index = {key: index for index, key in enumerate(feature_keys)}
+    first["bridge_feature_dictionary"] = [
+        {
+            "feature_index": index,
+            "mediator_type": key[0],
+            "mediator_kind": key[1],
+            "contacted_residue_ids": list(key[2]),
+        }
+        for index, key in enumerate(feature_keys)
+    ]
+    frame_summaries = []
+    for report in reports:
+        local = {
+            int(row["feature_index"]): (
+                str(row["mediator_type"]), str(row["mediator_kind"]),
+                tuple(str(value) for value in row["contacted_residue_ids"]),
+            )
+            for row in report.get("bridge_feature_dictionary", [])
+            if isinstance(row, Mapping)
+        }
+        for original in report.get("frame_summaries", []):
+            if not isinstance(original, Mapping):
+                continue
+            row = dict(original)
+            row["active_bridge_feature_indices"] = sorted(
+                feature_index[local[int(value)]]
+                for value in row.get("active_bridge_feature_indices", [])
+            )
+            frame_summaries.append(row)
+    frame_summaries.sort(key=lambda row: (
+        str(row["system_id"]), str(row["replica_id"]),
+        str(row["segment_id"]), int(row["source_frame_index"]),
+    ))
+    first["frame_summaries"] = frame_summaries
+
+    retention_rows = [
+        report["bridge_hyperedge_retention"] for report in reports
+        if isinstance(report.get("bridge_hyperedge_retention"), Mapping)
+    ]
+    observed = sum(int(row["observed_record_count"]) for row in retention_rows)
+    maximum = int(first["settings"]["maximum_bridge_records"])  # type: ignore[index]
+    detailed = [
+        row for report in reports for row in report.get("bridge_hyperedges", [])
+        if isinstance(row, Mapping)
+    ]
+    detailed = sorted(detailed, key=lambda row: (
+        _bridge_record_score(row), str(row["system_id"]),
+        str(row["replica_id"]), str(row["segment_id"]),
+        int(row["source_frame_index"]),
+    ))[:maximum]
+    first["bridge_hyperedges"] = detailed
+    first["bridge_hyperedge_retention"] = {
+        "observed_record_count": observed,
+        "retained_detailed_record_count": len(detailed),
+        "maximum_retained_detailed_records": maximum,
+        "retention_policy": "deterministic_sha256_min_hash_v1",
+        "all_frame_feature_assignments_complete": True,
+    }
+
+    mediator_summaries = [
+        row for report in reports for row in report.get("mediator_summaries", [])
+        if isinstance(row, Mapping)
+    ]
+    if not mediator_summaries:
+        raise MultivalentBridgeError(
+            "project contains no configured mediator residues, recognized waters, "
+            "or supported ions"
+        )
+    first["mediator_summaries"] = mediator_summaries
+    first["projected_residue_edges"] = [
+        row for report in reports for row in report.get("projected_residue_edges", [])
+    ]
+
+    system_frames = Counter(str(row["system_id"]) for row in frame_summaries)
+    minimum = int(first["settings"]["minimum_evaluated_frames_per_system"])  # type: ignore[index]
+    for system_id, count in system_frames.items():
+        if count < minimum:
+            raise MultivalentBridgeError(
+                f"system {system_id} produced {count} selected frames; "
+                "minimum_evaluated_frames_per_system was not met"
+            )
+    observed_by_system: Counter[str] = Counter()
+    for report in reports:
+        for row in report.get("system_summaries", []):
+            if isinstance(row, Mapping):
+                observed_by_system[str(row["system_id"])] += int(
+                    row["bridge_hyperedge_record_count"]
+                )
+    topology_rows = first["topology_reports"]
+    system_summaries = []
+    for system_id in sorted(system_frames):
+        rows = [row for row in frame_summaries if row["system_id"] == system_id]
+        inventory: Counter[str] = Counter()
+        for topology in topology_rows:
+            if isinstance(topology, Mapping) and topology["system_id"] == system_id:
+                inventory.update(topology["mediator_type_counts"])  # type: ignore[arg-type]
+        evaluated = len(rows)
+        system_summaries.append({
+            "system_id": system_id,
+            "evaluated_frame_count": evaluated,
+            "replica_count": len({str(row["replica_id"]) for row in rows}),
+            "topology_mediator_type_counts_across_replicas": dict(sorted(inventory.items())),
+            "bridge_hyperedge_record_count": observed_by_system[system_id],
+            "mean_active_bridges_per_frame": sum(
+                int(row["active_bridge_count"]) for row in rows
+            ) / evaluated,
+            "frames_with_any_bridge": sum(
+                int(row["active_bridge_count"]) > 0 for row in rows
+            ),
+            "frames_with_interchain_bridge": sum(
+                int(row["active_interchain_bridge_count"]) > 0 for row in rows
+            ),
+        })
+    first["system_summaries"] = system_summaries
+
+    type_counts: Counter[Tuple[str, str]] = Counter()
+    type_bridges: Counter[Tuple[str, str]] = Counter()
+    type_multiplicity: Dict[Tuple[str, str], Counter[int]] = defaultdict(Counter)
+    mediator_types = {}
+    for row in mediator_summaries:
+        mediator = row["mediator"]
+        assert isinstance(mediator, Mapping)
+        key = (str(row["system_id"]), str(mediator["mediator_type"]))
+        type_counts[key] += int(row["evaluated_frame_count"])
+        type_bridges[key] += int(row["bridge_frame_count"])
+        mediator_types[(
+            str(row["system_id"]), str(row["replica_id"]),
+            str(mediator["mediator_id"]),
+        )] = str(mediator["mediator_type"])
+        for item in row.get("multiplicity_distribution", []):
+            if isinstance(item, Mapping):
+                type_multiplicity[key][int(item["distinct_residue_count"])] += int(
+                    item["mediator_frame_count"]
+                )
+    type_frame_hits: Counter[Tuple[str, str]] = Counter()
+    for row in frame_summaries:
+        active_types = {
+            feature_keys[int(value)][0]
+            for value in row.get("active_bridge_feature_indices", [])
+        }
+        for mediator_type in active_types:
+            type_frame_hits[(str(row["system_id"]), mediator_type)] += 1
+    type_events: Dict[Tuple[str, str], List[Dict[str, object]]] = defaultdict(list)
+    for event in first["bridge_events"]:
+        if not isinstance(event, Mapping):
+            continue
+        identity = (
+            str(event["system_id"]), str(event["replica_id"]),
+            str(event["mediator_id"]),
+        )
+        if identity in mediator_types:
+            type_events[(identity[0], mediator_types[identity])].append(dict(event))
+    first["mediator_type_summaries"] = [
+        {
+            "system_id": key[0], "mediator_type": key[1],
+            "evaluated_mediator_frame_count": type_counts[key],
+            "bridge_mediator_frame_count": type_bridges[key],
+            "bridge_occupancy": type_bridges[key] / type_counts[key],
+            "bridge_occupancy_definition": (
+                "bridge mediator-frames divided by all evaluated mediator-frames of this type"
+            ),
+            "frames_with_any_type_bridge": type_frame_hits[key],
+            "frame_bridge_occupancy": type_frame_hits[key] / system_frames[key[0]],
+            "mean_active_bridge_mediators_per_frame": type_bridges[key] / system_frames[key[0]],
+            "multiplicity_distribution": _distribution(type_multiplicity[key]),
+            "bridge_residence": _run_summary(type_events[key]),
+        }
+        for key in sorted(type_counts)
+    ]
+
+    issues = [
+        issue for issue in unique_issues(reports)
+        if issue.get("code") != "BRIDGE_HYPEREDGE_DETAILS_SAMPLED"
+    ]
+    if len(detailed) < observed:
+        issues.append({
+            "severity": "warning", "code": "BRIDGE_HYPEREDGE_DETAILS_SAMPLED",
+            "message": (
+                f"Retained {len(detailed)} deterministic min-hash detailed "
+                f"hyperedges from {observed} observed records. All-frame summaries use every bridge."
+            ),
+        })
+    first["issues"] = issues
+    first["error_count"] = sum(issue.get("severity") == "error" for issue in issues)
+    first["warning_count"] = sum(issue.get("severity") == "warning" for issue in issues)
+    restore_source_provenance(first, source_context)
+    return first
+
+
+def multivalent_molecular_bridges_project(
+    project_path: Path, hash_content: bool = False
+) -> Dict[str, object]:
+    """Extract replica bridge records in parallel and reduce once per project."""
+
+    project = load_json(Path(project_path).expanduser().resolve(strict=False))
+    settings = _settings(project)
+    selection = settings.get("frame_selection")
+    if isinstance(selection, Mapping) and selection.get("mode") == "auto_resource_budget_v1":
+        return _multivalent_molecular_bridges_project_serial(
+            project_path, hash_content=hash_content
+        )
+    return execute_replica_final_module(
+        project_path,
+        runner_id="multivalent_bridges",
+        hash_content=hash_content,
+        reducer=_reduce_multivalent_bridge_reports,
+        worker_payload={"allow_incomplete_system_reference": True},
+    )
 
 
 def multivalent_molecular_bridges_project_safe(

@@ -77,6 +77,24 @@ def _module_worker(shard: ReplicaShard) -> Dict[str, object]:
         return _water_mediated_hydrogen_bond_networks_project_serial(
             project_path, hash_content=hash_content
         )
+    if runner_id == "nucleic_acid_structure":
+        from .nucleic_acid_structure import (
+            _nucleic_acid_structure_project_serial,
+        )
+        return _nucleic_acid_structure_project_serial(
+            project_path, hash_content=hash_content
+        )
+    if runner_id == "multivalent_bridges":
+        from .multivalent_bridges import (
+            _multivalent_molecular_bridges_project_serial,
+        )
+        return _multivalent_molecular_bridges_project_serial(
+            project_path,
+            hash_content=hash_content,
+            allow_incomplete_system_reference=bool(
+                payload.get("allow_incomplete_system_reference", False)
+            ),
+        )
     raise ReplicaModuleExecutionError(f"unsupported replica runner {runner_id!r}")
 
 
