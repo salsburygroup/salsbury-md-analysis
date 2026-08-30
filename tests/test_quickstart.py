@@ -944,9 +944,11 @@ class QuickstartTests(unittest.TestCase):
                 "resource_safety_margins"
             ]
             self.assertEqual(safety["modeled_task_time_factor"], 1.5)
-            self.assertEqual(safety["analysis_memory_model_factor"], 1.25)
-            self.assertEqual(safety["scheduler_memory_safety_factor"], 1.5)
-            self.assertEqual(safety["scheduler_memory_overhead_gib"], 1.0)
+            uncertainty = safety["memory_calibration_uncertainty"]
+            self.assertEqual(uncertainty["well_calibrated_factor"], 1.0)
+            self.assertEqual(uncertainty["poorly_calibrated_factor"], 1.25)
+            self.assertEqual(safety["scheduler_memory_safety_factor"], 1.0)
+            self.assertEqual(safety["scheduler_memory_overhead_gib"], 0.0)
             self.assertTrue((output / "submit.sh").stat().st_mode & 0o100)
             self.assertTrue((output / "run-local.sh").stat().st_mode & 0o100)
             self.assertEqual(report["execution_adapter"], "local")
@@ -1162,6 +1164,7 @@ class QuickstartTests(unittest.TestCase):
     def test_memory_fallback_writes_requested_and_reduced_configs(
         self, _discover_dssp,
     ):
+        repository = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "inputs"
@@ -1170,7 +1173,11 @@ class QuickstartTests(unittest.TestCase):
             config_path = root / "low-memory.json"
             config_path.write_text(json.dumps({
                 "config_schema": "salsbury-analysis-config-v1",
-                "execution": {"maximum_memory_gib": 4.0},
+                "execution": {
+                    "maximum_memory_gib": 4.0,
+                    "well_calibrated_memory_uncertainty_factor": 2.0,
+                    "poorly_calibrated_memory_uncertainty_factor": 2.0,
+                },
             }), encoding="utf-8")
             output = root / "analysis-memory-fit"
             report = prepare_standard_analysis_memory_fit(
@@ -1222,7 +1229,11 @@ class QuickstartTests(unittest.TestCase):
             config_path = root / "constrained.json"
             config_path.write_text(json.dumps({
                 "config_schema": "salsbury-analysis-config-v1",
-                "execution": {"maximum_memory_gib": 4.0},
+                "execution": {
+                    "maximum_memory_gib": 4.0,
+                    "well_calibrated_memory_uncertainty_factor": 2.0,
+                    "poorly_calibrated_memory_uncertainty_factor": 2.0,
+                },
             }), encoding="utf-8")
             output = root / "analysis-resource-fit"
             report = prepare_standard_analysis_resource_fit(

@@ -377,7 +377,7 @@ class CampaignPlanningTests(unittest.TestCase):
         }
         _apply_measured_resource_calibrations(
             [scaled, reference], calibration,
-            time_safety_factor=1.5, memory_safety_factor=1.25,
+            time_safety_factor=1.5,
         )
         self.assertAlmostEqual(scaled["cpu_seconds_per_physical_frame"], 0.075)
         self.assertAlmostEqual(reference["cpu_seconds_per_physical_frame"], 0.75)
@@ -414,12 +414,12 @@ class CampaignPlanningTests(unittest.TestCase):
         }
         _apply_measured_resource_calibrations(
             [task], calibration,
-            time_safety_factor=1.5, memory_safety_factor=1.25,
+            time_safety_factor=1.5,
         )
-        self.assertAlmostEqual(task["estimated_peak_memory_gib"], 1.25)
+        self.assertAlmostEqual(task["estimated_peak_memory_gib"], 1.0)
         self.assertAlmostEqual(
             task["measured_memory_cost_model"]["calibration_memory_gib"],
-            1.25,
+            1.0,
         )
         self.assertTrue(
             task["measured_resource_calibration"]["memory_replacement_qualified"]
@@ -457,11 +457,11 @@ class CampaignPlanningTests(unittest.TestCase):
         }
         _apply_measured_resource_calibrations(
             [task], calibration,
-            time_safety_factor=1.5, memory_safety_factor=1.25,
+            time_safety_factor=1.5,
         )
         model = task["measured_memory_cost_model"]
         self.assertEqual(model["calibration_observations"], 100_000)
-        self.assertEqual(model["calibration_memory_gib"], 20.0)
+        self.assertEqual(model["calibration_memory_gib"], 16.0)
         self.assertEqual(model["memory_exponent"], 1.0)
 
     def test_base_automatic_chemistry_tasks_are_budgeted_in_dependency_order(self):

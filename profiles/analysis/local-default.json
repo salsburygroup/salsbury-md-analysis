@@ -10,7 +10,8 @@
     "pilot_budget_fraction": 0.05,
     "finalization_headroom_fraction": 0.05,
     "time_safety_factor": 1.5,
-    "memory_safety_factor": 1.25,
+    "well_calibrated_memory_uncertainty_factor": 1.0,
+    "poorly_calibrated_memory_uncertainty_factor": 1.25,
     "censored_timeout_safety_factor": 1.5,
     "coordinate_cache": "auto"
   }

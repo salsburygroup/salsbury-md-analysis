@@ -417,7 +417,8 @@ def default_analysis_config(
             "pilot_budget_fraction": 0.05,
             "finalization_headroom_fraction": 0.05,
             "time_safety_factor": 1.5,
-            "memory_safety_factor": 1.25,
+            "well_calibrated_memory_uncertainty_factor": 1.0,
+            "poorly_calibrated_memory_uncertainty_factor": 1.25,
             "censored_timeout_safety_factor": 1.5,
             "fail_if_minimum_coverage_unaffordable": True,
             "submission_adapter": "local",
@@ -913,6 +914,8 @@ def load_analysis_config(
         "maximum_memory_gib", "maximum_scratch_gib", "planning_utilization",
         "pilot_budget_fraction", "finalization_headroom_fraction",
         "time_safety_factor", "memory_safety_factor",
+        "well_calibrated_memory_uncertainty_factor",
+        "poorly_calibrated_memory_uncertainty_factor",
         "censored_timeout_safety_factor",
         "fail_if_minimum_coverage_unaffordable",
         "submission_adapter", "slurm_profile", "coordinate_cache",
@@ -957,8 +960,24 @@ def load_analysis_config(
             "execution pilot plus finalization headroom fractions must be smaller "
             "than planning_utilization"
         )
+    if (
+        "memory_safety_factor" in raw_execution
+        and "poorly_calibrated_memory_uncertainty_factor" in raw_execution
+    ):
+        raise AnalysisConfigError(
+            "execution.memory_safety_factor is a deprecated alias for "
+            "execution.poorly_calibrated_memory_uncertainty_factor; supply "
+            "only one"
+        )
+    if "memory_safety_factor" in raw_execution:
+        execution["poorly_calibrated_memory_uncertainty_factor"] = (
+            raw_execution["memory_safety_factor"]
+        )
+        execution.pop("memory_safety_factor", None)
     for field in (
-        "time_safety_factor", "memory_safety_factor",
+        "time_safety_factor",
+        "well_calibrated_memory_uncertainty_factor",
+        "poorly_calibrated_memory_uncertainty_factor",
         "censored_timeout_safety_factor",
     ):
         value = execution[field]

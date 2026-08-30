@@ -23,6 +23,11 @@ from .hydrogen_bond_discovery import (
     _automatic_candidate_intersection,
 )
 from .manifests import load_json, resolve_manifest_path, validate_system
+from .memory_policy import (
+    MemoryPolicyError,
+    apply_memory_calibration_uncertainty,
+    resolve_memory_uncertainty_policy,
+)
 from .preflight import FileProbeError, probe_topology, probe_trajectory
 from .registry import list_modules
 from .resource_planning import plan_campaign_resource_budget
@@ -555,7 +560,6 @@ def _campaign_direct_resource_plan(
                     "maximum_completed_resident_memory_mib",
                     measured["maximum_resident_memory_mib"],
                 ))
-                * float(execution.get("memory_safety_factor", 1.25))
                 / 1024.0
             )
             memory_replacement_qualified = bool(
@@ -743,6 +747,11 @@ def _campaign_direct_resource_plan(
         raise AutomaticSamplingError(
             "campaign planning requires at least one direct trajectory estimator"
         )
+    try:
+        memory_uncertainty_policy = resolve_memory_uncertainty_policy(execution)
+        apply_memory_calibration_uncertainty(tasks, memory_uncertainty_policy)
+    except MemoryPolicyError as exc:
+        raise AutomaticSamplingError(str(exc)) from exc
     plan = plan_campaign_resource_budget(
         tasks,
         maximum_parallel_cpus=int(execution["maximum_parallel_cpus"]),
@@ -755,6 +764,7 @@ def _campaign_direct_resource_plan(
         ),
     )
     plan["planning_scope"] = "enabled direct trajectory estimators"
+    plan["memory_calibration_uncertainty"] = memory_uncertainty_policy
     plan["scope_limit"] = (
         "Derived-data tasks and repeated conformational-view workflows require "
         "the campaign-DAG expansion layer before this can be treated as the final "

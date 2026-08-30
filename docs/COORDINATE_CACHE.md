@@ -92,9 +92,10 @@ assigns at most one worker to each original replica, and the worker examines
 only that replica. The parent process combines the shards into the ordinary
 structural-QC report with system, replica, frame-selection, cache-hash, and
 worker provenance. Its memory estimate is the sum of concurrently active
-replica workers. The local adapter uses local processes. The Slurm adapter may
-split the workers across several nodes, applies memory padding to each node's
-worker group, and counts every node reservation against the campaign aggregate.
+replica workers. The local adapter uses local processes. For Slurm, the planner
+may split the workers across several nodes, applies the selected profile's
+memory adjustment to each node's worker group, and counts every node
+reservation against the campaign aggregate. The Slurm adapter emits that plan.
 A missing, incomplete, count-inconsistent, or source-mismatched cache fails
 closed.
 
