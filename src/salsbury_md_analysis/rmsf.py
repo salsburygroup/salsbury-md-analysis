@@ -9,7 +9,12 @@ from typing import Dict, List, Mapping, Sequence, Tuple
 from .atom_mapping import AtomMappingError, AtomRecord, read_topology_atoms
 from .context import compile_project_context_file
 from .coordinates import CoordinateReadError, iter_coordinate_frames
-from .frame_sampling import frame_selected, reader_frame_indices, source_frame_count
+from .frame_sampling import (
+    frame_selected,
+    integer_stride_indices,
+    reader_frame_indices,
+    source_frame_count,
+)
 from .geometry import GeometryError, apply_transform, best_fit_transform
 from .manifests import (
     ManifestValidationError,
@@ -334,7 +339,11 @@ def _pooled_rmsf_project_serial(
                     trajectory_path, coordinate_unit, error_type=RMSFError
                 )
                 selected_indices = (
-                    set(range(0, source_frames, int(settings["frame_stride"])))
+                    integer_stride_indices(
+                        source_frames,
+                        int(settings["frame_stride"]),
+                        error_type=RMSFError,
+                    )
                     if int(settings["frame_stride"]) > 1 else None
                 )
                 decoded_frames = 0

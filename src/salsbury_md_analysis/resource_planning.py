@@ -1147,6 +1147,52 @@ def plan_campaign_resource_budget(
             raw.get("estimated_peak_memory_gib", 1.0),
             f"task {task_id} estimated_peak_memory_gib",
         )
+        parallel_execution_model = raw.get("parallel_execution_model")
+        parallel_worker_count: Optional[int] = None
+        per_parallel_worker_memory: Optional[float] = None
+        reducer_memory: Optional[float] = None
+        if parallel_execution_model is not None:
+            if (
+                not isinstance(parallel_execution_model, str)
+                or not parallel_execution_model
+            ):
+                raise ResourcePlanningError(
+                    f"task {task_id} parallel_execution_model must be a "
+                    "nonempty string"
+                )
+            raw_worker_count = raw.get("parallel_worker_count")
+            if (
+                isinstance(raw_worker_count, bool)
+                or not isinstance(raw_worker_count, int)
+                or raw_worker_count <= 0
+            ):
+                raise ResourcePlanningError(
+                    f"task {task_id} parallel_worker_count must be a positive "
+                    "integer"
+                )
+            parallel_worker_count = int(raw_worker_count)
+            per_parallel_worker_memory = _positive_number(
+                raw.get("estimated_peak_memory_gib_per_parallel_worker"),
+                f"task {task_id} "
+                "estimated_peak_memory_gib_per_parallel_worker",
+            )
+            reducer_memory = _positive_number(
+                raw.get("reducer_memory_gib", per_parallel_worker_memory),
+                f"task {task_id} reducer_memory_gib",
+            )
+            cap = min(int(cap), parallel_worker_count)
+            if node_memory_gib is not None:
+                unpadded_node_budget = max(
+                    0.0,
+                    (node_memory_gib - memory_overhead) / memory_factor,
+                )
+                memory_limited_workers = math.floor(
+                    unpadded_node_budget / per_parallel_worker_memory
+                )
+                if reducer_memory <= unpadded_node_budget:
+                    cap = min(int(cap), max(1, memory_limited_workers))
+                else:
+                    cap = 1
         weight = _positive_number(
             raw.get("priority_weight", 1.0),
             f"task {task_id} priority_weight",
@@ -1198,6 +1244,12 @@ def plan_campaign_resource_budget(
             "power_law_cost_model": power_model,
             "measured_memory_cost_model": measured_memory_model,
             "estimated_peak_memory_gib": task_memory,
+            "parallel_execution_model": parallel_execution_model,
+            "parallel_worker_count": parallel_worker_count,
+            "estimated_peak_memory_gib_per_parallel_worker": (
+                per_parallel_worker_memory
+            ),
+            "reducer_memory_gib": reducer_memory,
             "priority_weight": weight,
             "member_observation_multiplier": int(multiplier),
             "balance_group": balance_group or task_id,
@@ -1333,6 +1385,17 @@ def plan_campaign_resource_budget(
         return float(row["fixed_cpu_hours"]) + float(rate) * sum(counts) / 3600.0
 
     def task_memory(row: Mapping[str, object], counts: Sequence[int]) -> float:
+        if row.get("parallel_execution_model") is not None:
+            worker_count = min(
+                int(row["parallel_worker_count"]),
+                int(row["effective_cpu_cap"]),
+                maximum_parallel_cpus,
+            )
+            return max(
+                float(row["reducer_memory_gib"]),
+                float(row["estimated_peak_memory_gib_per_parallel_worker"])
+                * worker_count,
+            )
         power_model = row.get("power_law_cost_model")
         observations = sum(counts) * int(row["member_observation_multiplier"])
         if isinstance(power_model, Mapping):
@@ -1855,6 +1918,14 @@ def plan_campaign_resource_budget(
             ),
             "estimated_scheduler_memory_gib_at_selected_observations": (
                 selected_scheduler_memory_gib
+            ),
+            "active_parallel_workers_at_selected_observations": (
+                min(
+                    int(row["parallel_worker_count"]),
+                    int(row["effective_cpu_cap"]),
+                    maximum_parallel_cpus,
+                )
+                if row.get("parallel_execution_model") is not None else 1
             ),
             "estimated_wall_hours_at_effective_cpu_cap": (
                 final_costs[task_id]

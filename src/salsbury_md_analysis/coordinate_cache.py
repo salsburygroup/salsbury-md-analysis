@@ -594,11 +594,13 @@ def build_coordinate_cache(
                 )
                 cached_segments = []
                 segment_reports = []
-                replica_source_offset = 0
-                for segment_index, segment in enumerate(raw_replica["segments"]):
+                segment_inputs = []
+                for segment in raw_replica["segments"]:
                     assert isinstance(segment, dict)
                     segment_id = str(segment["segment_id"])
-                    trajectory = resolve_manifest_path(str(segment["trajectory"]), source)
+                    trajectory = resolve_manifest_path(
+                        str(segment["trajectory"]), source
+                    )
                     try:
                         probe = probe_trajectory(trajectory)
                     except (FileProbeError, OSError) as exc:
@@ -608,13 +610,35 @@ def build_coordinate_cache(
                         raise CoordinateCacheError(
                             f"{system_id}/{replica_id}/{segment_id} has no declared frames"
                         )
+                    segment_inputs.append(
+                        (segment, segment_id, trajectory, probe, declared)
+                    )
+                replica_source_count = sum(row[4] for row in segment_inputs)
+                replica_retained_count = integer_stride_selected_count(
+                    replica_source_count, cache_stride
+                )
+                last_selected_global = (
+                    (replica_retained_count - 1) * cache_stride
+                    if replica_retained_count else -1
+                )
+                replica_source_offset = 0
+                for segment_index, (
+                    segment, segment_id, trajectory, probe, declared
+                ) in enumerate(segment_inputs):
                     processor.begin_segment(
                         bool(segment.get("continuous_with_previous", False))
                     )
                     first_selected_local = (-replica_source_offset) % cache_stride
+                    last_selected_local = min(
+                        declared - 1,
+                        last_selected_global - replica_source_offset,
+                    )
                     retained = (
-                        0 if first_selected_local >= declared else
-                        (declared - 1 - first_selected_local) // cache_stride + 1
+                        0
+                        if first_selected_local > last_selected_local
+                        else (
+                            last_selected_local - first_selected_local
+                        ) // cache_stride + 1
                     )
                     cached_trajectory = (
                         temporary / f"{prefix}-segment-{segment_index:02d}.dcd"
@@ -632,9 +656,10 @@ def build_coordinate_cache(
                                 atom_indices,
                             )
                             decoded += 1
+                            global_index = replica_source_offset + local_index
                             if (
-                                (replica_source_offset + local_index)
-                                % cache_stride != 0
+                                global_index % cache_stride != 0
+                                or global_index > last_selected_global
                             ):
                                 continue
                             if writer is None:
@@ -903,6 +928,8 @@ def validate_reusable_coordinate_cache(
                 raise CoordinateCacheError(
                     f"reusable cache segment count changed for {key[0]}/{key[1]}"
                 )
+            decoded_total = 0
+            retained_total = 0
             for cached_segment, source_segment in zip(
                 cached_segments, source_segments
             ):
@@ -916,13 +943,20 @@ def validate_reusable_coordinate_cache(
                 )
                 decoded = int(cached_segment.get("decoded_frame_count", -1))
                 retained = int(cached_segment.get("retained_frame_count", -1))
-                if decoded <= 0 or retained != integer_stride_selected_count(
-                    decoded, cache_stride
-                ):
+                if decoded <= 0 or retained < 0:
                     raise CoordinateCacheError(
                         "reusable cache retained-frame count is inconsistent with "
                         "its declared integer stride"
                     )
+                decoded_total += decoded
+                retained_total += retained
+            if retained_total != integer_stride_selected_count(
+                decoded_total, cache_stride
+            ):
+                raise CoordinateCacheError(
+                    "reusable cache retained-frame count is inconsistent with "
+                    "its declared integer stride"
+                )
     if set(rows) != expected_keys:
         raise CoordinateCacheError(
             "reusable coordinate cache system/replica identities do not match"

@@ -197,11 +197,18 @@ def uniform_indices(
 
 
 def integer_stride_selected_count(frame_count: int, stride: int) -> int:
-    """Return the exact number of ``0, stride, 2*stride, ...`` indices."""
+    """Return the complete-interval count for an exact integer stride.
+
+    A trailing partial stride interval does not contribute an observation.  For
+    example, 100,000 source frames at stride 401 retain 249 observations, not
+    250.  This floor convention is shared by planning and execution so a
+    scientific sampling floor cannot pass because of one trailing partial
+    interval that the execution contract does not count.
+    """
 
     if frame_count <= 0 or stride <= 0:
         raise ValueError("frame count and integer stride must be positive")
-    return (frame_count - 1) // stride + 1
+    return frame_count // stride
 
 
 def integer_stride_indices(
@@ -210,11 +217,12 @@ def integer_stride_indices(
     *,
     error_type: Type[Exception] = ValueError,
 ) -> Set[int]:
-    """Return strict integer-stride indices beginning at replica frame zero."""
+    """Return complete-interval stride indices beginning at replica frame zero."""
 
     if frame_count <= 0 or stride <= 0:
         raise error_type("frame count and integer stride must be positive")
-    return set(range(0, frame_count, stride))
+    selected_count = integer_stride_selected_count(frame_count, stride)
+    return {index * stride for index in range(selected_count)}
 
 
 def integer_stride_for_budget(
@@ -421,7 +429,9 @@ def plan_frame_selection(
                 if selected_global is None:
                     # Historical stride is explicitly segment-local: every new
                     # segment starts again at source frame zero.
-                    indices = set(range(0, count, frame_stride))
+                    indices = integer_stride_indices(
+                        count, frame_stride, error_type=error_type
+                    )
                 else:
                     indices = {
                         index - offset

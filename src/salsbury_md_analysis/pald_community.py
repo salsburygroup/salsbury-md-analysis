@@ -14,6 +14,7 @@ from .alternative_clustering import (
 )
 from .clustering import ClusteringAnalysisError, _standardize
 from .feature_matrix import load_feature_matrix, parse_feature_selection
+from .frame_sampling import integer_stride_indices
 from .manifests import ManifestValidationError, load_json
 from .provenance import stable_json_sha256
 from .trajectory_features import TrajectoryFeatureError
@@ -103,7 +104,12 @@ def regular_strided_sample(
     stride = max(1, math.ceil(len(metadata) / maximum))
     while True:
         selected = sorted(
-            index for indices in groups.values() for index in indices[::stride]
+            index
+            for indices in groups.values()
+            for index in (
+                indices[position]
+                for position in sorted(integer_stride_indices(len(indices), stride))
+            )
         )
         if len(selected) <= maximum:
             break

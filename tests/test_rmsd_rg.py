@@ -182,9 +182,9 @@ class RMSDRGTests(unittest.TestCase):
             )
         segment = report["systems"][0]["replicas"][0]["segments"][0]
         self.assertEqual(segment["observed_frame_count"], 3)
-        self.assertEqual(segment["decoded_frame_count"], 2)
-        self.assertEqual([row["frame_index"] for row in segment["timeseries"]], [0, 2])
-        self.assertEqual([row["time"] for row in segment["timeseries"]], [10.0, 14.0])
+        self.assertEqual(segment["decoded_frame_count"], 1)
+        self.assertEqual([row["frame_index"] for row in segment["timeseries"]], [0])
+        self.assertEqual([row["time"] for row in segment["timeseries"]], [10.0])
         self.assertIn("FRAME_SUBSAMPLING", {issue["code"] for issue in report["issues"]})
 
     def test_unknown_element_mass_fails_closed(self):

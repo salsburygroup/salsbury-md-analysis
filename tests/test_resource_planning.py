@@ -395,9 +395,9 @@ class ResourcePlanningTests(unittest.TestCase):
         )
         rows = {row["task_id"]: row for row in plan["tasks"]}
         self.assertEqual(
-            rows["projection"]["selected_physical_frames_per_replica"], [334]
+            rows["projection"]["selected_physical_frames_per_replica"], [333]
         )
-        self.assertEqual(rows["fit"]["source_frames_per_replica"], [334])
+        self.assertEqual(rows["fit"]["source_frames_per_replica"], [333])
         coupling = plan["projection_clustering_coupling"]
         self.assertEqual(coupling["dynamic_cycle_resolution_count"], 1)
         self.assertEqual(coupling["iterations"], 4)
@@ -1021,6 +1021,48 @@ class ResourcePlanningTests(unittest.TestCase):
         self.assertEqual(
             plan["node_resource_policy"]["maximum_nodes"], 2
         )
+
+    def test_replica_workers_are_capped_by_padded_per_node_memory(self):
+        plan = plan_campaign_resource_budget(
+            [{
+                "task_id": "replica-qc",
+                "module_id": "structural_integrity_qc",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 63,
+                "parallel_execution_model": (
+                    "replica_worker_exact_global_reducer_v1"
+                ),
+                "parallel_worker_count": 63,
+                "estimated_peak_memory_gib_per_parallel_worker": 3.0,
+                "reducer_memory_gib": 3.0,
+                "source_frames_per_replica": [100] * 63,
+                "minimum_frames_per_replica": 10,
+                "maximum_frames_per_replica": 100,
+                "cpu_seconds_per_physical_frame": 0.01,
+                "estimated_peak_memory_gib": 189.0,
+            }],
+            maximum_parallel_cpus=88,
+            maximum_wall_hours=1.0,
+            maximum_memory_gib=370.0,
+            memory_safety_factor=1.5,
+            memory_overhead_gib=1.0,
+            maximum_cpus_per_node=44,
+            maximum_memory_gib_per_node=185.0,
+            maximum_nodes=2,
+        )
+        row = plan["tasks"][0]
+        self.assertEqual(row["effective_cpu_cap"], 40)
+        self.assertEqual(
+            row["active_parallel_workers_at_selected_observations"], 40
+        )
+        self.assertEqual(
+            row["estimated_peak_memory_gib_at_selected_observations"], 120.0
+        )
+        self.assertEqual(
+            row["estimated_scheduler_memory_gib_at_selected_observations"],
+            181.0,
+        )
+        self.assertEqual(plan["feasibility_status"], "feasible")
 
     def test_measured_memory_scales_from_observation_coverage(self):
         plan = plan_campaign_resource_budget(

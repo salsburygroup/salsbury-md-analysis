@@ -238,8 +238,10 @@ Python and package paths; environment setup commands and variables; shared-write
 umask; storage and scratch roots; conservative resource policy metadata; and an
 optional `node_policy` with `cpus_per_node`, `memory_gib_per_node`, and
 `maximum_nodes_per_campaign`. The generic template leaves the node shape null;
-the supplied DEAC profile uses a conservative 44-CPU, 185-GiB node shape. The
-adapter converts every planner task estimate to a time and memory request using the
+the supplied DEAC profile uses a conservative 44-CPU, 185-GiB node shape. These
+are editable profile values, not hard-coded planner constants; use the real node
+shape for another cluster, or leave the fields null when no homogeneous shape is
+available. The adapter converts every planner task estimate to a time and memory request using the
 profile safety factors. `scheduler-resource-requests.json` records every mapped
 planner task, the safety margin, selected partition, final request, and exact
 aggregate-resource wave. `slurm-submission-preview.json` also records the
