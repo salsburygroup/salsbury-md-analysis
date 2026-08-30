@@ -2383,7 +2383,20 @@ def plan_campaign_resource_budget(
                 "safety_adjusted_scheduler_request"
                 if maximum_cpus_per_node is not None else None
             ),
-            "single_node_per_task": maximum_cpus_per_node is not None,
+            "single_node_per_task": bool(
+                maximum_cpus_per_node is not None
+                and not any(
+                    row.get("parallel_execution_model") is not None
+                    for row in normalized
+                )
+            ),
+            "distributed_replica_tasks_supported": bool(
+                maximum_cpus_per_node is not None
+                and any(
+                    row.get("parallel_execution_model") is not None
+                    for row in normalized
+                )
+            ),
         },
         "scheduler_memory_safety_factor": memory_factor,
         "memory_overhead_gib": memory_overhead,
