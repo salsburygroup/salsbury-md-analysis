@@ -372,6 +372,20 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertEqual(plan["dependency_model"], "task_dag_v1")
         self.assertEqual(qc["depends_on_task_ids"], [preflight["task_id"]])
         self.assertEqual(pca["depends_on_task_ids"], [preflight["task_id"]])
+        self.assertTrue(
+            qc["ensemble_parallelism_contract"][
+                "replica_shard_may_finalize_primary_result"
+            ]
+        )
+        self.assertFalse(
+            pca["ensemble_parallelism_contract"][
+                "replica_shard_may_finalize_primary_result"
+            ]
+        )
+        self.assertEqual(
+            pca["ensemble_parallelism_contract"]["primary_estimator_scope"],
+            "declared_view_all_systems_and_replicas",
+        )
         self.assertNotIn(qc["task_id"], fes["depends_on_task_ids"])
         self.assertEqual(
             set(fes["depends_on_task_ids"]),

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Mapping, MutableMapping, Optional, Sequence
 
 from .automatic_sampling import _apply_campaign_direct_allocations
+from .ensemble_parallelism import annotate_task_parallelism
 from .execution_adapters import load_slurm_profile
 from .frame_sampling import (
     integer_stride_for_budget,
@@ -1975,6 +1976,7 @@ def plan_and_apply_complete_campaign(
                 execution.get("memory_safety_factor", 1.25)
             ),
         )
+        built = [annotate_task_parallelism(task) for task in built]
         return built, current_base
 
     previous_signature: object = None

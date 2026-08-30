@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence
 
 from .analysis_config import COMMAND_MODULES
+from .ensemble_parallelism import annotate_task_parallelism
 from .manifests import load_json
 from .resource_planning import ResourcePlanningError, pack_resource_lanes
 
@@ -1532,6 +1533,7 @@ def _apply_task_dependency_graph(
                 command if script.startswith("run_reporting_")
                 else COMMAND_MODULES.get(command) if command else None
             )
+            task = annotate_task_parallelism(task)
             project_filename = _task_project_filename(root, task)
             task["project_filename"] = project_filename
             view = _view_id(script)

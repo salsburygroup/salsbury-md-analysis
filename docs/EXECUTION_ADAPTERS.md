@@ -48,6 +48,16 @@ decode the original solvated trajectories a second time. Structural QC depends
 on cache completion, but unrelated modules do not depend on structural QC or
 the cache unless their declared inputs require them.
 
+Every planned task whose module has trajectory-ensemble semantics carries an
+`ensemble_parallelism_contract`. The scheduler may partition structural QC,
+RMSD/Rg, individual PCA, and continuous unwrapping into complete replica-local
+work. For pooled RMSF, DCCM, common PCA, TICA, FES, clustering, and MSMs,
+replica workers are limited to mergeable statistics, identity-preserving
+features, or ordered segment records. Their primary result is finalized once at
+the contract's pooled scope. A task that declares an independent replica
+partition for one of those pooled estimators is rejected before launch. See
+[`ENSEMBLE_PARALLELISM.md`](ENSEMBLE_PARALLELISM.md).
+
 ## Local desktop or workstation
 
 Local mode is the default. It needs Python 3.10 or newer plus the package's analysis
