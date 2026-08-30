@@ -20,6 +20,7 @@ from salsbury_md_analysis.quickstart import (
     _slurm_files,
     prepare_standard_analysis,
     prepare_standard_analysis_memory_fit,
+    prepare_standard_analysis_resource_fit,
 )
 
 
@@ -1188,6 +1189,59 @@ class QuickstartTests(unittest.TestCase):
             )
             self.assertTrue(
                 requested["modules"]["solvent_accessible_surface_area"]["enabled"]
+            )
+            self.assertFalse(
+                reduced["modules"]["solvent_accessible_surface_area"]["enabled"]
+            )
+
+    @patch(
+        "salsbury_md_analysis.quickstart._discover_dssp_executable",
+        return_value=None,
+    )
+    def test_resource_fit_applies_dependency_closed_optional_reduction(
+        self, _discover_dssp,
+    ):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "inputs"
+            source.mkdir()
+            pdb, psf, trajectories = _write_inputs(source)
+            config_path = root / "constrained.json"
+            config_path.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "execution": {"maximum_memory_gib": 4.0},
+            }), encoding="utf-8")
+            output = root / "analysis-resource-fit"
+            report = prepare_standard_analysis_resource_fit(
+                pdb_path=pdb,
+                psf_path=psf,
+                trajectories=trajectories,
+                output_directory=output,
+                project_id="resource-fit-system",
+                frame_interval_ps=10.0,
+                config_path=config_path,
+            )
+            self.assertEqual(report["technical_status"], "complete")
+            resource_fit = json.loads(
+                (output / "resource-fit-report.json").read_text()
+            )
+            self.assertTrue(resource_fit["automatic_changes_applied"])
+            self.assertTrue(resource_fit["protected_set_preserved"])
+            self.assertIn(
+                "modules.solvent_accessible_surface_area.enabled",
+                resource_fit["directly_disabled_configuration_switches"],
+            )
+            requested = json.loads(
+                (output / "analysis-config.requested.json").read_text()
+            )
+            reduced = json.loads(
+                (output / "analysis-config.resource-fit.json").read_text()
+            )
+            self.assertTrue(
+                requested["modules"]["structural_integrity_qc"]["enabled"]
+            )
+            self.assertTrue(
+                reduced["modules"]["structural_integrity_qc"]["enabled"]
             )
             self.assertFalse(
                 reduced["modules"]["solvent_accessible_surface_area"]["enabled"]

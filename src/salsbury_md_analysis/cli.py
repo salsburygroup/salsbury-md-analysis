@@ -101,10 +101,12 @@ from .quickstart import (
     QuickstartPlanningError,
     prepare_standard_analysis,
     prepare_standard_analysis_memory_fit,
+    prepare_standard_analysis_resource_fit,
 )
 from .comparative_quickstart import (
     prepare_comparative_analysis,
     prepare_comparative_analysis_memory_fit,
+    prepare_comparative_analysis_resource_fit,
 )
 from .pca import common_pca_project_safe, individual_pca_project_safe
 from .pca_fes import pca_fes_basins_project_safe
@@ -753,13 +755,15 @@ def _prepare_analysis_command(
     energetic_openmm_system_xml: Optional[Path],
     energetic_gromacs_tpr: Optional[Path],
     auto_disable_to_fit_memory: bool,
+    auto_disable_optional_to_fit_resources: bool,
     plan_only: bool,
 ) -> int:
     try:
-        prepare = (
-            prepare_standard_analysis_memory_fit
-            if auto_disable_to_fit_memory else prepare_standard_analysis
-        )
+        prepare = prepare_standard_analysis
+        if auto_disable_to_fit_memory:
+            prepare = prepare_standard_analysis_memory_fit
+        elif auto_disable_optional_to_fit_resources:
+            prepare = prepare_standard_analysis_resource_fit
         report = prepare(
             pdb_path=pdb,
             psf_path=psf,
@@ -846,13 +850,15 @@ def _prepare_comparison_command(
     dssr_executable: Optional[str],
     config_path: Optional[Path],
     auto_disable_to_fit_memory: bool,
+    auto_disable_optional_to_fit_resources: bool,
     plan_only: bool,
 ) -> int:
     try:
-        prepare = (
-            prepare_comparative_analysis_memory_fit
-            if auto_disable_to_fit_memory else prepare_comparative_analysis
-        )
+        prepare = prepare_comparative_analysis
+        if auto_disable_to_fit_memory:
+            prepare = prepare_comparative_analysis_memory_fit
+        elif auto_disable_optional_to_fit_resources:
+            prepare = prepare_comparative_analysis_resource_fit
         report = prepare(
             request_path=request,
             output_directory=output_directory,
@@ -1654,13 +1660,24 @@ def build_parser() -> argparse.ArgumentParser:
             "topology-applicable views remain enabled by default."
         ),
     )
-    prepare_parser.add_argument(
+    prepare_fit_group = prepare_parser.add_mutually_exclusive_group()
+    prepare_fit_group.add_argument(
         "--auto-disable-to-fit-memory", action="store_true",
         help=(
             "When enabled technical minima exceed execution.maximum_memory_gib, "
             "preserve the requested config, explicitly disable the oversized "
             "modules and their dependents, replan, and write the resolved on/off "
             "config. Without this flag preparation fails closed."
+        ),
+    )
+    prepare_fit_group.add_argument(
+        "--auto-disable-optional-to-fit-resources", action="store_true",
+        help=(
+            "Opt in to the planner's dependency-closed optional reduction when "
+            "the complete workflow exceeds CPU, wall-time, or memory limits. "
+            "Protected modules are never disabled; preparation fails if the "
+            "protected core cannot fit. Requested and resolved configs are both "
+            "written for review."
         ),
     )
     prepare_parser.add_argument(
@@ -1828,12 +1845,21 @@ def build_parser() -> argparse.ArgumentParser:
             "topology-derived views are enabled when omitted."
         ),
     )
-    comparison_parser.add_argument(
+    comparison_fit_group = comparison_parser.add_mutually_exclusive_group()
+    comparison_fit_group.add_argument(
         "--auto-disable-to-fit-memory", action="store_true",
         help=(
             "Preserve the requested comparison config, explicitly turn off "
             "memory-incompatible switches and dependents, replan, and write "
             "the resolved on/off config. Without this flag preparation fails closed."
+        ),
+    )
+    comparison_fit_group.add_argument(
+        "--auto-disable-optional-to-fit-resources", action="store_true",
+        help=(
+            "Opt in to dependency-closed optional reduction for CPU, wall-time, "
+            "or memory limits. Protected comparison and QC modules remain enabled; "
+            "preparation fails if that protected core cannot fit."
         ),
     )
     comparison_parser.add_argument(
@@ -2148,6 +2174,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.energetic_openmm_system_xml,
             args.energetic_gromacs_tpr,
             args.auto_disable_to_fit_memory,
+            args.auto_disable_optional_to_fit_resources,
             args.plan_only,
         )
     if args.command == "prepare-comparison":
@@ -2161,6 +2188,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.dssr_executable,
             args.config,
             args.auto_disable_to_fit_memory,
+            args.auto_disable_optional_to_fit_resources,
             args.plan_only,
         )
     if args.command == "run-local-workflow":

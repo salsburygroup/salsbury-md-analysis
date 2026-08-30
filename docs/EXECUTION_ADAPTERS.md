@@ -155,6 +155,13 @@ module or clustering-method switches and their dependents, and replans. Review
 memory only; CPU-hour, critical-path, calibration, and scratch limits still
 fail closed.
 
+Use `--auto-disable-optional-to-fit-resources` when the user wants the same
+explicit reduction across CPU, critical-path wall time, and memory. The
+planner applies its dependency-closed optional switch set, replans, and writes
+`analysis-config.resource-fit.json` plus `resource-fit-report.json`. Protected
+modules remain enabled. If the protected subset does not fit, preparation
+returns `NO_ACCEPTABLE_REDUCED_PLAN` and submits nothing.
+
 Slurm requests can be larger than the estimated working set because the site
 profile adds explicit safety margins. Preparation applies those margins before
 testing memory feasibility. It then packs individual array elements and ordinary

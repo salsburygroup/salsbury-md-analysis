@@ -65,6 +65,12 @@ replicas; available memory and storage bandwidth may require a lower worker
 count. The campaign plan reports both this replica-parallel ceiling and the
 full workflow's dependency-stage CPU ceiling.
 
+Continuous reconstruction is sequential only within one replica because frame
+to-frame image continuity must be retained. Replicas do not share unwrap state:
+each worker owns one complete replica timeline, including its ordered segments,
+and the parent assembles the independently completed caches after all workers
+finish.
+
 The cache is deliberately unaligned. Each scientific view must still apply its
 own declared protein, nucleic-acid, interface, or oligomer-member alignment.
 PCA feature atoms and exported coordinate payload atoms remain separate: a
