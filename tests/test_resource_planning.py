@@ -1022,7 +1022,7 @@ class ResourcePlanningTests(unittest.TestCase):
             plan["node_resource_policy"]["maximum_nodes"], 2
         )
 
-    def test_replica_workers_are_capped_by_padded_per_node_memory(self):
+    def test_replica_workers_are_sharded_by_padded_per_node_memory(self):
         plan = plan_campaign_resource_budget(
             [{
                 "task_id": "replica-qc",
@@ -1051,17 +1051,38 @@ class ResourcePlanningTests(unittest.TestCase):
             maximum_nodes=2,
         )
         row = plan["tasks"][0]
-        self.assertEqual(row["effective_cpu_cap"], 40)
+        self.assertEqual(row["effective_cpu_cap"], 63)
         self.assertEqual(
-            row["active_parallel_workers_at_selected_observations"], 40
+            row["active_parallel_workers_at_selected_observations"], 63
         )
         self.assertEqual(
-            row["estimated_peak_memory_gib_at_selected_observations"], 120.0
+            row["estimated_peak_memory_gib_at_selected_observations"], 189.0
         )
         self.assertEqual(
             row["estimated_scheduler_memory_gib_at_selected_observations"],
+            362.0,
+        )
+        self.assertEqual(
+            row["estimated_scheduler_memory_gib_per_node_at_selected_observations"],
             181.0,
         )
+        self.assertEqual(
+            row["parallel_node_layout_at_selected_observations"]["node_count"],
+            2,
+        )
+        self.assertEqual(
+            row["parallel_node_layout_at_selected_observations"]["workers_per_node"],
+            40,
+        )
+        lane = plan["stages"][0]["resource_lanes"][0]
+        self.assertEqual(lane["planned_node_indices"], [0, 1])
+        fragments = lane["planned_node_fragment_reservations"]
+        self.assertEqual(
+            sorted(fragment["cpu_slots"] for fragment in fragments), [23, 40]
+        )
+        self.assertTrue(all(
+            fragment["memory_gib"] <= 185.0 for fragment in fragments
+        ))
         self.assertEqual(plan["feasibility_status"], "feasible")
 
     def test_measured_memory_scales_from_observation_coverage(self):

@@ -232,13 +232,16 @@ while allocating frames and estimating dependency-stage wall time.
 A Slurm profile can also declare `node_policy.cpus_per_node`,
 `node_policy.memory_gib_per_node`, and an optional
 `node_policy.maximum_nodes_per_campaign`. Node memory is checked against the
-safety-adjusted scheduler request, not the unpadded working-set estimate. The
-planner rejects any single task that cannot fit one node and bin-packs all
-concurrent resource lanes so their padded CPU and memory reservations fit the
-declared node shapes. If the campaign gives only aggregate CPU and memory caps,
-the planner derives the node-count ceiling from those caps and the profile's
-node shape. The protected-core minimum request reports its modeled node count
-as well as aggregate CPUs, memory, and wall time.
+safety-adjusted scheduler request, not the unpadded working-set estimate.
+Replica-parallel tasks are split into node-sized worker groups; other tasks
+must fit one node. Concurrent resource lanes are then bin-packed so no node's
+padded CPU or memory reservation exceeds its declared shape. The campaign's
+`maximum_memory_gib` remains an aggregate simultaneous-memory limit: a task
+that reserves 181 GiB on each of two nodes consumes 362 GiB of that envelope.
+If the campaign gives only aggregate CPU and memory caps, the planner derives
+the node-count ceiling from those caps and the profile's node shape. The
+protected-core minimum request reports its modeled node count as well as
+aggregate CPUs, memory, and wall time.
 
 When one or more safety-adjusted technical minima exceed `maximum_memory_gib`, the plan's
 `memory_feasibility` section reports the largest raw working set, the required

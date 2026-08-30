@@ -312,11 +312,13 @@ individual task fits. The local executor and the generated `submit.sh` enforce
 the same limits.
 
 Slurm profiles may also declare CPUs and memory per node. The planner applies
-the profile's memory padding before checking that every task fits one node, then
-bin-packs concurrent lanes across the allowed node count. The DEAC profile uses
-a conservative 44-CPU, 185-GiB node shape. The submission preview reports each
-planned node's padded CPU and memory total, and every generated worker requests
-one node explicitly.
+the profile's memory padding before placing work. Replica-parallel tasks may
+span several nodes; non-distributed tasks must fit one node. The DEAC profile
+uses an editable 44-CPU, 185-GiB node shape. For example, 63 workers with a
+3-GiB working-set estimate each are placed 40 plus 23 under the DEAC
+`1.5x + 1 GiB` padding rule. Forty-four such workers would request 199 GiB and
+cannot occupy one 185-GiB node. The submission preview reports each planned
+node's padded CPU and memory reservation and the aggregate campaign total.
 
 For an insufficient memory cap, `campaign-resource-plan.json` and
 `memory-feasibility-report.json` state (1) the largest enabled technical-minimum

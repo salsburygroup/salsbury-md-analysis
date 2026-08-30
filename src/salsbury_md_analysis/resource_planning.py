@@ -46,7 +46,10 @@ def workflow_useful_parallel_cpu_ceiling(
             1,
             int(row.get("intrinsic_cpu_cap", row.get("effective_cpu_cap", 1))),
         )
-        if maximum_cpus_per_node is not None:
+        if (
+            maximum_cpus_per_node is not None
+            and row.get("parallel_execution_model") is None
+        ):
             cap = min(cap, maximum_cpus_per_node)
         stage_bundles = stages.setdefault(stage, {})
         stage_bundles[bundle] = max(cap, stage_bundles.get(bundle, 0))
@@ -210,6 +213,9 @@ def pack_resource_lanes(
         cpus = int(item.get("cpu_slots", 1))
         memory = float(item.get("memory_gib", 0.0))
         wall = float(item.get("wall_hours", 0.0))
+        node_count = int(item.get("node_count", 1))
+        workers_per_node = int(item.get("workers_per_node", cpus))
+        distributed = bool(item.get("distributed_replica_execution", False))
         if cpus <= 0 or memory <= 0.0 or wall < 0.0:
             raise ResourcePlanningError(
                 f"resource-lane item {item_id} has invalid resources"
@@ -224,22 +230,59 @@ def pack_resource_lanes(
                 f"resource-lane item {item_id} requests {memory:g} GiB, "
                 f"exceeding the campaign limit {maximum_parallel_memory_gib:g} GiB"
             )
+        if node_count <= 0 or workers_per_node <= 0:
+            raise ResourcePlanningError(
+                f"resource-lane item {item_id} has an invalid node layout"
+            )
+        if distributed and node_count == 1:
+            distributed = False
         if (
             maximum_cpus_per_node is not None
-            and cpus > maximum_cpus_per_node
+            and cpus > maximum_cpus_per_node * node_count
         ):
             raise ResourcePlanningError(
                 f"resource-lane item {item_id} requests {cpus} CPUs, exceeding "
-                f"the per-node limit {maximum_cpus_per_node}"
+                f"the {node_count}-node CPU limit "
+                f"{maximum_cpus_per_node * node_count}"
             )
         if (
             maximum_memory_gib_per_node is not None
-            and memory > float(maximum_memory_gib_per_node) + 1.0e-12
+            and memory
+            > float(maximum_memory_gib_per_node) * node_count + 1.0e-12
         ):
             raise ResourcePlanningError(
                 f"resource-lane item {item_id} requests {memory:g} GiB after "
                 "scheduler padding, exceeding the per-node limit "
-                f"{float(maximum_memory_gib_per_node):g} GiB"
+                f"{float(maximum_memory_gib_per_node):g} GiB and configured "
+                f"{node_count}-node limit "
+                f"{float(maximum_memory_gib_per_node) * node_count:g} GiB"
+            )
+        per_node_memory = memory / node_count
+        if (
+            maximum_memory_gib_per_node is not None
+            and per_node_memory
+            > float(maximum_memory_gib_per_node) + 1.0e-12
+        ):
+            raise ResourcePlanningError(
+                f"resource-lane item {item_id} requests {per_node_memory:g} "
+                "GiB per node after scheduler padding, exceeding the per-node "
+                f"limit {float(maximum_memory_gib_per_node):g} GiB"
+            )
+        fragments = []
+        remaining_cpus = cpus
+        for _ in range(node_count):
+            fragment_cpus = min(workers_per_node, remaining_cpus)
+            remaining_cpus -= fragment_cpus
+            fragments.append({
+                "cpu_slots": fragment_cpus,
+                "memory_gib": per_node_memory,
+            })
+        if remaining_cpus > 0 or any(
+            int(fragment["cpu_slots"]) <= 0 for fragment in fragments
+        ):
+            raise ResourcePlanningError(
+                f"resource-lane item {item_id} cannot distribute its CPU slots "
+                "across the declared nodes"
             )
         normalized.append({
             **dict(item),
@@ -247,6 +290,10 @@ def pack_resource_lanes(
             "cpu_slots": cpus,
             "memory_gib": memory,
             "wall_hours": wall,
+            "node_count": node_count,
+            "workers_per_node": workers_per_node,
+            "distributed_replica_execution": distributed,
+            "node_fragments": fragments,
             "_input_index": index,
         })
 
@@ -264,6 +311,34 @@ def pack_resource_lanes(
     )
     lanes: list[Dict[str, object]] = []
 
+    def merged_fragments(
+        left: Sequence[Mapping[str, object]],
+        right: Sequence[Mapping[str, object]],
+    ) -> list[Dict[str, object]]:
+        left_rows = sorted(
+            left,
+            key=lambda row: (-float(row["memory_gib"]), -int(row["cpu_slots"])),
+        )
+        right_rows = sorted(
+            right,
+            key=lambda row: (-float(row["memory_gib"]), -int(row["cpu_slots"])),
+        )
+        width = max(len(left_rows), len(right_rows))
+        result = []
+        for index in range(width):
+            a = left_rows[index] if index < len(left_rows) else {}
+            b = right_rows[index] if index < len(right_rows) else {}
+            result.append({
+                "cpu_slots": max(
+                    int(a.get("cpu_slots", 0)), int(b.get("cpu_slots", 0))
+                ),
+                "memory_gib": max(
+                    float(a.get("memory_gib", 0.0)),
+                    float(b.get("memory_gib", 0.0)),
+                ),
+            })
+        return result
+
     def totals() -> tuple[int, float]:
         return (
             sum(int(lane["cpu_slots"]) for lane in lanes),
@@ -277,11 +352,18 @@ def pack_resource_lanes(
             and total_memory + float(item["memory_gib"])
             <= maximum_parallel_memory_gib + 1.0e-12
         )
-        candidates: list[tuple[float, float, int, Dict[str, object]]] = []
+        candidates: list[
+            tuple[float, float, int, Dict[str, object], list[Dict[str, object]]]
+        ] = []
         for lane in lanes:
-            new_cpu = max(int(lane["cpu_slots"]), int(item["cpu_slots"]))
-            new_memory = max(
-                float(lane["memory_gib"]), float(item["memory_gib"])
+            candidate_fragments = merged_fragments(
+                lane["node_fragments"], item["node_fragments"]
+            )
+            new_cpu = sum(
+                int(row["cpu_slots"]) for row in candidate_fragments
+            )
+            new_memory = sum(
+                float(row["memory_gib"]) for row in candidate_fragments
             )
             cpu_delta = new_cpu - int(lane["cpu_slots"])
             memory_delta = new_memory - float(lane["memory_gib"])
@@ -295,6 +377,7 @@ def pack_resource_lanes(
                     memory_delta + float(cpu_delta),
                     int(lane["lane_index"]),
                     lane,
+                    candidate_fragments,
                 ))
         # Prefer a new lane when it reduces the predicted makespan.  Otherwise
         # grow the least-loaded compatible lane by the smallest reservation.
@@ -309,6 +392,7 @@ def pack_resource_lanes(
                     "cpu_slots": int(item["cpu_slots"]),
                     "memory_gib": float(item["memory_gib"]),
                     "wall_hours": 0.0,
+                    "node_fragments": list(item["node_fragments"]),
                     "items": [],
                 }
                 lanes.append(selected)
@@ -324,16 +408,21 @@ def pack_resource_lanes(
                     "cpu_slots": int(item["cpu_slots"]),
                     "memory_gib": float(item["memory_gib"]),
                     "wall_hours": 0.0,
+                    "node_fragments": list(item["node_fragments"]),
                     "items": [],
                 }
                 lanes.append(selected)
             else:
-                selected = min(candidates, key=lambda value: value[:3])[3]
-                selected["cpu_slots"] = max(
-                    int(selected["cpu_slots"]), int(item["cpu_slots"])
+                chosen = min(candidates, key=lambda value: value[:3])
+                selected = chosen[3]
+                selected["node_fragments"] = chosen[4]
+                selected["cpu_slots"] = sum(
+                    int(row["cpu_slots"])
+                    for row in selected["node_fragments"]
                 )
-                selected["memory_gib"] = max(
-                    float(selected["memory_gib"]), float(item["memory_gib"])
+                selected["memory_gib"] = sum(
+                    float(row["memory_gib"])
+                    for row in selected["node_fragments"]
                 )
         selected["wall_hours"] = (
             float(selected["wall_hours"]) + float(item["wall_hours"])
@@ -362,37 +451,50 @@ def pack_resource_lanes(
         )
         nodes: list[Dict[str, object]] = []
         for lane in ordered_lanes:
-            selected_node: Optional[Dict[str, object]] = None
-            for node in nodes:
-                if (
-                    int(node["cpu_slots"]) + int(lane["cpu_slots"])
-                    <= maximum_cpus_per_node
-                    and float(node["memory_gib"])
-                    + float(lane["memory_gib"])
-                    <= float(maximum_memory_gib_per_node) + 1.0e-12
-                ):
-                    selected_node = node
-                    break
-            if selected_node is None:
-                if len(nodes) >= maximum_nodes:
-                    return None
-                selected_node = {
-                    "node_index": len(nodes),
-                    "cpu_slots": 0,
-                    "memory_gib": 0.0,
-                    "lane_indices": [],
-                }
-                nodes.append(selected_node)
-            selected_node["cpu_slots"] = (
-                int(selected_node["cpu_slots"]) + int(lane["cpu_slots"])
-            )
-            selected_node["memory_gib"] = (
-                float(selected_node["memory_gib"])
-                + float(lane["memory_gib"])
-            )
-            selected_node["lane_indices"].append(  # type: ignore[union-attr]
-                int(lane["lane_index"])
-            )
+            used_for_lane: set[int] = set()
+            for fragment in lane["node_fragments"]:
+                selected_node: Optional[Dict[str, object]] = None
+                for node in nodes:
+                    if int(node["node_index"]) in used_for_lane:
+                        continue
+                    if (
+                        int(node["cpu_slots"]) + int(fragment["cpu_slots"])
+                        <= maximum_cpus_per_node
+                        and float(node["memory_gib"])
+                        + float(fragment["memory_gib"])
+                        <= float(maximum_memory_gib_per_node) + 1.0e-12
+                    ):
+                        selected_node = node
+                        break
+                if selected_node is None:
+                    if len(nodes) >= maximum_nodes:
+                        return None
+                    selected_node = {
+                        "node_index": len(nodes),
+                        "cpu_slots": 0,
+                        "memory_gib": 0.0,
+                        "lane_indices": [],
+                        "lane_fragment_reservations": [],
+                    }
+                    nodes.append(selected_node)
+                selected_node["cpu_slots"] = (
+                    int(selected_node["cpu_slots"])
+                    + int(fragment["cpu_slots"])
+                )
+                selected_node["memory_gib"] = (
+                    float(selected_node["memory_gib"])
+                    + float(fragment["memory_gib"])
+                )
+                if int(lane["lane_index"]) not in selected_node["lane_indices"]:
+                    selected_node["lane_indices"].append(  # type: ignore[union-attr]
+                        int(lane["lane_index"])
+                    )
+                selected_node["lane_fragment_reservations"].append({
+                    "lane_index": int(lane["lane_index"]),
+                    "cpu_slots": int(fragment["cpu_slots"]),
+                    "memory_gib": float(fragment["memory_gib"]),
+                })
+                used_for_lane.add(int(selected_node["node_index"]))
         return nodes
 
     # If the aggregate-optimal lane set fragments badly across physical nodes,
@@ -423,11 +525,14 @@ def pack_resource_lanes(
         )
         first = lanes[first_index]
         second = lanes[second_index]
-        first["cpu_slots"] = max(
-            int(first["cpu_slots"]), int(second["cpu_slots"])
+        first["node_fragments"] = merged_fragments(
+            first["node_fragments"], second["node_fragments"]
         )
-        first["memory_gib"] = max(
-            float(first["memory_gib"]), float(second["memory_gib"])
+        first["cpu_slots"] = sum(
+            int(row["cpu_slots"]) for row in first["node_fragments"]
+        )
+        first["memory_gib"] = sum(
+            float(row["memory_gib"]) for row in first["node_fragments"]
         )
         first["wall_hours"] = (
             float(first["wall_hours"]) + float(second["wall_hours"])
@@ -438,10 +543,20 @@ def pack_resource_lanes(
             lane["lane_index"] = lane_index
         assigned_nodes = node_assignment(lanes)
 
-    node_by_lane = {}
+    nodes_by_lane: Dict[int, list[int]] = {}
+    reservations_by_lane: Dict[int, list[Dict[str, object]]] = {}
     for node in assigned_nodes or []:
         for lane_index in node["lane_indices"]:  # type: ignore[union-attr]
-            node_by_lane[int(lane_index)] = int(node["node_index"])
+            nodes_by_lane.setdefault(int(lane_index), []).append(
+                int(node["node_index"])
+            )
+        for reservation in node.get("lane_fragment_reservations", []):
+            lane_index = int(reservation["lane_index"])
+            reservations_by_lane.setdefault(lane_index, []).append({
+                "planned_node_index": int(node["node_index"]),
+                "cpu_slots": int(reservation["cpu_slots"]),
+                "memory_gib": float(reservation["memory_gib"]),
+            })
 
     for lane in lanes:
         lane_items = sorted(
@@ -451,7 +566,13 @@ def pack_resource_lanes(
             row.pop("_input_index", None)
         lane["items"] = lane_items
         if maximum_cpus_per_node is not None:
-            lane["planned_node_index"] = node_by_lane[int(lane["lane_index"])]
+            planned = sorted(nodes_by_lane[int(lane["lane_index"])])
+            lane["planned_node_indices"] = planned
+            lane["planned_node_index"] = planned[0] if len(planned) == 1 else None
+            lane["planned_node_fragment_reservations"] = sorted(
+                reservations_by_lane[int(lane["lane_index"])],
+                key=lambda row: int(row["planned_node_index"]),
+            )
             lane["maximum_cpus_per_node"] = maximum_cpus_per_node
             lane["maximum_memory_gib_per_node"] = float(
                 maximum_memory_gib_per_node
@@ -1030,7 +1151,10 @@ def plan_campaign_resource_budget(
                 f"task {task_id} has an invalid effective_cpu_cap"
             )
         unconstrained_cap = int(cap)
-        if maximum_cpus_per_node is not None:
+        if (
+            maximum_cpus_per_node is not None
+            and raw.get("parallel_execution_model") is None
+        ):
             cap = min(unconstrained_cap, maximum_cpus_per_node)
         raw_counts = raw.get("source_frames_per_replica")
         if (
@@ -1181,18 +1305,6 @@ def plan_campaign_resource_budget(
                 f"task {task_id} reducer_memory_gib",
             )
             cap = min(int(cap), parallel_worker_count)
-            if node_memory_gib is not None:
-                unpadded_node_budget = max(
-                    0.0,
-                    (node_memory_gib - memory_overhead) / memory_factor,
-                )
-                memory_limited_workers = math.floor(
-                    unpadded_node_budget / per_parallel_worker_memory
-                )
-                if reducer_memory <= unpadded_node_budget:
-                    cap = min(int(cap), max(1, memory_limited_workers))
-                else:
-                    cap = 1
         weight = _positive_number(
             raw.get("priority_weight", 1.0),
             f"task {task_id} priority_weight",
@@ -1384,13 +1496,53 @@ def plan_campaign_resource_budget(
             return None
         return float(row["fixed_cpu_hours"]) + float(rate) * sum(counts) / 3600.0
 
+    def task_parallel_layout(row: Mapping[str, object]) -> Dict[str, object]:
+        """Resolve one logical task into safe single- or multi-node workers."""
+
+        active_cpus = min(maximum_parallel_cpus, int(row["effective_cpu_cap"]))
+        if row.get("parallel_execution_model") is None:
+            return {
+                "active_worker_count": 1,
+                "execution_cpu_slots": active_cpus,
+                "node_count": 1,
+                "workers_per_node": active_cpus,
+                "distributed_replica_execution": False,
+            }
+        active_workers = min(
+            int(row["parallel_worker_count"]), active_cpus
+        )
+        workers_per_node = active_workers
+        if maximum_cpus_per_node is not None:
+            workers_per_node = min(workers_per_node, maximum_cpus_per_node)
+        if node_memory_gib is not None:
+            unpadded_node_budget = max(
+                0.0, (node_memory_gib - memory_overhead) / memory_factor
+            )
+            if float(row["reducer_memory_gib"]) > unpadded_node_budget:
+                workers_per_node = 0
+            else:
+                workers_per_node = min(
+                    workers_per_node,
+                    math.floor(
+                        unpadded_node_budget
+                        / float(row[
+                            "estimated_peak_memory_gib_per_parallel_worker"
+                        ])
+                    ),
+                )
+        workers_per_node = max(1, workers_per_node)
+        node_count = math.ceil(active_workers / workers_per_node)
+        return {
+            "active_worker_count": active_workers,
+            "execution_cpu_slots": active_workers,
+            "node_count": node_count,
+            "workers_per_node": workers_per_node,
+            "distributed_replica_execution": node_count > 1,
+        }
+
     def task_memory(row: Mapping[str, object], counts: Sequence[int]) -> float:
         if row.get("parallel_execution_model") is not None:
-            worker_count = min(
-                int(row["parallel_worker_count"]),
-                int(row["effective_cpu_cap"]),
-                maximum_parallel_cpus,
-            )
+            worker_count = int(task_parallel_layout(row)["active_worker_count"])
             return max(
                 float(row["reducer_memory_gib"]),
                 float(row["estimated_peak_memory_gib_per_parallel_worker"])
@@ -1423,6 +1575,21 @@ def plan_campaign_resource_budget(
     def task_scheduler_memory(
         row: Mapping[str, object], counts: Sequence[int]
     ) -> float:
+        layout = task_parallel_layout(row)
+        if bool(layout["distributed_replica_execution"]):
+            per_node_working = max(
+                float(row["reducer_memory_gib"]),
+                float(row[
+                    "estimated_peak_memory_gib_per_parallel_worker"
+                ]) * int(layout["workers_per_node"]),
+            )
+            per_node_scheduler = max(
+                minimum_scheduler_memory,
+                float(math.ceil(
+                    per_node_working * memory_factor + memory_overhead
+                )),
+            )
+            return per_node_scheduler * int(layout["node_count"])
         return max(
             minimum_scheduler_memory,
             float(math.ceil(
@@ -1465,19 +1632,31 @@ def plan_campaign_resource_budget(
         }
         bundle_resources = []
         for bundle_id, bundle_rows in bundles.items():
+            layouts = [task_parallel_layout(row) for row in bundle_rows]
+            node_count = max(int(layout["node_count"]) for layout in layouts)
+            distributed = any(
+                bool(layout["distributed_replica_execution"])
+                for layout in layouts
+            )
+            workers_per_node = max(
+                int(layout["workers_per_node"]) for layout in layouts
+            )
+            scheduler_memory_per_node = max(
+                task_scheduler_memory(
+                    row, selection[str(row["task_id"])]
+                ) / int(layout["node_count"])
+                for row, layout in zip(bundle_rows, layouts)
+            )
             bundle_resources.append({
                 "item_id": bundle_id,
                 "cpu_slots": max(
-                    min(maximum_parallel_cpus, int(row["effective_cpu_cap"]))
-                    for row in bundle_rows
+                    int(layout["execution_cpu_slots"]) for layout in layouts
                 ),
-                "memory_gib": max(
-                    task_scheduler_memory(
-                        row, selection[str(row["task_id"])]
-                    )
-                    for row in bundle_rows
-                ),
+                "memory_gib": scheduler_memory_per_node * node_count,
                 "wall_hours": bundle_walls[bundle_id],
+                "node_count": node_count,
+                "workers_per_node": workers_per_node,
+                "distributed_replica_execution": distributed,
             })
         resource_lanes = pack_resource_lanes(
             bundle_resources,
@@ -1500,8 +1679,9 @@ def plan_campaign_resource_budget(
             0
             if maximum_cpus_per_node is None else
             len({
-                int(lane["planned_node_index"])
+                int(node_index)
                 for lane in resource_lanes
+                for node_index in lane.get("planned_node_indices", [])
             })
         )
         useful = sum(
@@ -1603,6 +1783,14 @@ def plan_campaign_resource_budget(
                 "required_memory_gib": task_scheduler_memory(
                     row, selected[str(row["task_id"])]
                 ),
+                "required_memory_gib_per_node": (
+                    task_scheduler_memory(
+                        row, selected[str(row["task_id"])]
+                    ) / int(task_parallel_layout(row)["node_count"])
+                ),
+                "required_node_count": int(
+                    task_parallel_layout(row)["node_count"]
+                ),
             }
             for row in normalized
         ),
@@ -1626,13 +1814,25 @@ def plan_campaign_resource_budget(
             "single_task_memory_limit_gib": single_task_memory_limit_gib,
             "shortfall_gib": (
                 float(row["required_memory_gib"])
-                - single_task_memory_limit_gib
+                - memory_gib
+            ),
+            "per_node_shortfall_gib": max(
+                0.0,
+                float(row["required_memory_gib_per_node"])
+                - (
+                    node_memory_gib
+                    if node_memory_gib is not None else memory_gib
+                ),
             ),
         }
         for row in minimum_memory_rows
         if (
-            float(row["required_memory_gib"])
-            > single_task_memory_limit_gib + 1.0e-12
+            float(row["required_memory_gib"]) > memory_gib + 1.0e-12
+            or (
+                node_memory_gib is not None
+                and float(row["required_memory_gib_per_node"])
+                > node_memory_gib + 1.0e-12
+            )
         )
     ]
     oversized_memory_tasks = [
@@ -1876,6 +2076,7 @@ def plan_campaign_resource_budget(
         all_frames = counts == source_counts
         selected_memory_gib = task_memory(row, counts)
         selected_scheduler_memory_gib = task_scheduler_memory(row, counts)
+        selected_parallel_layout = task_parallel_layout(row)
         task_reports.append({
             **row,
             "selected_physical_frames_per_replica": counts,
@@ -1919,13 +2120,16 @@ def plan_campaign_resource_budget(
             "estimated_scheduler_memory_gib_at_selected_observations": (
                 selected_scheduler_memory_gib
             ),
+            "estimated_scheduler_memory_gib_per_node_at_selected_observations": (
+                selected_scheduler_memory_gib
+                / int(selected_parallel_layout["node_count"])
+            ),
             "active_parallel_workers_at_selected_observations": (
-                min(
-                    int(row["parallel_worker_count"]),
-                    int(row["effective_cpu_cap"]),
-                    maximum_parallel_cpus,
-                )
+                int(task_parallel_layout(row)["active_worker_count"])
                 if row.get("parallel_execution_model") is not None else 1
+            ),
+            "parallel_node_layout_at_selected_observations": (
+                selected_parallel_layout
             ),
             "estimated_wall_hours_at_effective_cpu_cap": (
                 final_costs[task_id]

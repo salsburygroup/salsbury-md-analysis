@@ -601,6 +601,10 @@ def _campaign_direct_resource_plan(
                 or str(execution.get("coordinate_cache", "auto")) != "off"
             )
         )
+        # The campaign memory limit is aggregate across every simultaneously
+        # active node.  Physical-node placement is applied later by the
+        # resource planner, but the task may not declare more concurrent
+        # workers than the whole-campaign memory envelope can support.
         memory_limited_workers = max(
             1,
             math.floor(
