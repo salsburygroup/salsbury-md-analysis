@@ -19,6 +19,12 @@ from .manifests import (
 )
 from .moments import CoordinateMoments, MomentError, sample_summary
 from .periodic import PeriodicFrameProcessor, PeriodicReconstructionError
+from .replica_execution import ReplicaPartial
+from .replica_module_execution import (
+    execute_replica_final_module,
+    restore_source_provenance,
+    unique_issues,
+)
 from .reporting import atom_identity_record, issue_record
 from .selections import AtomCorrespondence, build_common_correspondences
 from .trajectory_contracts import (
@@ -171,7 +177,7 @@ def _mapping_sets(
     return tuple(results)
 
 
-def pooled_rmsf_project(
+def _pooled_rmsf_project_serial(
     project_path: Path, hash_content: bool = False
 ) -> Dict[str, object]:
     """Fit and stream every declared replica into explicit RMSF estimators."""
@@ -508,6 +514,7 @@ def pooled_rmsf_project(
                     for role, correspondence in mapping.items()
                 },
                 "evaluated_frame_count": replica_state.count,
+                "mergeable_coordinate_moments": replica_state.to_state(),
                 "atom_statistics": replica_statistics,
                 "segments": segment_reports,
             })
@@ -595,6 +602,113 @@ def pooled_rmsf_project(
             "No real-project regression fixture has yet been approved; status remains experimental.",
         ],
     }
+
+
+def _reduce_rmsf_replica_reports(
+    partials: Sequence[ReplicaPartial[Dict[str, object]]],
+    source_context: Dict[str, object],
+) -> Dict[str, object]:
+    reports = [partial.value for partial in partials]
+    first = dict(reports[0])
+    for report in reports[1:]:
+        for key in (
+            "module_id", "reference", "settings", "common_atom_policy",
+            "periodic_coordinate_policy", "time_unit",
+        ):
+            if report.get(key) != first.get(key):
+                raise RMSFError(f"replica RMSF reports disagree on {key}")
+    grouped: Dict[str, List[Dict[str, object]]] = {}
+    for report in reports:
+        for system in report.get("systems", []):
+            if isinstance(system, dict):
+                grouped.setdefault(str(system["system_id"]), []).extend(
+                    row for row in system.get("replicas", []) if isinstance(row, dict)
+                )
+    system_reports = []
+    for system_id, replica_rows in grouped.items():
+        states = [
+            CoordinateMoments.from_state(row["mergeable_coordinate_moments"])
+            for row in replica_rows if int(row.get("evaluated_frame_count", 0)) > 0
+        ]
+        if not states:
+            pooled = None
+        else:
+            pooled = CoordinateMoments(states[0].atom_count)
+            for state in states:
+                pooled.merge(state)
+        blocks = [
+            block["rmsf_angstrom_by_common_atom_index"]
+            for row in replica_rows
+            for segment in row.get("segments", [])
+            if isinstance(segment, dict)
+            for block in segment.get("time_blocks", [])
+            if isinstance(block, dict)
+        ]
+        identity_rows = next(
+            (row.get("atom_statistics", []) for row in replica_rows if row.get("atom_statistics")),
+            [],
+        )
+        atom_statistics = []
+        if pooled is not None:
+            replica_values = [state.rmsf_values() for state in states]
+            for atom_index, identity in enumerate(identity_rows):
+                mean = pooled.mean_coordinate(atom_index)
+                identity_fields = {
+                    key: value for key, value in identity.items()
+                    if key not in {"mean_x_angstrom", "mean_y_angstrom", "mean_z_angstrom", "rmsf_angstrom"}
+                }
+                atom_statistics.append({
+                    **identity_fields,
+                    "frame_pooled_mean_x_angstrom": mean[0],
+                    "frame_pooled_mean_y_angstrom": mean[1],
+                    "frame_pooled_mean_z_angstrom": mean[2],
+                    "frame_pooled_rmsf_angstrom": pooled.rmsf(atom_index),
+                    "replica_rmsf_summary_angstrom": sample_summary(
+                        values[atom_index] for values in replica_values
+                    ),
+                    "time_block_rmsf_summary_angstrom": sample_summary(
+                        values[atom_index] for values in blocks
+                    ),
+                })
+        system_reports.append({
+            "system_id": system_id,
+            "frame_pooled_sample_count": pooled.count if pooled is not None else 0,
+            "replica_estimate_count": len(states),
+            "included_time_block_count": len(blocks),
+            "atom_statistics": atom_statistics,
+            "replicas": replica_rows,
+        })
+    first["systems"] = system_reports
+    issues = [
+        issue for issue in unique_issues(reports)
+        if issue.get("code") != "REPLICA_UNCERTAINTY_UNAVAILABLE"
+    ]
+    minimum = int(first["settings"]["minimum_replicas_for_uncertainty"])  # type: ignore[index]
+    for system in system_reports:
+        if int(system["replica_estimate_count"]) < minimum:
+            issues.append(issue_record(
+                "warning", "REPLICA_UNCERTAINTY_UNAVAILABLE", str(system["system_id"]),
+                f"{system['replica_estimate_count']} replicas produced estimates; {minimum} were requested for uncertainty",
+            ))
+    first["issues"] = issues
+    first["error_count"] = sum(issue.get("severity") == "error" for issue in issues)
+    first["warning_count"] = sum(issue.get("severity") == "warning" for issue in issues)
+    first["technical_status"] = "failed" if first["error_count"] else "complete"
+    restore_source_provenance(first, source_context)
+    return first
+
+
+def pooled_rmsf_project(
+    project_path: Path, hash_content: bool = False
+) -> Dict[str, object]:
+    """Scan replicas independently and merge exact coordinate moments."""
+
+    return execute_replica_final_module(
+        project_path,
+        runner_id="rmsf",
+        hash_content=hash_content,
+        reducer=_reduce_rmsf_replica_reports,
+    )
 
 
 def pooled_rmsf_project_safe(

@@ -1430,7 +1430,10 @@ def _task_project_filename(root: Path, task: Mapping[str, object]) -> Optional[s
     script = str(task["script"])
     path = root / script
     array_task_id = task.get("array_task_id")
-    if script.startswith("run_automatic_context_stage_") and array_task_id is not None:
+    if (
+        array_task_id is not None
+        and re.search(r"^PROJECTS=\($", path.read_text(encoding="utf-8"), re.MULTILINE)
+    ):
         projects = _bash_array_values(path, "PROJECTS")
         index = int(array_task_id)
         if index >= len(projects):
@@ -1625,6 +1628,14 @@ def _apply_task_dependency_graph(
                         dependencies.add(preflight_id)
             elif preflight_task is not None:
                 dependencies.add(str(preflight_task["task_id"]))
+
+            project_filename = task.get("project_filename")
+            if (
+                cache_task is not None
+                and isinstance(project_filename, str)
+                and Path(project_filename).name == "project-cache-base.json"
+            ):
+                dependencies.add(str(cache_task["task_id"]))
 
             if (
                 task.get("module_id") == "structural_integrity_qc"

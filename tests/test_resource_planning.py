@@ -1160,12 +1160,91 @@ class ResourcePlanningTests(unittest.TestCase):
             planning_utilization=1.0,
             pilot_budget_fraction=0.0,
         )
-        self.assertEqual(report["recommendation_status"], "feasible_subset_found")
+        self.assertEqual(
+            report["recommendation_status"], "feasible_subset_found",
+            msg=report,
+        )
         self.assertEqual(
             report["disabled_configuration_switches"],
             ["modules.dccm.enabled"],
         )
         self.assertFalse(report["automatic_changes_applied"])
+
+    def test_global_stride_subset_disables_optional_scientific_failure(self):
+        tasks = [
+            {
+                "task_id": "cache",
+                "workflow_id": "cache",
+                "module_id": "coordinate_cache",
+                "task_scope": "lossless_coordinate_preprocessing",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [1_000, 1_000],
+                "minimum_frames_per_replica": 1,
+                "maximum_frames_per_replica": 1_000,
+                "cpu_seconds_per_physical_frame": 0.001,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 100.0,
+            },
+            {
+                "task_id": "rmsd",
+                "workflow_id": "rmsd",
+                "module_id": "replica_rmsd_rg",
+                "task_scope": "direct_trajectory_estimator",
+                "dependency_stage": 1,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [1_000, 1_000],
+                "minimum_frames_per_replica": 100,
+                "maximum_frames_per_replica": 1_000,
+                "cpu_seconds_per_physical_frame": 0.001,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 100.0,
+            },
+            {
+                "task_id": "hbond",
+                "workflow_id": "hbond",
+                "module_id": "hydrogen_bond_discovery",
+                "task_scope": "direct_trajectory_estimator",
+                "dependency_stage": 1,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [1_000, 1_000],
+                "system_ids_per_replica": ["a", "a"],
+                "minimum_frames_per_replica": 334,
+                "maximum_frames_per_replica": 1_000,
+                "scientific_sampling_requirements": profile_contract(
+                    scientific_sampling_profile("hydrogen_bond_discovery")
+                ),
+                "cpu_seconds_per_physical_frame": 10.0,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 1.0,
+            },
+        ]
+        report = recommend_scientifically_valid_task_subset(
+            tasks,
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=0.1,
+            maximum_memory_gib=8.0,
+            planning_utilization=1.0,
+            pilot_budget_fraction=0.0,
+            protected_module_ids=("coordinate_cache", "replica_rmsd_rg"),
+            use_global_stride_coupling=True,
+            coordinate_cache_minimum_frames_per_replica=1,
+            coordinate_cache_full_scan_fraction=0.0,
+            overall_stride_candidate_strides=[1, 2, 5, 10],
+        )
+        self.assertEqual(
+            report["recommendation_status"], "feasible_subset_found",
+            msg=report,
+        )
+        self.assertEqual(
+            report["disabled_configuration_switches"],
+            ["modules.hydrogen_bond_discovery.enabled"],
+        )
+        coupling = report["recommended_plan"]["global_stride_coupling"]
+        self.assertIn(
+            coupling["selected_overall_trajectory_integer_stride"],
+            (1, 2, 5, 10),
+        )
 
     def test_method_subset_never_removes_protected_structural_qc(self):
         tasks = [

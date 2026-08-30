@@ -16,6 +16,12 @@ from .coordinates import CoordinateReadError, iter_coordinate_frames
 from .manifests import ManifestValidationError, load_json, resolve_manifest_path
 from .moments import sample_summary
 from .periodic import PeriodicFrameProcessor, PeriodicReconstructionError, minimum_image_displacement
+from .replica_execution import ReplicaPartial
+from .replica_module_execution import (
+    execute_replica_final_module,
+    restore_source_provenance,
+    unique_issues,
+)
 from .scalar_distributions import ScalarDistributionError, analyze_scalar_distribution
 from .trajectory_contracts import TrajectoryContractError, frame_axis_value, normalize_segment_axis
 from .validation import positive_integer
@@ -343,7 +349,7 @@ def _distributions(
     return reports
 
 
-def ion_coordination_geometry_project(
+def _ion_coordination_geometry_project_serial(
     project_path: Path, hash_content: bool = False
 ) -> Dict[str, object]:
     source = Path(project_path).expanduser().resolve(strict=False)
@@ -633,6 +639,61 @@ def ion_coordination_geometry_project(
             "Pass thresholds and biological interpretation belong in project or publication locks.",
         ],
     }
+
+
+def _reduce_ion_geometry_reports(
+    partials: Sequence[ReplicaPartial[Dict[str, object]]],
+    source_context: Dict[str, object],
+) -> Dict[str, object]:
+    reports = [partial.value for partial in partials]
+    first = dict(reports[0])
+    for report in reports[1:]:
+        for key in ("module_id", "settings", "metric_ids"):
+            if report.get(key) != first.get(key):
+                raise IonGeometryError(f"replica ion-geometry reports disagree on {key}")
+    for key in ("topology_reports", "frame_reports", "replica_reports"):
+        first[key] = [row for report in reports for row in report.get(key, [])]
+    first["evaluated_frame_count"] = sum(
+        int(report.get("evaluated_frame_count", 0)) for report in reports
+    )
+    maximum = int(first["settings"]["maximum_frames"])  # type: ignore[index]
+    if int(first["evaluated_frame_count"]) > maximum:
+        raise IonGeometryError(
+            "parallel ion-geometry frame count exceeds maximum_frames"
+        )
+    segment_rows: Dict[Tuple[str, str, str], List[Mapping[str, object]]] = {}
+    for raw_row in first["frame_reports"]:  # type: ignore[assignment]
+        row = raw_row
+        key = (
+            str(row["system_id"]), str(row["replica_id"]), str(row["segment_id"])
+        )
+        segment_rows.setdefault(key, []).append(row)
+    first["distribution_reports"] = _distributions(
+        segment_rows,
+        first["metric_ids"],  # type: ignore[arg-type]
+        first["settings"],  # type: ignore[arg-type]
+    )
+    issues = unique_issues(reports)
+    first["issues"] = issues
+    first["error_count"] = sum(issue.get("severity") == "error" for issue in issues)
+    first["warning_count"] = sum(
+        issue.get("severity") == "warning" for issue in issues
+    )
+    restore_source_provenance(first, source_context)
+    return first
+
+
+def ion_coordination_geometry_project(
+    project_path: Path, hash_content: bool = False
+) -> Dict[str, object]:
+    """Analyze ion sites by replica, then rebuild campaign distributions."""
+
+    return execute_replica_final_module(
+        project_path,
+        runner_id="ion_geometry",
+        hash_content=hash_content,
+        reducer=_reduce_ion_geometry_reports,
+    )
 
 
 def ion_coordination_geometry_project_safe(

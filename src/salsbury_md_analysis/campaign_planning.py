@@ -505,6 +505,7 @@ def _automatic_context_tasks(
             f"automatic-context project {resolved_context_id} has no requested_modules"
         )
     tasks: List[Dict[str, object]] = []
+    replica_parallel_modules = {"ion_coordination_geometry", "ion_atmosphere"}
     for module_id in requested:
         module = str(module_id)
         model = _AUTOMATIC_CONTEXT_MODELS.get(module)
@@ -529,13 +530,27 @@ def _automatic_context_tasks(
         materialized_working_set_gib = float(
             model.get("minimum_materialized_working_set_gib", 0.0)
         )
+        parallel_workers = len(source_counts) if module in replica_parallel_modules else 1
+        per_worker_memory = max(
+            float(model["memory_gib"]), materialized_working_set_gib
+        )
         tasks.append({
             "task_id": f"{resolved_task_namespace}:{module}",
             "workflow_id": resolved_context_id,
             "module_id": module,
             "task_scope": task_scope,
             "dependency_stage": int(model["stage"]),
-            "effective_cpu_cap": 1,
+            "effective_cpu_cap": parallel_workers,
+            "intrinsic_cpu_cap": parallel_workers,
+            **({
+                "parallel_execution_model": "replica_worker_exact_global_reducer_v1",
+                "parallel_worker_count": parallel_workers,
+                "estimated_peak_memory_gib_per_parallel_worker": per_worker_memory,
+                "reducer_memory_gib": per_worker_memory,
+                "parallel_memory_model": (
+                    "max(reducer, simultaneously_active_replica_workers)"
+                ),
+            } if module in replica_parallel_modules else {}),
             "source_frames_per_replica": list(source_counts),
             "minimum_frames_per_replica": int(
                 scientific["attainable_scientific_minimum_frames_per_replica"]
@@ -547,9 +562,7 @@ def _automatic_context_tasks(
                 float(model["seconds_per_frame"]) * time_safety_factor
             ),
             "fixed_cpu_hours": 0.0,
-            "estimated_peak_memory_gib": max(
-                float(model["memory_gib"]), materialized_working_set_gib
-            ),
+            "estimated_peak_memory_gib": per_worker_memory * parallel_workers,
             **({
                 "minimum_materialized_working_set_gib": (
                     materialized_working_set_gib
@@ -2016,14 +2029,10 @@ def plan_and_apply_complete_campaign(
                     coordinate_cache_full_scan_fraction=float(
                         execution.get("coordinate_cache_full_scan_fraction", 1.0)
                     ),
-                    overall_stride_candidate_strides=(
-                        [1]
-                        if structural_qc_requires_cache
-                        else list(execution.get(
-                            "overall_stride_candidates",
-                            [1, 2, 3, 4, 5, 10, 20, 100],
-                        ))
-                    ),
+                    overall_stride_candidate_strides=list(execution.get(
+                        "overall_stride_candidates",
+                        [1, 2, 3, 4, 5, 10, 20, 100],
+                    )),
                     **planning_kwargs,
                 )
             else:
@@ -2036,7 +2045,20 @@ def plan_and_apply_complete_campaign(
             and bool(execution.get("fail_if_minimum_coverage_unaffordable", True))
         ):
             recommendation = recommend_scientifically_valid_task_subset(
-                tasks, **planning_kwargs
+                tasks,
+                use_global_stride_coupling=(
+                    coordinate_cache_build_required
+                    and cache_materialization == "planned_strided"
+                ),
+                coordinate_cache_minimum_frames_per_replica=1,
+                coordinate_cache_full_scan_fraction=float(
+                    execution.get("coordinate_cache_full_scan_fraction", 1.0)
+                ),
+                overall_stride_candidate_strides=list(execution.get(
+                    "overall_stride_candidates",
+                    [1, 2, 3, 4, 5, 10, 20, 100],
+                )),
+                **planning_kwargs,
             )
             recommended_plan = recommendation.get("recommended_plan")
             if isinstance(recommended_plan, Mapping):

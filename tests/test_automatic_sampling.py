@@ -305,7 +305,10 @@ class AutomaticSamplingTests(unittest.TestCase):
             time_safety_factor=1.5,
         )
         row = plan["tasks"][0]
-        self.assertEqual(row["parallel_execution_model"], "one_process_per_replica_v1")
+        self.assertEqual(
+            row["parallel_execution_model"],
+            "replica_worker_exact_global_reducer_v1",
+        )
         self.assertEqual(row["intrinsic_cpu_cap"], 3)
         self.assertEqual(row["effective_cpu_cap"], 3)
         self.assertEqual(row["parallel_worker_count"], 3)

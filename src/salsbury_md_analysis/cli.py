@@ -18,6 +18,10 @@ from .atom_mapping import (
 )
 from .context import compile_project_context_file
 from .coordinate_cache import build_coordinate_cache_safe
+from .cache_routing import (
+    CacheRoutingError,
+    materialize_cache_backed_base_project,
+)
 from .convergence import convergence_uncertainty_project_safe
 from .clustering import (
     clustering_hdbscan_project_safe,
@@ -1751,6 +1755,16 @@ def build_parser() -> argparse.ArgumentParser:
             "global replica indices 0, stride, 2*stride, ... ."
         ),
     )
+    cache_project_parser = subparsers.add_parser(
+        "materialize-cache-base-project",
+        help=(
+            "Validate a coordinate cache and atom-remap cache-compatible base "
+            "analyses into one runtime project."
+        ),
+    )
+    cache_project_parser.add_argument("source_project", type=Path)
+    cache_project_parser.add_argument("cache_directory", type=Path)
+    cache_project_parser.add_argument("output", type=Path)
     comparison_parser.add_argument("--dssp-executable")
     comparison_parser.add_argument(
         "--config", type=Path,
@@ -2228,6 +2242,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.path, args.output, hash_source_content=args.hash_source_content,
             maximum_workers=args.workers, cache_stride=args.cache_stride,
         )
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0 if report["technical_status"] == "complete" else 2
+    if args.command == "materialize-cache-base-project":
+        try:
+            report = materialize_cache_backed_base_project(
+                args.source_project, args.cache_directory, args.output
+            )
+        except (CacheRoutingError, OSError, ValueError) as exc:
+            report = {
+                "technical_status": "failed",
+                "scientific_status": "not evaluated",
+                "error": str(exc),
+            }
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0 if report["technical_status"] == "complete" else 2
     if args.command == "prepare-unwrapped-cache":

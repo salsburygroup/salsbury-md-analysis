@@ -110,6 +110,14 @@ and uses it as the source count for each downstream clustering fit. The planner
 iterates until those counts agree exactly. If discrete stride upgrades alternate
 between two allocations, it derives the componentwise lower projection ceiling
 from that cycle and replans the fits; it never falls back to a saved count.
+A two-stage plan first selects a cache stride from the raw trajectory, then an
+integer method stride over that cache for each estimator. Effective raw stride
+is their product. Candidates that violate any protected module's scientific
+floor are pruned before CPU or memory planning. An optional module that cannot
+meet its own floor makes that complete candidate fail closed; dependency-closed
+reduction may then recommend disabling the module and replan the remaining
+workflow. The planner never prices a scientifically invalid protected-core
+stride as if it were executable.
 A configured envelope that cannot fund the small
 technical minima fails closed by default.
 

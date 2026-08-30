@@ -64,6 +64,13 @@ SIMULATION_KINDS = {
     "ai_ensemble",
 }
 
+REPLICA_PARALLEL_DIRECT_MODULES = {
+    "structural_integrity_qc", "replica_rmsd_rg", "pooled_rmsf", "dccm",
+    "hydrogen_bond_discovery", "water_mediated_hydrogen_bond_networks",
+    "secondary_structure", "solvent_accessible_surface_area",
+    "ion_coordination_geometry", "ion_atmosphere",
+}
+
 
 @dataclass(frozen=True)
 class SamplingProfile:
@@ -555,9 +562,12 @@ def _campaign_direct_resource_plan(
             calibration_status = (
                 "completed_builtin_with_censored_catalog_lower_bound"
             )
-        parallel_qc_enabled = (
-            module_id == "structural_integrity_qc"
-            and str(execution.get("coordinate_cache", "auto")) != "off"
+        replica_parallel_enabled = (
+            module_id in REPLICA_PARALLEL_DIRECT_MODULES
+            and (
+                module_id != "structural_integrity_qc"
+                or str(execution.get("coordinate_cache", "auto")) != "off"
+            )
         )
         memory_limited_workers = max(
             1,
@@ -572,7 +582,7 @@ def _campaign_direct_resource_plan(
                 int(execution["maximum_parallel_cpus"]),
                 memory_limited_workers,
             )
-            if parallel_qc_enabled else 1
+            if replica_parallel_enabled else 1
         )
         aggregate_memory_gib = memory_gib * parallel_workers
         tasks.append({
@@ -582,13 +592,19 @@ def _campaign_direct_resource_plan(
             "dependency_stage": 1,
             "effective_cpu_cap": parallel_workers,
             "intrinsic_cpu_cap": (
-                replica_count if parallel_qc_enabled else 1
+                replica_count if replica_parallel_enabled else 1
             ),
             **({
-                "parallel_execution_model": "one_process_per_replica_v1",
+                "parallel_execution_model": (
+                    "replica_worker_exact_global_reducer_v1"
+                ),
                 "parallel_worker_count": parallel_workers,
                 "estimated_peak_memory_gib_per_parallel_worker": memory_gib,
-            } if parallel_qc_enabled else {}),
+                "reducer_memory_gib": memory_gib,
+                "parallel_memory_model": (
+                    "max(reducer, simultaneously_active_replica_workers)"
+                ),
+            } if replica_parallel_enabled else {}),
             "source_frames_per_replica": replica_counts,
             "system_ids_per_replica": system_ids_per_replica,
             **({

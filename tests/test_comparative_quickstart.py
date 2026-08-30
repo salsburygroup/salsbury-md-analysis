@@ -286,7 +286,7 @@ class ComparativeQuickstartTests(unittest.TestCase):
             self.assertEqual(
                 capacity["coordinate_cache_replica_parallel_cpu_ceiling"], 63
             )
-            self.assertEqual(capacity["useful_parallel_cpu_ceiling"], 154)
+            self.assertEqual(capacity["useful_parallel_cpu_ceiling"], 380)
 
     def test_disabled_common_pca_prepares_without_conformational_projects(self):
         with tempfile.TemporaryDirectory() as temporary:
