@@ -500,6 +500,10 @@ salsbury-md-analysis prepare-analysis ... --protected-core-only
 
 # Use one cache stride for every enabled analysis, with no downstream frame stride.
 salsbury-md-analysis prepare-analysis ... --uniform-cache-stride
+
+# On the experimental branch, add all applicable experimental modules to the
+# normal main-module workflow.
+salsbury-md-analysis prepare-analysis ... --with-experimental-modules
 ```
 
 The same switches work with `prepare-comparison` and `--plan-only`. The
@@ -511,6 +515,12 @@ frame ceiling, and stops at the first candidate that fits the campaign CPU,
 wall-time, and memory envelope. It fails closed when no single stride can
 satisfy all enabled methods. The default remains the more efficient balanced
 mode, which may add method-specific strides after the cache.
+`--with-experimental-modules` is the command-line form of
+`enable_all_experimental_modules: true`. It extends the normal module set in a
+newly prepared campaign; it does not modify or consume an already completed
+campaign directory. Explicit per-module `false` entries still win. It is
+mutually exclusive with `--protected-core-only` because those switches request
+opposite module sets.
 
 Run `salsbury-md-analysis list-modules` to see the module identifiers. The
 prepared campaign writes the complete resolved configuration to

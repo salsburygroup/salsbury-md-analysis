@@ -37,6 +37,10 @@ remain off without reviewed source and sink nodes. Bridge and hydration-density
 tasks are omitted when the reference topology contains none of their enabled
 particle or mediator species. These decisions are reported as unavailable or
 not applicable while the original configuration intent remains visible.
+The command-line equivalent is `--with-experimental-modules` on
+`prepare-analysis` and `prepare-comparison`. It adds applicable experimental
+methods to the normal main-module workflow for the new campaign. It does not
+write into, or reuse results from, a completed campaign directory.
 Supply a reviewed partial or complete configuration with:
 
 ```bash

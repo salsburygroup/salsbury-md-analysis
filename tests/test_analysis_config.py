@@ -86,6 +86,24 @@ class AnalysisConfigTests(unittest.TestCase):
             ):
                 load_analysis_config(path, ["common_pca"], ["global"])
 
+    def test_command_override_enables_experimental_extension_set(self):
+        config = load_analysis_config(
+            None,
+            ["common_pca", *sorted(DEFAULT_DISABLED_MODULES)],
+            ["global"],
+            enable_all_experimental_modules_override=True,
+        )
+        self.assertTrue(config["enable_all_experimental_modules"])
+        self.assertTrue(all(
+            config["modules"][module_id]["enabled"]
+            for module_id in DEFAULT_DISABLED_MODULES
+            if not config["modules"][module_id]["depends_on"]
+            or all(
+                dependency in config["modules"]
+                for dependency in config["modules"][module_id]["depends_on"]
+            )
+        ))
+
     def test_declared_perturbation_sites_enable_required_trace_view(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "config.json"

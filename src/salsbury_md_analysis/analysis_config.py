@@ -438,12 +438,15 @@ def load_analysis_config(
     *, additional_protected_modules: Sequence[str] = (),
     module_selection_override: str | None = None,
     stride_mode_override: str | None = None,
+    enable_all_experimental_modules_override: bool = False,
 ) -> Dict[str, object]:
     protected_modules = set(PROTECTED_MODULES).union(additional_protected_modules)
     config = default_analysis_config(
         module_ids, view_ids, protected_modules=sorted(protected_modules)
     )
     if path is None:
+        if enable_all_experimental_modules_override:
+            _enable_all_experimental_modules(config)
         return _apply_planning_modes(
             config,
             protected_modules=protected_modules,
@@ -467,21 +470,21 @@ def load_analysis_config(
         raise AnalysisConfigError("config_schema must be salsbury-analysis-config-v1")
     if supplied.get("default_module_policy", "all_applicable") != "all_applicable":
         raise AnalysisConfigError("default_module_policy must be all_applicable")
-    enable_all_experimental = supplied.get(
-        "enable_all_experimental_modules", False
-    )
-    if not isinstance(enable_all_experimental, bool):
+    supplied_experimental = supplied.get("enable_all_experimental_modules", False)
+    if not isinstance(supplied_experimental, bool):
         raise AnalysisConfigError(
             "enable_all_experimental_modules must be boolean"
         )
+    if not isinstance(enable_all_experimental_modules_override, bool):
+        raise AnalysisConfigError(
+            "experimental-module override must be boolean"
+        )
+    enable_all_experimental = (
+        supplied_experimental or enable_all_experimental_modules_override
+    )
     config["enable_all_experimental_modules"] = enable_all_experimental
     if enable_all_experimental:
-        modules = config["modules"]
-        assert isinstance(modules, dict)
-        for module_id in DEFAULT_DISABLED_MODULES.intersection(modules):
-            row = modules[module_id]
-            assert isinstance(row, dict)
-            row["enabled"] = True
+        _enable_all_experimental_modules(config)
     known_modules = set(module_ids)
     raw_groups = supplied.get("module_groups")
     if raw_groups is not None and raw_groups != config["module_groups"]:
@@ -1077,6 +1080,19 @@ def load_analysis_config(
                     row["enabled"] = False
                     row["state_trajectory_exports_enabled"] = False
     return config
+
+
+def _enable_all_experimental_modules(config: Dict[str, object]) -> None:
+    """Apply the experimental-branch master opt-in before explicit overrides."""
+
+    config["enable_all_experimental_modules"] = True
+    modules = config.get("modules")
+    if not isinstance(modules, dict):
+        raise AnalysisConfigError("analysis config has no module mapping")
+    for module_id in DEFAULT_DISABLED_MODULES.intersection(modules):
+        row = modules[module_id]
+        if isinstance(row, dict):
+            row["enabled"] = True
 
 
 def _apply_planning_modes(
