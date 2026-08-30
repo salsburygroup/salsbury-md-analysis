@@ -23,6 +23,7 @@ from .coordinates import (
     CoordinateFrame,
     iter_coordinate_frames,
 )
+from .frame_sampling import integer_stride_selected_count
 from .manifests import (
     ManifestValidationError,
     load_json,
@@ -740,6 +741,7 @@ def build_coordinate_cache(
                     "replica_id": replica_id,
                     "source_atom_count": len(atoms),
                     "cached_atom_count": len(atom_indices),
+                    "source_atom_indices_in_cache_order": list(atom_indices),
                     "selection": "molecular_payload",
                     "cache_stride": cache_stride,
                     "source_frame_count": sum(
@@ -825,7 +827,13 @@ def build_coordinate_cache_safe(
 def validate_reusable_coordinate_cache(
     cache_directory: Path, source_system_manifest: Path
 ) -> Dict[str, object]:
-    """Validate a lossless external cache against the current source inputs."""
+    """Validate a reusable all-frame-scanned cache against source inputs.
+
+    Cache reuse does not require materializing every decoded frame.  It does
+    require a positive declared integer stride, an in-order scan of every raw
+    frame for continuous reconstruction, exact source identities, and the
+    deterministic retained-frame count implied by that stride.
+    """
 
     root = Path(cache_directory).expanduser().resolve(strict=True)
     source = Path(source_system_manifest).expanduser().resolve(strict=True)
@@ -836,9 +844,14 @@ def validate_reusable_coordinate_cache(
     original = load_json(source)
     if not isinstance(report, dict) or report.get("technical_status") != "complete":
         raise CoordinateCacheError("reusable coordinate cache report is incomplete")
-    if report.get("cache_stride") != 1:
+    cache_stride = report.get("cache_stride")
+    if (
+        isinstance(cache_stride, bool)
+        or not isinstance(cache_stride, int)
+        or cache_stride <= 0
+    ):
         raise CoordinateCacheError(
-            "a reusable coordinate cache must materialize every frame at stride 1"
+            "a reusable coordinate cache must declare a positive integer stride"
         )
     if report.get("source_frame_scan") != "all source frames decoded in order":
         raise CoordinateCacheError(
@@ -901,11 +914,14 @@ def validate_reusable_coordinate_cache(
                 _validate_source_identity(
                     cached_segment.get("source"), path, "trajectory"
                 )
-                if int(cached_segment.get("retained_frame_count", -1)) != int(
-                    cached_segment.get("decoded_frame_count", -2)
+                decoded = int(cached_segment.get("decoded_frame_count", -1))
+                retained = int(cached_segment.get("retained_frame_count", -1))
+                if decoded <= 0 or retained != integer_stride_selected_count(
+                    decoded, cache_stride
                 ):
                     raise CoordinateCacheError(
-                        "reusable cache does not retain every decoded source frame"
+                        "reusable cache retained-frame count is inconsistent with "
+                        "its declared integer stride"
                     )
     if set(rows) != expected_keys:
         raise CoordinateCacheError(
@@ -920,10 +936,12 @@ def validate_reusable_coordinate_cache(
         "cached_system_manifest_sha256": sha256_file(manifest_path),
         "source_system_manifest": str(source),
         "source_system_manifest_sha256": sha256_file(source),
-        "cache_stride": 1,
+        "cache_stride": cache_stride,
         "replica_count": len(rows),
         "reuse_boundary": (
-            "Validated for conformational and other non-bulk-solvent analyses; "
+            "Every raw frame was scanned in order for continuous reconstruction. "
+            f"Every {cache_stride:g} frame was materialized for conformational "
+            "and other non-bulk-solvent analyses; "
             "water- and solvent-dependent modules continue to read the original "
             "solvated trajectories."
         ),

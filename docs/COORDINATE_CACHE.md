@@ -36,11 +36,13 @@ It stops after writing the cache. A later analysis config can reuse it:
 }
 ```
 
-The relative path is resolved from the analysis-config file. Preparation
-checks that the cache is complete and stride 1, that every decoded source frame
-was retained, and that system/replica/segment identities and source topology,
-connectivity, and trajectory identities still match. If a recorded content
-hash exists it is checked as well. A mismatch fails before the cache is used.
+The relative path is resolved from the analysis-config file. This explicit
+lossless mode produces stride 1. The validator also accepts a planner-selected
+strided cache when its positive integer stride is declared, every raw frame was
+decoded in order for continuous reconstruction, and the retained count exactly
+matches that stride. System, replica, segment, topology, connectivity, and
+trajectory identities must still match. If a recorded content hash exists it
+is checked as well. A mismatch fails before the cache is used.
 
 The output directory must not already exist. It is assembled under a temporary
 sibling directory and installed with one atomic rename only after every frame,
@@ -76,13 +78,23 @@ own declared protein, nucleic-acid, interface, or oligomer-member alignment.
 PCA feature atoms and exported coordinate payload atoms remain separate: a
 common-heavy PCA may export a representative containing the complete solute.
 
-Structural-integrity QC also consumes this validated cache. The planner assigns
-at most one worker to each original replica, and the worker examines only that
-replica. The parent process combines the shards into the ordinary structural-QC
-report with system, replica, frame-selection, cache-hash, and worker provenance.
-Its memory estimate is the sum of concurrently active replica workers; the
-Slurm or local adapter requests that aggregate amount once for the task. A
-missing, incomplete, non-stride-1, or source-mismatched cache fails closed.
+Preparation writes a validated `project-cache-base.json` after the cache is
+complete. Atom-index definitions are remapped through the cache's recorded
+source-atom order. RMSD/Rg, pooled RMSF, DCCM, individual PCA, dihedrals,
+non-water hydrogen-bond discovery, secondary structure, SASA, nucleic-acid
+geometry, ion analyses, trajectory features, and other molecular-payload base
+estimators are routed through that project. A module is routed only when its
+required atoms are present; ambiguous water use falls back to the original
+project rather than silently changing the estimator.
+
+Structural-integrity QC also consumes a validated replica cache. The planner
+assigns at most one worker to each original replica, and the worker examines
+only that replica. The parent process combines the shards into the ordinary
+structural-QC report with system, replica, frame-selection, cache-hash, and
+worker provenance. Its memory estimate is the sum of concurrently active
+replica workers; the Slurm or local adapter requests that aggregate amount once
+for the task. A missing, incomplete, count-inconsistent, or source-mismatched
+cache fails closed.
 
 ## Methods that must retain the solvated source
 

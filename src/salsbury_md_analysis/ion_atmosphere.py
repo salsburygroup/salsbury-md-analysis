@@ -25,6 +25,13 @@ from .periodic import (
     PeriodicFrameProcessor, PeriodicReconstructionError,
     minimum_image_displacement,
 )
+from .replica_execution import ReplicaPartial
+from .replica_module_execution import (
+    execute_replica_final_module,
+    merge_frame_selection_reports,
+    restore_source_provenance,
+    unique_issues,
+)
 from .trajectory_contracts import TrajectoryContractError
 from .validation import positive_integer
 
@@ -123,7 +130,7 @@ def _summary(values: Sequence[float]) -> Dict[str, object]:
     }
 
 
-def ion_atmosphere_project(project_path: Path, hash_content: bool = False) -> Dict[str, object]:
+def _ion_atmosphere_project_serial(project_path: Path, hash_content: bool = False) -> Dict[str, object]:
     source = Path(project_path).expanduser().resolve(strict=False)
     project = load_json(source)
     settings = _settings(project)
@@ -301,6 +308,112 @@ def ion_atmosphere_project(project_path: Path, hash_content: bool = False) -> Di
             "Exact triclinic minimum-image distances are used; local atmosphere distances do not require whole-solvent reconstruction.",
         ],
     }
+
+
+def _combine_shell_summary_rows(
+    reports: Sequence[Mapping[str, object]],
+) -> list[Dict[str, object]]:
+    states: Dict[tuple[str, str, str, float], Dict[str, float]] = {}
+    for report in reports:
+        for row in report.get("species_target_shell_summaries", []):
+            if not isinstance(row, dict) or not isinstance(row.get("ion_count_summary"), dict):
+                raise IonAtmosphereError("ion-atmosphere shell summary is malformed")
+            summary = row["ion_count_summary"]
+            key = (
+                str(row["species"]), str(row["charge_class"]),
+                str(row["target_id"]), float(row["cutoff_angstrom"]),
+            )
+            count = int(summary["count"])
+            mean = float(summary["mean"])
+            standard_deviation = summary.get("sample_standard_deviation")
+            m2 = (
+                0.0 if count <= 1 or standard_deviation is None
+                else (count - 1) * float(standard_deviation) ** 2
+            )
+            current = states.get(key)
+            if current is None:
+                states[key] = {
+                    "count": float(count), "mean": mean, "m2": m2,
+                    "minimum": float(summary["minimum"]),
+                    "maximum": float(summary["maximum"]),
+                }
+                continue
+            left_count = int(current["count"])
+            combined = left_count + count
+            delta = mean - current["mean"]
+            current["mean"] += delta * count / combined
+            current["m2"] += m2 + delta * delta * left_count * count / combined
+            current["count"] = float(combined)
+            current["minimum"] = min(current["minimum"], float(summary["minimum"]))
+            current["maximum"] = max(current["maximum"], float(summary["maximum"]))
+    result = []
+    for key, state in sorted(states.items()):
+        count = int(state["count"])
+        result.append({
+            "species": key[0], "charge_class": key[1], "target_id": key[2],
+            "cutoff_angstrom": key[3],
+            "ion_count_summary": {
+                "count": count, "mean": state["mean"],
+                "sample_standard_deviation": (
+                    math.sqrt(state["m2"] / (count - 1)) if count > 1 else None
+                ),
+                "minimum": state["minimum"], "maximum": state["maximum"],
+            },
+        })
+    return result
+
+
+def _reduce_ion_atmosphere_reports(
+    partials: Sequence[ReplicaPartial[Dict[str, object]]],
+    source_context: Dict[str, object],
+) -> Dict[str, object]:
+    reports = [partial.value for partial in partials]
+    first = dict(reports[0])
+    for report in reports[1:]:
+        for key in ("module_id", "settings"):
+            if report.get(key) != first.get(key):
+                raise IonAtmosphereError(
+                    f"replica ion-atmosphere reports disagree on {key}"
+                )
+    first["frame_selection"] = merge_frame_selection_reports([
+        report["frame_selection"] for report in reports
+        if isinstance(report.get("frame_selection"), dict)
+    ])
+    if int(first["frame_selection"]["selected_frame_count"]) > int(  # type: ignore[index]
+        first["settings"]["maximum_frames"]  # type: ignore[index]
+    ):
+        raise IonAtmosphereError(
+            "parallel ion-atmosphere frame count exceeds maximum_frames"
+        )
+    for key in ("segment_reports", "frame_records", "per_ion_inner_shell_persistence"):
+        first[key] = [row for report in reports for row in report.get(key, [])]
+    first["species_target_shell_summaries"] = _combine_shell_summary_rows(reports)
+    issues = unique_issues(reports)
+    first["issues"] = issues
+    first["error_count"] = sum(issue.get("severity") == "error" for issue in issues)
+    first["warning_count"] = sum(
+        issue.get("severity") == "warning" for issue in issues
+    )
+    restore_source_provenance(first, source_context)
+    return first
+
+
+def ion_atmosphere_project(
+    project_path: Path, hash_content: bool = False
+) -> Dict[str, object]:
+    """Analyze replicas independently and pool exact shell-count moments."""
+
+    project = load_json(Path(project_path).expanduser().resolve(strict=False))
+    settings = _settings(project)
+    selection = settings.get("frame_selection")
+    if isinstance(selection, dict) and selection.get("mode") == "auto_resource_budget_v1":
+        return _ion_atmosphere_project_serial(project_path, hash_content=hash_content)
+    return execute_replica_final_module(
+        project_path,
+        runner_id="ion_atmosphere",
+        hash_content=hash_content,
+        reducer=_reduce_ion_atmosphere_reports,
+    )
 
 
 def ion_atmosphere_project_safe(project_path: Path, hash_content: bool = False) -> Dict[str, object]:

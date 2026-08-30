@@ -8,7 +8,6 @@ import json
 import math
 import os
 import time
-from concurrent.futures import ProcessPoolExecutor
 from copy import deepcopy
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
@@ -48,6 +47,7 @@ from .periodic import (
     load_connectivity,
 )
 from .reporting import issue_record
+from .replica_execution import ReplicaShard, execute_replica_workers
 from .selections import select_atoms
 from .structural_chemistry import (
     StructuralChemistryError,
@@ -1273,15 +1273,13 @@ def _write_cache_backed_qc_project(
     return destination
 
 
-def _structural_qc_replica_job(
-    arguments: Tuple[Path, str, str]
-) -> Dict[str, object]:
-    project_path, system_id, replica_id = arguments
+def _structural_qc_replica_job(shard: ReplicaShard) -> Dict[str, object]:
+    project_path = Path(str(shard.payload))
     return _structural_qc_project_serial(
         project_path,
         hash_content=False,
-        only_system_id=system_id,
-        only_replica_id=replica_id,
+        only_system_id=shard.system_id,
+        only_replica_id=shard.replica_id,
     )
 
 
@@ -1339,9 +1337,15 @@ def _aggregate_structural_qc_shards(
         issue.get("code") in _QC_FINDING_CODES for issue in issues
     )
     first = reports[0]
+    cache_stride = int(cache_validation["cache_stride"])
+    raw_method_stride = first["frame_selection"].get("resolved_integer_stride")
+    if raw_method_stride is None:
+        raw_method_stride = first["frame_selection"].get("frame_stride", 1)
+    method_stride = int(raw_method_stride)
     limitations.append(
-        "Replica shards consume one validated stride-1, made-whole molecular-"
-        "payload cache; bulk-solvent integrity remains outside this QC report."
+        "Replica shards consume one validated, all-frame-scanned, made-whole "
+        f"molecular-payload cache at raw stride {cache_stride}; bulk-solvent "
+        "integrity remains outside this QC report."
     )
     return {
         "module_id": "structural_integrity_qc",
@@ -1375,6 +1379,8 @@ def _aggregate_structural_qc_shards(
             "resolved_integer_stride": first["frame_selection"].get(
                 "resolved_integer_stride"
             ),
+            "coordinate_cache_integer_stride": cache_stride,
+            "effective_raw_integer_stride": cache_stride * method_stride,
             "selection_contract": first["frame_selection"].get(
                 "selection_contract"
             ),
@@ -1440,32 +1446,45 @@ def structural_qc_project(
         project_source, project, cache_validation, parallel
     )
     cached = load_json(cache_manifest)
-    shard_ids = [
-        (str(system["system_id"]), str(replica["replica_id"]))
-        for system in cached.get("systems", [])
-        if isinstance(system, dict)
-        for replica in system.get("replicas", [])
-        if isinstance(replica, dict)
+    shards = [
+        ReplicaShard(
+            ordinal=ordinal,
+            system_id=str(system["system_id"]),
+            replica_id=str(replica["replica_id"]),
+            segment_ids=tuple(
+                str(segment.get("segment_id", f"segment-{index + 1}"))
+                for index, segment in enumerate(replica.get("segments", []))
+                if isinstance(segment, dict)
+            ),
+            payload=str(cache_project),
+        )
+        for ordinal, (system, replica) in enumerate(
+            (system, replica)
+            for system in cached.get("systems", [])
+            if isinstance(system, dict)
+            for replica in system.get("replicas", [])
+            if isinstance(replica, dict)
+        )
     ]
-    if not shard_ids:
+    if not shards:
         raise StructuralQCError("validated coordinate cache contains no replicas")
     configured_workers = int(parallel["maximum_workers"])
-    scheduler_workers = int(os.environ.get("SLURM_CPUS_PER_TASK", configured_workers))
-    workers = min(configured_workers, scheduler_workers, len(shard_ids))
-    with ProcessPoolExecutor(max_workers=workers) as executor:
-        reports = list(executor.map(
-            _structural_qc_replica_job,
-            [(cache_project, system_id, replica_id)
-             for system_id, replica_id in shard_ids],
-        ))
-    return _aggregate_structural_qc_shards(
+    partials, execution_evidence = execute_replica_workers(
+        shards, _structural_qc_replica_job,
+        maximum_workers=configured_workers,
+    )
+    result = _aggregate_structural_qc_shards(
         project_source,
         thresholds,
         cache_validation,
-        reports,
+        [partial.value for partial in partials],
         configured_workers=configured_workers,
-        workers_used=workers,
+        workers_used=execution_evidence.workers_used,
     )
+    result["parallel_execution"]["replica_execution_evidence"] = (
+        execution_evidence.as_dict()
+    )
+    return result
 
 
 def structural_qc_project_safe(

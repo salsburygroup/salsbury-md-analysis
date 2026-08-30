@@ -10,6 +10,9 @@ from salsbury_md_analysis.coordinate_cache import (
     build_coordinate_cache_safe,
     validate_reusable_coordinate_cache,
 )
+from salsbury_md_analysis.cache_routing import (
+    materialize_cache_backed_base_project,
+)
 from salsbury_md_analysis.coordinates import iter_coordinate_frames
 from salsbury_md_analysis.manifests import load_json, validate_system
 from salsbury_md_analysis.preflight import probe_trajectory
@@ -143,6 +146,51 @@ class CoordinateCacheTests(unittest.TestCase):
             self.assertAlmostEqual(
                 strided_frames[1].coordinates_angstrom[0][0], 10.7, places=5
             )
+            strided_reuse = validate_reusable_coordinate_cache(
+                strided_output, manifest
+            )
+            self.assertEqual(strided_reuse["cache_stride"], 2)
+            self.assertIn(
+                "Every 2 frame", strided_reuse["reuse_boundary"]
+            )
+            cache_source_project = root / "cache-source-project.json"
+            cache_source_project.write_text(json.dumps({
+                "project_id": "cache-routing",
+                "analysis_profile": "standard_md_v1",
+                "system_manifest": str(manifest),
+                "analysis_output_root": str(root / "cache-routing-output"),
+                "sampling_mode": "UNBIASED_MD",
+                "coordinate_unit": "angstrom",
+                "time_unit": "ps",
+                "periodic_coordinate_policy": "unwrap_continuous",
+                "periodic_reconstruction": {
+                    "maximum_bond_length_angstrom": 3.0,
+                    "cycle_closure_tolerance_angstrom": 0.25,
+                    "maximum_anchor_displacement_angstrom": 20.0,
+                },
+                "reference_structure": str(pdb),
+                "reference_connectivity": str(bonds),
+                "selections": {
+                    "alignment": {"preset": "heavy"},
+                    "analysis": {"preset": "heavy"},
+                },
+                "definitions": {"replica_rmsd_rg": {}},
+                "requested_modules": ["replica_rmsd_rg"],
+                "protected_locations": [],
+            }), encoding="utf-8")
+            cache_project = root / "project-cache-base.json"
+            routing = materialize_cache_backed_base_project(
+                cache_source_project, strided_output, cache_project
+            )
+            self.assertEqual(routing["technical_status"], "complete")
+            cached_project = load_json(cache_project)
+            self.assertEqual(
+                cached_project["periodic_coordinate_policy"],
+                "preprocessed_make_whole",
+            )
+            self.assertEqual(cached_project["requested_modules"], [
+                "replica_rmsd_rg"
+            ])
 
             second_replica = json.loads(json.dumps(
                 system["systems"][0]["replicas"][0]
@@ -209,10 +257,6 @@ class CoordinateCacheTests(unittest.TestCase):
             self.assertEqual(
                 qc["periodic_coordinate_policy"], "preprocessed_make_whole"
             )
-            with self.assertRaisesRegex(
-                CoordinateCacheError, "stride 1"
-            ):
-                validate_reusable_coordinate_cache(strided_output, manifest)
             pdb.write_text(
                 pdb.read_text(encoding="utf-8") + "REMARK source changed\n",
                 encoding="utf-8",

@@ -10,6 +10,15 @@ scope at which the primary result must be finalized. A scheduler request that
 marks a pooled estimator as an independently finalized replica partition fails
 before execution.
 
+The shared replica-worker/reducer layer validates unique system/replica
+identities, complete continuous-segment identities, contiguous shard ordinals,
+the scheduler CPU limit, and stable reduction order. Critical base modules use
+this layer for SASA, water-mediated networks, hydrogen-bond discovery, DCCM,
+secondary structure, RMSF, RMSD/Rg, structural QC, and ion analyses. The
+reducer is method-specific: some concatenate identity-preserving observations,
+while RMSF and DCCM merge exact streaming moments with the between-replica mean
+correction.
+
 ## Global coordinate estimators
 
 Common PCA, pooled RMSF, and DCCM use a common atom map and one declared
@@ -39,6 +48,14 @@ explicit replica-balanced sample from that view. The software does not fit an
 independent clustering model to each replica and attempt to reconcile labels
 afterward. Frames from different replicas can therefore receive the same state
 label under one fitted model.
+
+K-means-like and probabilistic models may fit once on the declared pooled
+training observations and then assign identity-preserving replica chunks with
+that single fitted model. HDBSCAN labels the complete pooled set it fits,
+including explicit noise. Ward and quality-threshold methods are skipped when
+their fit budget cannot cover every observation they claim to partition;
+neither receives invented out-of-sample labels. PaLD remains a separate pooled
+sample community analysis rather than a substitute trajectory partition.
 
 Common PCA supports two explicit weighting contracts. `frame` gives every
 selected frame equal weight. `replica_equal` gives every replica distribution

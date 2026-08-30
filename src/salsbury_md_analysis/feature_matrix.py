@@ -12,6 +12,7 @@ from .tica import (
     time_lagged_independent_component_analysis_project,
 )
 from .trajectory_features import trajectory_features_project
+from .replica_execution import ReplicaShard, execute_replica_workers
 
 
 Vector = Tuple[float, ...]
@@ -99,51 +100,85 @@ def parse_feature_selection(
     }
 
 
+def _pca_replica_records(
+    shard: ReplicaShard,
+) -> Tuple[List[Dict[str, object]], List[Vector]]:
+    system_id, replica, zero_based = shard.payload  # type: ignore[misc]
+    metadata: List[Dict[str, object]] = []
+    vectors: List[Vector] = []
+    assert isinstance(replica, dict)
+    for segment in replica["segments"]:
+        assert isinstance(segment, dict)
+        for projection in segment["projections"]:
+            assert isinstance(projection, dict)
+            scores = projection["scores_angstrom"]
+            assert isinstance(scores, list)
+            if max(zero_based) >= len(scores):
+                raise ValueError(
+                    "component_indices exceed components returned by common_pca"
+                )
+            vector = tuple(float(scores[index]) for index in zero_based)
+            if not all(math.isfinite(value) for value in vector):
+                raise ValueError("PCA feature vector is non-finite")
+            metadata.append({
+                "system_id": str(system_id),
+                "replica_id": str(replica["replica_id"]),
+                "segment_id": str(segment["segment_id"]),
+                "source_frame_index": projection["source_frame_index"],
+                **(
+                    {"member_id": str(projection["member_id"])}
+                    if "member_id" in projection else {}
+                ),
+                **(
+                    {"sample_index": projection["sample_index"]}
+                    if "sample_index" in projection else {
+                        "time": projection["time"],
+                        "time_unit": projection["time_unit"],
+                    }
+                ),
+            })
+            vectors.append(vector)
+    return metadata, vectors
+
+
 def _pca_records(
     report: Mapping[str, object], component_indices: Sequence[int], error_type: Type[ValueError]
-) -> Tuple[List[Dict[str, object]], List[Vector], List[Dict[str, object]]]:
+) -> Tuple[
+    List[Dict[str, object]], List[Vector], List[Dict[str, object]],
+    Dict[str, object],
+]:
     metadata: List[Dict[str, object]] = []
     vectors: List[Vector] = []
     zero_based = [value - 1 for value in component_indices]
     systems = report.get("systems")
     if not isinstance(systems, list):
         raise error_type("common_pca produced no systems")
+    shards = []
     for system in systems:
         assert isinstance(system, dict)
         for replica in system["replicas"]:
             assert isinstance(replica, dict)
-            for segment in replica["segments"]:
-                assert isinstance(segment, dict)
-                for projection in segment["projections"]:
-                    assert isinstance(projection, dict)
-                    scores = projection["scores_angstrom"]
-                    assert isinstance(scores, list)
-                    if max(zero_based) >= len(scores):
-                        raise error_type(
-                            "component_indices exceed components returned by common_pca"
-                        )
-                    vector = tuple(float(scores[index]) for index in zero_based)
-                    if not all(math.isfinite(value) for value in vector):
-                        raise error_type("PCA feature vector is non-finite")
-                    metadata.append({
-                        "system_id": str(system["system_id"]),
-                        "replica_id": str(replica["replica_id"]),
-                        "segment_id": str(segment["segment_id"]),
-                        "source_frame_index": projection["source_frame_index"],
-                        **(
-                            {"member_id": str(projection["member_id"])}
-                            if "member_id" in projection else {}
-                        ),
-                        **(
-                            {"sample_index": projection["sample_index"]}
-                            if "sample_index" in projection
-                            else {
-                                "time": projection["time"],
-                                "time_unit": projection["time_unit"],
-                            }
-                        ),
-                    })
-                    vectors.append(vector)
+            segments = replica.get("segments")
+            assert isinstance(segments, list)
+            shards.append(ReplicaShard(
+                ordinal=len(shards),
+                system_id=str(system["system_id"]),
+                replica_id=str(replica["replica_id"]),
+                segment_ids=tuple(str(segment["segment_id"]) for segment in segments),
+                payload=(str(system["system_id"]), replica, zero_based),
+            ))
+    try:
+        partials, evidence = execute_replica_workers(
+            shards, _pca_replica_records,
+            maximum_workers=len(shards),
+            worker_backend="thread",
+        )
+    except (ValueError, TypeError) as exc:
+        raise error_type(str(exc)) from exc
+    for partial in partials:
+        replica_metadata, replica_vectors = partial.value
+        metadata.extend(replica_metadata)
+        vectors.extend(replica_vectors)
     columns = [
         {
             "column_index": index + 1,
@@ -154,7 +189,7 @@ def _pca_records(
         }
         for index, component in enumerate(component_indices)
     ]
-    return metadata, vectors, columns
+    return metadata, vectors, columns, evidence.as_dict()
 
 
 def _trajectory_records(
@@ -320,7 +355,7 @@ def load_feature_matrix(
 
     if selection["feature_source"] == "common_pca":
         report = common_pca_project(project_path, hash_content=hash_content)
-        metadata, vectors, columns = _pca_records(
+        metadata, vectors, columns, extraction_parallelism = _pca_records(
             report,
             selection["component_indices"],  # type: ignore[arg-type]
             error_type,
@@ -337,6 +372,10 @@ def load_feature_matrix(
             selection["component_indices"],  # type: ignore[arg-type]
             error_type,
         )
+        extraction_parallelism = {
+            "execution_model": "serial_identity_preserving_feature_extraction",
+            "workers_used": 1,
+        }
     else:
         report = trajectory_features_project(project_path, hash_content=hash_content)
         metadata, vectors, columns = _trajectory_records(
@@ -344,6 +383,10 @@ def load_feature_matrix(
             selection["trajectory_feature_columns"],  # type: ignore[arg-type]
             error_type,
         )
+        extraction_parallelism = {
+            "execution_model": "serial_identity_preserving_feature_extraction",
+            "workers_used": 1,
+        }
     if not vectors:
         raise error_type(f"{selection['feature_source']} produced no feature records")
     return report, metadata, vectors, {
@@ -351,6 +394,7 @@ def load_feature_matrix(
         "observation_count": len(vectors),
         "feature_count": len(vectors[0]),
         "columns": columns,
+        "replica_feature_extraction": extraction_parallelism,
         **(
             {
                 "symmetry_expansion": report["settings"].get("symmetry_expansion"),

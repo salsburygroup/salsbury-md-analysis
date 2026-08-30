@@ -959,27 +959,39 @@ class QuickstartTests(unittest.TestCase):
                 "salsbury-local-execution-plan-v4",
             )
             self.assertEqual(local_plan["dependency_model"], "task_dag_v1")
+            local_tasks = [
+                task for phase in local_plan["phases"] for task in phase["tasks"]
+            ]
+            cache_task = next(
+                task for task in local_tasks
+                if task["script"] == "run_coordinate_cache.slurm"
+            )
+            cache_consumers = [
+                task for task in local_tasks
+                if isinstance(task.get("project_filename"), str)
+                and task["project_filename"].endswith(
+                    "project-cache-base.json"
+                )
+            ]
+            self.assertTrue(cache_consumers)
+            self.assertTrue(all(
+                cache_task["task_id"] in task["depends_on_task_ids"]
+                for task in cache_consumers
+            ))
+            self.assertEqual(local_plan["maximum_parallel_cpus"], 16)
             campaign = json.loads(
                 (output / "campaign-resource-plan.json").read_text()
             )
             self.assertEqual(campaign["maximum_parallel_cpus_input"], 16)
-            effective_cpus = campaign["effective_parallel_cpu_cap"]
-            self.assertGreaterEqual(effective_cpus, 8)
-            self.assertEqual(
-                local_plan["maximum_parallel_cpus"], effective_cpus
-            )
-            self.assertEqual(
-                campaign["resource_warnings"][0]["code"],
-                "REQUESTED_CPUS_EXCEED_USEFUL_PARALLELISM",
-            )
-            self.assertIn(
-                f"Slurm submission will be changed to {effective_cpus} CPUs",
-                campaign["resource_warnings"][0]["message"],
-            )
+            self.assertEqual(campaign["effective_parallel_cpu_cap"], 16)
+            self.assertFalse(campaign["resource_warnings"])
             self.assertEqual(local_plan["maximum_parallel_memory_gib"], 128.0)
             worker_paths = sorted(output.glob("run_stage_*_array.slurm"))
             workers = [path.read_text(encoding="utf-8") for path in worker_paths]
             worker = "\n".join(workers)
+            self.assertIn("PROJECTS=(", worker)
+            self.assertIn("project-cache-base.json", worker)
+            self.assertTrue((output / "base-cache-routing.json").is_file())
             preflight = (output / "run_preflight.slurm").read_text(encoding="utf-8")
             submit = (output / "submit.sh").read_text(encoding="utf-8")
             stages = json.loads((output / "workflow-stages.json").read_text())

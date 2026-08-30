@@ -2483,6 +2483,10 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
     memory_overhead_gib: float = 0.0,
     minimum_scheduler_memory_gib: float = 0.0,
     maximum_coupling_iterations: int = 12,
+    protected_module_ids: Sequence[str] = (
+        "coordinate_cache", "provenance_manifest", "preflight_inventory",
+        "common_atom_mapping", "structural_integrity_qc",
+    ),
 ) -> Dict[str, object]:
     """Jointly choose an overall trajectory stride and downstream strides.
 
@@ -2538,8 +2542,10 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
             "coordinate_cache_minimum_frames_per_replica must be a positive integer"
         )
 
+    protected_modules = {str(value) for value in protected_module_ids}
+    protected_modules.add("coordinate_cache")
     base_tasks: list[Dict[str, object]] = []
-    overall_minimum = declared_minimum
+    protected_replica_minima = [declared_minimum]
     for original in tasks:
         row = dict(original)
         if (
@@ -2566,12 +2572,12 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
                     max(int(value) for value in raw_counts),
                 )
             )
-            overall_minimum = max(
-                overall_minimum,
-                int(row["global_stride_declared_minimum_frames_per_replica"]),
-            )
+            if str(row.get("module_id")) in protected_modules:
+                protected_replica_minima.append(int(
+                    row["global_stride_declared_minimum_frames_per_replica"]
+                ))
         base_tasks.append(row)
-    declared_minimum = overall_minimum
+    declared_minimum = max(protected_replica_minima)
     maximum_stride = _overall_trajectory_maximum_stride(
         cache_source, declared_minimum
     )
@@ -2628,6 +2634,7 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
     feasible: list[
         tuple[tuple[float, float, float, int, float], Dict[str, object]]
     ] = []
+    candidate_plans: list[Dict[str, object]] = []
     best_feasible_information = -math.inf
     for candidate_index, cache_stride in enumerate(candidates):
         evaluated_candidates.append(cache_stride)
@@ -2738,19 +2745,96 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
                     )
                     row.pop("dynamic_coupling_ceiling_per_replica", None)
             candidate_tasks.append(row)
-        invalid_minimum_tasks = sorted(
-            str(row.get("task_id"))
-            for row in candidate_tasks
-            if row.get("task_scope") != "conformational_view_algorithm_fit"
-            and int(row["maximum_frames_per_replica"])
-            < int(row["minimum_frames_per_replica"])
-        )
-        if invalid_minimum_tasks:
+        invalid_protected_tasks: list[Dict[str, object]] = []
+        invalid_optional_tasks: list[Dict[str, object]] = []
+        for row in candidate_tasks:
+            is_protected = str(row.get("module_id")) in protected_modules
+            invalid_rows = (
+                invalid_protected_tasks if is_protected
+                else invalid_optional_tasks
+            )
+            task_id = str(row.get("task_id"))
+            if task_id == cache_id:
+                retained = row.get(
+                    "coordinate_cache_candidate_selected_frames_per_replica", []
+                )
+                if not isinstance(retained, list) or any(
+                    int(value) < coordinate_cache_minimum_frames_per_replica
+                    for value in retained
+                ):
+                    invalid_rows.append({
+                        "task_id": task_id,
+                        "reason": "coordinate_cache_minimum_frames_per_replica",
+                    })
+                continue
+            if row.get("task_scope") == "conformational_view_algorithm_fit":
+                # This task consumes its parent projection. The parent protected
+                # estimator is checked here; the fit's method stride is checked
+                # by the coupled downstream planner.
+                continue
+            raw_counts = [int(value) for value in row[
+                "global_stride_raw_source_frames_per_replica"
+            ]]
+            retained = [
+                integer_stride_selected_count(value, cache_stride)
+                for value in raw_counts
+            ]
+            embedded = row.get("scientific_sampling_requirements")
+            profile = (
+                profile_from_contract(embedded)
+                if isinstance(embedded, Mapping) else None
+            )
+            if profile is not None and profile.minimum_frames_per_replica > 0:
+                system_ids = row.get("system_ids_per_replica")
+                raw_intervals = row.get(
+                    "global_stride_raw_frame_intervals_ns_per_replica",
+                    row.get("frame_intervals_ns_per_replica"),
+                )
+                spans = row.get("source_time_spans_ns_per_replica")
+                assessment = assess_raw_sampling(
+                    profile,
+                    selected_frames_per_replica=retained,
+                    source_frames_per_replica=raw_counts,
+                    system_ids_per_replica=(
+                        [str(value) for value in system_ids]
+                        if isinstance(system_ids, list) else None
+                    ),
+                    integer_stride=cache_stride,
+                    frame_intervals_ns_per_replica=(
+                        [float(value) for value in raw_intervals]
+                        if isinstance(raw_intervals, list) else None
+                    ),
+                    source_time_spans_ns_per_replica=(
+                        [float(value) for value in spans]
+                        if isinstance(spans, list) else None
+                    ),
+                )
+                if not bool(assessment["keep_enabled"]):
+                    invalid_rows.append({
+                        "task_id": task_id,
+                        "reason": "scientific_sampling_contract",
+                        "assessment": assessment,
+                    })
+            elif any(
+                chosen < min(
+                    int(row["global_stride_declared_minimum_frames_per_replica"]),
+                    available,
+                )
+                for chosen, available in zip(retained, raw_counts)
+            ):
+                invalid_rows.append({
+                    "task_id": task_id,
+                    "reason": "declared_minimum_frames_per_replica",
+                })
+        if invalid_protected_tasks:
             evaluations.append({
                 "overall_trajectory_integer_stride": cache_stride,
                 "coordinate_cache_integer_stride": cache_stride,
-                "feasibility_status": "scientific_minimum_pruned",
-                "invalid_minimum_task_ids": invalid_minimum_tasks,
+                "feasibility_status": "protected_scientific_minimum_pruned",
+                "invalid_minimum_task_ids": [
+                    str(row["task_id"]) for row in invalid_protected_tasks
+                ],
+                "invalid_protected_tasks": invalid_protected_tasks,
                 "balanced_information_upper_bound": (
                     _global_stride_information_upper_bound(
                         base_tasks, cache_stride
@@ -2761,8 +2845,28 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
                 ),
             })
             continue
+        planner_candidate_tasks = candidate_tasks
+        if invalid_optional_tasks:
+            # Optional methods that cannot meet their own scientific floor at
+            # this cache stride make the complete candidate infeasible.  Keep
+            # the resource model evaluable so the dependency-closed subset
+            # recommender can measure the benefit of disabling them.  The
+            # temporary clamp is diagnostic only; the returned plan is forced
+            # fail-closed and can never be selected as a feasible campaign.
+            invalid_ids = {
+                str(row["task_id"]) for row in invalid_optional_tasks
+            }
+            planner_candidate_tasks = []
+            for original in candidate_tasks:
+                row = dict(original)
+                if str(row.get("task_id")) in invalid_ids:
+                    row["minimum_frames_per_replica"] = min(
+                        int(row["minimum_frames_per_replica"]),
+                        int(row["maximum_frames_per_replica"]),
+                    )
+                planner_candidate_tasks.append(row)
         plan = plan_projection_coupled_campaign_resource_budget(
-            candidate_tasks,
+            planner_candidate_tasks,
             maximum_parallel_cpus=maximum_parallel_cpus,
             maximum_wall_hours=maximum_wall_hours,
             maximum_memory_gib=maximum_memory_gib,
@@ -2774,11 +2878,29 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
             minimum_scheduler_memory_gib=minimum_scheduler_memory_gib,
             maximum_coupling_iterations=maximum_coupling_iterations,
         )
+        candidate_plans.append(plan)
+        if invalid_optional_tasks:
+            plan["feasibility_status"] = "infeasible"
+            reasons = list(plan.get("infeasibility_reasons", []))
+            reasons.append(
+                "optional tasks fail their scientific sampling contracts at "
+                f"overall trajectory stride {cache_stride}"
+            )
+            plan["infeasibility_reasons"] = reasons
+            plan["optional_scientific_minimum_failures"] = (
+                invalid_optional_tasks
+            )
         information = _global_plan_information_metrics(plan)
         evaluation = {
             "overall_trajectory_integer_stride": cache_stride,
             "coordinate_cache_integer_stride": cache_stride,
             "feasibility_status": plan["feasibility_status"],
+            **({
+                "invalid_optional_task_ids": [
+                    str(row["task_id"]) for row in invalid_optional_tasks
+                ],
+                "invalid_optional_tasks": invalid_optional_tasks,
+            } if invalid_optional_tasks else {}),
             **information,
             "estimated_selected_cpu_hours": plan[
                 "estimated_selected_cpu_hours"
@@ -2821,19 +2943,41 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
     if not feasible:
         # Return the finest candidate's fail-closed diagnostic rather than
         # obscuring the actual technical minimum or memory shortfall.
-        result = plan_projection_coupled_campaign_resource_budget(
-            base_tasks,
-            maximum_parallel_cpus=maximum_parallel_cpus,
-            maximum_wall_hours=maximum_wall_hours,
-            maximum_memory_gib=maximum_memory_gib,
-            planning_utilization=planning_utilization,
-            pilot_budget_fraction=pilot_budget_fraction,
-            finalization_headroom_fraction=finalization_headroom_fraction,
-            memory_safety_factor=memory_safety_factor,
-            memory_overhead_gib=memory_overhead_gib,
-            minimum_scheduler_memory_gib=minimum_scheduler_memory_gib,
-            maximum_coupling_iterations=maximum_coupling_iterations,
-        )
+        if candidate_plans:
+            result = min(candidate_plans, key=_resource_shortfall_score)
+        else:
+            # No resource calculation is valid when every candidate violates
+            # a protected scientific contract.  Return a deliberately
+            # fail-closed diagnostic shell without pricing such a stride.
+            science_wall = (
+                float(maximum_wall_hours)
+                * float(planning_utilization)
+                * (1.0 - float(pilot_budget_fraction))
+                * (1.0 - float(finalization_headroom_fraction))
+            )
+            result = {
+                "feasibility_status": "infeasible",
+                "infeasibility_reasons": [
+                    "every overall trajectory stride candidate violates a "
+                    "protected scientific sampling contract"
+                ],
+                "tasks": [],
+                "science_budget_cpu_hours": (
+                    float(maximum_parallel_cpus) * science_wall
+                ),
+                "science_budget_wall_hours": science_wall,
+                "minimum_known_cpu_hours": 0.0,
+                "minimum_wall_hours_lower_bound": None,
+                "memory_feasibility": {
+                    "minimum_required_memory_gib": 0.0,
+                    "configured_memory_gib": float(maximum_memory_gib),
+                },
+                "protected_scientific_minimum_failures": [
+                    row
+                    for evaluation in evaluations
+                    for row in evaluation.get("invalid_protected_tasks", [])
+                ],
+            }
         result["coordinate_cache_coupling"] = {
             "converged": False,
             "selected_overall_trajectory_integer_stride": None,
@@ -2916,9 +3060,12 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
         "candidate_evaluations": evaluations,
         "planner_total_wall_seconds": time.monotonic() - overall_planning_started,
         "candidate_policy": (
-            "Evaluate each declared exact integer overall stride on every raw "
+            "Reject a candidate before resource optimization when its raw "
+            "stride violates a protected analysis contract. Evaluate every "
+            "remaining exact integer overall stride on every retained raw "
             "trajectory consumer, including solvated analyses, then replan "
-            "method-specific and projection-derived strides. The cache scan "
+            "method-specific and projection-derived strides. Optional methods "
+            "may be disabled only by dependency-closed reduction. The cache scan "
             "fraction charges sequential connectivity reconstruction to all raw "
             "frames and the remaining materialization cost to retained frames."
         ),
@@ -3001,6 +3148,16 @@ def _resource_shortfall_score(plan: Mapping[str, object]) -> float:
     calibration = plan.get("tasks_requiring_project_pilots", [])
     if isinstance(calibration, list):
         score += float(len(calibration))
+    optional_scientific_failures = plan.get(
+        "optional_scientific_minimum_failures", []
+    )
+    if isinstance(optional_scientific_failures, list):
+        score += float(len(optional_scientific_failures))
+    protected_scientific_failures = plan.get(
+        "protected_scientific_minimum_failures", []
+    )
+    if isinstance(protected_scientific_failures, list):
+        score += 1000.0 * float(len(protected_scientific_failures))
     return score
 
 
@@ -3020,6 +3177,10 @@ def recommend_scientifically_valid_task_subset(
         "coordinate_cache", "provenance_manifest", "preflight_inventory",
         "common_atom_mapping", "structural_integrity_qc",
     ),
+    use_global_stride_coupling: bool = False,
+    coordinate_cache_minimum_frames_per_replica: int = 1,
+    coordinate_cache_full_scan_fraction: float = 1.0,
+    overall_stride_candidate_strides: Optional[Sequence[int]] = None,
 ) -> Dict[str, object]:
     """Propose the broadest scientifically valid task subset for an envelope.
 
@@ -3045,6 +3206,24 @@ def recommend_scientifically_valid_task_subset(
         "memory_overhead_gib": memory_overhead_gib,
         "minimum_scheduler_memory_gib": minimum_scheduler_memory_gib,
     }
+
+    def run_planner(rows: Sequence[Mapping[str, object]]) -> Dict[str, object]:
+        if use_global_stride_coupling:
+            return plan_global_stride_projection_coupled_campaign_resource_budget(
+                rows,
+                coordinate_cache_minimum_frames_per_replica=(
+                    coordinate_cache_minimum_frames_per_replica
+                ),
+                coordinate_cache_full_scan_fraction=(
+                    coordinate_cache_full_scan_fraction
+                ),
+                overall_stride_candidate_strides=(
+                    overall_stride_candidate_strides
+                ),
+                protected_module_ids=tuple(protected_module_ids),
+                **planner_kwargs,
+            )
+        return plan_campaign_resource_budget(rows, **planner_kwargs)
     working = [deepcopy(dict(task)) for task in tasks]
     if not working:
         raise ResourcePlanningError("task-subset recommendation requires tasks")
@@ -3085,19 +3264,13 @@ def recommend_scientifically_valid_task_subset(
                 if any(dependency not in modules_present for dependency in dependencies):
                     removed.add(task_id)
                     changed = True
-        remaining_conformational = any(
-            str(row["task_id"]) not in removed
-            and str(row.get("task_scope", "")).startswith("conformational_view")
-            for row in rows
-        )
-        if not remaining_conformational:
-            removed.update(
-                str(row["task_id"])
-                for row in rows if row.get("module_id") == "coordinate_cache"
-            )
+        # The coordinate cache is also the validated input for cache-compatible
+        # base modules.  It is protected preprocessing, not a disposable
+        # conformational-view helper, so optional-module removal never deletes
+        # it merely because no PCA view remains.
         return removed
 
-    current_plan = plan_campaign_resource_budget(working, **planner_kwargs)
+    current_plan = run_planner(working)
     current_score = _resource_shortfall_score(current_plan)
     while current_plan["feasibility_status"] != "feasible":
         switches = sorted({
@@ -3115,9 +3288,7 @@ def recommend_scientifically_valid_task_subset(
             ]
             if not candidate_tasks:
                 continue
-            candidate_plan = plan_campaign_resource_budget(
-                candidate_tasks, **planner_kwargs
-            )
+            candidate_plan = run_planner(candidate_tasks)
             candidate_score = _resource_shortfall_score(candidate_plan)
             relief = current_score - candidate_score
             if relief <= 1.0e-12:
@@ -3209,7 +3380,12 @@ def recommend_scientifically_valid_task_subset(
         "planner_wall_seconds": time.monotonic() - started,
         "strategy": (
             "deterministic dependency-closed removal by normalized CPU, wall, "
-            "and memory shortfall relief per lost scientific-priority weight"
+            "and memory shortfall relief per lost scientific-priority weight; "
+            + (
+                "every subset is repriced with coupled cache and method strides"
+                if use_global_stride_coupling else
+                "every subset is repriced with direct method strides"
+            )
         ),
         "scientific_boundary": (
             "This is a proposed configuration. Apply and rerun planning explicitly; "
