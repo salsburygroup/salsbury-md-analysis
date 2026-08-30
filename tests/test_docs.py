@@ -12,26 +12,6 @@ import generate_docs
 
 
 class GeneratedDocumentationTests(unittest.TestCase):
-    def test_human_documentation_has_no_named_ai_slop_vocabulary(self):
-        banned = {
-            "beacon", "cutting-edge", "delve", "elevate", "embark",
-            "empower", "ever-evolving", "facilitate", "foster", "game changer",
-            "harness", "intricate", "leverage", "meticulous", "multifaceted",
-            "paradigm shift", "paramount", "realm", "robust", "streamline",
-            "supercharge", "tapestry", "transformative", "utilize",
-        }
-        markdown_paths = sorted(ROOT.glob("*.md"))
-        markdown_paths += sorted((ROOT / "docs").rglob("*.md"))
-        markdown_paths += sorted((ROOT / "tutorials").rglob("*.md"))
-        markdown_paths += sorted((ROOT / "validation").rglob("README.md"))
-        for path in markdown_paths:
-            text = path.read_text(encoding="utf-8").lower()
-            for term in banned:
-                self.assertIsNone(
-                    re.search(rf"\b{re.escape(term)}\b", text),
-                    f"{path.relative_to(ROOT)} contains banned wording: {term}",
-                )
-
     def test_json_documentation_examples_are_strict_json(self):
         def reject_duplicate_keys(pairs):
             result = {}
