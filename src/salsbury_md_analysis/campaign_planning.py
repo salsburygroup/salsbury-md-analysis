@@ -1825,7 +1825,18 @@ def plan_and_apply_complete_campaign(
         if isinstance(request, dict):
             annotate_permissive_minimum_request(request)
     cache_mode = str(execution.get("coordinate_cache", "auto"))
-    coordinate_cache_enabled = bool(view_paths) and cache_mode in {"auto", "required"}
+    base_request = load_json(base_project_path)
+    base_requested_modules = (
+        base_request.get("requested_modules", [])
+        if isinstance(base_request, dict) else []
+    )
+    structural_qc_requires_cache = (
+        isinstance(base_requested_modules, list)
+        and "structural_integrity_qc" in base_requested_modules
+    )
+    coordinate_cache_enabled = (
+        bool(view_paths) or structural_qc_requires_cache
+    ) and cache_mode in {"auto", "required"}
     coordinate_cache_input = execution.get("coordinate_cache_input")
     coordinate_cache_build_required = (
         coordinate_cache_enabled and coordinate_cache_input is None
@@ -2003,11 +2014,13 @@ def plan_and_apply_complete_campaign(
                     coordinate_cache_full_scan_fraction=float(
                         execution.get("coordinate_cache_full_scan_fraction", 1.0)
                     ),
-                    overall_stride_candidate_strides=list(
-                        execution.get(
+                    overall_stride_candidate_strides=(
+                        [1]
+                        if structural_qc_requires_cache
+                        else list(execution.get(
                             "overall_stride_candidates",
                             [1, 2, 3, 4, 5, 10, 20, 100],
-                        )
+                        ))
                     ),
                     **planning_kwargs,
                 )

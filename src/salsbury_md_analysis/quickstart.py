@@ -863,11 +863,14 @@ def _coordinate_cache_enabled(
         return False
     if mode not in {"auto", "required"}:
         raise QuickstartError(f"unsupported coordinate cache mode: {mode}")
-    if mode == "required" and not view_ids:
+    structural_qc_enabled = (
+        "structural_integrity_qc" in enabled_modules(analysis_config)
+    )
+    if mode == "required" and not view_ids and not structural_qc_enabled:
         raise QuickstartError(
-            "coordinate cache is required but no conformational view is executable"
+            "coordinate cache is required but no cache-consuming analysis is executable"
         )
-    return bool(view_ids)
+    return bool(view_ids) or structural_qc_enabled
 
 
 def _configure_coordinate_cache_views(
@@ -963,6 +966,7 @@ def _configure_coordinate_cache_views(
         "cache_stride": cache_stride,
         "external_cache_reused": external,
         "base_workflow_uses_original_solvated_trajectories": True,
+        "structural_qc_uses_validated_lossless_cache": True,
         "conformational_views_use_cache": True,
         "alignment_is_performed_downstream_per_view": True,
         "bulk_water_excluded": True,
@@ -971,6 +975,47 @@ def _configure_coordinate_cache_views(
     }
     _json_write(root / "coordinate-cache-contract.json", contract)
     return ["coordinate-cache-contract.json"]
+
+
+def _configure_structural_qc_parallel_execution(
+    root: Path,
+    campaign_resource_plan: Mapping[str, object],
+    *,
+    coordinate_cache_directory: Path,
+) -> None:
+    """Point structural QC at one validated stride-1 cache and replica workers."""
+
+    project_path = root / "project.json"
+    project = load_json(project_path)
+    if not isinstance(project, dict):
+        raise QuickstartError("base project is unavailable for structural-QC setup")
+    requested = project.get("requested_modules")
+    if not isinstance(requested, list) or "structural_integrity_qc" not in requested:
+        return
+    definitions = project.get("definitions")
+    structural = definitions.get("structural_qc") if isinstance(definitions, dict) else None
+    if not isinstance(structural, dict):
+        raise QuickstartError("base project lacks a structural-QC definition")
+    task_rows = [
+        row for row in campaign_resource_plan.get("tasks", [])
+        if isinstance(row, dict)
+        and row.get("module_id") == "structural_integrity_qc"
+        and row.get("task_scope") == "direct_trajectory_estimator"
+    ]
+    if len(task_rows) != 1:
+        raise QuickstartError(
+            "campaign plan lacks exactly one structural-QC resource task"
+        )
+    workers = int(task_rows[0]["effective_cpu_cap"])
+    cache_root = coordinate_cache_directory.expanduser().resolve(strict=False)
+    structural["parallel_execution"] = {
+        "enabled": True,
+        "maximum_workers": workers,
+        "coordinate_cache_system_manifest": str(cache_root / "system-cache.json"),
+        "coordinate_cache_report": str(cache_root / "coordinate-cache-report.json"),
+    }
+    _json_write(project_path, project)
+    validate_project(project, source_path=project_path, check_paths=False)
 
 
 def _conformational_view_projects(
@@ -2670,6 +2715,16 @@ def prepare_standard_analysis(
         effective_parallel_cpu_cap,
         len(trajectory_paths),
     )
+    if coordinate_cache_enabled:
+        _configure_structural_qc_parallel_execution(
+            root,
+            campaign_resource_plan,
+            coordinate_cache_directory=(
+                Path(str(coordinate_cache_input))
+                if coordinate_cache_input is not None
+                else root / "coordinate-cache"
+            ),
+        )
     deferred = {
         **exclusions,
         **config_disabled,
@@ -2815,9 +2870,9 @@ intentionally outside this first zero-configuration workflow. `conformational-vi
     records the topology-derived global-common-heavy, chemical-interface when applicable,
     and optional macromolecular-trace views. The active launcher runs every enabled,
     automatically applicable view; the trace view is disabled by default. Conformational
-    views read a reusable, made-whole molecular-payload
-    cache built from every physical frame; base solvent-dependent analyses continue to
-    read the original solvated trajectories. The launchers retain the
+    views and replica-parallel structural QC read a validated, reusable, made-whole
+    molecular-payload cache built from every physical frame. Solvent-dependent analyses
+    continue to read the original solvated trajectories. The launchers retain the
 Python executable and package source used here; after an intentional installation move,
 override them with `SALSBURY_MD_ANALYSIS_PYTHON` and
 `SALSBURY_MD_ANALYSIS_PYTHONPATH`.

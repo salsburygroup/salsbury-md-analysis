@@ -8,6 +8,8 @@ import json
 import math
 import os
 import time
+from concurrent.futures import ProcessPoolExecutor
+from copy import deepcopy
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -22,6 +24,10 @@ from .coordinates import (
     coordinate_format,
     finite_coordinate_count,
     iter_coordinate_frames,
+)
+from .coordinate_cache import (
+    CoordinateCacheError,
+    validate_reusable_coordinate_cache,
 )
 from .frame_sampling import (
     frame_selected,
@@ -61,6 +67,7 @@ _ALLOWED_THRESHOLDS = _REQUIRED_THRESHOLDS | {
     "maximum_frame_atom_displacement_angstrom",
     "frame_displacement_selection",
     "chemical_integrity", "frame_selection", "checkpointing",
+    "parallel_execution",
 }
 class StructuralQCError(ValueError):
     """Raised when structural-QC configuration cannot be interpreted safely."""
@@ -193,6 +200,40 @@ def _thresholds(project: Mapping[str, object]) -> Dict[str, object]:
         checkpointing["within_segment_interval_seconds"],
         "checkpointing.within_segment_interval_seconds",
     )
+    parallel = raw.get("parallel_execution")
+    if parallel is not None:
+        required_parallel = {
+            "enabled", "maximum_workers", "coordinate_cache_system_manifest",
+            "coordinate_cache_report",
+        }
+        if not isinstance(parallel, dict) or set(parallel) != required_parallel:
+            raise StructuralQCError(
+                "parallel_execution must contain exactly enabled, maximum_workers, "
+                "coordinate_cache_system_manifest, and coordinate_cache_report"
+            )
+        if not isinstance(parallel["enabled"], bool):
+            raise StructuralQCError("parallel_execution.enabled must be boolean")
+        workers = parallel["maximum_workers"]
+        if isinstance(workers, bool) or not isinstance(workers, int) or workers <= 0:
+            raise StructuralQCError(
+                "parallel_execution.maximum_workers must be a positive integer"
+            )
+        for field in (
+            "coordinate_cache_system_manifest", "coordinate_cache_report",
+        ):
+            value = parallel[field]
+            if not isinstance(value, str) or not value.strip():
+                raise StructuralQCError(
+                    f"parallel_execution.{field} must be a nonempty path"
+                )
+        parallel = {
+            "enabled": parallel["enabled"],
+            "maximum_workers": workers,
+            "coordinate_cache_system_manifest": parallel[
+                "coordinate_cache_system_manifest"
+            ],
+            "coordinate_cache_report": parallel["coordinate_cache_report"],
+        }
     return {
         "near_coincident_distance_angstrom": _positive_number(
             raw["near_coincident_distance_angstrom"],
@@ -217,6 +258,7 @@ def _thresholds(project: Mapping[str, object]) -> Dict[str, object]:
             "within_segment_interval_seconds": checkpoint_interval,
             "segment_completion_checkpoints": True,
         },
+        "parallel_execution": parallel,
     }
 
 
@@ -421,10 +463,12 @@ def _maximum_rigid_body_aligned_displacement(
     return float(np.linalg.norm(aligned - right, axis=1).max())
 
 
-def structural_qc_project(
-    project_path: Path, hash_content: bool = False
+def _structural_qc_project_serial(
+    project_path: Path, hash_content: bool = False, *,
+    only_system_id: Optional[str] = None,
+    only_replica_id: Optional[str] = None,
 ) -> Dict[str, object]:
-    """Scan every declared trajectory and apply explicit coordinate-integrity gates."""
+    """Evaluate one project serially, optionally scoped to exactly one replica."""
 
     project_source = Path(project_path).expanduser().resolve(strict=False)
     project = load_json(project_source)
@@ -438,6 +482,33 @@ def structural_qc_project(
     time_unit = str(units["time"])
     system_path = Path(str(context["system_manifest_path"]))
     system_manifest = load_json(system_path)
+    if only_system_id is not None or only_replica_id is not None:
+        if only_system_id is None or only_replica_id is None:
+            raise StructuralQCError(
+                "structural-QC replica scoping requires both system and replica IDs"
+            )
+        selected_systems = []
+        for raw_system in system_manifest.get("systems", []):
+            if not isinstance(raw_system, dict) or str(
+                raw_system.get("system_id")
+            ) != only_system_id:
+                continue
+            selected_replicas = [
+                deepcopy(replica)
+                for replica in raw_system.get("replicas", [])
+                if isinstance(replica, dict)
+                and str(replica.get("replica_id")) == only_replica_id
+            ]
+            if selected_replicas:
+                selected_systems.append({
+                    **deepcopy(raw_system), "replicas": selected_replicas,
+                })
+        if len(selected_systems) != 1:
+            raise StructuralQCError(
+                f"structural-QC cache lacks exactly one replica "
+                f"{only_system_id}/{only_replica_id}"
+            )
+        system_manifest = {"systems": selected_systems}
     checkpointing = thresholds["checkpointing"]
     assert isinstance(checkpointing, dict)
     inventory = context["input_inventory"]
@@ -1152,6 +1223,251 @@ def structural_qc_project(
     }
 
 
+def _write_cache_backed_qc_project(
+    project_source: Path,
+    project: Mapping[str, object],
+    cache_validation: Mapping[str, object],
+    parallel: Mapping[str, object],
+) -> Path:
+    """Write one deterministic runtime project that declares verified cache use."""
+
+    payload = deepcopy(dict(project))
+    payload["system_manifest"] = str(cache_validation["cached_system_manifest"])
+    payload["periodic_coordinate_policy"] = "preprocessed_make_whole"
+    payload["preprocessed_coordinate_source"] = {
+        "cache_report": str(cache_validation["cache_report"]),
+        "cache_report_sha256": str(cache_validation["cache_report_sha256"]),
+    }
+    definitions = payload.get("definitions")
+    if not isinstance(definitions, dict):
+        raise StructuralQCError("cache-backed structural QC lacks definitions")
+    structural = definitions.get("structural_qc")
+    if not isinstance(structural, dict):
+        raise StructuralQCError("cache-backed structural QC lacks its definition")
+    structural["parallel_execution"] = {
+        **dict(parallel), "enabled": False, "maximum_workers": 1,
+    }
+    signature = hashlib.sha256(
+        _checkpoint_payload_bytes({
+            "source_project": str(project_source),
+            "source_project_sha256": hashlib.sha256(
+                project_source.read_bytes()
+            ).hexdigest(),
+            "cache_report_sha256": cache_validation["cache_report_sha256"],
+            "cached_system_manifest_sha256": cache_validation[
+                "cached_system_manifest_sha256"
+            ],
+        })
+    ).hexdigest()[:16]
+    destination = project_source.parent / (
+        f"project-structural-qc-cache-{signature}.json"
+    )
+    rendered = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    if destination.exists():
+        if destination.read_text(encoding="utf-8") != rendered:
+            raise StructuralQCError(
+                f"cache-backed structural-QC project changed: {destination}"
+            )
+    else:
+        destination.write_text(rendered, encoding="utf-8")
+    return destination
+
+
+def _structural_qc_replica_job(
+    arguments: Tuple[Path, str, str]
+) -> Dict[str, object]:
+    project_path, system_id, replica_id = arguments
+    return _structural_qc_project_serial(
+        project_path,
+        hash_content=False,
+        only_system_id=system_id,
+        only_replica_id=replica_id,
+    )
+
+
+def _aggregate_structural_qc_shards(
+    project_source: Path,
+    thresholds: Mapping[str, object],
+    cache_validation: Mapping[str, object],
+    reports: Sequence[Mapping[str, object]],
+    *,
+    configured_workers: int,
+    workers_used: int,
+) -> Dict[str, object]:
+    if not reports:
+        raise StructuralQCError("parallel structural QC produced no shard reports")
+    systems: Dict[str, Dict[str, object]] = {}
+    issues: List[Dict[str, object]] = []
+    seen_issues = set()
+    replicas = []
+    source_frames = 0
+    selected_frames = 0
+    limitations: List[str] = []
+    for report in reports:
+        frame_selection = report.get("frame_selection")
+        if not isinstance(frame_selection, dict):
+            raise StructuralQCError("structural-QC shard lacks frame-selection evidence")
+        source_frames += int(frame_selection["source_frame_count"])
+        selected_frames += int(frame_selection["selected_frame_count"])
+        raw_replicas = frame_selection.get("replicas")
+        if not isinstance(raw_replicas, list):
+            raise StructuralQCError("structural-QC shard lacks replica sampling evidence")
+        replicas.extend(deepcopy(raw_replicas))
+        for raw_issue in report.get("issues", []):
+            if not isinstance(raw_issue, dict):
+                continue
+            identity = json.dumps(raw_issue, sort_keys=True, separators=(",", ":"))
+            if identity not in seen_issues:
+                seen_issues.add(identity)
+                issues.append(deepcopy(raw_issue))
+        for raw_system in report.get("systems", []):
+            if not isinstance(raw_system, dict):
+                continue
+            system_id = str(raw_system["system_id"])
+            target = systems.setdefault(system_id, {
+                "system_id": system_id, "replicas": [],
+            })
+            target_replicas = target["replicas"]
+            assert isinstance(target_replicas, list)
+            target_replicas.extend(deepcopy(raw_system.get("replicas", [])))
+        for limitation in report.get("limitations", []):
+            if isinstance(limitation, str) and limitation not in limitations:
+                limitations.append(limitation)
+    error_count = sum(issue.get("severity") == "error" for issue in issues)
+    warning_count = sum(issue.get("severity") == "warning" for issue in issues)
+    qc_finding_count = sum(
+        issue.get("code") in _QC_FINDING_CODES for issue in issues
+    )
+    first = reports[0]
+    limitations.append(
+        "Replica shards consume one validated stride-1, made-whole molecular-"
+        "payload cache; bulk-solvent integrity remains outside this QC report."
+    )
+    return {
+        "module_id": "structural_integrity_qc",
+        "technical_status": "failed" if error_count else "complete",
+        "scientific_status": "not evaluated",
+        "qc_status": (
+            "review_required" if qc_finding_count else "no_findings_observed"
+        ),
+        "human_review_status": (
+            "pending" if qc_finding_count else "not requested"
+        ),
+        "project_manifest_path": str(project_source),
+        "project_manifest_sha256": hashlib.sha256(
+            project_source.read_bytes()
+        ).hexdigest(),
+        "system_manifest_path": cache_validation["cached_system_manifest"],
+        "system_manifest_sha256": cache_validation[
+            "cached_system_manifest_sha256"
+        ],
+        "contract_signature_sha256": first.get("contract_signature_sha256"),
+        "input_content_signature_sha256": first.get(
+            "input_content_signature_sha256"
+        ),
+        "content_hashes_included": True,
+        "thresholds": dict(thresholds),
+        "checkpointing": first.get("checkpointing"),
+        "frame_selection": {
+            "mode": first["frame_selection"].get("mode"),
+            "resolved_mode": first["frame_selection"].get("resolved_mode"),
+            "frame_stride": first["frame_selection"].get("frame_stride"),
+            "resolved_integer_stride": first["frame_selection"].get(
+                "resolved_integer_stride"
+            ),
+            "selection_contract": first["frame_selection"].get(
+                "selection_contract"
+            ),
+            "source_frame_count": source_frames,
+            "selected_frame_count": selected_frames,
+            "coverage_fraction": selected_frames / source_frames,
+            "replicas": replicas,
+        },
+        "periodic_coordinate_policy": "preprocessed_make_whole",
+        "time_unit": first.get("time_unit"),
+        "error_count": error_count,
+        "warning_count": warning_count,
+        "qc_finding_count": qc_finding_count,
+        "issues": issues,
+        "systems": list(systems.values()),
+        "parallel_execution": {
+            "execution_model": "one_process_per_replica_v1",
+            "configured_maximum_workers": configured_workers,
+            "workers_used": workers_used,
+            "shard_count": len(reports),
+            "cache_validation": dict(cache_validation),
+        },
+        "limitations": limitations,
+    }
+
+
+def structural_qc_project(
+    project_path: Path, hash_content: bool = False
+) -> Dict[str, object]:
+    """Run structural QC serially or in validated cache-backed replica shards."""
+
+    project_source = Path(project_path).expanduser().resolve(strict=False)
+    project = load_json(project_source)
+    thresholds = _thresholds(project)
+    parallel = thresholds.get("parallel_execution")
+    if not isinstance(parallel, dict) or not bool(parallel.get("enabled")):
+        return _structural_qc_project_serial(
+            project_source, hash_content=hash_content
+        )
+    context = compile_project_context_file(
+        project_source, hash_content=hash_content
+    )
+    source_system = Path(str(context["system_manifest_path"]))
+    cache_manifest = resolve_manifest_path(
+        str(parallel["coordinate_cache_system_manifest"]), project_source
+    )
+    cache_report = resolve_manifest_path(
+        str(parallel["coordinate_cache_report"]), project_source
+    )
+    cache_root = cache_manifest.parent
+    cache_validation = validate_reusable_coordinate_cache(
+        cache_root, source_system
+    )
+    if Path(str(cache_validation["cached_system_manifest"])) != cache_manifest:
+        raise StructuralQCError(
+            "parallel structural-QC cache manifest differs from validated cache"
+        )
+    if Path(str(cache_validation["cache_report"])) != cache_report:
+        raise StructuralQCError(
+            "parallel structural-QC cache report differs from validated cache"
+        )
+    cache_project = _write_cache_backed_qc_project(
+        project_source, project, cache_validation, parallel
+    )
+    cached = load_json(cache_manifest)
+    shard_ids = [
+        (str(system["system_id"]), str(replica["replica_id"]))
+        for system in cached.get("systems", [])
+        if isinstance(system, dict)
+        for replica in system.get("replicas", [])
+        if isinstance(replica, dict)
+    ]
+    if not shard_ids:
+        raise StructuralQCError("validated coordinate cache contains no replicas")
+    configured_workers = int(parallel["maximum_workers"])
+    scheduler_workers = int(os.environ.get("SLURM_CPUS_PER_TASK", configured_workers))
+    workers = min(configured_workers, scheduler_workers, len(shard_ids))
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        reports = list(executor.map(
+            _structural_qc_replica_job,
+            [(cache_project, system_id, replica_id)
+             for system_id, replica_id in shard_ids],
+        ))
+    return _aggregate_structural_qc_shards(
+        project_source,
+        thresholds,
+        cache_validation,
+        reports,
+        configured_workers=configured_workers,
+        workers_used=workers,
+    )
+
+
 def structural_qc_project_safe(
     project_path: Path, hash_content: bool = False
 ) -> Dict[str, object]:
@@ -1159,7 +1475,10 @@ def structural_qc_project_safe(
 
     try:
         return structural_qc_project(project_path, hash_content=hash_content)
-    except (ManifestValidationError, StructuralQCError, AtomMappingError) as exc:
+    except (
+        ManifestValidationError, StructuralQCError, CoordinateCacheError,
+        AtomMappingError,
+    ) as exc:
         messages = list(exc.issues) if isinstance(exc, ManifestValidationError) else [str(exc)]
         return {
             "module_id": "structural_integrity_qc",

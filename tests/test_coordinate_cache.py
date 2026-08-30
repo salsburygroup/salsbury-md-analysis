@@ -13,6 +13,7 @@ from salsbury_md_analysis.coordinate_cache import (
 from salsbury_md_analysis.coordinates import iter_coordinate_frames
 from salsbury_md_analysis.manifests import load_json, validate_system
 from salsbury_md_analysis.preflight import probe_trajectory
+from salsbury_md_analysis.structural_qc import structural_qc_project
 
 
 def record(payload: bytes) -> bytes:
@@ -160,6 +161,53 @@ class CoordinateCacheTests(unittest.TestCase):
             )
             self.assertEqual(
                 len(list(parallel_output.glob("*-segment-00.dcd"))), 2
+            )
+            project = root / "project.json"
+            project.write_text(json.dumps({
+                "project_id": "parallel-cache-qc",
+                "analysis_profile": "standard_md_v1",
+                "system_manifest": str(manifest),
+                "analysis_output_root": str(root / "qc-output"),
+                "sampling_mode": "UNBIASED_MD",
+                "coordinate_unit": "angstrom",
+                "time_unit": "ps",
+                "periodic_coordinate_policy": "unwrap_continuous",
+                "periodic_reconstruction": {
+                    "maximum_bond_length_angstrom": 3.0,
+                    "cycle_closure_tolerance_angstrom": 0.25,
+                    "maximum_anchor_displacement_angstrom": 20.0,
+                },
+                "selections": {
+                    "alignment": {"preset": "heavy"},
+                    "analysis": {"preset": "heavy"},
+                },
+                "definitions": {"structural_qc": {
+                    "near_coincident_distance_angstrom": 0.2,
+                    "maximum_near_coincident_pairs_per_frame": 100,
+                    "maximum_absolute_coordinate_angstrom": 1000.0,
+                    "frame_stride": 1,
+                    "parallel_execution": {
+                        "enabled": True,
+                        "maximum_workers": 2,
+                        "coordinate_cache_system_manifest": str(
+                            parallel_output / "system-cache.json"
+                        ),
+                        "coordinate_cache_report": str(
+                            parallel_output / "coordinate-cache-report.json"
+                        ),
+                    },
+                }},
+                "requested_modules": ["structural_integrity_qc"],
+                "protected_locations": [],
+            }), encoding="utf-8")
+            qc = structural_qc_project(project, hash_content=True)
+            self.assertEqual(qc["technical_status"], "complete", qc)
+            self.assertEqual(qc["parallel_execution"]["workers_used"], 2)
+            self.assertEqual(qc["parallel_execution"]["shard_count"], 2)
+            self.assertEqual(qc["frame_selection"]["selected_frame_count"], 6)
+            self.assertEqual(len(qc["systems"][0]["replicas"]), 2)
+            self.assertEqual(
+                qc["periodic_coordinate_policy"], "preprocessed_make_whole"
             )
             with self.assertRaisesRegex(
                 CoordinateCacheError, "stride 1"

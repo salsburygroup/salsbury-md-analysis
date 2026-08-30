@@ -516,18 +516,18 @@ class QuickstartTests(unittest.TestCase):
                 "salsbury-local-execution-plan-v4",
             )
             self.assertEqual(local_plan["dependency_model"], "task_dag_v1")
-            self.assertEqual(local_plan["maximum_parallel_cpus"], 8)
+            self.assertEqual(local_plan["maximum_parallel_cpus"], 10)
             campaign = json.loads(
                 (output / "campaign-resource-plan.json").read_text()
             )
             self.assertEqual(campaign["maximum_parallel_cpus_input"], 16)
-            self.assertEqual(campaign["effective_parallel_cpu_cap"], 8)
+            self.assertEqual(campaign["effective_parallel_cpu_cap"], 10)
             self.assertEqual(
                 campaign["resource_warnings"][0]["code"],
                 "REQUESTED_CPUS_EXCEED_USEFUL_PARALLELISM",
             )
             self.assertIn(
-                "Slurm submission will be changed to 8 CPUs",
+                "Slurm submission will be changed to 10 CPUs",
                 campaign["resource_warnings"][0]["message"],
             )
             self.assertEqual(local_plan["maximum_parallel_memory_gib"], 128.0)

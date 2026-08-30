@@ -419,6 +419,7 @@ def _enrich_task_resources(
     path = root / str(task["script"])
     maximum_hours = float(execution["maximum_hours_per_cpu"])
     maximum_memory = float(execution["maximum_memory_gib"])
+    maximum_cpus = int(execution["maximum_parallel_cpus"])
     if matched:
         try:
             wall_hours = sum(
@@ -467,6 +468,10 @@ def _enrich_task_resources(
                 f"limit {maximum_memory:g} GiB"
             )
         planner_task_ids = [str(row["task_id"]) for row in matched]
+        cpu_slots = max(
+            min(maximum_cpus, int(row.get("effective_cpu_cap", 1)))
+            for row in matched
+        )
         source = "campaign_planner_with_profile_safety_margin"
     else:
         wall_hours = _existing_wall_minutes(path) / 60.0
@@ -479,9 +484,11 @@ def _enrich_task_resources(
                 f"campaign limit"
             )
         planner_task_ids = []
+        cpu_slots = int(task.get("cpu_slots", 1))
         source = "generated_worker_static_request_no_planner_row"
     enriched.update({
         "planner_task_ids": planner_task_ids,
+        "cpu_slots": cpu_slots,
         "planned_wall_hours": wall_hours,
         "planned_peak_memory_gib": memory_gib,
         "requested_wall_minutes": requested_wall_minutes,
@@ -1616,6 +1623,12 @@ def _apply_task_dependency_graph(
                         dependencies.add(preflight_id)
             elif preflight_task is not None:
                 dependencies.add(str(preflight_task["task_id"]))
+
+            if (
+                task.get("module_id") == "structural_integrity_qc"
+                and cache_task is not None
+            ):
+                dependencies.add(str(cache_task["task_id"]))
 
             module_id = task.get("module_id")
             required_modules: set[str] = set()

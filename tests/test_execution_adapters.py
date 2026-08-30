@@ -449,7 +449,10 @@ class ExecutionAdapterTests(unittest.TestCase):
         view_preflight = tasks[("run_view_preflight_0.slurm", None)]
         view_pca = tasks[("run_view_cached_stage_0.slurm", 0)]
         self.assertEqual(preflight["depends_on_task_ids"], [])
-        self.assertEqual(qc["depends_on_task_ids"], [preflight["task_id"]])
+        self.assertEqual(
+            set(qc["depends_on_task_ids"]),
+            {preflight["task_id"], cache["task_id"]},
+        )
         self.assertEqual(
             view_preflight["depends_on_task_ids"], [cache["task_id"]]
         )

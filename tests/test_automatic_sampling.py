@@ -288,6 +288,54 @@ class AutomaticSamplingTests(unittest.TestCase):
             for module_id in plans
         ))
 
+    def test_structural_qc_uses_one_cache_backed_worker_per_replica(self):
+        dimensions = self._reference_dimensions(frames_per_replica=12_000)
+        plan = _campaign_direct_resource_plan(
+            dimensions,
+            ["structural_integrity_qc"],
+            {
+                "maximum_parallel_cpus": 8,
+                "maximum_hours_per_cpu": 24,
+                "maximum_memory_gib": 185,
+                "planning_utilization": 0.85,
+                "pilot_budget_fraction": 0.05,
+                "memory_safety_factor": 1.25,
+                "coordinate_cache": "auto",
+            },
+            time_safety_factor=1.5,
+        )
+        row = plan["tasks"][0]
+        self.assertEqual(row["parallel_execution_model"], "one_process_per_replica_v1")
+        self.assertEqual(row["intrinsic_cpu_cap"], 3)
+        self.assertEqual(row["effective_cpu_cap"], 3)
+        self.assertEqual(row["parallel_worker_count"], 3)
+        self.assertEqual(row["estimated_peak_memory_gib_per_parallel_worker"], 4.0)
+        self.assertEqual(row["estimated_peak_memory_gib"], 12.0)
+        self.assertAlmostEqual(
+            row["estimated_wall_hours_at_effective_cpu_cap"],
+            row["estimated_cpu_hours"] / 3.0,
+        )
+
+    def test_structural_qc_parallelism_respects_aggregate_memory(self):
+        dimensions = self._reference_dimensions(frames_per_replica=12_000)
+        plan = _campaign_direct_resource_plan(
+            dimensions,
+            ["structural_integrity_qc"],
+            {
+                "maximum_parallel_cpus": 8,
+                "maximum_hours_per_cpu": 24,
+                "maximum_memory_gib": 7.5,
+                "planning_utilization": 0.85,
+                "pilot_budget_fraction": 0.05,
+                "memory_safety_factor": 1.25,
+                "coordinate_cache": "auto",
+            },
+            time_safety_factor=1.5,
+        )
+        row = plan["tasks"][0]
+        self.assertEqual(row["effective_cpu_cap"], 1)
+        self.assertEqual(row["estimated_peak_memory_gib"], 4.0)
+
     def test_censored_only_memory_does_not_invent_observation_scaling(self):
         dimensions = self._reference_dimensions(frames_per_replica=1000)
         measured = {

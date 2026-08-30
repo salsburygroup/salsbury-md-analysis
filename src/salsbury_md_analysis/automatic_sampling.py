@@ -555,12 +555,40 @@ def _campaign_direct_resource_plan(
             calibration_status = (
                 "completed_builtin_with_censored_catalog_lower_bound"
             )
+        parallel_qc_enabled = (
+            module_id == "structural_integrity_qc"
+            and str(execution.get("coordinate_cache", "auto")) != "off"
+        )
+        memory_limited_workers = max(
+            1,
+            math.floor(
+                max(0.0, float(execution["maximum_memory_gib"]) - 1.0)
+                / (1.5 * memory_gib)
+            ),
+        )
+        parallel_workers = (
+            min(
+                replica_count,
+                int(execution["maximum_parallel_cpus"]),
+                memory_limited_workers,
+            )
+            if parallel_qc_enabled else 1
+        )
+        aggregate_memory_gib = memory_gib * parallel_workers
         tasks.append({
             "task_id": f"direct:{module_id}",
             "module_id": module_id,
             "task_scope": "direct_trajectory_estimator",
             "dependency_stage": 1,
-            "effective_cpu_cap": 1,
+            "effective_cpu_cap": parallel_workers,
+            "intrinsic_cpu_cap": (
+                replica_count if parallel_qc_enabled else 1
+            ),
+            **({
+                "parallel_execution_model": "one_process_per_replica_v1",
+                "parallel_worker_count": parallel_workers,
+                "estimated_peak_memory_gib_per_parallel_worker": memory_gib,
+            } if parallel_qc_enabled else {}),
             "source_frames_per_replica": replica_counts,
             "system_ids_per_replica": system_ids_per_replica,
             **({
@@ -596,7 +624,7 @@ def _campaign_direct_resource_plan(
                 calibration.fixed_overhead_seconds
                 * time_safety_factor / 3600.0
             ),
-            "estimated_peak_memory_gib": memory_gib,
+            "estimated_peak_memory_gib": aggregate_memory_gib,
             "reference_peak_memory_gib": reference_memory_gib,
             "memory_atom_scale": memory_atom_scale,
             "memory_reference_atom_count": REFERENCE_ATOM_COUNT,
@@ -607,7 +635,7 @@ def _campaign_direct_resource_plan(
                     "calibration_observations": int(
                         measured["maximum_measured_observation_count"]
                     ),
-                    "calibration_memory_gib": memory_gib,
+                    "calibration_memory_gib": aggregate_memory_gib,
                     "memory_exponent": 0.5,
                     "minimum_observation_scale": 0.1,
                     "workload_scaling_applied": True,
