@@ -26,6 +26,30 @@ class CLIWorkflowModeTests(unittest.TestCase):
         self.assertTrue(analysis.plan_only)
         self.assertTrue(comparison.plan_only)
 
+    def test_prepare_commands_expose_explicit_resource_fit_mode(self):
+        parser = build_parser()
+        analysis = parser.parse_args([
+            "prepare-analysis", "--pdb", "input.pdb", "--trajectory", "run.dcd",
+            "--output", "out", "--project-id", "test",
+            "--frame-interval-ps", "10",
+            "--auto-disable-optional-to-fit-resources",
+        ])
+        comparison = parser.parse_args([
+            "prepare-comparison", "comparison.json", "--output", "out",
+            "--project-id", "test",
+            "--auto-disable-optional-to-fit-resources",
+        ])
+        self.assertTrue(analysis.auto_disable_optional_to_fit_resources)
+        self.assertTrue(comparison.auto_disable_optional_to_fit_resources)
+        with self.assertRaises(SystemExit):
+            parser.parse_args([
+                "prepare-analysis", "--pdb", "input.pdb",
+                "--trajectory", "run.dcd", "--output", "out",
+                "--project-id", "test", "--frame-interval-ps", "10",
+                "--auto-disable-to-fit-memory",
+                "--auto-disable-optional-to-fit-resources",
+            ])
+
     def test_minimums_template_command_writes_once_and_never_overwrites(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "minimums.json"

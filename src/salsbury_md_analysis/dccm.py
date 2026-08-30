@@ -17,6 +17,13 @@ from .geometry import GeometryError, apply_transform, best_fit_transform
 from .manifests import ManifestValidationError, load_json, resolve_manifest_path, sha256_file
 from .moments import DisplacementCovariance, MomentError
 from .periodic import PeriodicFrameProcessor, PeriodicReconstructionError
+from .replica_execution import ReplicaPartial
+from .replica_module_execution import (
+    execute_replica_final_module,
+    merge_frame_selection_reports,
+    restore_source_provenance,
+    unique_issues,
+)
 from .reporting import atom_identity_record, issue_record
 from .selections import AtomCorrespondence, build_common_correspondences
 from .trajectory_contracts import (
@@ -178,7 +185,12 @@ def _difference_matrix(
     return difference, undefined
 
 
-def dccm_project(project_path: Path, hash_content: bool = False) -> Dict[str, object]:
+def _dccm_project_serial(
+    project_path: Path,
+    hash_content: bool = False,
+    *,
+    allow_incomplete_pooled_reference: bool = False,
+) -> Dict[str, object]:
     """Calculate per-replica and system-pooled DCCMs on one global atom basis."""
 
     project_source = Path(project_path).expanduser().resolve(strict=False)
@@ -492,6 +504,7 @@ def dccm_project(project_path: Path, hash_content: bool = False) -> Dict[str, ob
                     for role, correspondence in mapping.items()
                 },
                 "dccm": matrix_payload,
+                "mergeable_displacement_covariance": replica_state.to_state(),
                 "segments": segment_reports,
             })
         if system_state.count >= int(settings["minimum_evaluated_frames_per_replica"]):
@@ -523,13 +536,16 @@ def dccm_project(project_path: Path, hash_content: bool = False) -> Dict[str, ob
         report for report in system_reports if report["system_id"] == reference_system
     )
     reference_payload = reference_report["frame_pooled_dccm"]
-    if not isinstance(reference_payload, dict):
+    if not isinstance(reference_payload, dict) and not allow_incomplete_pooled_reference:
         raise DCCMError("reference system produced no pooled DCCM")
-    reference_matrix = reference_payload["matrix"]
-    assert isinstance(reference_matrix, list)
+    reference_matrix = (
+        reference_payload["matrix"] if isinstance(reference_payload, dict) else None
+    )
+    if reference_matrix is not None:
+        assert isinstance(reference_matrix, list)
     for report in system_reports:
         payload = report["frame_pooled_dccm"]
-        if not isinstance(payload, dict):
+        if not isinstance(payload, dict) or reference_matrix is None:
             report["difference_from_reference_dccm"] = None
             continue
         matrix = payload["matrix"]
@@ -599,6 +615,126 @@ def dccm_project(project_path: Path, hash_content: bool = False) -> Dict[str, ob
             "No real-project regression fixture has yet been approved; status remains experimental.",
         ],
     }
+
+
+def _reduce_dccm_replica_reports(
+    partials: Sequence[ReplicaPartial[Dict[str, object]]],
+    source_context: Dict[str, object],
+) -> Dict[str, object]:
+    reports = [partial.value for partial in partials]
+    first = dict(reports[0])
+    for report in reports[1:]:
+        for key in (
+            "module_id", "reference", "settings", "common_atom_policy",
+            "periodic_coordinate_policy", "time_unit", "analysis_atoms",
+        ):
+            if report.get(key) != first.get(key):
+                raise DCCMError(f"replica DCCM reports disagree on {key}")
+    first["frame_selection"] = merge_frame_selection_reports([
+        report["frame_selection"] for report in reports
+        if isinstance(report.get("frame_selection"), dict)
+    ])
+    grouped: Dict[str, List[Dict[str, object]]] = {}
+    for report in reports:
+        for system in report.get("systems", []):
+            if isinstance(system, dict):
+                grouped.setdefault(str(system["system_id"]), []).extend(
+                    row for row in system.get("replicas", []) if isinstance(row, dict)
+                )
+    issues = [
+        issue for issue in unique_issues(reports)
+        if issue.get("code") not in {
+            "INSUFFICIENT_SYSTEM_FRAMES", "UNDEFINED_ZERO_VARIANCE_CORRELATIONS",
+        }
+    ]
+    minimum = int(first["settings"]["minimum_evaluated_frames_per_replica"])  # type: ignore[index]
+    minimum_variance = float(first["settings"]["minimum_variance_angstrom2"])  # type: ignore[index]
+    system_reports = []
+    for system_id, replica_rows in grouped.items():
+        states = [
+            DisplacementCovariance.from_state(row["mergeable_displacement_covariance"])
+            for row in replica_rows
+        ]
+        pooled = DisplacementCovariance(states[0].atom_count)
+        for state in states:
+            pooled.merge(state)
+        for replica_row, state in zip(replica_rows, states):
+            matrix = (
+                _matrix_payload(state, minimum_variance)
+                if state.count >= minimum else None
+            )
+            replica_row["dccm"] = matrix
+            if matrix and matrix["undefined_upper_triangle_entry_count"]:
+                issues.append(issue_record(
+                    "warning", "UNDEFINED_ZERO_VARIANCE_CORRELATIONS",
+                    f"{system_id}/{replica_row['replica_id']}",
+                    f"{matrix['undefined_upper_triangle_entry_count']} upper-triangle entries are null because at least one atom is below the variance gate",
+                ))
+        if pooled.count >= minimum:
+            pooled_payload = _matrix_payload(pooled, minimum_variance)
+            if pooled_payload["undefined_upper_triangle_entry_count"]:
+                issues.append(issue_record(
+                    "warning", "UNDEFINED_ZERO_VARIANCE_CORRELATIONS", system_id,
+                    f"{pooled_payload['undefined_upper_triangle_entry_count']} pooled upper-triangle entries are null because at least one atom is below the variance gate",
+                ))
+        else:
+            pooled_payload = None
+            issues.append(issue_record(
+                "error", "INSUFFICIENT_SYSTEM_FRAMES", system_id,
+                f"system produced {pooled.count} pooled evaluated frames; at least {minimum} are required",
+            ))
+        system_reports.append({
+            "system_id": system_id,
+            "frame_pooled_dccm": pooled_payload,
+            "replicas": replica_rows,
+        })
+    contract = source_context.get("contract")
+    if not isinstance(contract, dict):
+        raise DCCMError("source context contract is missing")
+    reference_system = str(contract["reference_system"])
+    reference_report = next(
+        (row for row in system_reports if row["system_id"] == reference_system), None
+    )
+    if reference_report is None or not isinstance(
+        reference_report.get("frame_pooled_dccm"), dict
+    ):
+        raise DCCMError("reference system produced no pooled DCCM")
+    reference_matrix = reference_report["frame_pooled_dccm"]["matrix"]
+    for system in system_reports:
+        payload = system["frame_pooled_dccm"]
+        if not isinstance(payload, dict):
+            system["difference_from_reference_dccm"] = None
+            continue
+        difference, undefined = _difference_matrix(payload["matrix"], reference_matrix)
+        system["difference_from_reference_dccm"] = {
+            "reference_system_id": reference_system,
+            "undefined_entry_count": undefined,
+            "matrix": difference,
+        }
+    first["reference_system_id"] = reference_system
+    first["systems"] = system_reports
+    first["issues"] = issues
+    first["error_count"] = sum(issue.get("severity") == "error" for issue in issues)
+    first["warning_count"] = sum(issue.get("severity") == "warning" for issue in issues)
+    first["technical_status"] = "failed" if first["error_count"] else "complete"
+    restore_source_provenance(first, source_context)
+    return first
+
+
+def dccm_project(project_path: Path, hash_content: bool = False) -> Dict[str, object]:
+    """Scan replicas independently and merge exact displacement covariance."""
+
+    project = load_json(Path(project_path).expanduser().resolve(strict=False))
+    settings = _settings(project)
+    selection = settings.get("frame_selection")
+    if isinstance(selection, dict) and selection.get("mode") == "auto_resource_budget_v1":
+        return _dccm_project_serial(project_path, hash_content=hash_content)
+    return execute_replica_final_module(
+        project_path,
+        runner_id="dccm",
+        hash_content=hash_content,
+        reducer=_reduce_dccm_replica_reports,
+    )
 
 
 def dccm_project_safe(project_path: Path, hash_content: bool = False) -> Dict[str, object]:

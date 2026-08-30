@@ -21,6 +21,13 @@ from .manifests import ManifestValidationError, load_json, resolve_manifest_path
 from .moments import sample_summary
 from .scalar_distributions import ScalarDistributionError, analyze_scalar_distribution
 from .periodic import PeriodicFrameProcessor, PeriodicReconstructionError
+from .replica_execution import ReplicaPartial
+from .replica_module_execution import (
+    execute_replica_final_module,
+    merge_frame_selection_reports,
+    restore_source_provenance,
+    unique_issues,
+)
 from .selections import select_atoms
 from .trajectory_contracts import (
     TrajectoryContractError,
@@ -276,7 +283,7 @@ class _VectorMoments:
         }
 
 
-def solvent_accessible_surface_area_project(
+def _solvent_accessible_surface_area_project_serial(
     project_path: Path, hash_content: bool = False
 ) -> Dict[str, object]:
     source = Path(project_path).expanduser().resolve(strict=False)
@@ -551,6 +558,63 @@ def solvent_accessible_surface_area_project(
             "The bounded production output retains exact totals, per-atom and per-residue first and second moments, and a Scott-rule total-SASA histogram while omitting duplicated per-frame atom and residue dictionaries.",
         ],
     }
+
+
+def _reduce_sasa_replica_reports(
+    partials: Sequence[ReplicaPartial[Dict[str, object]]],
+    source_context: Dict[str, object],
+) -> Dict[str, object]:
+    reports = [partial.value for partial in partials]
+    first = dict(reports[0])
+    for report in reports[1:]:
+        for key in ("module_id", "settings", "algorithm", "radii_contract"):
+            if report.get(key) != first.get(key):
+                raise SASAAnalysisError(f"replica SASA reports disagree on {key}")
+    first["frame_selection"] = merge_frame_selection_reports([
+        report["frame_selection"] for report in reports
+        if isinstance(report.get("frame_selection"), dict)
+    ])
+    first["observation_count"] = sum(
+        int(report.get("observation_count", 0)) for report in reports
+    )
+    maximum = int(first["settings"]["maximum_observations"])  # type: ignore[index]
+    if int(first["observation_count"]) > maximum:
+        raise SASAAnalysisError(
+            "parallel SASA observation count exceeds maximum_observations"
+        )
+    first["replicas"] = [
+        row for report in reports for row in report.get("replicas", [])
+    ]
+    issues = unique_issues(reports)
+    first["issues"] = issues
+    first["error_count"] = sum(issue.get("severity") == "error" for issue in issues)
+    first["warning_count"] = sum(
+        issue.get("severity") == "warning" for issue in issues
+    )
+    restore_source_provenance(first, source_context)
+    return first
+
+
+def solvent_accessible_surface_area_project(
+    project_path: Path, hash_content: bool = False
+) -> Dict[str, object]:
+    """Run replica workers and reduce replica-final SASA estimates exactly."""
+
+    project = load_json(Path(project_path).expanduser().resolve(strict=False))
+    settings = _settings(project)
+    selection = settings.get("frame_selection")
+    if isinstance(selection, dict) and selection.get("mode") == "auto_resource_budget_v1":
+        # This legacy mode divides a wall-time budget by the project replica
+        # count.  Resolve it in the campaign planner before replica sharding.
+        return _solvent_accessible_surface_area_project_serial(
+            project_path, hash_content=hash_content
+        )
+    return execute_replica_final_module(
+        project_path,
+        runner_id="sasa",
+        hash_content=hash_content,
+        reducer=_reduce_sasa_replica_reports,
+    )
 
 
 def solvent_accessible_surface_area_project_safe(

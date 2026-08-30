@@ -384,6 +384,17 @@ def _nested_scalar_frame_counts(
 def _observation_counts(
     report: Mapping[str, object], project: Mapping[str, object] | None = None
 ) -> tuple[int | None, int | None]:
+    # PCA has two distinct workloads: basis fitting and projection/assignment.
+    # The projection stream is the downstream observation set and therefore the
+    # primary selected-frame count.  Older generic fallback logic found the
+    # basis selection first and silently reported that smaller count instead.
+    if report.get("module_id") == "common_pca":
+        projection = report.get("projection_frame_selection")
+        if isinstance(projection, dict):
+            physical = projection.get("selected_frame_count")
+            if isinstance(physical, int) and not isinstance(physical, bool):
+                multiplier = _symmetry_multiplier(report, project)
+                return physical, physical * multiplier
     accounting = report.get("observation_accounting")
     if isinstance(accounting, dict):
         physical = next((
@@ -516,6 +527,13 @@ def _analysis_workload_counts(
         accounting.get("basis_member_observation_count")
         if isinstance(accounting, dict) else None
     )
+    if report.get("module_id") == "common_pca":
+        basis_selection = report.get("basis_frame_selection")
+        if isinstance(basis_selection, dict):
+            selected = basis_selection.get("selected_frame_count")
+            if isinstance(selected, int) and not isinstance(selected, bool):
+                basis_physical = selected
+                basis_observations = selected * _symmetry_multiplier(report)
     fit_observations = report.get("fit_observation_count")
     module_id = str(report.get("module_id", ""))
     if module_id == "pald_community_analysis":

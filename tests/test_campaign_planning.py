@@ -29,6 +29,16 @@ class CampaignPlanningTests(unittest.TestCase):
         )
         self.assertEqual(tasks[0]["reference_peak_memory_gib"], 24.0)
 
+    def test_artifact_materialization_memory_floor_is_not_atom_scaled_away(self):
+        tasks = [{
+            "task_id": "small:derived-join",
+            "estimated_peak_memory_gib": 16.0,
+            "minimum_materialized_working_set_gib": 16.0,
+        }]
+        _apply_system_memory_scaling(tasks, 423)
+        self.assertEqual(tasks[0]["memory_atom_scale"], 0.1)
+        self.assertEqual(tasks[0]["estimated_peak_memory_gib"], 16.0)
+
     def test_measured_overlay_preserves_declared_workload_scaling(self):
         calibration = {
             "coordinate_cache": {

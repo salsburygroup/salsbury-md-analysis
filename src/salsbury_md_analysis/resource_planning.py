@@ -31,6 +31,8 @@ class ResourcePlanningError(ValueError):
 
 def workflow_useful_parallel_cpu_ceiling(
     tasks: Sequence[Mapping[str, object]],
+    *,
+    maximum_cpus_per_node: Optional[int] = None,
 ) -> int:
     """Return the dependency-stage CPU peak without a user or cluster cap."""
 
@@ -44,6 +46,11 @@ def workflow_useful_parallel_cpu_ceiling(
             1,
             int(row.get("intrinsic_cpu_cap", row.get("effective_cpu_cap", 1))),
         )
+        if (
+            maximum_cpus_per_node is not None
+            and row.get("parallel_execution_model") is None
+        ):
+            cap = min(cap, maximum_cpus_per_node)
         stage_bundles = stages.setdefault(stage, {})
         stage_bundles[bundle] = max(cap, stage_bundles.get(bundle, 0))
     if not stages:
@@ -131,6 +138,449 @@ def pack_resource_waves(
     return waves
 
 
+def pack_resource_lanes(
+    items: Sequence[Mapping[str, object]],
+    *,
+    maximum_parallel_cpus: int,
+    maximum_parallel_memory_gib: float,
+    maximum_cpus_per_node: Optional[int] = None,
+    maximum_memory_gib_per_node: Optional[float] = None,
+    maximum_nodes: Optional[int] = None,
+) -> list[Dict[str, object]]:
+    """Assign tasks to independent, aggregate-resource-bounded serial lanes.
+
+    One task may run at a time in each lane.  A lane therefore reserves the
+    maximum CPU and memory request of any task assigned to it, while its wall
+    estimate is the sum of its tasks.  The sum of the lane reservations never
+    exceeds the campaign caps.  Unlike whole-wave barriers, a slow task delays
+    only later work in its own lane; scientific prerequisites remain separate
+    task-level dependencies.
+
+    Input order is retained within every lane.  Callers must provide tasks in
+    dependency-safe order.
+    """
+
+    if maximum_parallel_cpus <= 0 or maximum_parallel_memory_gib <= 0.0:
+        raise ResourcePlanningError("resource-lane limits must be positive")
+    node_limits_supplied = (
+        maximum_cpus_per_node is not None
+        or maximum_memory_gib_per_node is not None
+        or maximum_nodes is not None
+    )
+    if node_limits_supplied and (
+        maximum_cpus_per_node is None
+        or maximum_memory_gib_per_node is None
+    ):
+        raise ResourcePlanningError(
+            "node-aware packing requires both maximum_cpus_per_node and "
+            "maximum_memory_gib_per_node"
+        )
+    if maximum_cpus_per_node is not None and (
+        isinstance(maximum_cpus_per_node, bool)
+        or not isinstance(maximum_cpus_per_node, int)
+        or maximum_cpus_per_node <= 0
+    ):
+        raise ResourcePlanningError(
+            "maximum_cpus_per_node must be a positive integer"
+        )
+    if maximum_memory_gib_per_node is not None and (
+        isinstance(maximum_memory_gib_per_node, bool)
+        or not isinstance(maximum_memory_gib_per_node, (int, float))
+        or not math.isfinite(float(maximum_memory_gib_per_node))
+        or float(maximum_memory_gib_per_node) <= 0.0
+    ):
+        raise ResourcePlanningError(
+            "maximum_memory_gib_per_node must be finite and positive"
+        )
+    if maximum_nodes is not None and (
+        isinstance(maximum_nodes, bool)
+        or not isinstance(maximum_nodes, int)
+        or maximum_nodes <= 0
+    ):
+        raise ResourcePlanningError("maximum_nodes must be a positive integer")
+    if maximum_cpus_per_node is not None and maximum_nodes is None:
+        assert maximum_memory_gib_per_node is not None
+        maximum_nodes = max(
+            math.ceil(maximum_parallel_cpus / maximum_cpus_per_node),
+            math.ceil(
+                maximum_parallel_memory_gib
+                / float(maximum_memory_gib_per_node)
+            ),
+        )
+    normalized: list[Dict[str, object]] = []
+    for index, item in enumerate(items):
+        item_id = str(item.get("item_id", f"item-{index}"))
+        cpus = int(item.get("cpu_slots", 1))
+        memory = float(item.get("memory_gib", 0.0))
+        wall = float(item.get("wall_hours", 0.0))
+        node_count = int(item.get("node_count", 1))
+        workers_per_node = int(item.get("workers_per_node", cpus))
+        distributed = bool(item.get("distributed_replica_execution", False))
+        if cpus <= 0 or memory <= 0.0 or wall < 0.0:
+            raise ResourcePlanningError(
+                f"resource-lane item {item_id} has invalid resources"
+            )
+        if cpus > maximum_parallel_cpus:
+            raise ResourcePlanningError(
+                f"resource-lane item {item_id} requests {cpus} CPUs, exceeding "
+                f"the campaign limit {maximum_parallel_cpus}"
+            )
+        if memory > maximum_parallel_memory_gib + 1.0e-12:
+            raise ResourcePlanningError(
+                f"resource-lane item {item_id} requests {memory:g} GiB, "
+                f"exceeding the campaign limit {maximum_parallel_memory_gib:g} GiB"
+            )
+        if node_count <= 0 or workers_per_node <= 0:
+            raise ResourcePlanningError(
+                f"resource-lane item {item_id} has an invalid node layout"
+            )
+        if distributed and node_count == 1:
+            distributed = False
+        if (
+            maximum_cpus_per_node is not None
+            and cpus > maximum_cpus_per_node * node_count
+        ):
+            raise ResourcePlanningError(
+                f"resource-lane item {item_id} requests {cpus} CPUs, exceeding "
+                f"the {node_count}-node CPU limit "
+                f"{maximum_cpus_per_node * node_count}"
+            )
+        if (
+            maximum_memory_gib_per_node is not None
+            and memory
+            > float(maximum_memory_gib_per_node) * node_count + 1.0e-12
+        ):
+            raise ResourcePlanningError(
+                f"resource-lane item {item_id} requests {memory:g} GiB after "
+                "scheduler padding, exceeding the per-node limit "
+                f"{float(maximum_memory_gib_per_node):g} GiB and configured "
+                f"{node_count}-node limit "
+                f"{float(maximum_memory_gib_per_node) * node_count:g} GiB"
+            )
+        per_node_memory = memory / node_count
+        if (
+            maximum_memory_gib_per_node is not None
+            and per_node_memory
+            > float(maximum_memory_gib_per_node) + 1.0e-12
+        ):
+            raise ResourcePlanningError(
+                f"resource-lane item {item_id} requests {per_node_memory:g} "
+                "GiB per node after scheduler padding, exceeding the per-node "
+                f"limit {float(maximum_memory_gib_per_node):g} GiB"
+            )
+        fragments = []
+        remaining_cpus = cpus
+        for _ in range(node_count):
+            fragment_cpus = min(workers_per_node, remaining_cpus)
+            remaining_cpus -= fragment_cpus
+            fragments.append({
+                "cpu_slots": fragment_cpus,
+                "memory_gib": per_node_memory,
+            })
+        if remaining_cpus > 0 or any(
+            int(fragment["cpu_slots"]) <= 0 for fragment in fragments
+        ):
+            raise ResourcePlanningError(
+                f"resource-lane item {item_id} cannot distribute its CPU slots "
+                "across the declared nodes"
+            )
+        normalized.append({
+            **dict(item),
+            "item_id": item_id,
+            "cpu_slots": cpus,
+            "memory_gib": memory,
+            "wall_hours": wall,
+            "node_count": node_count,
+            "workers_per_node": workers_per_node,
+            "distributed_replica_execution": distributed,
+            "node_fragments": fragments,
+            "_input_index": index,
+        })
+
+    # Establish lane envelopes with the largest requests first.  This prevents
+    # many small lanes from consuming aggregate capacity that a later large
+    # task needs.  Items are restored to caller order within each lane below.
+    ordered = sorted(
+        normalized,
+        key=lambda row: (
+            -float(row["memory_gib"]),
+            -int(row["cpu_slots"]),
+            -float(row["wall_hours"]),
+            str(row["item_id"]),
+        ),
+    )
+    lanes: list[Dict[str, object]] = []
+
+    def merged_fragments(
+        left: Sequence[Mapping[str, object]],
+        right: Sequence[Mapping[str, object]],
+    ) -> list[Dict[str, object]]:
+        left_rows = sorted(
+            left,
+            key=lambda row: (-float(row["memory_gib"]), -int(row["cpu_slots"])),
+        )
+        right_rows = sorted(
+            right,
+            key=lambda row: (-float(row["memory_gib"]), -int(row["cpu_slots"])),
+        )
+        width = max(len(left_rows), len(right_rows))
+        result = []
+        for index in range(width):
+            a = left_rows[index] if index < len(left_rows) else {}
+            b = right_rows[index] if index < len(right_rows) else {}
+            result.append({
+                "cpu_slots": max(
+                    int(a.get("cpu_slots", 0)), int(b.get("cpu_slots", 0))
+                ),
+                "memory_gib": max(
+                    float(a.get("memory_gib", 0.0)),
+                    float(b.get("memory_gib", 0.0)),
+                ),
+            })
+        return result
+
+    def totals() -> tuple[int, float]:
+        return (
+            sum(int(lane["cpu_slots"]) for lane in lanes),
+            sum(float(lane["memory_gib"]) for lane in lanes),
+        )
+
+    for item in ordered:
+        total_cpu, total_memory = totals()
+        can_open = (
+            total_cpu + int(item["cpu_slots"]) <= maximum_parallel_cpus
+            and total_memory + float(item["memory_gib"])
+            <= maximum_parallel_memory_gib + 1.0e-12
+        )
+        candidates: list[
+            tuple[float, float, int, Dict[str, object], list[Dict[str, object]]]
+        ] = []
+        for lane in lanes:
+            candidate_fragments = merged_fragments(
+                lane["node_fragments"], item["node_fragments"]
+            )
+            new_cpu = sum(
+                int(row["cpu_slots"]) for row in candidate_fragments
+            )
+            new_memory = sum(
+                float(row["memory_gib"]) for row in candidate_fragments
+            )
+            cpu_delta = new_cpu - int(lane["cpu_slots"])
+            memory_delta = new_memory - float(lane["memory_gib"])
+            if (
+                total_cpu + cpu_delta <= maximum_parallel_cpus
+                and total_memory + memory_delta
+                <= maximum_parallel_memory_gib + 1.0e-12
+            ):
+                candidates.append((
+                    float(lane["wall_hours"]) + float(item["wall_hours"]),
+                    memory_delta + float(cpu_delta),
+                    int(lane["lane_index"]),
+                    lane,
+                    candidate_fragments,
+                ))
+        # Prefer a new lane when it reduces the predicted makespan.  Otherwise
+        # grow the least-loaded compatible lane by the smallest reservation.
+        selected: Optional[Dict[str, object]] = None
+        if can_open:
+            existing_finish = min(
+                (candidate[0] for candidate in candidates), default=math.inf
+            )
+            if float(item["wall_hours"]) < existing_finish - 1.0e-12:
+                selected = {
+                    "lane_index": len(lanes),
+                    "cpu_slots": int(item["cpu_slots"]),
+                    "memory_gib": float(item["memory_gib"]),
+                    "wall_hours": 0.0,
+                    "node_fragments": list(item["node_fragments"]),
+                    "items": [],
+                }
+                lanes.append(selected)
+        if selected is None:
+            if not candidates:
+                if not can_open:
+                    raise ResourcePlanningError(
+                        f"resource-lane item {item['item_id']} cannot be assigned "
+                        "within the aggregate CPU and memory caps"
+                    )
+                selected = {
+                    "lane_index": len(lanes),
+                    "cpu_slots": int(item["cpu_slots"]),
+                    "memory_gib": float(item["memory_gib"]),
+                    "wall_hours": 0.0,
+                    "node_fragments": list(item["node_fragments"]),
+                    "items": [],
+                }
+                lanes.append(selected)
+            else:
+                chosen = min(candidates, key=lambda value: value[:3])
+                selected = chosen[3]
+                selected["node_fragments"] = chosen[4]
+                selected["cpu_slots"] = sum(
+                    int(row["cpu_slots"])
+                    for row in selected["node_fragments"]
+                )
+                selected["memory_gib"] = sum(
+                    float(row["memory_gib"])
+                    for row in selected["node_fragments"]
+                )
+        selected["wall_hours"] = (
+            float(selected["wall_hours"]) + float(item["wall_hours"])
+        )
+        selected["items"].append(dict(item))  # type: ignore[union-attr]
+
+    def node_assignment(
+        candidate_lanes: Sequence[Mapping[str, object]],
+    ) -> Optional[list[Dict[str, object]]]:
+        if maximum_cpus_per_node is None:
+            return []
+        assert maximum_memory_gib_per_node is not None
+        assert maximum_nodes is not None
+        ordered_lanes = sorted(
+            candidate_lanes,
+            key=lambda row: (
+                -max(
+                    int(row["cpu_slots"]) / maximum_cpus_per_node,
+                    float(row["memory_gib"])
+                    / float(maximum_memory_gib_per_node),
+                ),
+                -float(row["memory_gib"]),
+                -int(row["cpu_slots"]),
+                int(row["lane_index"]),
+            ),
+        )
+        nodes: list[Dict[str, object]] = []
+        for lane in ordered_lanes:
+            used_for_lane: set[int] = set()
+            for fragment in lane["node_fragments"]:
+                selected_node: Optional[Dict[str, object]] = None
+                for node in nodes:
+                    if int(node["node_index"]) in used_for_lane:
+                        continue
+                    if (
+                        int(node["cpu_slots"]) + int(fragment["cpu_slots"])
+                        <= maximum_cpus_per_node
+                        and float(node["memory_gib"])
+                        + float(fragment["memory_gib"])
+                        <= float(maximum_memory_gib_per_node) + 1.0e-12
+                    ):
+                        selected_node = node
+                        break
+                if selected_node is None:
+                    if len(nodes) >= maximum_nodes:
+                        return None
+                    selected_node = {
+                        "node_index": len(nodes),
+                        "cpu_slots": 0,
+                        "memory_gib": 0.0,
+                        "lane_indices": [],
+                        "lane_fragment_reservations": [],
+                    }
+                    nodes.append(selected_node)
+                selected_node["cpu_slots"] = (
+                    int(selected_node["cpu_slots"])
+                    + int(fragment["cpu_slots"])
+                )
+                selected_node["memory_gib"] = (
+                    float(selected_node["memory_gib"])
+                    + float(fragment["memory_gib"])
+                )
+                if int(lane["lane_index"]) not in selected_node["lane_indices"]:
+                    selected_node["lane_indices"].append(  # type: ignore[union-attr]
+                        int(lane["lane_index"])
+                    )
+                selected_node["lane_fragment_reservations"].append({
+                    "lane_index": int(lane["lane_index"]),
+                    "cpu_slots": int(fragment["cpu_slots"]),
+                    "memory_gib": float(fragment["memory_gib"]),
+                })
+                used_for_lane.add(int(selected_node["node_index"]))
+        return nodes
+
+    # If the aggregate-optimal lane set fragments badly across physical nodes,
+    # serialize the least costly pair of lanes until every simultaneous lane
+    # reservation has a valid node bin.  Merging lanes cannot increase their
+    # CPU or memory envelope; it changes only the predicted wall time.
+    assigned_nodes = node_assignment(lanes)
+    while maximum_cpus_per_node is not None and assigned_nodes is None:
+        if len(lanes) < 2:
+            raise ResourcePlanningError(
+                "resource lanes cannot be packed into the configured node count"
+            )
+        first_index, second_index = min(
+            (
+                (left, right)
+                for left in range(len(lanes))
+                for right in range(left + 1, len(lanes))
+            ),
+            key=lambda pair: (
+                float(lanes[pair[0]]["wall_hours"])
+                + float(lanes[pair[1]]["wall_hours"]),
+                max(
+                    float(lanes[pair[0]]["memory_gib"]),
+                    float(lanes[pair[1]]["memory_gib"]),
+                ),
+                pair,
+            ),
+        )
+        first = lanes[first_index]
+        second = lanes[second_index]
+        first["node_fragments"] = merged_fragments(
+            first["node_fragments"], second["node_fragments"]
+        )
+        first["cpu_slots"] = sum(
+            int(row["cpu_slots"]) for row in first["node_fragments"]
+        )
+        first["memory_gib"] = sum(
+            float(row["memory_gib"]) for row in first["node_fragments"]
+        )
+        first["wall_hours"] = (
+            float(first["wall_hours"]) + float(second["wall_hours"])
+        )
+        first["items"].extend(second["items"])  # type: ignore[union-attr]
+        del lanes[second_index]
+        for lane_index, lane in enumerate(lanes):
+            lane["lane_index"] = lane_index
+        assigned_nodes = node_assignment(lanes)
+
+    nodes_by_lane: Dict[int, list[int]] = {}
+    reservations_by_lane: Dict[int, list[Dict[str, object]]] = {}
+    for node in assigned_nodes or []:
+        for lane_index in node["lane_indices"]:  # type: ignore[union-attr]
+            nodes_by_lane.setdefault(int(lane_index), []).append(
+                int(node["node_index"])
+            )
+        for reservation in node.get("lane_fragment_reservations", []):
+            lane_index = int(reservation["lane_index"])
+            reservations_by_lane.setdefault(lane_index, []).append({
+                "planned_node_index": int(node["node_index"]),
+                "cpu_slots": int(reservation["cpu_slots"]),
+                "memory_gib": float(reservation["memory_gib"]),
+            })
+
+    for lane in lanes:
+        lane_items = sorted(
+            lane["items"], key=lambda row: int(row["_input_index"])
+        )
+        for row in lane_items:
+            row.pop("_input_index", None)
+        lane["items"] = lane_items
+        if maximum_cpus_per_node is not None:
+            planned = sorted(nodes_by_lane[int(lane["lane_index"])])
+            lane["planned_node_indices"] = planned
+            lane["planned_node_index"] = planned[0] if len(planned) == 1 else None
+            lane["planned_node_fragment_reservations"] = sorted(
+                reservations_by_lane[int(lane["lane_index"])],
+                key=lambda row: int(row["planned_node_index"]),
+            )
+            lane["maximum_cpus_per_node"] = maximum_cpus_per_node
+            lane["maximum_memory_gib_per_node"] = float(
+                maximum_memory_gib_per_node
+            )
+            lane["maximum_nodes"] = maximum_nodes
+    return lanes
+
+
 def _permissive_minimum_resource_request(
     *,
     request_scope: str,
@@ -147,10 +597,13 @@ def _permissive_minimum_resource_request(
     memory_overhead_gib: float,
     minimum_scheduler_memory_gib: float,
     minimum_single_task_memory_gib: float,
+    maximum_cpus_per_node: Optional[int],
+    maximum_memory_gib_per_node: Optional[float],
+    maximum_nodes: Optional[int],
 ) -> Dict[str, object]:
     """Describe a padded scheduler request for one modeled minimum schedule.
 
-    The request preserves the wave packing produced under the caller's CPU and
+    The request preserves the lane packing produced under the caller's CPU and
     aggregate-memory caps. It is intentionally a permissive execution floor,
     not a convergence or scientific-sufficiency claim.
     """
@@ -160,20 +613,38 @@ def _permissive_minimum_resource_request(
         - pilot_budget_fraction
         - finalization_headroom_fraction
     )
-    waves = [
-        wave
+    stage_lanes = [
+        [lane for lane in (
+            stage.get("resource_lanes", stage.get("resource_waves", []))
+            if isinstance(
+                stage.get("resource_lanes", stage.get("resource_waves", [])),
+                list,
+            ) else []
+        ) if isinstance(lane, Mapping)]
         for stage in minimum_stages
-        for wave in (
-            stage.get("resource_waves", [])
-            if isinstance(stage.get("resource_waves"), list) else []
-        )
-        if isinstance(wave, Mapping)
     ]
+    lanes = [lane for stage in stage_lanes for lane in stage]
     parallel_cpus = max(
-        (int(wave.get("cpu_slots", 0)) for wave in waves), default=0
+        (sum(int(lane.get("cpu_slots", 0)) for lane in stage) for stage in stage_lanes),
+        default=0,
     )
     aggregate_memory = max(
-        (float(wave.get("memory_gib", 0.0)) for wave in waves), default=0.0
+        (
+            sum(float(lane.get("memory_gib", 0.0)) for lane in stage)
+            for stage in stage_lanes
+        ),
+        default=0.0,
+    )
+    planned_nodes = max(
+        (
+            len({
+                int(lane["planned_node_index"])
+                for lane in stage
+                if lane.get("planned_node_index") is not None
+            })
+            for stage in stage_lanes
+        ),
+        default=0,
     )
     exact_requested_wall = (
         float(minimum_wall_hours) / science_wall_fraction
@@ -186,7 +657,7 @@ def _permissive_minimum_resource_request(
     )
     resource_schedule_available = (
         minimum_wall_hours is not None
-        and bool(waves)
+        and bool(lanes)
         and parallel_cpus <= maximum_parallel_cpus
         and aggregate_memory <= maximum_memory_gib + 1.0e-12
         and minimum_single_task_memory_gib <= maximum_memory_gib + 1.0e-12
@@ -213,6 +684,7 @@ def _permissive_minimum_resource_request(
                 else None
             ),
             "wall_hours": rounded_requested_wall,
+            **({"nodes": planned_nodes} if planned_nodes > 0 else {}),
         },
         "unrounded_request": {
             "aggregate_memory_gib": aggregate_memory or None,
@@ -227,6 +699,9 @@ def _permissive_minimum_resource_request(
             "parallel_cpus": maximum_parallel_cpus,
             "aggregate_memory_gib": maximum_memory_gib,
             "wall_hours": maximum_wall_hours,
+            "cpus_per_node": maximum_cpus_per_node,
+            "memory_gib_per_node": maximum_memory_gib_per_node,
+            "maximum_nodes": maximum_nodes,
         },
         "fits_input_wall_cap": fits_input_wall_cap,
         "additional_wall_hours_required": (
@@ -249,7 +724,7 @@ def _permissive_minimum_resource_request(
             ),
         },
         "interpretation": (
-            "CPU and memory preserve the modeled minimum resource-wave schedule "
+            "CPU and memory preserve the modeled minimum resource-lane schedule "
             "under the supplied caps. Wall time reverses the configured campaign "
             "utilization and pilot/finalization reserves, then rounds up to a "
             "whole scheduler hour."
@@ -563,6 +1038,9 @@ def plan_campaign_resource_budget(
     memory_safety_factor: float = 1.0,
     memory_overhead_gib: float = 0.0,
     minimum_scheduler_memory_gib: float = 0.0,
+    maximum_cpus_per_node: Optional[int] = None,
+    maximum_memory_gib_per_node: Optional[float] = None,
+    maximum_nodes: Optional[int] = None,
 ) -> Dict[str, object]:
     """Allocate one hard CPU/wall envelope across an analysis campaign.
 
@@ -595,6 +1073,46 @@ def plan_campaign_resource_budget(
     minimum_scheduler_memory = _nonnegative_number(
         minimum_scheduler_memory_gib, "minimum_scheduler_memory_gib"
     )
+    node_limits_supplied = (
+        maximum_cpus_per_node is not None
+        or maximum_memory_gib_per_node is not None
+        or maximum_nodes is not None
+    )
+    if node_limits_supplied and (
+        maximum_cpus_per_node is None
+        or maximum_memory_gib_per_node is None
+    ):
+        raise ResourcePlanningError(
+            "node-aware planning requires both maximum_cpus_per_node and "
+            "maximum_memory_gib_per_node"
+        )
+    if maximum_cpus_per_node is not None and (
+        isinstance(maximum_cpus_per_node, bool)
+        or not isinstance(maximum_cpus_per_node, int)
+        or maximum_cpus_per_node <= 0
+    ):
+        raise ResourcePlanningError(
+            "maximum_cpus_per_node must be a positive integer"
+        )
+    node_memory_gib = (
+        None
+        if maximum_memory_gib_per_node is None
+        else _positive_number(
+            maximum_memory_gib_per_node, "maximum_memory_gib_per_node"
+        )
+    )
+    if maximum_nodes is not None and (
+        isinstance(maximum_nodes, bool)
+        or not isinstance(maximum_nodes, int)
+        or maximum_nodes <= 0
+    ):
+        raise ResourcePlanningError("maximum_nodes must be a positive integer")
+    if maximum_cpus_per_node is not None and maximum_nodes is None:
+        assert node_memory_gib is not None
+        maximum_nodes = max(
+            math.ceil(maximum_parallel_cpus / maximum_cpus_per_node),
+            math.ceil(memory_gib / node_memory_gib),
+        )
     utilization = _fraction(planning_utilization, "planning_utilization")
     pilot_fraction = _fraction(
         pilot_budget_fraction, "pilot_budget_fraction", allow_zero=True
@@ -632,6 +1150,12 @@ def plan_campaign_resource_budget(
             raise ResourcePlanningError(
                 f"task {task_id} has an invalid effective_cpu_cap"
             )
+        unconstrained_cap = int(cap)
+        if (
+            maximum_cpus_per_node is not None
+            and raw.get("parallel_execution_model") is None
+        ):
+            cap = min(unconstrained_cap, maximum_cpus_per_node)
         raw_counts = raw.get("source_frames_per_replica")
         if (
             not isinstance(raw_counts, (list, tuple))
@@ -747,6 +1271,40 @@ def plan_campaign_resource_budget(
             raw.get("estimated_peak_memory_gib", 1.0),
             f"task {task_id} estimated_peak_memory_gib",
         )
+        parallel_execution_model = raw.get("parallel_execution_model")
+        parallel_worker_count: Optional[int] = None
+        per_parallel_worker_memory: Optional[float] = None
+        reducer_memory: Optional[float] = None
+        if parallel_execution_model is not None:
+            if (
+                not isinstance(parallel_execution_model, str)
+                or not parallel_execution_model
+            ):
+                raise ResourcePlanningError(
+                    f"task {task_id} parallel_execution_model must be a "
+                    "nonempty string"
+                )
+            raw_worker_count = raw.get("parallel_worker_count")
+            if (
+                isinstance(raw_worker_count, bool)
+                or not isinstance(raw_worker_count, int)
+                or raw_worker_count <= 0
+            ):
+                raise ResourcePlanningError(
+                    f"task {task_id} parallel_worker_count must be a positive "
+                    "integer"
+                )
+            parallel_worker_count = int(raw_worker_count)
+            per_parallel_worker_memory = _positive_number(
+                raw.get("estimated_peak_memory_gib_per_parallel_worker"),
+                f"task {task_id} "
+                "estimated_peak_memory_gib_per_parallel_worker",
+            )
+            reducer_memory = _positive_number(
+                raw.get("reducer_memory_gib", per_parallel_worker_memory),
+                f"task {task_id} reducer_memory_gib",
+            )
+            cap = min(int(cap), parallel_worker_count)
         weight = _positive_number(
             raw.get("priority_weight", 1.0),
             f"task {task_id} priority_weight",
@@ -789,6 +1347,7 @@ def plan_campaign_resource_budget(
             "task_id": task_id,
             "dependency_stage": stage,
             "effective_cpu_cap": cap,
+            "node_unconstrained_effective_cpu_cap": unconstrained_cap,
             "source_frames_per_replica": list(source_counts),
             "minimum_frames_per_replica": int(minimum),
             "maximum_frames_per_replica": int(maximum),
@@ -797,6 +1356,12 @@ def plan_campaign_resource_budget(
             "power_law_cost_model": power_model,
             "measured_memory_cost_model": measured_memory_model,
             "estimated_peak_memory_gib": task_memory,
+            "parallel_execution_model": parallel_execution_model,
+            "parallel_worker_count": parallel_worker_count,
+            "estimated_peak_memory_gib_per_parallel_worker": (
+                per_parallel_worker_memory
+            ),
+            "reducer_memory_gib": reducer_memory,
             "priority_weight": weight,
             "member_observation_multiplier": int(multiplier),
             "balance_group": balance_group or task_id,
@@ -931,7 +1496,58 @@ def plan_campaign_resource_budget(
             return None
         return float(row["fixed_cpu_hours"]) + float(rate) * sum(counts) / 3600.0
 
+    def task_parallel_layout(row: Mapping[str, object]) -> Dict[str, object]:
+        """Resolve one logical task into safe single- or multi-node workers."""
+
+        active_cpus = min(maximum_parallel_cpus, int(row["effective_cpu_cap"]))
+        if row.get("parallel_execution_model") is None:
+            return {
+                "active_worker_count": 1,
+                "execution_cpu_slots": active_cpus,
+                "node_count": 1,
+                "workers_per_node": active_cpus,
+                "distributed_replica_execution": False,
+            }
+        active_workers = min(
+            int(row["parallel_worker_count"]), active_cpus
+        )
+        workers_per_node = active_workers
+        if maximum_cpus_per_node is not None:
+            workers_per_node = min(workers_per_node, maximum_cpus_per_node)
+        if node_memory_gib is not None:
+            unpadded_node_budget = max(
+                0.0, (node_memory_gib - memory_overhead) / memory_factor
+            )
+            if float(row["reducer_memory_gib"]) > unpadded_node_budget:
+                workers_per_node = 0
+            else:
+                workers_per_node = min(
+                    workers_per_node,
+                    math.floor(
+                        unpadded_node_budget
+                        / float(row[
+                            "estimated_peak_memory_gib_per_parallel_worker"
+                        ])
+                    ),
+                )
+        workers_per_node = max(1, workers_per_node)
+        node_count = math.ceil(active_workers / workers_per_node)
+        return {
+            "active_worker_count": active_workers,
+            "execution_cpu_slots": active_workers,
+            "node_count": node_count,
+            "workers_per_node": workers_per_node,
+            "distributed_replica_execution": node_count > 1,
+        }
+
     def task_memory(row: Mapping[str, object], counts: Sequence[int]) -> float:
+        if row.get("parallel_execution_model") is not None:
+            worker_count = int(task_parallel_layout(row)["active_worker_count"])
+            return max(
+                float(row["reducer_memory_gib"]),
+                float(row["estimated_peak_memory_gib_per_parallel_worker"])
+                * worker_count,
+            )
         power_model = row.get("power_law_cost_model")
         observations = sum(counts) * int(row["member_observation_multiplier"])
         if isinstance(power_model, Mapping):
@@ -959,6 +1575,21 @@ def plan_campaign_resource_budget(
     def task_scheduler_memory(
         row: Mapping[str, object], counts: Sequence[int]
     ) -> float:
+        layout = task_parallel_layout(row)
+        if bool(layout["distributed_replica_execution"]):
+            per_node_working = max(
+                float(row["reducer_memory_gib"]),
+                float(row[
+                    "estimated_peak_memory_gib_per_parallel_worker"
+                ]) * int(layout["workers_per_node"]),
+            )
+            per_node_scheduler = max(
+                minimum_scheduler_memory,
+                float(math.ceil(
+                    per_node_working * memory_factor + memory_overhead
+                )),
+            )
+            return per_node_scheduler * int(layout["node_count"])
         return max(
             minimum_scheduler_memory,
             float(math.ceil(
@@ -1001,32 +1632,57 @@ def plan_campaign_resource_budget(
         }
         bundle_resources = []
         for bundle_id, bundle_rows in bundles.items():
+            layouts = [task_parallel_layout(row) for row in bundle_rows]
+            node_count = max(int(layout["node_count"]) for layout in layouts)
+            distributed = any(
+                bool(layout["distributed_replica_execution"])
+                for layout in layouts
+            )
+            workers_per_node = max(
+                int(layout["workers_per_node"]) for layout in layouts
+            )
+            scheduler_memory_per_node = max(
+                task_scheduler_memory(
+                    row, selection[str(row["task_id"])]
+                ) / int(layout["node_count"])
+                for row, layout in zip(bundle_rows, layouts)
+            )
             bundle_resources.append({
                 "item_id": bundle_id,
                 "cpu_slots": max(
-                    min(maximum_parallel_cpus, int(row["effective_cpu_cap"]))
-                    for row in bundle_rows
+                    int(layout["execution_cpu_slots"]) for layout in layouts
                 ),
-                "memory_gib": max(
-                    task_scheduler_memory(
-                        row, selection[str(row["task_id"])]
-                    )
-                    for row in bundle_rows
-                ),
+                "memory_gib": scheduler_memory_per_node * node_count,
                 "wall_hours": bundle_walls[bundle_id],
+                "node_count": node_count,
+                "workers_per_node": workers_per_node,
+                "distributed_replica_execution": distributed,
             })
-        resource_waves = pack_resource_waves(
+        resource_lanes = pack_resource_lanes(
             bundle_resources,
             maximum_parallel_cpus=maximum_parallel_cpus,
             maximum_parallel_memory_gib=memory_gib,
+            maximum_cpus_per_node=maximum_cpus_per_node,
+            maximum_memory_gib_per_node=node_memory_gib,
+            maximum_nodes=maximum_nodes,
         )
         longest = max(bundle_walls.values())
         lower_bound = max(
             stage_cpu_hours / maximum_parallel_cpus,
             longest,
         )
-        packed_wall = sum(
-            float(wave["wall_hours"]) for wave in resource_waves
+        packed_wall = max(
+            (float(lane["wall_hours"]) for lane in resource_lanes),
+            default=0.0,
+        )
+        planned_node_count = (
+            0
+            if maximum_cpus_per_node is None else
+            len({
+                int(node_index)
+                for lane in resource_lanes
+                for node_index in lane.get("planned_node_indices", [])
+            })
         )
         useful = sum(
             max(int(row["effective_cpu_cap"]) for row in bundle_rows)
@@ -1039,9 +1695,15 @@ def plan_campaign_resource_budget(
             "estimated_cpu_hours": stage_cpu_hours,
             "maximum_useful_parallel_cpus": useful,
             "planned_parallel_cpus": min(maximum_parallel_cpus, useful),
+            "planned_node_count": planned_node_count,
             "estimated_wall_hours_lower_bound": lower_bound,
+            "estimated_wall_hours_with_resource_lanes": packed_wall,
+            # Compatibility fields retain the old name while carrying the new
+            # non-convoy lane schedule.  New consumers should use
+            # resource_lanes and estimated_wall_hours_with_resource_lanes.
             "estimated_wall_hours_with_resource_waves": packed_wall,
-            "resource_waves": resource_waves,
+            "resource_lanes": resource_lanes,
+            "resource_waves": resource_lanes,
             "task_ids": [str(row["task_id"]) for row in rows],
             "execution_bundle_wall_hours": bundle_walls,
         }
@@ -1059,7 +1721,7 @@ def plan_campaign_resource_budget(
                 stage_report = schedule_stage(stage, selection, costs)
                 stages.append(stage_report)
                 total_wall += float(
-                    stage_report["estimated_wall_hours_with_resource_waves"]
+                    stage_report["estimated_wall_hours_with_resource_lanes"]
                 )
         except ResourcePlanningError:
             return None, []
@@ -1121,6 +1783,14 @@ def plan_campaign_resource_budget(
                 "required_memory_gib": task_scheduler_memory(
                     row, selected[str(row["task_id"])]
                 ),
+                "required_memory_gib_per_node": (
+                    task_scheduler_memory(
+                        row, selected[str(row["task_id"])]
+                    ) / int(task_parallel_layout(row)["node_count"])
+                ),
+                "required_node_count": int(
+                    task_parallel_layout(row)["node_count"]
+                ),
             }
             for row in normalized
         ),
@@ -1132,16 +1802,38 @@ def plan_campaign_resource_budget(
         float(row["required_memory_gib"])
         for row in minimum_memory_rows
     )
+    single_task_memory_limit_gib = min(
+        memory_gib,
+        node_memory_gib if node_memory_gib is not None else memory_gib,
+    )
     oversized_memory_rows = [
         {
             **row,
             "configured_memory_gib": memory_gib,
+            "per_node_memory_gib": node_memory_gib,
+            "single_task_memory_limit_gib": single_task_memory_limit_gib,
             "shortfall_gib": (
-                float(row["required_memory_gib"]) - memory_gib
+                float(row["required_memory_gib"])
+                - memory_gib
+            ),
+            "per_node_shortfall_gib": max(
+                0.0,
+                float(row["required_memory_gib_per_node"])
+                - (
+                    node_memory_gib
+                    if node_memory_gib is not None else memory_gib
+                ),
             ),
         }
         for row in minimum_memory_rows
-        if float(row["required_memory_gib"]) > memory_gib + 1.0e-12
+        if (
+            float(row["required_memory_gib"]) > memory_gib + 1.0e-12
+            or (
+                node_memory_gib is not None
+                and float(row["required_memory_gib_per_node"])
+                > node_memory_gib + 1.0e-12
+            )
+        )
     ]
     oversized_memory_tasks = [
         str(row["task_id"]) for row in oversized_memory_rows
@@ -1384,10 +2076,19 @@ def plan_campaign_resource_budget(
         all_frames = counts == source_counts
         selected_memory_gib = task_memory(row, counts)
         selected_scheduler_memory_gib = task_scheduler_memory(row, counts)
+        selected_parallel_layout = task_parallel_layout(row)
         task_reports.append({
             **row,
             "selected_physical_frames_per_replica": counts,
             "selected_physical_frame_count": physical_count,
+            **({
+                "projection_selected_physical_frames_per_replica": counts,
+                "projection_selected_physical_frame_count": physical_count,
+                "projection_member_observation_count": (
+                    physical_count
+                    * int(row["member_observation_multiplier"])
+                ),
+            } if row.get("module_id") == "common_pca" else {}),
             "selected_member_observation_count": (
                 physical_count * int(row["member_observation_multiplier"])
             ),
@@ -1418,6 +2119,17 @@ def plan_campaign_resource_budget(
             ),
             "estimated_scheduler_memory_gib_at_selected_observations": (
                 selected_scheduler_memory_gib
+            ),
+            "estimated_scheduler_memory_gib_per_node_at_selected_observations": (
+                selected_scheduler_memory_gib
+                / int(selected_parallel_layout["node_count"])
+            ),
+            "active_parallel_workers_at_selected_observations": (
+                int(task_parallel_layout(row)["active_worker_count"])
+                if row.get("parallel_execution_model") is not None else 1
+            ),
+            "parallel_node_layout_at_selected_observations": (
+                selected_parallel_layout
             ),
             "estimated_wall_hours_at_effective_cpu_cap": (
                 final_costs[task_id]
@@ -1607,7 +2319,7 @@ def plan_campaign_resource_budget(
             "steps and available parallelism, not silently discarded work."
         )
     useful_parallel_cpu_ceiling = workflow_useful_parallel_cpu_ceiling(
-        normalized
+        normalized, maximum_cpus_per_node=maximum_cpus_per_node
     )
     effective_parallel_cpu_cap = min(
         maximum_parallel_cpus, useful_parallel_cpu_ceiling
@@ -1647,6 +2359,9 @@ def plan_campaign_resource_budget(
         memory_overhead_gib=memory_overhead,
         minimum_scheduler_memory_gib=minimum_scheduler_memory,
         minimum_single_task_memory_gib=minimum_required_memory_gib,
+        maximum_cpus_per_node=maximum_cpus_per_node,
+        maximum_memory_gib_per_node=node_memory_gib,
+        maximum_nodes=maximum_nodes,
     )
     return {
         "planning_schema": "salsbury-campaign-resource-plan-v1",
@@ -1659,6 +2374,17 @@ def plan_campaign_resource_budget(
         "maximum_wall_hours_input": wall_hours,
         "maximum_memory_gib_input": memory_gib,
         "maximum_parallel_memory_gib_input": memory_gib,
+        "node_resource_policy": {
+            "enabled": maximum_cpus_per_node is not None,
+            "maximum_cpus_per_node": maximum_cpus_per_node,
+            "maximum_memory_gib_per_node": node_memory_gib,
+            "maximum_nodes": maximum_nodes,
+            "memory_basis": (
+                "safety_adjusted_scheduler_request"
+                if maximum_cpus_per_node is not None else None
+            ),
+            "single_node_per_task": maximum_cpus_per_node is not None,
+        },
         "scheduler_memory_safety_factor": memory_factor,
         "memory_overhead_gib": memory_overhead,
         "minimum_scheduler_memory_gib": minimum_scheduler_memory,
@@ -1757,6 +2483,7 @@ def plan_campaign_resource_budget(
         "memory_feasibility": {
             "configured_memory_gib": memory_gib,
             "minimum_required_memory_gib": minimum_required_memory_gib,
+            "single_task_memory_limit_gib": single_task_memory_limit_gib,
             "minimum_required_working_set_gib": max(
                 float(row["required_working_set_gib"])
                 for row in minimum_memory_rows
@@ -1820,6 +2547,9 @@ def plan_projection_coupled_campaign_resource_budget(
     memory_safety_factor: float = 1.0,
     memory_overhead_gib: float = 0.0,
     minimum_scheduler_memory_gib: float = 0.0,
+    maximum_cpus_per_node: Optional[int] = None,
+    maximum_memory_gib_per_node: Optional[float] = None,
+    maximum_nodes: Optional[int] = None,
     maximum_coupling_iterations: int = 12,
 ) -> Dict[str, object]:
     """Replan PCA projections and their clustering fits to one fixed point.
@@ -1899,6 +2629,9 @@ def plan_projection_coupled_campaign_resource_budget(
             memory_safety_factor=memory_safety_factor,
             memory_overhead_gib=memory_overhead_gib,
             minimum_scheduler_memory_gib=minimum_scheduler_memory_gib,
+            maximum_cpus_per_node=maximum_cpus_per_node,
+            maximum_memory_gib_per_node=maximum_memory_gib_per_node,
+            maximum_nodes=maximum_nodes,
         )
         planned_rows = {
             str(row["task_id"]): row
@@ -2311,7 +3044,16 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
     memory_safety_factor: float = 1.0,
     memory_overhead_gib: float = 0.0,
     minimum_scheduler_memory_gib: float = 0.0,
+    maximum_cpus_per_node: Optional[int] = None,
+    maximum_memory_gib_per_node: Optional[float] = None,
+    maximum_nodes: Optional[int] = None,
     maximum_coupling_iterations: int = 12,
+    protected_module_ids: Sequence[str] = (
+        "coordinate_cache", "provenance_manifest", "preflight_inventory",
+        "common_atom_mapping", "structural_integrity_qc", "replica_rmsd_rg",
+        "pooled_rmsf", "individual_pca", "common_pca", "dccm",
+        "pca_fes_basins", "representative_frames",
+    ),
 ) -> Dict[str, object]:
     """Jointly choose an overall trajectory stride and downstream strides.
 
@@ -2367,8 +3109,10 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
             "coordinate_cache_minimum_frames_per_replica must be a positive integer"
         )
 
+    protected_modules = {str(value) for value in protected_module_ids}
+    protected_modules.add("coordinate_cache")
     base_tasks: list[Dict[str, object]] = []
-    overall_minimum = declared_minimum
+    protected_replica_minima = [declared_minimum]
     for original in tasks:
         row = dict(original)
         if (
@@ -2395,12 +3139,12 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
                     max(int(value) for value in raw_counts),
                 )
             )
-            overall_minimum = max(
-                overall_minimum,
-                int(row["global_stride_declared_minimum_frames_per_replica"]),
-            )
+            if str(row.get("module_id")) in protected_modules:
+                protected_replica_minima.append(int(
+                    row["global_stride_declared_minimum_frames_per_replica"]
+                ))
         base_tasks.append(row)
-    declared_minimum = overall_minimum
+    declared_minimum = max(protected_replica_minima)
     maximum_stride = _overall_trajectory_maximum_stride(
         cache_source, declared_minimum
     )
@@ -2457,6 +3201,7 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
     feasible: list[
         tuple[tuple[float, float, float, int, float], Dict[str, object]]
     ] = []
+    candidate_plans: list[Dict[str, object]] = []
     best_feasible_information = -math.inf
     for candidate_index, cache_stride in enumerate(candidates):
         evaluated_candidates.append(cache_stride)
@@ -2567,19 +3312,106 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
                     )
                     row.pop("dynamic_coupling_ceiling_per_replica", None)
             candidate_tasks.append(row)
-        invalid_minimum_tasks = sorted(
-            str(row.get("task_id"))
-            for row in candidate_tasks
-            if row.get("task_scope") != "conformational_view_algorithm_fit"
-            and int(row["maximum_frames_per_replica"])
-            < int(row["minimum_frames_per_replica"])
-        )
-        if invalid_minimum_tasks:
+        invalid_protected_tasks: list[Dict[str, object]] = []
+        invalid_optional_tasks: list[Dict[str, object]] = []
+        for row in candidate_tasks:
+            is_protected = str(row.get("module_id")) in protected_modules
+            invalid_rows = (
+                invalid_protected_tasks if is_protected
+                else invalid_optional_tasks
+            )
+            task_id = str(row.get("task_id"))
+            if task_id == cache_id:
+                retained = row.get(
+                    "coordinate_cache_candidate_selected_frames_per_replica", []
+                )
+                if not isinstance(retained, list) or any(
+                    int(value) < coordinate_cache_minimum_frames_per_replica
+                    for value in retained
+                ):
+                    invalid_rows.append({
+                        "task_id": task_id,
+                        "reason": "coordinate_cache_minimum_frames_per_replica",
+                    })
+                continue
+            if row.get("task_scope") == "conformational_view_algorithm_fit":
+                # This task consumes its parent projection. The parent protected
+                # estimator is checked here; the fit's method stride is checked
+                # by the coupled downstream planner.
+                continue
+            raw_counts = [int(value) for value in row[
+                "global_stride_raw_source_frames_per_replica"
+            ]]
+            retained = [
+                integer_stride_selected_count(value, cache_stride)
+                for value in raw_counts
+            ]
+            embedded = row.get("scientific_sampling_requirements")
+            profile = (
+                profile_from_contract(embedded)
+                if isinstance(embedded, Mapping) else None
+            )
+            profile_failed = False
+            if profile is not None and profile.minimum_frames_per_replica > 0:
+                system_ids = row.get("system_ids_per_replica")
+                raw_intervals = row.get(
+                    "global_stride_raw_frame_intervals_ns_per_replica",
+                    row.get("frame_intervals_ns_per_replica"),
+                )
+                spans = row.get("source_time_spans_ns_per_replica")
+                assessment = assess_raw_sampling(
+                    profile,
+                    selected_frames_per_replica=retained,
+                    source_frames_per_replica=raw_counts,
+                    system_ids_per_replica=(
+                        [str(value) for value in system_ids]
+                        if isinstance(system_ids, list) else None
+                    ),
+                    integer_stride=cache_stride,
+                    frame_intervals_ns_per_replica=(
+                        [float(value) for value in raw_intervals]
+                        if isinstance(raw_intervals, list) else None
+                    ),
+                    source_time_spans_ns_per_replica=(
+                        [float(value) for value in spans]
+                        if isinstance(spans, list) else None
+                    ),
+                )
+                if not bool(assessment["keep_enabled"]):
+                    invalid_rows.append({
+                        "task_id": task_id,
+                        "reason": "scientific_sampling_contract",
+                        "assessment": assessment,
+                    })
+                    profile_failed = True
+            # Some task definitions impose a stronger, data-dependent floor
+            # than the packaged generic profile.  Grouped ML is one example:
+            # its required projection count also depends on the requested
+            # number and size of independent time blocks.  Check that declared
+            # floor even when an embedded profile is present.  Otherwise a
+            # coarse cache candidate reaches the resource planner with
+            # maximum < minimum and raises instead of being rejected (or made
+            # available to dependency-closed optional-module reduction).
+            if not profile_failed and any(
+                chosen < min(
+                    int(row["global_stride_declared_minimum_frames_per_replica"]),
+                    available,
+                )
+                for chosen, available in zip(retained, raw_counts)
+            ):
+                invalid_rows.append({
+                    "task_id": task_id,
+                    "reason": "declared_minimum_frames_per_replica",
+                })
+        if invalid_protected_tasks:
             evaluations.append({
                 "overall_trajectory_integer_stride": cache_stride,
                 "coordinate_cache_integer_stride": cache_stride,
-                "feasibility_status": "scientific_minimum_pruned",
-                "invalid_minimum_task_ids": invalid_minimum_tasks,
+                "feasibility_status": "protected_scientific_minimum_pruned",
+                "invalid_minimum_task_ids": [
+                    str(row["task_id"]) for row in invalid_protected_tasks
+                ],
+                "invalid_protected_tasks": invalid_protected_tasks,
                 "balanced_information_upper_bound": (
                     _global_stride_information_upper_bound(
                         base_tasks, cache_stride
@@ -2590,8 +3422,28 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
                 ),
             })
             continue
+        planner_candidate_tasks = candidate_tasks
+        if invalid_optional_tasks:
+            # Optional methods that cannot meet their own scientific floor at
+            # this cache stride make the complete candidate infeasible.  Keep
+            # the resource model evaluable so the dependency-closed subset
+            # recommender can measure the benefit of disabling them.  The
+            # temporary clamp is diagnostic only; the returned plan is forced
+            # fail-closed and can never be selected as a feasible campaign.
+            invalid_ids = {
+                str(row["task_id"]) for row in invalid_optional_tasks
+            }
+            planner_candidate_tasks = []
+            for original in candidate_tasks:
+                row = dict(original)
+                if str(row.get("task_id")) in invalid_ids:
+                    row["minimum_frames_per_replica"] = min(
+                        int(row["minimum_frames_per_replica"]),
+                        int(row["maximum_frames_per_replica"]),
+                    )
+                planner_candidate_tasks.append(row)
         plan = plan_projection_coupled_campaign_resource_budget(
-            candidate_tasks,
+            planner_candidate_tasks,
             maximum_parallel_cpus=maximum_parallel_cpus,
             maximum_wall_hours=maximum_wall_hours,
             maximum_memory_gib=maximum_memory_gib,
@@ -2601,13 +3453,34 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
             memory_safety_factor=memory_safety_factor,
             memory_overhead_gib=memory_overhead_gib,
             minimum_scheduler_memory_gib=minimum_scheduler_memory_gib,
+            maximum_cpus_per_node=maximum_cpus_per_node,
+            maximum_memory_gib_per_node=maximum_memory_gib_per_node,
+            maximum_nodes=maximum_nodes,
             maximum_coupling_iterations=maximum_coupling_iterations,
         )
+        candidate_plans.append(plan)
+        if invalid_optional_tasks:
+            plan["feasibility_status"] = "infeasible"
+            reasons = list(plan.get("infeasibility_reasons", []))
+            reasons.append(
+                "optional tasks fail their scientific sampling contracts at "
+                f"overall trajectory stride {cache_stride}"
+            )
+            plan["infeasibility_reasons"] = reasons
+            plan["optional_scientific_minimum_failures"] = (
+                invalid_optional_tasks
+            )
         information = _global_plan_information_metrics(plan)
         evaluation = {
             "overall_trajectory_integer_stride": cache_stride,
             "coordinate_cache_integer_stride": cache_stride,
             "feasibility_status": plan["feasibility_status"],
+            **({
+                "invalid_optional_task_ids": [
+                    str(row["task_id"]) for row in invalid_optional_tasks
+                ],
+                "invalid_optional_tasks": invalid_optional_tasks,
+            } if invalid_optional_tasks else {}),
             **information,
             "estimated_selected_cpu_hours": plan[
                 "estimated_selected_cpu_hours"
@@ -2650,19 +3523,41 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
     if not feasible:
         # Return the finest candidate's fail-closed diagnostic rather than
         # obscuring the actual technical minimum or memory shortfall.
-        result = plan_projection_coupled_campaign_resource_budget(
-            base_tasks,
-            maximum_parallel_cpus=maximum_parallel_cpus,
-            maximum_wall_hours=maximum_wall_hours,
-            maximum_memory_gib=maximum_memory_gib,
-            planning_utilization=planning_utilization,
-            pilot_budget_fraction=pilot_budget_fraction,
-            finalization_headroom_fraction=finalization_headroom_fraction,
-            memory_safety_factor=memory_safety_factor,
-            memory_overhead_gib=memory_overhead_gib,
-            minimum_scheduler_memory_gib=minimum_scheduler_memory_gib,
-            maximum_coupling_iterations=maximum_coupling_iterations,
-        )
+        if candidate_plans:
+            result = min(candidate_plans, key=_resource_shortfall_score)
+        else:
+            # No resource calculation is valid when every candidate violates
+            # a protected scientific contract.  Return a deliberately
+            # fail-closed diagnostic shell without pricing such a stride.
+            science_wall = (
+                float(maximum_wall_hours)
+                * float(planning_utilization)
+                * (1.0 - float(pilot_budget_fraction))
+                * (1.0 - float(finalization_headroom_fraction))
+            )
+            result = {
+                "feasibility_status": "infeasible",
+                "infeasibility_reasons": [
+                    "every overall trajectory stride candidate violates a "
+                    "protected scientific sampling contract"
+                ],
+                "tasks": [],
+                "science_budget_cpu_hours": (
+                    float(maximum_parallel_cpus) * science_wall
+                ),
+                "science_budget_wall_hours": science_wall,
+                "minimum_known_cpu_hours": 0.0,
+                "minimum_wall_hours_lower_bound": None,
+                "memory_feasibility": {
+                    "minimum_required_memory_gib": 0.0,
+                    "configured_memory_gib": float(maximum_memory_gib),
+                },
+                "protected_scientific_minimum_failures": [
+                    row
+                    for evaluation in evaluations
+                    for row in evaluation.get("invalid_protected_tasks", [])
+                ],
+            }
         result["coordinate_cache_coupling"] = {
             "converged": False,
             "selected_overall_trajectory_integer_stride": None,
@@ -2745,9 +3640,12 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
         "candidate_evaluations": evaluations,
         "planner_total_wall_seconds": time.monotonic() - overall_planning_started,
         "candidate_policy": (
-            "Evaluate each declared exact integer overall stride on every raw "
+            "Reject a candidate before resource optimization when its raw "
+            "stride violates a protected analysis contract. Evaluate every "
+            "remaining exact integer overall stride on every retained raw "
             "trajectory consumer, including solvated analyses, then replan "
-            "method-specific and projection-derived strides. The cache scan "
+            "method-specific and projection-derived strides. Optional methods "
+            "may be disabled only by dependency-closed reduction. The cache scan "
             "fraction charges sequential connectivity reconstruction to all raw "
             "frames and the remaining materialization cost to retained frames."
         ),
@@ -2830,6 +3728,16 @@ def _resource_shortfall_score(plan: Mapping[str, object]) -> float:
     calibration = plan.get("tasks_requiring_project_pilots", [])
     if isinstance(calibration, list):
         score += float(len(calibration))
+    optional_scientific_failures = plan.get(
+        "optional_scientific_minimum_failures", []
+    )
+    if isinstance(optional_scientific_failures, list):
+        score += float(len(optional_scientific_failures))
+    protected_scientific_failures = plan.get(
+        "protected_scientific_minimum_failures", []
+    )
+    if isinstance(protected_scientific_failures, list):
+        score += 1000.0 * float(len(protected_scientific_failures))
     return score
 
 
@@ -2845,10 +3753,19 @@ def recommend_scientifically_valid_task_subset(
     memory_safety_factor: float = 1.0,
     memory_overhead_gib: float = 0.0,
     minimum_scheduler_memory_gib: float = 0.0,
+    maximum_cpus_per_node: Optional[int] = None,
+    maximum_memory_gib_per_node: Optional[float] = None,
+    maximum_nodes: Optional[int] = None,
     protected_module_ids: Sequence[str] = (
         "coordinate_cache", "provenance_manifest", "preflight_inventory",
-        "common_atom_mapping", "structural_integrity_qc",
+        "common_atom_mapping", "structural_integrity_qc", "replica_rmsd_rg",
+        "pooled_rmsf", "individual_pca", "common_pca", "dccm",
+        "pca_fes_basins", "representative_frames",
     ),
+    use_global_stride_coupling: bool = False,
+    coordinate_cache_minimum_frames_per_replica: int = 1,
+    coordinate_cache_full_scan_fraction: float = 1.0,
+    overall_stride_candidate_strides: Optional[Sequence[int]] = None,
 ) -> Dict[str, object]:
     """Propose the broadest scientifically valid task subset for an envelope.
 
@@ -2873,7 +3790,28 @@ def recommend_scientifically_valid_task_subset(
         "memory_safety_factor": memory_safety_factor,
         "memory_overhead_gib": memory_overhead_gib,
         "minimum_scheduler_memory_gib": minimum_scheduler_memory_gib,
+        "maximum_cpus_per_node": maximum_cpus_per_node,
+        "maximum_memory_gib_per_node": maximum_memory_gib_per_node,
+        "maximum_nodes": maximum_nodes,
     }
+
+    def run_planner(rows: Sequence[Mapping[str, object]]) -> Dict[str, object]:
+        if use_global_stride_coupling:
+            return plan_global_stride_projection_coupled_campaign_resource_budget(
+                rows,
+                coordinate_cache_minimum_frames_per_replica=(
+                    coordinate_cache_minimum_frames_per_replica
+                ),
+                coordinate_cache_full_scan_fraction=(
+                    coordinate_cache_full_scan_fraction
+                ),
+                overall_stride_candidate_strides=(
+                    overall_stride_candidate_strides
+                ),
+                protected_module_ids=tuple(protected_module_ids),
+                **planner_kwargs,
+            )
+        return plan_campaign_resource_budget(rows, **planner_kwargs)
     working = [deepcopy(dict(task)) for task in tasks]
     if not working:
         raise ResourcePlanningError("task-subset recommendation requires tasks")
@@ -2914,19 +3852,13 @@ def recommend_scientifically_valid_task_subset(
                 if any(dependency not in modules_present for dependency in dependencies):
                     removed.add(task_id)
                     changed = True
-        remaining_conformational = any(
-            str(row["task_id"]) not in removed
-            and str(row.get("task_scope", "")).startswith("conformational_view")
-            for row in rows
-        )
-        if not remaining_conformational:
-            removed.update(
-                str(row["task_id"])
-                for row in rows if row.get("module_id") == "coordinate_cache"
-            )
+        # The coordinate cache is also the validated input for cache-compatible
+        # base modules.  It is protected preprocessing, not a disposable
+        # conformational-view helper, so optional-module removal never deletes
+        # it merely because no PCA view remains.
         return removed
 
-    current_plan = plan_campaign_resource_budget(working, **planner_kwargs)
+    current_plan = run_planner(working)
     current_score = _resource_shortfall_score(current_plan)
     while current_plan["feasibility_status"] != "feasible":
         switches = sorted({
@@ -2944,9 +3876,7 @@ def recommend_scientifically_valid_task_subset(
             ]
             if not candidate_tasks:
                 continue
-            candidate_plan = plan_campaign_resource_budget(
-                candidate_tasks, **planner_kwargs
-            )
+            candidate_plan = run_planner(candidate_tasks)
             candidate_score = _resource_shortfall_score(candidate_plan)
             relief = current_score - candidate_score
             if relief <= 1.0e-12:
@@ -3038,7 +3968,12 @@ def recommend_scientifically_valid_task_subset(
         "planner_wall_seconds": time.monotonic() - started,
         "strategy": (
             "deterministic dependency-closed removal by normalized CPU, wall, "
-            "and memory shortfall relief per lost scientific-priority weight"
+            "and memory shortfall relief per lost scientific-priority weight; "
+            + (
+                "every subset is repriced with coupled cache and method strides"
+                if use_global_stride_coupling else
+                "every subset is repriced with direct method strides"
+            )
         ),
         "scientific_boundary": (
             "This is a proposed configuration. Apply and rerun planning explicitly; "

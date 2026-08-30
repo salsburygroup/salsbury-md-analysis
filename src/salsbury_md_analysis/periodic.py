@@ -547,7 +547,9 @@ class PeriodicFrameProcessor:
                 raise PeriodicReconstructionError(
                     "preprocessed coordinate cache report is not technically complete"
                 )
-            if report.get("coordinate_representation") != "made_whole_unaligned":
+            if report.get("coordinate_representation") != (
+                "continuous_unwrap_unaligned_strided"
+            ):
                 raise PeriodicReconstructionError(
                     "preprocessed coordinate cache report has the wrong representation"
                 )

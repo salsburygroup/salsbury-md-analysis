@@ -54,6 +54,9 @@ The comprehensive, nonredundant `standard_md_v1` profile includes:
 The exact module contracts, inputs, outputs, status, and interpretation limits
 are generated from the code registry in
 [`docs/generated/MODULE_REFERENCE.md`](docs/generated/MODULE_REFERENCE.md).
+Replica-parallel execution boundaries—including pooled means, covariance,
+bases, clustering, and segment-safe transition rules—are documented in
+[`docs/ENSEMBLE_PARALLELISM.md`](docs/ENSEMBLE_PARALLELISM.md).
 The final non-docking legacy destination review is summarized in
 [`docs/LEGACY_REVIEW.md`](docs/LEGACY_REVIEW.md); it closes repository placement
 without treating experimental modules as scientifically supported.
@@ -151,12 +154,13 @@ ceiling, the response includes
 counts. The planning record keeps the requested count, but the generated local,
 custom, and Slurm launchers use the smaller effective count; Slurm array widths
 and multiprocess worker requests are capped accordingly. If the envelope cannot
-retain protected preparation and structural-integrity checks at their minima,
+retain the protected scientific core—preparation/QC, RMSD/Rg, RMSF, individual
+and common PCA, DCCM, PCA FES, and observed representative frames—at its minima,
 planning returns
 `planning_outcome: no_acceptable_reduced_plan`; it does not propose disabling
 those checks. The response also reports a
-`protected_subset_minimum_request`: padded CPUs, aggregate memory, and whole
-wall hours for the best dependency-closed subset that retains every protected
+`protected_subset_minimum_request`: padded CPUs, aggregate memory, node count
+when configured, and whole wall hours for the best dependency-closed subset that retains every protected
 module under the supplied CPU and memory caps. This is a permissive execution
 floor, not evidence that the trajectory is converged or scientifically
 adequate; the scientific question may require a larger request.
@@ -289,6 +293,15 @@ can therefore increase the integer strides or serialize work even when every
 individual task fits. The local executor and the generated `submit.sh` enforce
 the same limits.
 
+Slurm profiles may also declare CPUs and memory per node. The planner applies
+the profile's memory padding before placing work. Replica-parallel tasks may
+span several nodes; non-distributed tasks must fit one node. The DEAC profile
+uses an editable 44-CPU, 185-GiB node shape. For example, 63 workers with a
+3-GiB working-set estimate each are placed 40 plus 23 under the DEAC
+`1.5x + 1 GiB` padding rule. Forty-four such workers would request 199 GiB and
+cannot occupy one 185-GiB node. The submission preview reports each planned
+node's padded CPU and memory reservation and the aggregate campaign total.
+
 For an insufficient memory cap, `campaign-resource-plan.json` and
 `memory-feasibility-report.json` state (1) the largest enabled technical-minimum
 working-set estimate, (2) the safety-adjusted memory request that would retain all enabled
@@ -302,6 +315,17 @@ configuration switches and anything that depends on them, replans without
 lowering frame minima, and writes the
 fully explicit result to `analysis-config.memory-fit.json`. If the reduced
 campaign still violates CPU or wall-time limits, it still fails.
+
+For an opt-in reduction across CPU, wall time, and memory, use
+`--auto-disable-optional-to-fit-resources`. The planner starts with the full
+requested workflow. If it does not fit, it applies the planner's
+dependency-closed optional switch set, preserves every protected module, and
+replans. The output retains the request in `analysis-config.requested.json`,
+writes the runnable choice to `analysis-config.resource-fit.json`, and records
+every direct and transitive disablement in `resource-fit-report.json`. The
+command fails when the protected core cannot fit; it never weakens protected
+QC or scientific sampling minima.
+
 Trajectory execution subsampling is never random: it is deterministic,
 replica-balanced, and spread over the full time range. Every production
 trajectory selector receives one exact integer stride over each concatenated
@@ -433,8 +457,10 @@ Run `salsbury-md-analysis list-modules` to see the module identifiers. The
 prepared campaign writes the complete resolved configuration to
 `analysis-config.json` and records every enabled, disabled, or deferred module
 in `module-coverage.json`. Disabling an upstream module also disables analyses
-that depend on it; required preflight, provenance, and atom-mapping checks
-cannot be turned off, and neither can structural-integrity QC. Each complete
+that depend on it. The protected core—preflight, provenance, atom mapping,
+structural-integrity QC, RMSD/Rg, pooled RMSF, individual/common PCA, DCCM,
+PCA FES, and representative frames—cannot be turned off. Comparison campaigns
+also protect integrated comparison. Each complete
 module row includes a generated `protected` flag, `depends_on`, and
 `turning_off_also_disables`, while `module_groups` arranges the switches as
 infrastructure, quality/motion, conformational bases, states/kinetics,

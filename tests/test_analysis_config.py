@@ -9,6 +9,7 @@ from salsbury_md_analysis.analysis_config import (
     default_analysis_config,
     load_analysis_config,
     make_memory_fit_config,
+    make_resource_fit_config,
 )
 
 
@@ -202,30 +203,38 @@ class AnalysisConfigTests(unittest.TestCase):
             path.write_text(json.dumps({
                 "config_schema": "salsbury-analysis-config-v1",
                 "modules": {
-                    "common_pca": {"enabled": False},
-                    "replica_rmsd_rg": {"options": {"frame_stride": 7}},
+                    "clustering_kmeans": {"enabled": False},
+                    "solvent_accessible_surface_area": {
+                        "options": {"frame_stride": 7}
+                    },
                 },
             }), encoding="utf-8")
             module_ids = [
                 "provenance_manifest", "preflight_inventory", "common_atom_mapping",
-                "common_pca", "pca_fes_basins", "replica_rmsd_rg",
+                "clustering_kmeans", "grouped_ml",
+                "solvent_accessible_surface_area",
             ]
             config = load_analysis_config(path, module_ids, ["global"])
             definitions, commands, requested, reasons = apply_module_configuration(
                 {
-                    "common_pca": {}, "pca_fes_basins": {},
-                    "replica_rmsd_rg": {"frame_stride": 1},
+                    "clustering_kmeans": {}, "grouped_ml": {},
+                    "solvent_accessible_surface_area": {"frame_stride": 1},
                 },
-                ["common-pca", "pca-fes-basins", "rmsd-rg"],
-                ["common_pca", "pca_fes_basins", "replica_rmsd_rg"],
+                ["cluster-kmeans", "grouped-ml", "sasa"],
+                [
+                    "clustering_kmeans", "grouped_ml",
+                    "solvent_accessible_surface_area",
+                ],
                 config,
             )
-            self.assertEqual(commands, ["rmsd-rg"])
-            self.assertEqual(requested, ["replica_rmsd_rg"])
-            self.assertEqual(definitions["replica_rmsd_rg"]["frame_stride"], 7)
-            self.assertIn("pca_fes_basins", reasons)
+            self.assertEqual(commands, ["sasa"])
+            self.assertEqual(requested, ["solvent_accessible_surface_area"])
+            self.assertEqual(
+                definitions["solvent_accessible_surface_area"]["frame_stride"], 7
+            )
+            self.assertIn("grouped_ml", reasons)
 
-    def test_structural_qc_is_protected_and_disabled_pca_turns_off_views(self):
+    def test_scientific_core_is_protected(self):
         module_ids = [
             "provenance_manifest", "preflight_inventory", "common_atom_mapping",
             "structural_integrity_qc", "common_pca", "pca_fes_basins",
@@ -234,6 +243,8 @@ class AnalysisConfigTests(unittest.TestCase):
         self.assertTrue(
             generated["modules"]["structural_integrity_qc"]["protected"]
         )
+        self.assertTrue(generated["modules"]["common_pca"]["protected"])
+        self.assertTrue(generated["modules"]["pca_fes_basins"]["protected"])
         self.assertIn(
             "structural_integrity_qc",
             generated["module_groups"]["01_infrastructure"]["modules"],
@@ -244,16 +255,13 @@ class AnalysisConfigTests(unittest.TestCase):
                 "config_schema": "salsbury-analysis-config-v1",
                 "modules": {"common_pca": {"enabled": False}},
             }), encoding="utf-8")
-            resolved = load_analysis_config(
-                path, module_ids, ["global_common_heavy"]
-            )
-            self.assertFalse(resolved["views"]["global_common_heavy"]["enabled"])
-            self.assertFalse(
-                resolved["views"]["global_common_heavy"][
-                    "state_trajectory_exports_enabled"
-                ]
-            )
-
+            with self.assertRaisesRegex(
+                AnalysisConfigError,
+                "protected module common_pca cannot be disabled",
+            ):
+                load_analysis_config(
+                    path, module_ids, ["global_common_heavy"]
+                )
             path.write_text(json.dumps({
                 "config_schema": "salsbury-analysis-config-v1",
                 "modules": {"structural_integrity_qc": {"enabled": False}},
@@ -298,26 +306,54 @@ class AnalysisConfigTests(unittest.TestCase):
     def test_memory_fit_config_materializes_dependency_disables(self):
         config = default_analysis_config(
             [
-                "common_pca", "pca_fes_basins", "representative_frames",
+                "clustering_kmeans", "grouped_ml",
                 "solvent_accessible_surface_area",
             ],
             ["global_common_heavy"],
         )
         reduced, direct, transitive = make_memory_fit_config(
-            config, ["common_pca", "coordinate_cache"]
+            config, ["clustering_kmeans", "coordinate_cache"]
         )
-        self.assertEqual(direct, ["common_pca", "coordinate_cache"])
-        self.assertEqual(
-            transitive, ["pca_fes_basins", "representative_frames"]
-        )
+        self.assertEqual(direct, ["clustering_kmeans", "coordinate_cache"])
+        self.assertEqual(transitive, ["grouped_ml"])
         self.assertEqual(reduced["execution"]["coordinate_cache"], "off")
-        self.assertFalse(reduced["modules"]["common_pca"]["enabled"])
-        self.assertFalse(reduced["modules"]["pca_fes_basins"]["enabled"])
-        self.assertFalse(reduced["modules"]["representative_frames"]["enabled"])
-        self.assertFalse(reduced["views"]["global_common_heavy"]["enabled"])
+        self.assertFalse(reduced["modules"]["clustering_kmeans"]["enabled"])
+        self.assertFalse(reduced["modules"]["grouped_ml"]["enabled"])
         self.assertTrue(
             reduced["modules"]["solvent_accessible_surface_area"]["enabled"]
         )
+
+    def test_resource_fit_config_materializes_planner_switch_closure(self):
+        config = default_analysis_config(
+            [
+                "structural_integrity_qc", "common_pca", "pca_fes_basins",
+                "representative_frames", "clustering_kmeans", "grouped_ml",
+                "solvent_accessible_surface_area",
+            ],
+            ["global_common_heavy"],
+        )
+        reduced, direct, transitive = make_resource_fit_config(
+            config, ["modules.clustering_kmeans.enabled"]
+        )
+        self.assertEqual(direct, ["modules.clustering_kmeans.enabled"])
+        self.assertEqual(transitive, ["grouped_ml"])
+        self.assertTrue(
+            reduced["modules"]["structural_integrity_qc"]["enabled"]
+        )
+        self.assertFalse(reduced["modules"]["clustering_kmeans"]["enabled"])
+        self.assertFalse(reduced["modules"]["grouped_ml"]["enabled"])
+
+    def test_resource_fit_refuses_protected_switch(self):
+        config = default_analysis_config(
+            ["structural_integrity_qc", "replica_rmsd_rg"], []
+        )
+        with self.assertRaisesRegex(
+            AnalysisConfigError, "protected module structural_integrity_qc"
+        ):
+            make_resource_fit_config(
+                config, ["modules.structural_integrity_qc.enabled"]
+            )
+
     def test_clustering_method_switches_filter_dedicated_and_alternative_methods(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "config.json"

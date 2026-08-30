@@ -36,11 +36,13 @@ It stops after writing the cache. A later analysis config can reuse it:
 }
 ```
 
-The relative path is resolved from the analysis-config file. Preparation
-checks that the cache is complete and stride 1, that every decoded source frame
-was retained, and that system/replica/segment identities and source topology,
-connectivity, and trajectory identities still match. If a recorded content
-hash exists it is checked as well. A mismatch fails before the cache is used.
+The relative path is resolved from the analysis-config file. This explicit
+lossless mode produces stride 1. The validator also accepts a planner-selected
+strided cache when its positive integer stride is declared, every raw frame was
+decoded in order for continuous reconstruction, and the retained count exactly
+matches that stride. System, replica, segment, topology, connectivity, and
+trajectory identities must still match. If a recorded content hash exists it
+is checked as well. A mismatch fails before the cache is used.
 
 The output directory must not already exist. It is assembled under a temporary
 sibling directory and installed with one atomic rename only after every frame,
@@ -65,10 +67,36 @@ replicas; available memory and storage bandwidth may require a lower worker
 count. The campaign plan reports both this replica-parallel ceiling and the
 full workflow's dependency-stage CPU ceiling.
 
+Continuous reconstruction is sequential only within one replica because frame
+to-frame image continuity must be retained. Replicas do not share unwrap state:
+each worker owns one complete replica timeline, including its ordered segments,
+and the parent assembles the independently completed caches after all workers
+finish.
+
 The cache is deliberately unaligned. Each scientific view must still apply its
 own declared protein, nucleic-acid, interface, or oligomer-member alignment.
 PCA feature atoms and exported coordinate payload atoms remain separate: a
 common-heavy PCA may export a representative containing the complete solute.
+
+Preparation writes a validated `project-cache-base.json` after the cache is
+complete. Atom-index definitions are remapped through the cache's recorded
+source-atom order. RMSD/Rg, pooled RMSF, DCCM, individual PCA, dihedrals,
+non-water hydrogen-bond discovery, secondary structure, SASA, nucleic-acid
+geometry, ion analyses, trajectory features, and other molecular-payload base
+estimators are routed through that project. A module is routed only when its
+required atoms are present; ambiguous water use falls back to the original
+project rather than silently changing the estimator.
+
+Structural-integrity QC also consumes a validated replica cache. The planner
+assigns at most one worker to each original replica, and the worker examines
+only that replica. The parent process combines the shards into the ordinary
+structural-QC report with system, replica, frame-selection, cache-hash, and
+worker provenance. Its memory estimate is the sum of concurrently active
+replica workers. The local adapter uses local processes. The Slurm adapter may
+split the workers across several nodes, applies memory padding to each node's
+worker group, and counts every node reservation against the campaign aggregate.
+A missing, incomplete, count-inconsistent, or source-mismatched cache fails
+closed.
 
 ## Methods that must retain the solvated source
 
@@ -76,8 +104,10 @@ Water-mediated hydrogen bonds, water or solvent RDFs, hydration-shell
 observables, and any analysis whose declared atom groups include bulk water
 must read the original solvated trajectories. The cache is not permission to
 drop chemically required solvent. A campaign may therefore use the cache for
-solute conformational work while scheduling water-dependent methods from the
-immutable original inputs.
+solute conformational and structural-integrity work while scheduling
+water-dependent methods from the immutable original inputs. Structural QC of
+the molecular payload does not claim that bulk-solvent coordinates were
+checked.
 
 ## Acceptance boundary
 

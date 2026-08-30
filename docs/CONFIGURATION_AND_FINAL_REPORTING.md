@@ -16,10 +16,14 @@ Options replace generated definition fields and then undergo the normal strict
 project-schema validation. Disabling an upstream module also disables its
 dependent analyses; the resolved config turns off affected conformational
 views before project construction, and `module-coverage.json` records the
-decision. Preflight, provenance, common-atom mapping, and structural-integrity
-QC cannot be disabled. Comparative preparation additionally protects
+decision. The protected scientific core cannot be disabled: provenance,
+preflight, common-atom mapping, structural-integrity QC, RMSD/Rg, pooled RMSF,
+individual and shared/common PCA, DCCM, PCA free-energy surfaces, and observed
+representative-frame selection. Comparative preparation additionally protects
 `integrated_comparison`: every comparison campaign must review and account for
-all completed result reports before the finding picker runs. Each topology-derived
+all completed result reports before the finding picker runs. These protections
+are passed into stride planning and optional-module reduction, so a plan that
+cannot fit the core returns `NO_ACCEPTABLE_REDUCED_PLAN`. Each topology-derived
 view has its own `enabled` flag and optional per-view `module_options`.
 The complete generated config also gives each module a generated `protected`
 flag, its direct `depends_on` list, and its `turning_off_also_disables` list.
@@ -110,6 +114,14 @@ and uses it as the source count for each downstream clustering fit. The planner
 iterates until those counts agree exactly. If discrete stride upgrades alternate
 between two allocations, it derives the componentwise lower projection ceiling
 from that cycle and replans the fits; it never falls back to a saved count.
+A two-stage plan first selects a cache stride from the raw trajectory, then an
+integer method stride over that cache for each estimator. Effective raw stride
+is their product. Candidates that violate any protected module's scientific
+floor are pruned before CPU or memory planning. An optional module that cannot
+meet its own floor makes that complete candidate fail closed; dependency-closed
+reduction may then recommend disabling the module and replan the remaining
+workflow. The planner never prices a scientifically invalid protected-core
+stride as if it were executable.
 A configured envelope that cannot fund the small
 technical minima fails closed by default.
 
@@ -181,6 +193,20 @@ then converts each working set to a buffered request. The DEAC rule is
 It is not repeated for every job. CPU and memory limits are both considered
 while allocating frames and estimating dependency-stage wall time.
 
+A Slurm profile can also declare `node_policy.cpus_per_node`,
+`node_policy.memory_gib_per_node`, and an optional
+`node_policy.maximum_nodes_per_campaign`. Node memory is checked against the
+safety-adjusted scheduler request, not the unpadded working-set estimate.
+Replica-parallel tasks are split into node-sized worker groups; other tasks
+must fit one node. Concurrent resource lanes are then bin-packed so no node's
+padded CPU or memory reservation exceeds its declared shape. The campaign's
+`maximum_memory_gib` remains an aggregate simultaneous-memory limit: a task
+that reserves 181 GiB on each of two nodes consumes 362 GiB of that envelope.
+If the campaign gives only aggregate CPU and memory caps, the planner derives
+the node-count ceiling from those caps and the profile's node shape. The
+protected-core minimum request reports its modeled node count as well as
+aggregate CPUs, memory, and wall time.
+
 When one or more safety-adjusted technical minima exceed `maximum_memory_gib`, the plan's
 `memory_feasibility` section reports the largest raw working set, the required
 buffered request, its shortfall,
@@ -211,6 +237,20 @@ on/off decisions are reviewable. `coordinate_cache` is represented by
 Technical frame minima and scientific gates are never relaxed. The fallback
 addresses memory only; a remaining CPU-hour, critical-path, calibration, or
 scratch-space failure remains fail-closed.
+
+To let the planner apply dependency-closed optional reductions for CPU,
+critical-path wall time, or memory, use:
+
+```bash
+salsbury-md-analysis prepare-analysis ... --config analysis.json \
+  --auto-disable-optional-to-fit-resources
+```
+
+The comparison initializer accepts the same flag. This mode preserves the
+requested config and plan, applies only the planner-recommended optional
+switches and their dependents, and writes `analysis-config.resource-fit.json`
+and `resource-fit-report.json`. It succeeds only if all protected modules fit
+without relaxing their configured sampling minima.
 
 Measured catalogs describe the systems on which they were collected; they are
 not universal per-frame constants. Planner tasks may therefore carry an

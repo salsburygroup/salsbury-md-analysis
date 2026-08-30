@@ -32,10 +32,10 @@ class PaLDCommunityTests(unittest.TestCase):
         rows = _metadata()
         selected, report = regular_strided_sample(rows, 12)
         self.assertEqual(report["source_frame_stride"], 4)
-        self.assertEqual(len(selected), 12)
+        self.assertEqual(len(selected), 8)
         self.assertEqual(
             {row["selected_observation_count"] for row in report["trajectory_groups"]},
-            {3},
+            {2},
         )
         self.assertEqual(
             {row["member_id"] for row in report["trajectory_groups"]},
