@@ -58,8 +58,8 @@ time and peak memory remain attributable to one fit size. PaLD is planned as a
 separate cubic, strictly gated community analysis and is not modeled as a
 quadratic conventional clustering method.
 
-`scalar_threshold_states` converts one scalar feature—such as
-`group_minimum_mean_distance` from a loop to candidate ions—into a declared
+`scalar_threshold_states` converts one scalar feature, such as
+`group_minimum_mean_distance` from a loop to candidate ions, into a declared
 two-state definition. It reports the primary threshold, a required sensitivity
 grid, state assignments, system and replica populations, within-segment
 transition counts, and boundary-censored residence runs. A threshold-defined
@@ -113,9 +113,9 @@ question about named donor--hydrogen--acceptor triples.
 Run automatic discovery separately for each condition when topologies differ.
 Each report must use the same interaction scope and cutoff definition, but its
 candidate universe is allowed to reflect that condition's chemistry. Use more
-than one scope when the scientific system requires it—for example, separate
-`protein_nucleic_acid` and `protein_protein` reports—so an interface-focused
-search does not silently omit intraprotein active-site interactions.
+than one scope when the scientific system requires it. For example, separate
+`protein_nucleic_acid` and `protein_protein` reports prevent an interface-focused
+search from silently omitting intraprotein active-site interactions.
 
 `compare-hydrogen-bonds` consumes exactly two technically complete
 `sparse_implicit_zero_v1` discovery reports. It collapses all explicit

@@ -67,8 +67,8 @@ The comprehensive, nonredundant `standard_md_v1` profile includes:
 The exact module contracts, inputs, outputs, status, and interpretation limits
 are generated from the code registry in
 [`docs/generated/MODULE_REFERENCE.md`](docs/generated/MODULE_REFERENCE.md).
-Replica-parallel execution boundaries—including pooled means, covariance,
-bases, clustering, and segment-safe transition rules—are documented in
+Replica-parallel execution boundaries, including pooled means, covariance,
+bases, clustering, and segment-safe transition rules, are documented in
 [`docs/ENSEMBLE_PARALLELISM.md`](docs/ENSEMBLE_PARALLELISM.md).
 The final non-docking legacy destination review is summarized in
 [`docs/LEGACY_REVIEW.md`](docs/LEGACY_REVIEW.md); it closes repository placement
@@ -96,8 +96,8 @@ micromamba create --prefix ./.venv --file environment.yml \
 
 Platform locks and their validation limits are documented in
 [`environments/README.md`](environments/README.md).
-Required, optional, external, build-only, and validation-only dependencies—and
-their license and redistribution boundaries—are consolidated in
+Required, optional, external, build-only, and validation-only dependencies,
+together with their license and redistribution boundaries, are consolidated in
 [`DEPENDENCIES_AND_LICENSES.md`](DEPENDENCIES_AND_LICENSES.md).
 The x3dna-dssr adapter requires a separately obtained executable; it is not
 redistributed by this repository.
@@ -172,14 +172,15 @@ ceiling, the response includes
 counts. The planning record keeps the requested count, but the generated local,
 custom, and Slurm launchers use the smaller effective count; Slurm array widths
 and multiprocess worker requests are capped accordingly. If the envelope cannot
-retain the protected scientific core—preparation/QC, RMSD/Rg, RMSF, individual
-and common PCA, DCCM, PCA FES, and observed representative frames—at its minima,
+retain the protected scientific core (preparation/QC, RMSD/Rg, RMSF, individual
+and common PCA, DCCM, PCA FES, and observed representative frames) at its minima,
 planning returns
 `planning_outcome: no_acceptable_reduced_plan`; it does not propose disabling
 those checks. The response also reports a
 `protected_subset_minimum_request`: padded CPUs, aggregate memory, node count
-when configured, and whole wall hours for the best dependency-closed subset that retains every protected
-module under the supplied CPU and memory caps. This is a permissive execution
+when configured, and whole wall hours for the best dependency-closed subset
+that retains every protected module under the supplied CPU and memory caps.
+This is a permissive execution
 floor, not evidence that the trajectory is converged or scientifically
 adequate; the scientific question may require a larger request.
 
@@ -373,8 +374,8 @@ A campaign can nearly exhaust its wall-time allowance while leaving many raw
 CPU-hours unused when dependency stages or serial methods cannot use all cores.
 `allocation_saturation` records whether every frame ceiling was reached, memory
 blocked the remaining work, or the next deterministic stride step would exceed
-the campaign envelope. The planner does not duplicate analyses just to occupy
-idle cores.
+the campaign envelope. The planner does not duplicate analyses solely to
+occupy idle cores.
 
 Preparation also classifies the reference chemistry and creates complementary
 conformational projects automatically. Protein–nucleic-acid complexes declare
@@ -454,6 +455,10 @@ Individual controls can be combined with the other configuration sections:
 ```json
 {
   "config_schema": "salsbury-analysis-config-v1",
+  "planning": {
+    "module_selection": "all_enabled",
+    "stride_mode": "balanced_per_method"
+  },
   "modules": {
     "solvent_accessible_surface_area": {"enabled": true},
     "water_mediated_hydrogen_bond_networks": {"enabled": false}
@@ -488,13 +493,43 @@ Use the file during preparation:
 salsbury-md-analysis prepare-analysis ... --config my-analysis-config.json
 ```
 
+Two preparation switches provide common reviewed presets without editing JSON:
+
+```bash
+# Run only the protected scientific core and its dependency closure.
+salsbury-md-analysis prepare-analysis ... --protected-core-only
+
+# Use one cache stride for every enabled analysis, with no downstream frame stride.
+salsbury-md-analysis prepare-analysis ... --uniform-cache-stride
+
+# On the experimental branch, add all applicable experimental modules to the
+# normal main-module workflow.
+salsbury-md-analysis prepare-analysis ... --with-experimental-modules
+```
+
+The same switches work with `prepare-comparison` and `--plan-only`. The
+generated `analysis-config.json` records the resolved `planning` values, so a
+reviewer can distinguish the preset from a hand-edited module list. Uniform
+planning tests candidate cache strides from finest to coarsest, rejects any
+candidate that violates an enabled method's sample floor, time-gap rule, or
+frame ceiling, and stops at the first candidate that fits the campaign CPU,
+wall-time, and memory envelope. It fails closed when no single stride can
+satisfy all enabled methods. The default remains the more efficient balanced
+mode, which may add method-specific strides after the cache.
+`--with-experimental-modules` is the command-line form of
+`enable_all_experimental_modules: true`. It extends the normal module set in a
+newly prepared campaign; it does not modify or consume an already completed
+campaign directory. Explicit per-module `false` entries still win. It is
+mutually exclusive with `--protected-core-only` because those switches request
+opposite module sets.
+
 Run `salsbury-md-analysis list-modules` to see the module identifiers. The
 prepared campaign writes the complete resolved configuration to
 `analysis-config.json` and records every enabled, disabled, or deferred module
 in `module-coverage.json`. Disabling an upstream module also disables analyses
-that depend on it. The protected core—preflight, provenance, atom mapping,
+that depend on it. The protected core (preflight, provenance, atom mapping,
 structural-integrity QC, RMSD/Rg, pooled RMSF, individual/common PCA, DCCM,
-PCA FES, and representative frames—cannot be turned off. Comparison campaigns
+PCA FES, and representative frames) cannot be turned off. Comparison campaigns
 also protect integrated comparison. Each complete
 module row includes a generated `protected` flag, `depends_on`, and
 `turning_off_also_disables`, while `module_groups` arranges the switches as

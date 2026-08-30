@@ -26,6 +26,37 @@ class CLIWorkflowModeTests(unittest.TestCase):
         self.assertTrue(analysis.plan_only)
         self.assertTrue(comparison.plan_only)
 
+    def test_prepare_commands_expose_core_and_uniform_stride_modes(self):
+        parser = build_parser()
+        analysis = parser.parse_args([
+            "prepare-analysis", "--pdb", "input.pdb", "--trajectory", "run.dcd",
+            "--output", "out", "--project-id", "test",
+            "--frame-interval-ps", "10", "--protected-core-only",
+            "--uniform-cache-stride",
+        ])
+        comparison = parser.parse_args([
+            "prepare-comparison", "comparison.json", "--output", "out",
+            "--project-id", "test", "--protected-core-only",
+            "--uniform-cache-stride",
+        ])
+        for parsed in (analysis, comparison):
+            self.assertTrue(parsed.protected_core_only)
+            self.assertTrue(parsed.uniform_cache_stride)
+
+    def test_prepare_commands_expose_experimental_extension_switch(self):
+        parser = build_parser()
+        analysis = parser.parse_args([
+            "prepare-analysis", "--pdb", "input.pdb", "--trajectory", "run.dcd",
+            "--output", "out", "--project-id", "test",
+            "--frame-interval-ps", "10", "--with-experimental-modules",
+        ])
+        comparison = parser.parse_args([
+            "prepare-comparison", "comparison.json", "--output", "out",
+            "--project-id", "test", "--with-experimental-modules",
+        ])
+        self.assertTrue(analysis.with_experimental_modules)
+        self.assertTrue(comparison.with_experimental_modules)
+
     def test_prepare_commands_expose_explicit_resource_fit_mode(self):
         parser = build_parser()
         analysis = parser.parse_args([

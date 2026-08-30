@@ -13,6 +13,22 @@
       "default": false,
       "description": "Enable every default-off experimental method before explicit per-module overrides are applied."
     },
+    "planning": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "module_selection": {
+          "enum": ["all_enabled", "protected_core_only"],
+          "default": "all_enabled",
+          "description": "Run the resolved enabled set or only the protected scientific core and its dependency closure."
+        },
+        "stride_mode": {
+          "enum": ["balanced_per_method", "uniform_cache_stride"],
+          "default": "balanced_per_method",
+          "description": "Allow method-specific strides after the cache, or require every enabled method to consume one uniformly strided cache stream."
+        }
+      }
+    },
     "module_groups": {
       "type": "object",
       "readOnly": true,
@@ -35,6 +51,11 @@
         "properties": {
           "enabled": {"type": "boolean", "default": true},
           "options": {"type": "object"},
+          "protected": {
+            "type": "boolean",
+            "readOnly": true,
+            "description": "Generated marker for modules that reduced-resource planning may not disable."
+          },
           "depends_on": {"type": "array", "items": {"type": "string"}, "readOnly": true},
           "turning_off_also_disables": {"type": "array", "items": {"type": "string"}, "readOnly": true}
         }
@@ -223,7 +244,7 @@
         "fail_if_minimum_coverage_unaffordable": {"type": "boolean", "default": true},
         "submission_adapter": {
           "enum": ["unspecified", "local", "slurm", "custom"],
-          "default": "unspecified",
+          "default": "local",
           "description": "Optional launcher adapter. Scientific planning and project manifests do not depend on it."
         },
         "coordinate_cache": {

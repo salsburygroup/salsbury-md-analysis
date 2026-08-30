@@ -126,8 +126,8 @@ Every component includes:
 
 The sign is reproducible but not physically meaningful. A component and its
 negative describe the same axis. Near-degenerate components may rotate within a
-nearly equal-eigenvalue subspace, so subspaces—not individual vectors—require
-sensitivity comparison.
+nearly equal-eigenvalue subspace, so subspaces, rather than individual vectors,
+require sensitivity comparison.
 
 The exact implementation uses vectorized online population covariance and
 NumPy's symmetric LAPACK eigensolver; its memory scales quadratically with

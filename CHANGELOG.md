@@ -175,7 +175,7 @@
 - Added public-safe resource-catalog redaction that preserves evidence hashes,
   measured costs, memory, coverage, and censoring status while removing private
   paths, scheduler identifiers, and hostnames. Publication/campaign-specific
-  TREX and TBA harnesses and cached outputs are excluded from the v80 reusable
+  TREX and TBA drivers and cached outputs are excluded from the v80 reusable
   source snapshot and remain preserved in their older locked lineages.
 
 ## 0.0.1.dev79
@@ -603,7 +603,7 @@
   retaining exact thresholds, exclusions, counts, and sorted examples. This
   removes the all-atom Python neighbor-loop bottleneck exposed by the retained
   85,199-atom TREX resource benchmark.
-- Cover every direct planner method in the retained resource benchmark harness;
+- Cover every direct planner method in the retained resource benchmark driver;
   explicit indexed hydrogen bonds and optional observables can no longer be
   omitted from calibration runs.
 - Validate the default all-applicable configuration and both all-pairs and
@@ -758,7 +758,7 @@
   retained pilots on the actual method/project workload.
 - Vectorized sparse direct hydrogen-bond distance screening and limited angle
   evaluation to cutoff-near candidates while retaining exact triclinic imaging.
-- Added an isolated frame-coverage benchmark harness that records wall/CPU
+- Added an isolated frame-coverage benchmark driver that records wall/CPU
   time, peak resident memory, scheduler/environment identity, compact observed
   counts, and a compressed full module report without changing input data.
 - Made connectivity-aware reconstruction observable-scoped: every complete
@@ -782,7 +782,7 @@
 - Distinguished DCD segment-header step resets from genuine nonzero DCD step
   inconsistencies during preflight; reset headers now warn and defer to the
   explicit continuous frame axis and external lineage.
-- Limited SASA van der Waals-radius validation to atoms actually selected as
+- Limited SASA van der Waals-radius validation to atoms selected as
   surfaces or occluders, so excluded ions do not invalidate a solute-only SASA
   calculation.
 - Added automatic topology-template direct hydrogen-bond discovery for standard

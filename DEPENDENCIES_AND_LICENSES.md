@@ -1,9 +1,9 @@
 # Dependencies and licenses
 
-This page separates what is required to run Salsbury MD Analysis from optional
-scientific tools and packages used only to validate the implementation. The
-toolkit does not copy or redistribute these third-party projects. Each remains
-subject to its own license.
+Salsbury MD Analysis has a small required runtime, optional scientific tools,
+and packages used only to validate the implementation. The toolkit does not
+copy or redistribute these third-party projects. Each remains subject to its
+own license.
 
 ## Salsbury MD Analysis licenses
 
