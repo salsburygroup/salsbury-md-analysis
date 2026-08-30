@@ -8,6 +8,8 @@ import math
 import os
 import shutil
 import struct
+import subprocess
+import sys
 import tempfile
 from concurrent.futures import ProcessPoolExecutor
 from copy import deepcopy
@@ -353,6 +355,71 @@ def _coordinate_cache_worker(
     )
 
 
+def _coordinate_cache_distributed_worker_entry(manifest_path: Path) -> None:
+    """Run the cache-worker ordinals assigned to one Slurm task rank."""
+
+    payload = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    raw_tasks = payload.get("tasks")
+    if not isinstance(raw_tasks, list):
+        raise CoordinateCacheError("distributed cache-worker manifest is malformed")
+    rank = int(os.environ.get("SLURM_PROCID", "0"))
+    task_count = int(os.environ.get("SLURM_NTASKS", "1"))
+    if rank < 0 or task_count <= 0 or rank >= task_count:
+        raise CoordinateCacheError("distributed Slurm rank metadata is invalid")
+    for ordinal in range(rank, len(raw_tasks), task_count):
+        raw = raw_tasks[ordinal]
+        if not isinstance(raw, list) or len(raw) != 6:
+            raise CoordinateCacheError("distributed cache-worker task is malformed")
+        _coordinate_cache_worker((
+            str(raw[0]), str(raw[1]), bool(raw[2]), float(raw[3]),
+            float(raw[4]), int(raw[5]),
+        ))
+
+
+def _execute_coordinate_cache_workers(
+    tasks: Sequence[tuple[str, str, bool, float, float, int]],
+    *,
+    maximum_workers: int,
+    worker_root: Path,
+) -> None:
+    """Use local processes or the complete multi-node Slurm allocation."""
+
+    distributed = (
+        os.environ.get("SMA_DISTRIBUTED_REPLICA_WORKERS") == "1"
+        and int(os.environ.get("SLURM_NNODES", "1")) > 1
+    )
+    if not distributed:
+        with ProcessPoolExecutor(
+            max_workers=min(maximum_workers, len(tasks))
+        ) as pool:
+            list(pool.map(_coordinate_cache_worker, tasks))
+        return
+    node_count = int(os.environ["SLURM_NNODES"])
+    task_count = min(maximum_workers, len(tasks))
+    workers_per_node = int(os.environ.get(
+        "SMA_REPLICA_WORKERS_PER_NODE",
+        str(max(1, (task_count + node_count - 1) // node_count)),
+    ))
+    manifest_path = worker_root / "distributed-cache-worker-manifest.json"
+    manifest_path.write_text(json.dumps({
+        "tasks": [list(task) for task in tasks]
+    }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    completed = subprocess.run([
+        os.environ.get("SMA_SRUN_COMMAND", "srun"),
+        "--nodes", str(node_count),
+        "--ntasks", str(task_count),
+        "--ntasks-per-node", str(workers_per_node),
+        sys.executable,
+        "-m", "salsbury_md_analysis.coordinate_cache",
+        "--distributed-worker-manifest", str(manifest_path),
+    ], check=False, capture_output=True, text=True)
+    if completed.returncode != 0:
+        raise CoordinateCacheError(
+            "distributed coordinate-cache workers failed: "
+            + (completed.stderr.strip() or completed.stdout.strip())
+        )
+
+
 def _build_coordinate_cache_parallel(
     *,
     source: Path,
@@ -407,8 +474,11 @@ def _build_coordinate_cache_parallel(
             raise CoordinateCacheError(
                 "parallel cache construction requires at least two replicas"
             )
-        with ProcessPoolExecutor(max_workers=min(maximum_workers, len(tasks))) as pool:
-            list(pool.map(_coordinate_cache_worker, tasks))
+        _execute_coordinate_cache_workers(
+            tasks,
+            maximum_workers=maximum_workers,
+            worker_root=worker_root,
+        )
 
         replicas_by_system: Dict[str, list[Mapping[str, object]]] = {}
         rows_by_system: Dict[str, list[Mapping[str, object]]] = {}
@@ -980,3 +1050,12 @@ def validate_reusable_coordinate_cache(
             "solvated trajectories."
         ),
     }
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3 or sys.argv[1] != "--distributed-worker-manifest":
+        raise SystemExit(
+            "usage: python -m salsbury_md_analysis.coordinate_cache "
+            "--distributed-worker-manifest PATH"
+        )
+    _coordinate_cache_distributed_worker_entry(Path(sys.argv[2]))

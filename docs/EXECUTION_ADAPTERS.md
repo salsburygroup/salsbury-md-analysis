@@ -246,13 +246,17 @@ profile safety factors. `scheduler-resource-requests.json` records every mapped
 planner task, the safety margin, selected partition, final request, and exact
 aggregate-resource wave. `slurm-submission-preview.json` also records the
 planned node count, lane-to-node mapping, and padded reservation totals for each
-node. Every generated worker requests one node; independent tasks supply the
-cross-node parallelism. The canonical `submit.sh` submits individual array
+node. Replica-final modules and coordinate-cache construction can use an
+identity-preserving `srun` worker group across several nodes; pooled reducers
+still run once after all replica workers finish. Non-distributed modules remain
+single-node jobs, and independent tasks provide additional cross-node
+parallelism. The canonical `submit.sh` submits individual array
 elements when needed so that both CPU and memory are bounded across all jobs that
 can run at the same time. Only requests that cross
-`large_memory_threshold_gib` use the `large_memory` partition role. The generated
-worker retains the largest request as a safe direct-submission fallback, while
-`submit.sh` applies the task-specific overrides used for a normal campaign launch.
+`large_memory_threshold_gib` use the `large_memory` partition role. Use the
+generated `submit.sh` for a planned campaign: it applies the task-specific node,
+task-count, CPU, memory, and time requests. Individual worker scripts are
+implementation artifacts, not a substitute for the resource-bounded launcher.
 `slurm-submission-preview.json` is the concise preflight view of that complete
 mapping; `execution_started: false` and `jobs_submitted: false` describe the
 preview itself, not the state after `./submit.sh` is executed.

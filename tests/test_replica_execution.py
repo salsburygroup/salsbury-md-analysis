@@ -1,10 +1,18 @@
 import unittest
+import json
+import os
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
 
 from salsbury_md_analysis.replica_execution import (
     ReplicaExecutionError,
     ReplicaShard,
     execute_replica_map_reduce,
     execute_replica_workers,
+)
+from salsbury_md_analysis.replica_module_execution import (
+    _distributed_worker_entry,
 )
 
 
@@ -17,6 +25,38 @@ def _sum_in_stable_order(partials):
 
 
 class ReplicaExecutionTests(unittest.TestCase):
+    def test_distributed_worker_entry_preserves_rank_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "partials"
+            output.mkdir()
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({
+                "output_directory": str(output),
+                "shards": [
+                    {
+                        "ordinal": index,
+                        "system_id": "system",
+                        "replica_id": f"replica-{index}",
+                        "segment_ids": ["segment"],
+                        "payload": {"value": index},
+                    }
+                    for index in range(2)
+                ],
+            }), encoding="utf-8")
+            with patch.dict(os.environ, {
+                "SLURM_PROCID": "0", "SLURM_NTASKS": "2"
+            }), patch(
+                "salsbury_md_analysis.replica_module_execution._module_worker",
+                side_effect=lambda shard: {"ordinal": shard.ordinal},
+            ):
+                _distributed_worker_entry(manifest)
+            first = json.loads(
+                (output / "partial-00000.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(first["replica_id"], "replica-0")
+            self.assertEqual(first["value"], {"ordinal": 0})
+            self.assertFalse((output / "partial-00001.json").exists())
     @staticmethod
     def _shards():
         return [

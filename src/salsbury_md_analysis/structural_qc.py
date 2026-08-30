@@ -47,7 +47,8 @@ from .periodic import (
     load_connectivity,
 )
 from .reporting import issue_record
-from .replica_execution import ReplicaShard, execute_replica_workers
+from .replica_execution import ReplicaShard
+from .replica_module_execution import execute_registered_replica_workers
 from .selections import select_atoms
 from .structural_chemistry import (
     StructuralChemistryError,
@@ -1273,16 +1274,6 @@ def _write_cache_backed_qc_project(
     return destination
 
 
-def _structural_qc_replica_job(shard: ReplicaShard) -> Dict[str, object]:
-    project_path = Path(str(shard.payload))
-    return _structural_qc_project_serial(
-        project_path,
-        hash_content=False,
-        only_system_id=shard.system_id,
-        only_replica_id=shard.replica_id,
-    )
-
-
 def _aggregate_structural_qc_shards(
     project_source: Path,
     thresholds: Mapping[str, object],
@@ -1456,7 +1447,12 @@ def structural_qc_project(
                 for index, segment in enumerate(replica.get("segments", []))
                 if isinstance(segment, dict)
             ),
-            payload=str(cache_project),
+            payload={
+                "project_path": str(cache_project),
+                "runner_id": "structural_qc",
+                "hash_content": False,
+                "structural_qc_project_path": str(cache_project),
+            },
         )
         for ordinal, (system, replica) in enumerate(
             (system, replica)
@@ -1469,8 +1465,8 @@ def structural_qc_project(
     if not shards:
         raise StructuralQCError("validated coordinate cache contains no replicas")
     configured_workers = int(parallel["maximum_workers"])
-    partials, execution_evidence = execute_replica_workers(
-        shards, _structural_qc_replica_job,
+    partials, execution_evidence = execute_registered_replica_workers(
+        shards,
         maximum_workers=configured_workers,
     )
     result = _aggregate_structural_qc_shards(

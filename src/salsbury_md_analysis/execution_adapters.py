@@ -497,6 +497,38 @@ def _enrich_task_resources(
                 float(row["estimated_peak_memory_gib_at_selected_observations"])
                 for row in matched
             )
+            node_count = max(
+                int(
+                    row.get(
+                        "parallel_node_layout_at_selected_observations", {}
+                    ).get("node_count", 1)
+                )
+                for row in matched
+            )
+            distributed_replica_execution = any(
+                bool(
+                    row.get(
+                        "parallel_node_layout_at_selected_observations", {}
+                    ).get("distributed_replica_execution", False)
+                )
+                for row in matched
+            )
+            workers_per_node = max(
+                int(
+                    row.get(
+                        "parallel_node_layout_at_selected_observations", {}
+                    ).get("workers_per_node", 1)
+                )
+                for row in matched
+            )
+            distributed_worker_count = max(
+                int(
+                    row.get(
+                        "parallel_node_layout_at_selected_observations", {}
+                    ).get("active_worker_count", 1)
+                )
+                for row in matched
+            )
         except (KeyError, TypeError, ValueError) as exc:
             raise ExecutionAdapterError(
                 f"planner estimates are incomplete for {path.name}"
@@ -521,17 +553,30 @@ def _enrich_task_resources(
             maximum_hours * 60.0,
             max(float(policy["minimum_wall_minutes"]), float(safe_minutes)),
         )
-        safe_memory = math.ceil(
-            memory_gib * float(policy["memory_safety_factor"])
-            + float(policy["memory_overhead_gib"])
-        )
-        requested_memory_gib = max(
-            float(policy["minimum_memory_gib"]), float(safe_memory)
-        )
-        if requested_memory_gib > maximum_memory + 1e-9:
+        if distributed_replica_execution:
+            requested_memory_gib = max(
+                float(policy["minimum_memory_gib"]),
+                max(
+                    float(row[
+                        "estimated_scheduler_memory_gib_per_node_at_selected_observations"
+                    ])
+                    for row in matched
+                ),
+            )
+            aggregate_requested_memory_gib = requested_memory_gib * node_count
+        else:
+            safe_memory = math.ceil(
+                memory_gib * float(policy["memory_safety_factor"])
+                + float(policy["memory_overhead_gib"])
+            )
+            requested_memory_gib = max(
+                float(policy["minimum_memory_gib"]), float(safe_memory)
+            )
+            aggregate_requested_memory_gib = requested_memory_gib
+        if aggregate_requested_memory_gib > maximum_memory + 1e-9:
             raise ExecutionAdapterError(
                 f"safety-adjusted memory request for {path.name} is "
-                f"{requested_memory_gib:g} GiB, exceeding the aggregate campaign "
+                f"{aggregate_requested_memory_gib:g} GiB, exceeding the aggregate campaign "
                 f"limit {maximum_memory:g} GiB"
             )
         if requested_memory_gib > maximum_memory_gib_per_node + 1e-9:
@@ -544,11 +589,17 @@ def _enrich_task_resources(
         cpu_slots = max(
             min(
                 maximum_cpus,
-                maximum_cpus_per_node,
+                (
+                    maximum_cpus
+                    if distributed_replica_execution
+                    else maximum_cpus_per_node
+                ),
                 int(row.get("effective_cpu_cap", 1)),
             )
             for row in matched
         )
+        if distributed_replica_execution:
+            cpu_slots = distributed_worker_count
         source = "campaign_planner_with_profile_safety_margin"
     else:
         wall_hours = _existing_wall_minutes(path) / 60.0
@@ -566,6 +617,11 @@ def _enrich_task_resources(
             )
         planner_task_ids = []
         cpu_slots = int(task.get("cpu_slots", 1))
+        node_count = 1
+        workers_per_node = cpu_slots
+        distributed_worker_count = cpu_slots
+        distributed_replica_execution = False
+        aggregate_requested_memory_gib = requested_memory_gib
         if cpu_slots > maximum_cpus_per_node:
             raise ExecutionAdapterError(
                 f"static CPU request for {path.name} exceeds the per-node limit"
@@ -578,6 +634,11 @@ def _enrich_task_resources(
         "planned_peak_memory_gib": memory_gib,
         "requested_wall_minutes": requested_wall_minutes,
         "requested_memory_gib": requested_memory_gib,
+        "aggregate_requested_memory_gib": aggregate_requested_memory_gib,
+        "node_count": node_count,
+        "workers_per_node": workers_per_node,
+        "distributed_worker_count": distributed_worker_count,
+        "distributed_replica_execution": distributed_replica_execution,
         "resource_request_source": source,
         "wall_request_limited_by_campaign_cap": (
             matched and requested_wall_minutes + 1e-9 < max(
@@ -937,6 +998,20 @@ def _task_resource_requests(plan: Mapping[str, object]) -> List[Dict[str, object
                 "planned_peak_memory_gib": task["planned_peak_memory_gib"],
                 "requested_wall_minutes": task["requested_wall_minutes"],
                 "requested_memory_gib": task["requested_memory_gib"],
+                "aggregate_requested_memory_gib": task.get(
+                    "aggregate_requested_memory_gib",
+                    task["requested_memory_gib"],
+                ),
+                "node_count": int(task.get("node_count", 1)),
+                "workers_per_node": int(task.get(
+                    "workers_per_node", task["cpu_slots"]
+                )),
+                "distributed_worker_count": int(task.get(
+                    "distributed_worker_count", task["cpu_slots"]
+                )),
+                "distributed_replica_execution": bool(task.get(
+                    "distributed_replica_execution", False
+                )),
                 "resource_request_source": task["resource_request_source"],
                 "wall_request_limited_by_campaign_cap": task[
                     "wall_request_limited_by_campaign_cap"
@@ -998,11 +1073,21 @@ def _slurm_resource_lanes(
                 "script": script,
                 "array_task_id": array_task_id,
                 "cpu_slots": int(task["cpu_slots"]),
-                "memory_gib": requested_memory_gib,
+                "memory_gib": (
+                    requested_memory_gib * int(task.get("node_count", 1))
+                ),
                 "wall_hours": requested_wall_minutes / 60.0,
                 "planned_wall_hours": float(task["planned_wall_hours"]),
                 "requested_wall_minutes": requested_wall_minutes,
                 "requested_memory_gib": requested_memory_gib,
+                "node_count": int(task.get("node_count", 1)),
+                "workers_per_node": int(task.get("workers_per_node", task["cpu_slots"])),
+                "distributed_worker_count": int(
+                    task.get("distributed_worker_count", task["cpu_slots"])
+                ),
+                "distributed_replica_execution": bool(
+                    task.get("distributed_replica_execution", False)
+                ),
                 "slurm_time": _format_slurm_time(requested_wall_minutes),
                 "slurm_memory": f"{int(math.ceil(requested_memory_gib))}G",
                 "planner_task_ids": list(task.get("planner_task_ids", [])),
@@ -1092,15 +1177,23 @@ def _slurm_submission_preview(
     node_cpus = node_policy.get("cpus_per_node")
     node_memory = node_policy.get("memory_gib_per_node")
     planned_node_indices = {
-        int(lane["planned_node_index"])
+        int(node_index)
         for lane in resource_lanes
-        if lane.get("planned_node_index") is not None
+        for node_index in lane.get("planned_node_indices", [])
     }
     node_reservations = []
     for node_index in sorted(planned_node_indices):
+        fragments = [
+            fragment
+            for lane in resource_lanes
+            for fragment in lane.get(
+                "planned_node_fragment_reservations", []
+            )
+            if int(fragment["planned_node_index"]) == node_index
+        ]
         node_lanes = [
             lane for lane in resource_lanes
-            if int(lane.get("planned_node_index", -1)) == node_index
+            if node_index in lane.get("planned_node_indices", [])
         ]
         node_reservations.append({
             "planned_node_index": node_index,
@@ -1108,10 +1201,10 @@ def _slurm_submission_preview(
                 int(lane["lane_index"]) for lane in node_lanes
             ],
             "reserved_cpus": sum(
-                int(lane["cpu_slots"]) for lane in node_lanes
+                int(fragment["cpu_slots"]) for fragment in fragments
             ),
             "reserved_memory_gib": sum(
-                float(lane["memory_gib"]) for lane in node_lanes
+                float(fragment["memory_gib"]) for fragment in fragments
             ),
         })
     if node_cpus is not None and node_memory is not None:
@@ -1273,11 +1366,25 @@ def _render_resource_bounded_submit(
         variable = f"JOB_T{item_index:04d}"
         options = [
             "--parsable",
-            "--nodes=1",
-            f"--cpus-per-task={int(item['cpu_slots'])}",
+            f"--nodes={int(item.get('node_count', 1))}",
+        ]
+        if item.get("distributed_replica_execution"):
+            options.extend([
+                f"--ntasks={int(item['distributed_worker_count'])}",
+                f"--ntasks-per-node={int(item['workers_per_node'])}",
+                "--cpus-per-task=1",
+                "--export=ALL,"
+                f"SMA_REPLICA_WORKERS={int(item['distributed_worker_count'])},"
+                f"SMA_REPLICA_WORKERS_PER_NODE={int(item['workers_per_node'])},"
+                "SMA_DISTRIBUTED_REPLICA_WORKERS=1,"
+                "SMA_DISTRIBUTED_WORK_DIR=$ROOT",
+            ])
+        else:
+            options.append(f"--cpus-per-task={int(item['cpu_slots'])}")
+        options.extend([
             f"--time={item['slurm_time']}",
             f"--mem={item['slurm_memory']}",
-        ]
+        ])
         if item.get("selected_partition"):
             options.append(
                 f"--partition={shlex.quote(str(item['selected_partition']))}"

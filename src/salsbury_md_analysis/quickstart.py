@@ -1013,16 +1013,9 @@ def _configure_structural_qc_parallel_execution(
         raise QuickstartError(
             "campaign plan lacks exactly one structural-QC resource task"
         )
-    node_policy = campaign_resource_plan.get("node_resource_policy")
-    per_node_cpu_cap = (
-        int(node_policy["maximum_cpus_per_node"])
-        if isinstance(node_policy, Mapping)
-        and node_policy.get("maximum_cpus_per_node") is not None
-        else int(task_rows[0]["effective_cpu_cap"])
-    )
-    workers = min(
-        int(task_rows[0]["effective_cpu_cap"]), per_node_cpu_cap
-    )
+    # This is the complete replica-worker count.  The execution adapter splits
+    # it into per-node groups when the planner selects a distributed layout.
+    workers = int(task_rows[0]["effective_cpu_cap"])
     cache_root = coordinate_cache_directory.expanduser().resolve(strict=False)
     structural["parallel_execution"] = {
         "enabled": True,
@@ -1797,7 +1790,38 @@ def _slurm_files(
         cache_wall_limit = (
             f"{cache_minutes // 60:02d}:{cache_minutes % 60:02d}:00"
         )
-        cache_memory_gib = max(4, math.ceil(0.5 * coordinate_cache_workers))
+        cache_layout = cache_tasks[0].get(
+            "parallel_node_layout_at_selected_observations", {}
+        )
+        if not isinstance(cache_layout, dict):
+            raise QuickstartError("coordinate cache lacks a parallel node layout")
+        cache_nodes = int(cache_layout.get("node_count", 1))
+        cache_workers_per_node = int(cache_layout.get(
+            "workers_per_node", coordinate_cache_workers
+        ))
+        cache_distributed = bool(
+            cache_layout.get("distributed_replica_execution", False)
+        )
+        cache_memory_gib = int(math.ceil(float(cache_tasks[0].get(
+            "estimated_scheduler_memory_gib_per_node_at_selected_observations",
+            max(4, math.ceil(0.5 * coordinate_cache_workers)),
+        ))))
+        cache_sbatch_layout = (
+            f"#SBATCH --nodes={cache_nodes}\n"
+            f"#SBATCH --ntasks={coordinate_cache_workers}\n"
+            f"#SBATCH --ntasks-per-node={cache_workers_per_node}\n"
+            "#SBATCH --cpus-per-task=1"
+            if cache_distributed else
+            f"#SBATCH --nodes=1\n"
+            f"#SBATCH --cpus-per-task={coordinate_cache_workers}"
+        )
+        cache_distributed_environment = (
+            f'export SMA_REPLICA_WORKERS={coordinate_cache_workers}\n'
+            f'export SMA_REPLICA_WORKERS_PER_NODE={cache_workers_per_node}\n'
+            'export SMA_DISTRIBUTED_REPLICA_WORKERS=1\n'
+            'export SMA_DISTRIBUTED_WORK_DIR="$ROOT"'
+            if cache_distributed else ""
+        )
         coordinate_cache_filename = "run_coordinate_cache.slurm"
         cache_project_materialization = f"""ROUTING_TMP="$ROOT/base-cache-routing.validated.json.tmp.$SLURM_JOB_ID"
 "$PYTHON" -m salsbury_md_analysis materialize-cache-base-project \
@@ -1823,7 +1847,7 @@ fi"""
         coordinate_cache_worker = f"""#!/usr/bin/env bash
 #SBATCH --job-name=sma-{project_id[:16]}-cache
 #SBATCH --time={cache_wall_limit}
-#SBATCH --cpus-per-task={coordinate_cache_workers}
+{cache_sbatch_layout}
 #SBATCH --mem={cache_memory_gib}G
 #SBATCH --output={root}/logs/%j-coordinate-cache.out
 #SBATCH --error={root}/logs/%j-coordinate-cache.err
@@ -1834,6 +1858,7 @@ PYTHON="${{SALSBURY_MD_ANALYSIS_PYTHON:-$PYTHON_DEFAULT}}"
 PACKAGE_ROOT_DEFAULT={json.dumps(package_root)}
 PACKAGE_ROOT="${{SALSBURY_MD_ANALYSIS_PYTHONPATH:-$PACKAGE_ROOT_DEFAULT}}"
 export PYTHONPATH="$PACKAGE_ROOT${{PYTHONPATH:+:$PYTHONPATH}}"
+{cache_distributed_environment}
 mkdir -p "$ROOT/results/coordinate-cache" "$ROOT/logs"
 FINAL="$ROOT/results/coordinate-cache/report.json"
 SUMMARY="$FINAL.summary.json"
@@ -2770,15 +2795,8 @@ def prepare_standard_analysis(
         )
         if coordinate_cache_enabled else []
     )
-    node_policy = campaign_resource_plan.get("node_resource_policy")
-    node_cpu_cap = (
-        int(node_policy["maximum_cpus_per_node"])
-        if isinstance(node_policy, Mapping)
-        and node_policy.get("maximum_cpus_per_node") is not None
-        else effective_parallel_cpu_cap
-    )
     coordinate_cache_workers = min(
-        effective_parallel_cpu_cap, len(trajectory_paths), node_cpu_cap
+        effective_parallel_cpu_cap, len(trajectory_paths)
     )
     if coordinate_cache_enabled:
         _configure_structural_qc_parallel_execution(

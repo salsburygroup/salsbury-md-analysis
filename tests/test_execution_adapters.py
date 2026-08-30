@@ -9,6 +9,7 @@ from salsbury_md_analysis.execution_adapters import (
     ExecutionAdapterError,
     _active_python_executable,
     _append_afterany_dependencies,
+    _render_resource_bounded_submit,
     apply_slurm_profile,
     build_local_execution_plan,
     load_slurm_profile,
@@ -17,6 +18,44 @@ from salsbury_md_analysis.execution_adapters import (
 
 
 class ExecutionAdapterTests(unittest.TestCase):
+    def test_distributed_replica_launcher_spans_configured_nodes(self):
+        repository = Path(__file__).resolve().parents[1]
+        profile = load_slurm_profile(repository / "profiles/slurm/deac.json")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profile_path = root / "slurm-profile.json"
+            profile_path.write_text("{}\n", encoding="utf-8")
+            script = _render_resource_bounded_submit(
+                root,
+                profile,
+                profile_path,
+                [{
+                    "lane_index": 0,
+                    "items": [{
+                        "submission_index": 0,
+                        "phase_id": "analysis",
+                        "task_id": "replica-qc",
+                        "script": "run_qc.slurm",
+                        "cpu_slots": 63,
+                        "memory_gib": 362.0,
+                        "node_count": 2,
+                        "workers_per_node": 40,
+                        "distributed_worker_count": 63,
+                        "distributed_replica_execution": True,
+                        "slurm_time": "01:00:00",
+                        "slurm_memory": "181G",
+                        "depends_on_task_ids": [],
+                        "wait_for_task_ids": [],
+                    }],
+                }],
+            )
+        self.assertIn("--nodes=2", script)
+        self.assertIn("--ntasks=63", script)
+        self.assertIn("--ntasks-per-node=40", script)
+        self.assertIn("--cpus-per-task=1", script)
+        self.assertIn("--mem=181G", script)
+        self.assertIn("SMA_DISTRIBUTED_REPLICA_WORKERS=1", script)
+
     def test_resource_barrier_does_not_turn_an_input_gate_into_a_success_chain(self):
         self.assertEqual(
             _append_afterany_dependencies(

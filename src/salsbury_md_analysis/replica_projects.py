@@ -54,6 +54,8 @@ def _absolute_replica_paths(replica: Dict[str, object], system_source: Path) -> 
 @contextmanager
 def materialized_replica_project_shards(
     project_path: Path,
+    *,
+    temporary_root: Path | None = None,
 ) -> Iterator[Tuple[List[ReplicaShard], Dict[str, object]]]:
     """Yield stable one-replica project paths and the untouched source project."""
 
@@ -68,7 +70,10 @@ def materialized_replica_project_shards(
     if not isinstance(systems, list) or not systems:
         raise ReplicaProjectError("system manifest contains no systems")
 
-    with tempfile.TemporaryDirectory(prefix="sma-replica-shards-") as directory:
+    with tempfile.TemporaryDirectory(
+        prefix="sma-replica-shards-",
+        dir=None if temporary_root is None else str(temporary_root),
+    ) as directory:
         root = Path(directory)
         shards: List[ReplicaShard] = []
         ordinal = 0

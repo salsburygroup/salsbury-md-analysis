@@ -1,11 +1,14 @@
 import json
+import os
 import struct
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from salsbury_md_analysis.coordinate_cache import (
     CoordinateCacheError,
+    _execute_coordinate_cache_workers,
     build_coordinate_cache,
     build_coordinate_cache_safe,
     validate_reusable_coordinate_cache,
@@ -48,6 +51,33 @@ def write_dcd(path: Path) -> None:
 
 
 class CoordinateCacheTests(unittest.TestCase):
+    def test_distributed_cache_workers_use_the_complete_slurm_allocation(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(
+            os.environ,
+            {
+                "SMA_DISTRIBUTED_REPLICA_WORKERS": "1",
+                "SLURM_NNODES": "2",
+                "SMA_REPLICA_WORKERS_PER_NODE": "40",
+            },
+        ), patch(
+            "salsbury_md_analysis.coordinate_cache.subprocess.run"
+        ) as run:
+            run.return_value.returncode = 0
+            run.return_value.stderr = ""
+            run.return_value.stdout = ""
+            task = ("manifest.json", "output", False, 4.0, 0.1, 1)
+            _execute_coordinate_cache_workers(
+                [task] * 63,
+                maximum_workers=63,
+                worker_root=Path(temporary),
+            )
+            command = run.call_args.args[0]
+            self.assertEqual(command[command.index("--nodes") + 1], "2")
+            self.assertEqual(command[command.index("--ntasks") + 1], "63")
+            self.assertEqual(
+                command[command.index("--ntasks-per-node") + 1], "40"
+            )
+
     def test_cache_is_made_whole_solute_only_and_atomic(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
