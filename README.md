@@ -454,6 +454,10 @@ Individual controls can be combined with the other configuration sections:
 ```json
 {
   "config_schema": "salsbury-analysis-config-v1",
+  "planning": {
+    "module_selection": "all_enabled",
+    "stride_mode": "balanced_per_method"
+  },
   "modules": {
     "solvent_accessible_surface_area": {"enabled": true},
     "water_mediated_hydrogen_bond_networks": {"enabled": false}
@@ -487,6 +491,26 @@ Use the file during preparation:
 ```bash
 salsbury-md-analysis prepare-analysis ... --config my-analysis-config.json
 ```
+
+Two preparation switches provide common reviewed presets without editing JSON:
+
+```bash
+# Run only the protected scientific core and its dependency closure.
+salsbury-md-analysis prepare-analysis ... --protected-core-only
+
+# Use one cache stride for every enabled analysis, with no downstream frame stride.
+salsbury-md-analysis prepare-analysis ... --uniform-cache-stride
+```
+
+The same switches work with `prepare-comparison` and `--plan-only`. The
+generated `analysis-config.json` records the resolved `planning` values, so a
+reviewer can distinguish the preset from a hand-edited module list. Uniform
+planning tests candidate cache strides from finest to coarsest, rejects any
+candidate that violates an enabled method's sample floor, time-gap rule, or
+frame ceiling, and stops at the first candidate that fits the campaign CPU,
+wall-time, and memory envelope. It fails closed when no single stride can
+satisfy all enabled methods. The default remains the more efficient balanced
+mode, which may add method-specific strides after the cache.
 
 Run `salsbury-md-analysis list-modules` to see the module identifiers. The
 prepared campaign writes the complete resolved configuration to

@@ -151,6 +151,56 @@ class ResourcePlanningTests(unittest.TestCase):
         self.assertEqual(rows["fit"]["projection_integer_stride"], 1)
         self.assertEqual(coupling["evaluated_candidate_strides"], [1, 2])
 
+    def test_uniform_cache_stride_forbids_downstream_and_fit_strides(self):
+        plan = plan_global_stride_projection_coupled_campaign_resource_budget(
+            self._cache_coupling_tasks(),
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=1.0,
+            maximum_memory_gib=8.0,
+            coordinate_cache_full_scan_fraction=0.0,
+            overall_stride_candidate_strides=[1, 2, 4, 5],
+            planning_utilization=1.0,
+            pilot_budget_fraction=0.0,
+            uniform_cache_stride=True,
+        )
+        coupling = plan["global_stride_coupling"]
+        self.assertEqual(coupling["planning_mode"], "uniform_cache_stride")
+        self.assertEqual(
+            coupling["selected_coordinate_cache_integer_stride"], 4
+        )
+        self.assertEqual(coupling["evaluated_candidate_strides"], [1, 2, 4])
+        self.assertEqual(coupling["early_terminated_candidate_strides"], [5])
+        rows = {row["task_id"]: row for row in plan["tasks"]}
+        self.assertEqual(rows["projection"]["integer_stride"], 1)
+        self.assertEqual(rows["fit"]["integer_stride"], 1)
+        self.assertEqual(rows["fit"]["projection_integer_stride"], 1)
+        self.assertEqual(rows["projection"]["effective_raw_integer_stride"], 4)
+        self.assertEqual(rows["fit"]["effective_raw_integer_stride"], 4)
+
+    def test_uniform_cache_stride_rejects_method_ceiling_until_coarse_enough(self):
+        tasks = self._cache_coupling_tasks()
+        tasks[1]["maximum_frames_per_replica"] = 300
+        tasks[2]["maximum_frames_per_replica"] = 300
+        plan = plan_global_stride_projection_coupled_campaign_resource_budget(
+            tasks,
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=24.0,
+            maximum_memory_gib=8.0,
+            coordinate_cache_full_scan_fraction=0.0,
+            overall_stride_candidate_strides=[1, 2, 4, 5],
+            planning_utilization=1.0,
+            pilot_budget_fraction=0.0,
+            uniform_cache_stride=True,
+        )
+        coupling = plan["global_stride_coupling"]
+        self.assertEqual(
+            coupling["selected_coordinate_cache_integer_stride"], 4
+        )
+        self.assertEqual(
+            coupling["candidate_evaluations"][0]["feasibility_status"],
+            "protected_scientific_minimum_pruned",
+        )
+
     def test_overall_stride_also_applies_to_solvated_trajectory_analysis(self):
         tasks = self._cache_coupling_tasks()
         tasks.append({

@@ -192,6 +192,65 @@ class AnalysisConfigTests(unittest.TestCase):
             )
         self.assertEqual(observed, expected)
 
+    def test_protected_core_only_mode_materializes_explicit_module_selection(self):
+        module_ids = [
+            "provenance_manifest", "preflight_inventory", "common_atom_mapping",
+            "structural_integrity_qc", "replica_rmsd_rg", "pooled_rmsf",
+            "individual_pca", "common_pca", "dccm", "pca_fes_basins",
+            "representative_frames", "solvent_accessible_surface_area",
+            "clustering_kmeans", "state_coordinate_exports",
+        ]
+        config = load_analysis_config(
+            None,
+            module_ids,
+            ["global_common_heavy"],
+            module_selection_override="protected_core_only",
+        )
+        self.assertEqual(
+            config["planning"]["module_selection"], "protected_core_only"
+        )
+        enabled = {
+            module_id for module_id, row in config["modules"].items()
+            if row["enabled"]
+        }
+        self.assertEqual(enabled, set(module_ids[:11]))
+        self.assertFalse(config["clustering"]["methods"]["kmeans"]["enabled"])
+        self.assertFalse(
+            config["views"]["global_common_heavy"][
+                "state_trajectory_exports_enabled"
+            ]
+        )
+
+    def test_planning_modes_can_be_selected_in_config_or_overridden(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "config.json"
+            path.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "planning": {
+                    "module_selection": "all_enabled",
+                    "stride_mode": "uniform_cache_stride",
+                },
+            }), encoding="utf-8")
+            configured = load_analysis_config(
+                path, ["provenance_manifest"], ["global"]
+            )
+            overridden = load_analysis_config(
+                path,
+                ["provenance_manifest"],
+                ["global"],
+                module_selection_override="protected_core_only",
+                stride_mode_override="balanced_per_method",
+            )
+        self.assertEqual(
+            configured["planning"]["stride_mode"], "uniform_cache_stride"
+        )
+        self.assertEqual(
+            overridden["planning"], {
+                "module_selection": "protected_core_only",
+                "stride_mode": "balanced_per_method",
+            }
+        )
+
     def test_reporting_contract_requires_ten_to_twelve_of_fifty(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "analysis-config.json"

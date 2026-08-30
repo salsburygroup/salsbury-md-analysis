@@ -3122,6 +3122,8 @@ def prepare_standard_analysis(
     energetic_charmm_parameter_files: Sequence[Path] = (),
     energetic_openmm_system_xml: Optional[Path] = None,
     energetic_gromacs_tpr: Optional[Path] = None,
+    protected_core_only: bool = False,
+    uniform_cache_stride: bool = False,
 ) -> Dict[str, object]:
     """Prepare manifests, budgets, and a local or Slurm workflow without touching inputs."""
 
@@ -3231,7 +3233,15 @@ def prepare_standard_analysis(
     ]
     try:
         analysis_config = load_analysis_config(
-            config_path, registry_ids, view_ids_for_config
+            config_path,
+            registry_ids,
+            view_ids_for_config,
+            module_selection_override=(
+                "protected_core_only" if protected_core_only else None
+            ),
+            stride_mode_override=(
+                "uniform_cache_stride" if uniform_cache_stride else None
+            ),
         )
     except (AnalysisConfigError, OSError) as exc:
         raise QuickstartError(str(exc)) from exc
@@ -3885,6 +3895,8 @@ def prepare_standard_analysis_resource_fit(
     config_path: Optional[Path] = None,
     generate_connectivity_openmm: bool = False,
     openmm_bond_definitions: Sequence[Path] = (),
+    protected_core_only: bool = False,
+    uniform_cache_stride: bool = False,
 ) -> Dict[str, object]:
     """Prepare an explicit dependency-closed optional resource reduction.
 
@@ -3913,6 +3925,8 @@ def prepare_standard_analysis_resource_fit(
         "dssp_executable": dssp_executable,
         "generate_connectivity_openmm": generate_connectivity_openmm,
         "openmm_bond_definitions": openmm_bond_definitions,
+        "protected_core_only": protected_core_only,
+        "uniform_cache_stride": uniform_cache_stride,
     }
     with tempfile.TemporaryDirectory(
         prefix="salsbury-resource-fit-planning-"
@@ -4043,6 +4057,8 @@ def prepare_standard_analysis_memory_fit(
     energetic_charmm_parameter_files: Sequence[Path] = (),
     energetic_openmm_system_xml: Optional[Path] = None,
     energetic_gromacs_tpr: Optional[Path] = None,
+    protected_core_only: bool = False,
+    uniform_cache_stride: bool = False,
 ) -> Dict[str, object]:
     """Prepare, explicitly reduce memory-incompatible modules, and replan.
 
@@ -4075,6 +4091,8 @@ def prepare_standard_analysis_memory_fit(
         "energetic_charmm_parameter_files": energetic_charmm_parameter_files,
         "energetic_openmm_system_xml": energetic_openmm_system_xml,
         "energetic_gromacs_tpr": energetic_gromacs_tpr,
+        "protected_core_only": protected_core_only,
+        "uniform_cache_stride": uniform_cache_stride,
     }
     with tempfile.TemporaryDirectory(
         prefix="salsbury-memory-fit-planning-"

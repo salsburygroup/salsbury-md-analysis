@@ -761,6 +761,8 @@ def _prepare_analysis_command(
     auto_disable_to_fit_memory: bool,
     auto_disable_optional_to_fit_resources: bool,
     plan_only: bool,
+    protected_core_only: bool,
+    uniform_cache_stride: bool,
 ) -> int:
     try:
         prepare = prepare_standard_analysis
@@ -786,6 +788,8 @@ def _prepare_analysis_command(
             energetic_charmm_parameter_files=energetic_charmm_parameter_files,
             energetic_openmm_system_xml=energetic_openmm_system_xml,
             energetic_gromacs_tpr=energetic_gromacs_tpr,
+            protected_core_only=protected_core_only,
+            uniform_cache_stride=uniform_cache_stride,
         )
         if plan_only and report.get("technical_status") == "complete":
             plan_path = output_directory.expanduser().resolve(strict=True) / (
@@ -856,6 +860,8 @@ def _prepare_comparison_command(
     auto_disable_to_fit_memory: bool,
     auto_disable_optional_to_fit_resources: bool,
     plan_only: bool,
+    protected_core_only: bool,
+    uniform_cache_stride: bool,
 ) -> int:
     try:
         prepare = prepare_comparative_analysis
@@ -872,6 +878,8 @@ def _prepare_comparison_command(
             dssp_executable=dssp_executable,
             dssr_executable=dssr_executable,
             config_path=config_path,
+            protected_core_only=protected_core_only,
+            uniform_cache_stride=uniform_cache_stride,
         )
         if plan_only and report.get("technical_status") == "complete":
             plan_path = output_directory.expanduser().resolve(strict=True) / (
@@ -1691,6 +1699,20 @@ def build_parser() -> argparse.ArgumentParser:
             "starting local execution or submitting scheduler jobs."
         ),
     )
+    prepare_parser.add_argument(
+        "--protected-core-only", action="store_true",
+        help=(
+            "Enable only the protected scientific core and its required "
+            "dependencies; record every other module as disabled."
+        ),
+    )
+    prepare_parser.add_argument(
+        "--uniform-cache-stride", action="store_true",
+        help=(
+            "Choose one scientifically valid cache stride for every enabled "
+            "analysis and forbid additional downstream frame strides."
+        ),
+    )
 
     comparison_parser = subparsers.add_parser(
         "prepare-comparison",
@@ -1881,6 +1903,20 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Prepare and return the complete comparison plan without starting "
             "local execution or submitting scheduler jobs."
+        ),
+    )
+    comparison_parser.add_argument(
+        "--protected-core-only", action="store_true",
+        help=(
+            "Enable only the protected comparative core, including integrated "
+            "comparison, and its required dependencies."
+        ),
+    )
+    comparison_parser.add_argument(
+        "--uniform-cache-stride", action="store_true",
+        help=(
+            "Choose one scientifically valid cache stride for every enabled "
+            "comparison analysis and forbid downstream frame strides."
         ),
     )
 
@@ -2190,6 +2226,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.auto_disable_to_fit_memory,
             args.auto_disable_optional_to_fit_resources,
             args.plan_only,
+            args.protected_core_only,
+            args.uniform_cache_stride,
         )
     if args.command == "prepare-comparison":
         return _prepare_comparison_command(
@@ -2204,6 +2242,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.auto_disable_to_fit_memory,
             args.auto_disable_optional_to_fit_resources,
             args.plan_only,
+            args.protected_core_only,
+            args.uniform_cache_stride,
         )
     if args.command == "run-local-workflow":
         try:
