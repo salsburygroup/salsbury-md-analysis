@@ -302,6 +302,17 @@ configuration switches and anything that depends on them, replans without
 lowering frame minima, and writes the
 fully explicit result to `analysis-config.memory-fit.json`. If the reduced
 campaign still violates CPU or wall-time limits, it still fails.
+
+For an opt-in reduction across CPU, wall time, and memory, use
+`--auto-disable-optional-to-fit-resources`. The planner starts with the full
+requested workflow. If it does not fit, it applies the planner's
+dependency-closed optional switch set, preserves every protected module, and
+replans. The output retains the request in `analysis-config.requested.json`,
+writes the runnable choice to `analysis-config.resource-fit.json`, and records
+every direct and transitive disablement in `resource-fit-report.json`. The
+command fails when the protected core cannot fit; it never weakens protected
+QC or scientific sampling minima.
+
 Trajectory execution subsampling is never random: it is deterministic,
 replica-balanced, and spread over the full time range. Every production
 trajectory selector receives one exact integer stride over each concatenated

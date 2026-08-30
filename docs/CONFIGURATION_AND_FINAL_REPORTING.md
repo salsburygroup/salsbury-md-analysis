@@ -212,6 +212,20 @@ Technical frame minima and scientific gates are never relaxed. The fallback
 addresses memory only; a remaining CPU-hour, critical-path, calibration, or
 scratch-space failure remains fail-closed.
 
+To let the planner apply dependency-closed optional reductions for CPU,
+critical-path wall time, or memory, use:
+
+```bash
+salsbury-md-analysis prepare-analysis ... --config analysis.json \
+  --auto-disable-optional-to-fit-resources
+```
+
+The comparison initializer accepts the same flag. This mode preserves the
+requested config and plan, applies only the planner-recommended optional
+switches and their dependents, and writes `analysis-config.resource-fit.json`
+and `resource-fit-report.json`. It succeeds only if all protected modules fit
+without relaxing their configured sampling minima.
+
 Measured catalogs describe the systems on which they were collected; they are
 not universal per-frame constants. Planner tasks may therefore carry an
 auditable workload multiplier before a catalog rate or memory maximum is

@@ -9,6 +9,7 @@ from salsbury_md_analysis.analysis_config import (
     default_analysis_config,
     load_analysis_config,
     make_memory_fit_config,
+    make_resource_fit_config,
 )
 
 
@@ -318,6 +319,40 @@ class AnalysisConfigTests(unittest.TestCase):
         self.assertTrue(
             reduced["modules"]["solvent_accessible_surface_area"]["enabled"]
         )
+
+    def test_resource_fit_config_materializes_planner_switch_closure(self):
+        config = default_analysis_config(
+            [
+                "structural_integrity_qc", "common_pca", "pca_fes_basins",
+                "representative_frames", "solvent_accessible_surface_area",
+            ],
+            ["global_common_heavy"],
+        )
+        reduced, direct, transitive = make_resource_fit_config(
+            config, ["modules.common_pca.enabled"]
+        )
+        self.assertEqual(direct, ["modules.common_pca.enabled"])
+        self.assertEqual(
+            transitive, ["pca_fes_basins", "representative_frames"]
+        )
+        self.assertTrue(
+            reduced["modules"]["structural_integrity_qc"]["enabled"]
+        )
+        self.assertFalse(reduced["modules"]["common_pca"]["enabled"])
+        self.assertFalse(reduced["modules"]["pca_fes_basins"]["enabled"])
+        self.assertFalse(reduced["views"]["global_common_heavy"]["enabled"])
+
+    def test_resource_fit_refuses_protected_switch(self):
+        config = default_analysis_config(
+            ["structural_integrity_qc", "replica_rmsd_rg"], []
+        )
+        with self.assertRaisesRegex(
+            AnalysisConfigError, "protected module structural_integrity_qc"
+        ):
+            make_resource_fit_config(
+                config, ["modules.structural_integrity_qc.enabled"]
+            )
+
     def test_clustering_method_switches_filter_dedicated_and_alternative_methods(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "config.json"

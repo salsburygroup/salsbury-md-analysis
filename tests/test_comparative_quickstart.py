@@ -8,11 +8,58 @@ from salsbury_md_analysis.comparative_quickstart import (
     _automatic_context_slurm_files,
     prepare_comparative_analysis,
     prepare_comparative_analysis_memory_fit,
+    prepare_comparative_analysis_resource_fit,
 )
 from tests.test_quickstart import _write_dcd, _write_inputs, _write_oligomer_inputs
 
 
 class ComparativeQuickstartTests(unittest.TestCase):
+    def test_comparison_resource_fit_preserves_protected_core(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pdb, psf, trajectories = _write_oligomer_inputs(root)
+            request_path = root / "comparison.json"
+            request_path.write_text(json.dumps({
+                "request_schema": "salsbury-comparative-analysis-input-v1",
+                "systems": [
+                    {
+                        "system_id": system_id,
+                        "pdb": str(pdb),
+                        "psf": str(psf),
+                        "trajectories": [str(path) for path in trajectories],
+                        "frame_interval_ps": 10.0,
+                    }
+                    for system_id in ("control", "variant")
+                ],
+            }), encoding="utf-8")
+            config_path = root / "constrained.json"
+            config_path.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "execution": {"maximum_memory_gib": 4.0},
+            }), encoding="utf-8")
+            output = root / "comparison-resource-fit"
+            report = prepare_comparative_analysis_resource_fit(
+                request_path=request_path,
+                output_directory=output,
+                project_id="comparison-resource-fit",
+                config_path=config_path,
+            )
+            self.assertEqual(report["technical_status"], "complete")
+            resource_fit = json.loads(
+                (output / "resource-fit-report.json").read_text()
+            )
+            self.assertTrue(resource_fit["automatic_changes_applied"])
+            self.assertTrue(resource_fit["protected_set_preserved"])
+            reduced = json.loads(
+                (output / "analysis-config.resource-fit.json").read_text()
+            )
+            self.assertTrue(
+                reduced["modules"]["structural_integrity_qc"]["enabled"]
+            )
+            self.assertTrue(
+                reduced["modules"]["integrated_comparison"]["enabled"]
+            )
+
     def test_comparison_memory_fallback_writes_explicit_reduced_config(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
