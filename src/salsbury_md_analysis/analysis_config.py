@@ -85,8 +85,20 @@ DEPENDENCIES = {
 }
 
 PROTECTED_MODULES = {
-    "provenance_manifest", "preflight_inventory", "common_atom_mapping",
+    # Reproducibility and input-validity gates.
+    "provenance_manifest",
+    "preflight_inventory",
+    "common_atom_mapping",
     "structural_integrity_qc",
+    # Minimum scientifically interpretable analysis.  These modules may not be
+    # silently removed by reduced-resource planning.
+    "replica_rmsd_rg",
+    "pooled_rmsf",
+    "individual_pca",
+    "common_pca",
+    "dccm",
+    "pca_fes_basins",
+    "representative_frames",
 }
 
 MODULE_GROUPS = {
@@ -95,7 +107,10 @@ MODULE_GROUPS = {
             "Required provenance, input validation, atom identity, and structural "
             "integrity QC."
         ),
-        "modules": PROTECTED_MODULES,
+        "modules": {
+            "provenance_manifest", "preflight_inventory",
+            "common_atom_mapping", "structural_integrity_qc",
+        },
     },
     "02_quality_and_motion": {
         "description": "Replica motion, fluctuations, and uncertainty.",

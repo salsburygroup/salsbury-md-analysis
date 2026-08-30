@@ -1741,6 +1741,15 @@ def plan_and_apply_complete_campaign(
     execution = analysis_config.get("execution")
     if not isinstance(execution, dict):
         raise CampaignPlanningError("analysis execution configuration is unavailable")
+    configured_modules = analysis_config.get("modules")
+    if not isinstance(configured_modules, Mapping):
+        raise CampaignPlanningError("analysis module configuration is unavailable")
+    protected_module_ids = tuple(sorted({
+        str(module_id)
+        for module_id, module_config in configured_modules.items()
+        if isinstance(module_config, Mapping)
+        and bool(module_config.get("protected", False))
+    } | {"coordinate_cache"}))
     sampling_configuration = analysis_config.get("sampling")
     if not isinstance(sampling_configuration, dict):
         raise CampaignPlanningError("analysis sampling configuration is unavailable")
@@ -1787,6 +1796,11 @@ def plan_and_apply_complete_campaign(
         "walltime_overhead_minutes": 15.0,
         "minimum_wall_minutes": 30.0,
     }
+    node_planning_policy: Dict[str, object] = {
+        "maximum_cpus_per_node": None,
+        "maximum_memory_gib_per_node": None,
+        "maximum_nodes": None,
+    }
     if str(execution.get("submission_adapter", "local")) == "slurm":
         profile_path = execution.get("slurm_profile")
         if not isinstance(profile_path, str) or not profile_path:
@@ -1803,6 +1817,31 @@ def plan_and_apply_complete_campaign(
                 memory_policy[key] = float(policy[key])
             for key in scheduler_time_policy:
                 scheduler_time_policy[key] = float(policy[key])
+        node_policy = profile.get("node_policy")
+        if isinstance(node_policy, Mapping) and node_policy.get(
+            "cpus_per_node"
+        ) is not None:
+            node_cpus = int(node_policy["cpus_per_node"])
+            node_memory = float(node_policy["memory_gib_per_node"])
+            configured_nodes = node_policy.get("maximum_nodes_per_campaign")
+            node_planning_policy = {
+                "maximum_cpus_per_node": node_cpus,
+                "maximum_memory_gib_per_node": node_memory,
+                "maximum_nodes": (
+                    int(configured_nodes)
+                    if configured_nodes is not None else
+                    max(
+                        math.ceil(
+                            int(execution["maximum_parallel_cpus"])
+                            / node_cpus
+                        ),
+                        math.ceil(
+                            float(execution["maximum_memory_gib"])
+                            / node_memory
+                        ),
+                    )
+                ),
+            }
 
     def annotate_permissive_minimum_request(
         request: MutableMapping[str, object],
@@ -2018,6 +2057,7 @@ def plan_and_apply_complete_campaign(
                 "minimum_scheduler_memory_gib": memory_policy[
                     "minimum_memory_gib"
                 ],
+                **node_planning_policy,
             }
             if (
                 coordinate_cache_build_required
@@ -2033,6 +2073,7 @@ def plan_and_apply_complete_campaign(
                         "overall_stride_candidates",
                         [1, 2, 3, 4, 5, 10, 20, 100],
                     )),
+                    protected_module_ids=protected_module_ids,
                     **planning_kwargs,
                 )
             else:
@@ -2058,6 +2099,7 @@ def plan_and_apply_complete_campaign(
                     "overall_stride_candidates",
                     [1, 2, 3, 4, 5, 10, 20, 100],
                 )),
+                protected_module_ids=protected_module_ids,
                 **planning_kwargs,
             )
             recommended_plan = recommendation.get("recommended_plan")

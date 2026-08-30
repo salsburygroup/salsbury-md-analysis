@@ -35,7 +35,7 @@ _PROFILE_FIELDS = {
     "slurm_profile_schema", "profile_id", "cluster_name", "submit_command",
     "status_command", "cancel_command", "account", "unix_group", "qos",
     "partitions", "partition_maximum_wall_minutes", "environment", "paths", "resource_policy",
-    "additional_sbatch_directives",
+    "node_policy", "additional_sbatch_directives",
 }
 _RESOURCE_POLICY_DEFAULTS = {
     "minimum_wall_minutes": 30.0,
@@ -221,6 +221,59 @@ def load_slurm_profile(path: Path) -> Dict[str, object]:
         checked_policy[name] = float(value)
     normalized["resource_policy"] = checked_policy
 
+    node_policy = profile.get("node_policy", {})
+    allowed_node_policy = {
+        "cpus_per_node", "memory_gib_per_node", "maximum_nodes_per_campaign",
+    }
+    if (
+        not isinstance(node_policy, dict)
+        or set(node_policy).difference(allowed_node_policy)
+    ):
+        raise ExecutionAdapterError("Slurm node_policy mapping is invalid")
+    cpus_per_node = node_policy.get("cpus_per_node")
+    memory_gib_per_node = node_policy.get("memory_gib_per_node")
+    maximum_nodes_per_campaign = node_policy.get("maximum_nodes_per_campaign")
+    if (cpus_per_node is None) != (memory_gib_per_node is None):
+        raise ExecutionAdapterError(
+            "node_policy requires both cpus_per_node and memory_gib_per_node"
+        )
+    if cpus_per_node is not None and (
+        isinstance(cpus_per_node, bool)
+        or not isinstance(cpus_per_node, int)
+        or cpus_per_node <= 0
+    ):
+        raise ExecutionAdapterError(
+            "node_policy.cpus_per_node must be a positive integer"
+        )
+    if memory_gib_per_node is not None and (
+        isinstance(memory_gib_per_node, bool)
+        or not isinstance(memory_gib_per_node, (int, float))
+        or not math.isfinite(float(memory_gib_per_node))
+        or float(memory_gib_per_node) <= 0.0
+    ):
+        raise ExecutionAdapterError(
+            "node_policy.memory_gib_per_node must be finite and positive"
+        )
+    if maximum_nodes_per_campaign is not None and (
+        isinstance(maximum_nodes_per_campaign, bool)
+        or not isinstance(maximum_nodes_per_campaign, int)
+        or maximum_nodes_per_campaign <= 0
+    ):
+        raise ExecutionAdapterError(
+            "node_policy.maximum_nodes_per_campaign must be a positive integer"
+        )
+    if maximum_nodes_per_campaign is not None and cpus_per_node is None:
+        raise ExecutionAdapterError(
+            "node_policy.maximum_nodes_per_campaign requires a node shape"
+        )
+    normalized["node_policy"] = {
+        "cpus_per_node": cpus_per_node,
+        "memory_gib_per_node": (
+            None if memory_gib_per_node is None else float(memory_gib_per_node)
+        ),
+        "maximum_nodes_per_campaign": maximum_nodes_per_campaign,
+    }
+
     directives = profile.get("additional_sbatch_directives", [])
     if not isinstance(directives, list):
         raise ExecutionAdapterError("additional_sbatch_directives must be a list")
@@ -233,7 +286,7 @@ def load_slurm_profile(path: Path) -> Dict[str, object]:
                 "additional Slurm directives must start with '#SBATCH --'"
             )
         if re.match(
-            r"#SBATCH --(?:account|partition|qos|time|mem|cpus-per-task)(?:=|\s)",
+            r"#SBATCH --(?:account|partition|qos|time|mem|nodes|cpus-per-task)(?:=|\s)",
             checked,
         ):
             raise ExecutionAdapterError(
@@ -414,6 +467,7 @@ def _enrich_task_resources(
     rows: Sequence[Mapping[str, object]],
     execution: Mapping[str, object],
     policy: Mapping[str, object],
+    node_policy: Optional[Mapping[str, object]] = None,
 ) -> Dict[str, object]:
     enriched = dict(task)
     matched = _task_planner_rows(root, task, rows)
@@ -421,6 +475,18 @@ def _enrich_task_resources(
     maximum_hours = float(execution["maximum_hours_per_cpu"])
     maximum_memory = float(execution["maximum_memory_gib"])
     maximum_cpus = int(execution["maximum_parallel_cpus"])
+    maximum_cpus_per_node = (
+        int(node_policy["cpus_per_node"])
+        if isinstance(node_policy, Mapping)
+        and node_policy.get("cpus_per_node") is not None
+        else maximum_cpus
+    )
+    maximum_memory_gib_per_node = (
+        float(node_policy["memory_gib_per_node"])
+        if isinstance(node_policy, Mapping)
+        and node_policy.get("memory_gib_per_node") is not None
+        else maximum_memory
+    )
     if matched:
         try:
             wall_hours = sum(
@@ -468,9 +534,19 @@ def _enrich_task_resources(
                 f"{requested_memory_gib:g} GiB, exceeding the aggregate campaign "
                 f"limit {maximum_memory:g} GiB"
             )
+        if requested_memory_gib > maximum_memory_gib_per_node + 1e-9:
+            raise ExecutionAdapterError(
+                f"safety-adjusted memory request for {path.name} is "
+                f"{requested_memory_gib:g} GiB, exceeding the per-node limit "
+                f"{maximum_memory_gib_per_node:g} GiB"
+            )
         planner_task_ids = [str(row["task_id"]) for row in matched]
         cpu_slots = max(
-            min(maximum_cpus, int(row.get("effective_cpu_cap", 1)))
+            min(
+                maximum_cpus,
+                maximum_cpus_per_node,
+                int(row.get("effective_cpu_cap", 1)),
+            )
             for row in matched
         )
         source = "campaign_planner_with_profile_safety_margin"
@@ -484,8 +560,16 @@ def _enrich_task_resources(
                 f"static memory request for {path.name} exceeds the aggregate "
                 f"campaign limit"
             )
+        if requested_memory_gib > maximum_memory_gib_per_node + 1e-9:
+            raise ExecutionAdapterError(
+                f"static memory request for {path.name} exceeds the per-node limit"
+            )
         planner_task_ids = []
         cpu_slots = int(task.get("cpu_slots", 1))
+        if cpu_slots > maximum_cpus_per_node:
+            raise ExecutionAdapterError(
+                f"static CPU request for {path.name} exceeds the per-node limit"
+            )
         source = "generated_worker_static_request_no_planner_row"
     enriched.update({
         "planner_task_ids": planner_task_ids,
@@ -535,6 +619,7 @@ def _script_resource_requests(plan: Mapping[str, object]) -> Dict[str, Dict[str,
             row = requests.setdefault(script, {
                 "requested_wall_minutes": 0.0,
                 "requested_memory_gib": 0.0,
+                "cpu_slots": 1,
                 "planner_task_ids": [],
                 "aggregation": "maximum across concurrently schedulable array elements",
             })
@@ -545,6 +630,9 @@ def _script_resource_requests(plan: Mapping[str, object]) -> Dict[str, Dict[str,
             row["requested_memory_gib"] = max(
                 float(row["requested_memory_gib"]),
                 float(task["requested_memory_gib"]),
+            )
+            row["cpu_slots"] = max(
+                int(row["cpu_slots"]), int(task["cpu_slots"])
             )
             row["planner_task_ids"].extend(task.get("planner_task_ids", []))
     for row in requests.values():
@@ -865,6 +953,7 @@ def _slurm_resource_lanes(
     partitions: Mapping[str, object],
     partition_limits: Mapping[str, object],
     resource_policy: Mapping[str, object],
+    node_policy: Mapping[str, object],
 ) -> List[Dict[str, object]]:
     """Pack dependency-safe tasks into independent serial resource lanes."""
 
@@ -925,10 +1014,33 @@ def _slurm_resource_lanes(
             item["submission_index"] = len(ordered_items)
             ordered_items.append(item)
     try:
+        node_cpus = node_policy.get("cpus_per_node")
+        node_memory = node_policy.get("memory_gib_per_node")
+        configured_maximum_nodes = node_policy.get(
+            "maximum_nodes_per_campaign"
+        )
+        maximum_nodes = (
+            int(configured_maximum_nodes)
+            if configured_maximum_nodes is not None else
+            (
+                max(
+                    math.ceil(maximum_cpus / int(node_cpus)),
+                    math.ceil(maximum_memory / float(node_memory)),
+                )
+                if node_cpus is not None and node_memory is not None else None
+            )
+        )
         lanes = pack_resource_lanes(
             ordered_items,
             maximum_parallel_cpus=maximum_cpus,
             maximum_parallel_memory_gib=maximum_memory,
+            maximum_cpus_per_node=(
+                None if node_cpus is None else int(node_cpus)
+            ),
+            maximum_memory_gib_per_node=(
+                None if node_memory is None else float(node_memory)
+            ),
+            maximum_nodes=maximum_nodes,
         )
     except ResourcePlanningError as exc:
         raise ExecutionAdapterError(str(exc)) from exc
@@ -946,6 +1058,7 @@ def _slurm_resource_lanes(
 def _slurm_submission_preview(
     execution_plan: Mapping[str, object],
     resource_lanes: Sequence[Mapping[str, object]],
+    node_policy: Mapping[str, object],
 ) -> Dict[str, object]:
     """Return a bounded, machine-readable contract shown before submission."""
 
@@ -976,6 +1089,41 @@ def _slurm_submission_preview(
         default=0.0,
     )
     warnings: List[Dict[str, object]] = []
+    node_cpus = node_policy.get("cpus_per_node")
+    node_memory = node_policy.get("memory_gib_per_node")
+    planned_node_indices = {
+        int(lane["planned_node_index"])
+        for lane in resource_lanes
+        if lane.get("planned_node_index") is not None
+    }
+    node_reservations = []
+    for node_index in sorted(planned_node_indices):
+        node_lanes = [
+            lane for lane in resource_lanes
+            if int(lane.get("planned_node_index", -1)) == node_index
+        ]
+        node_reservations.append({
+            "planned_node_index": node_index,
+            "resource_lane_indices": [
+                int(lane["lane_index"]) for lane in node_lanes
+            ],
+            "reserved_cpus": sum(
+                int(lane["cpu_slots"]) for lane in node_lanes
+            ),
+            "reserved_memory_gib": sum(
+                float(lane["memory_gib"]) for lane in node_lanes
+            ),
+        })
+    if node_cpus is not None and node_memory is not None:
+        for reservation in node_reservations:
+            if (
+                int(reservation["reserved_cpus"]) > int(node_cpus)
+                or float(reservation["reserved_memory_gib"])
+                > float(node_memory) + 1.0e-9
+            ):
+                raise ExecutionAdapterError(
+                    "planned padded lane reservations exceed one node"
+                )
     if peak_cpus < maximum_cpus:
         warnings.append({
             "severity": "warning",
@@ -1024,6 +1172,13 @@ def _slurm_submission_preview(
         "maximum_parallel_cpus_in_generated_waves": peak_cpus,
         "maximum_parallel_memory_gib_configured": maximum_memory,
         "maximum_parallel_memory_gib_in_generated_waves": peak_memory,
+        "node_policy": dict(node_policy),
+        "planned_node_count": len(planned_node_indices),
+        "planned_node_reservations": node_reservations,
+        "per_node_padding_validation": (
+            "complete" if node_cpus is not None and node_memory is not None
+            else "not_configured"
+        ),
         "planner_estimated_dependency_critical_path_hours": (
             planner_critical_path
         ),
@@ -1118,6 +1273,7 @@ def _render_resource_bounded_submit(
         variable = f"JOB_T{item_index:04d}"
         options = [
             "--parsable",
+            "--nodes=1",
             f"--cpus-per-task={int(item['cpu_slots'])}",
             f"--time={item['slurm_time']}",
             f"--mem={item['slurm_memory']}",
@@ -1212,6 +1368,8 @@ def apply_slurm_profile(
     assert isinstance(additional, Sequence)
     resource_policy = profile["resource_policy"]
     assert isinstance(resource_policy, Mapping)
+    node_policy = profile["node_policy"]
+    assert isinstance(node_policy, Mapping)
     script_requests = _script_resource_requests(execution_plan)
     partition_limits = profile["partition_maximum_wall_minutes"]
     assert isinstance(partition_limits, Mapping)
@@ -1226,9 +1384,10 @@ def apply_slurm_profile(
         partitions,
         partition_limits,
         resource_policy,
+        node_policy,
     )
     submission_preview = _slurm_submission_preview(
-        execution_plan, resource_lanes
+        execution_plan, resource_lanes, node_policy
     )
     (root / "slurm-submission-preview.json").write_text(
         json.dumps(submission_preview, indent=2, sort_keys=True) + "\n",
@@ -1269,6 +1428,10 @@ def apply_slurm_profile(
         )
         text = _replace_sbatch(
             text, "mem", f"{int(math.ceil(float(request['requested_memory_gib'])))}G"
+        )
+        text = _replace_sbatch(text, "nodes", "1")
+        text = _replace_sbatch(
+            text, "cpus-per-task", str(int(request.get("cpu_slots", 1)))
         )
         text = text.replace("set -euo pipefail\n", f"set -euo pipefail\n{preamble}\n", 1)
         python_path = environment.get("python_executable")
@@ -1328,6 +1491,7 @@ def apply_slurm_profile(
         "profile_id": profile["profile_id"],
         "cluster_name": profile["cluster_name"],
         "resource_policy": dict(resource_policy),
+        "node_policy": dict(node_policy),
         "partition_maximum_wall_minutes": dict(partition_limits),
         "tasks": _task_resource_requests(execution_plan),
         "scripts": script_requests,
@@ -1720,6 +1884,7 @@ def build_local_execution_plan(
     execution: Mapping[str, object],
     reporting: Mapping[str, object],
     resource_policy: Optional[Mapping[str, object]] = None,
+    node_policy: Optional[Mapping[str, object]] = None,
 ) -> Dict[str, object]:
     """Build one dependency/resource plan shared by local and Slurm adapters."""
 
@@ -1808,7 +1973,9 @@ def build_local_execution_plan(
     rows = _planner_rows(root)
     for phase in phases:
         phase["tasks"] = [
-            _enrich_task_resources(root, task, rows, execution, policy)
+            _enrich_task_resources(
+                root, task, rows, execution, policy, node_policy
+            )
             for task in phase["tasks"]
         ]
     return {
@@ -1818,6 +1985,7 @@ def build_local_execution_plan(
         "maximum_campaign_wall_hours": float(execution["maximum_hours_per_cpu"]),
         "maximum_parallel_memory_gib": float(execution["maximum_memory_gib"]),
         "resource_policy": policy,
+        "node_policy": dict(node_policy or {}),
         "phases": phases,
         "dependency_policy": (
             "depends_on_task_ids contains only success-required inputs that a task "
@@ -1854,6 +2022,7 @@ def prepare_execution_artifacts(
         execution,
         reporting,
         None if profile is None else profile["resource_policy"],
+        None if profile is None else profile["node_policy"],
     )
     (root / "local-execution-plan.json").write_text(
         json.dumps(plan, indent=2, sort_keys=True) + "\n", encoding="utf-8"

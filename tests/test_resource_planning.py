@@ -946,6 +946,82 @@ class ResourcePlanningTests(unittest.TestCase):
             sorted(len(lane["items"]) for lane in lanes), [1, 2]
         )
 
+    def test_resource_lane_packer_bins_padded_lanes_on_physical_nodes(self):
+        lanes = pack_resource_lanes(
+            [
+                {"item_id": "large", "cpu_slots": 1, "memory_gib": 100,
+                 "wall_hours": 1},
+                {"item_id": "medium", "cpu_slots": 1, "memory_gib": 90,
+                 "wall_hours": 1},
+                {"item_id": "small", "cpu_slots": 1, "memory_gib": 80,
+                 "wall_hours": 1},
+            ],
+            maximum_parallel_cpus=6,
+            maximum_parallel_memory_gib=370,
+            maximum_cpus_per_node=3,
+            maximum_memory_gib_per_node=185,
+            maximum_nodes=2,
+        )
+        reservations = {}
+        for lane in lanes:
+            node = lane["planned_node_index"]
+            reserved = reservations.setdefault(node, {"cpus": 0, "memory": 0})
+            reserved["cpus"] += lane["cpu_slots"]
+            reserved["memory"] += lane["memory_gib"]
+        self.assertEqual(len(reservations), 2)
+        self.assertTrue(all(row["cpus"] <= 3 for row in reservations.values()))
+        self.assertTrue(all(row["memory"] <= 185 for row in reservations.values()))
+
+    def test_node_aware_packer_rejects_one_padded_request_over_node_memory(self):
+        with self.assertRaisesRegex(ResourcePlanningError, "per-node limit 185"):
+            pack_resource_lanes(
+                [{
+                    "item_id": "cannot-fit-one-node",
+                    "cpu_slots": 1,
+                    "memory_gib": 186,
+                    "wall_hours": 1,
+                }],
+                maximum_parallel_cpus=88,
+                maximum_parallel_memory_gib=370,
+                maximum_cpus_per_node=44,
+                maximum_memory_gib_per_node=185,
+                maximum_nodes=2,
+            )
+
+    def test_planner_applies_padding_before_per_node_memory_gate(self):
+        plan = plan_campaign_resource_budget(
+            [{
+                "task_id": "structural-qc",
+                "module_id": "structural_integrity_qc",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 88,
+                "source_frames_per_replica": [100],
+                "minimum_frames_per_replica": 10,
+                "maximum_frames_per_replica": 100,
+                "cpu_seconds_per_physical_frame": 0.01,
+                "estimated_peak_memory_gib": 123.0,
+            }],
+            maximum_parallel_cpus=88,
+            maximum_wall_hours=1.0,
+            maximum_memory_gib=370.0,
+            memory_safety_factor=1.5,
+            memory_overhead_gib=1.0,
+            maximum_cpus_per_node=44,
+            maximum_memory_gib_per_node=185.0,
+            maximum_nodes=2,
+        )
+        self.assertEqual(plan["feasibility_status"], "infeasible")
+        self.assertEqual(plan["tasks"][0]["effective_cpu_cap"], 44)
+        self.assertEqual(
+            plan["memory_feasibility"]["single_task_memory_limit_gib"], 185.0
+        )
+        self.assertEqual(
+            plan["memory_feasibility"]["minimum_required_memory_gib"], 186.0
+        )
+        self.assertEqual(
+            plan["node_resource_policy"]["maximum_nodes"], 2
+        )
+
     def test_measured_memory_scales_from_observation_coverage(self):
         plan = plan_campaign_resource_budget(
             [{
@@ -1140,8 +1216,8 @@ class ResourcePlanningTests(unittest.TestCase):
                 "priority_weight": 100.0,
             },
             {
-                "task_id": "dccm",
-                "module_id": "dccm",
+                "task_id": "sasa",
+                "module_id": "solvent_accessible_surface_area",
                 "dependency_stage": 0,
                 "effective_cpu_cap": 1,
                 "source_frames_per_replica": [100],
@@ -1166,9 +1242,36 @@ class ResourcePlanningTests(unittest.TestCase):
         )
         self.assertEqual(
             report["disabled_configuration_switches"],
-            ["modules.dccm.enabled"],
+            ["modules.solvent_accessible_surface_area.enabled"],
         )
         self.assertFalse(report["automatic_changes_applied"])
+
+    def test_comparative_config_can_protect_integrated_comparison_in_replanning(self):
+        report = recommend_scientifically_valid_task_subset(
+            [{
+                "task_id": "integrated-comparison",
+                "module_id": "integrated_comparison",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [100],
+                "minimum_frames_per_replica": 100,
+                "maximum_frames_per_replica": 100,
+                "cpu_seconds_per_physical_frame": 100.0,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 1.0,
+            }],
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=0.1,
+            maximum_memory_gib=8.0,
+            planning_utilization=1.0,
+            pilot_budget_fraction=0.0,
+            protected_module_ids=("integrated_comparison",),
+        )
+        self.assertEqual(
+            report["recommendation_status"], "no_feasible_subset_found"
+        )
+        self.assertEqual(report["disabled_configuration_switches"], [])
+        self.assertIn("integrated-comparison", report["retained_task_ids"])
 
     def test_global_stride_subset_disables_optional_scientific_failure(self):
         tasks = [
@@ -1342,9 +1445,7 @@ class ResourcePlanningTests(unittest.TestCase):
         self.assertTrue(report["protected_set_preserved"])
         self.assertEqual(report["disabled_configuration_switches"], [])
         self.assertEqual(report["configuration_patch"], {})
-        self.assertIn(
-            "modules.dccm.enabled", report["attempted_configuration_switches"]
-        )
+        self.assertEqual(report["attempted_configuration_switches"], [])
         minimum_request = report[
             "best_protected_subset_minimum_resource_request"
         ]
@@ -1353,7 +1454,7 @@ class ResourcePlanningTests(unittest.TestCase):
             "best_dependency_closed_subset_that_preserves_all_protected_modules",
         )
         self.assertEqual(
-            minimum_request["recommended_request"]["wall_hours"], 10
+            minimum_request["recommended_request"]["wall_hours"], 11
         )
         self.assertEqual(
             minimum_request["warning"]["code"],

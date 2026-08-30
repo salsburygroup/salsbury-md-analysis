@@ -16,10 +16,14 @@ Options replace generated definition fields and then undergo the normal strict
 project-schema validation. Disabling an upstream module also disables its
 dependent analyses; the resolved config turns off affected conformational
 views before project construction, and `module-coverage.json` records the
-decision. Preflight, provenance, common-atom mapping, and structural-integrity
-QC cannot be disabled. Comparative preparation additionally protects
+decision. The protected scientific core cannot be disabled: provenance,
+preflight, common-atom mapping, structural-integrity QC, RMSD/Rg, pooled RMSF,
+individual and shared/common PCA, DCCM, PCA free-energy surfaces, and observed
+representative-frame selection. Comparative preparation additionally protects
 `integrated_comparison`: every comparison campaign must review and account for
-all completed result reports before the finding picker runs. Each topology-derived
+all completed result reports before the finding picker runs. These protections
+are passed into stride planning and optional-module reduction, so a plan that
+cannot fit the core returns `NO_ACCEPTABLE_REDUCED_PLAN`. Each topology-derived
 view has its own `enabled` flag and optional per-view `module_options`.
 The complete generated config also gives each module a generated `protected`
 flag, its direct `depends_on` list, and its `turning_off_also_disables` list.
@@ -188,6 +192,17 @@ then converts each working set to a buffered request. The DEAC rule is
 `maximum_memory_gib` limits the sum of those requests in each concurrent wave.
 It is not repeated for every job. CPU and memory limits are both considered
 while allocating frames and estimating dependency-stage wall time.
+
+A Slurm profile can also declare `node_policy.cpus_per_node`,
+`node_policy.memory_gib_per_node`, and an optional
+`node_policy.maximum_nodes_per_campaign`. Node memory is checked against the
+safety-adjusted scheduler request, not the unpadded working-set estimate. The
+planner rejects any single task that cannot fit one node and bin-packs all
+concurrent resource lanes so their padded CPU and memory reservations fit the
+declared node shapes. If the campaign gives only aggregate CPU and memory caps,
+the planner derives the node-count ceiling from those caps and the profile's
+node shape. The protected-core minimum request reports its modeled node count
+as well as aggregate CPUs, memory, and wall time.
 
 When one or more safety-adjusted technical minima exceed `maximum_memory_gib`, the plan's
 `memory_feasibility` section reports the largest raw working set, the required
