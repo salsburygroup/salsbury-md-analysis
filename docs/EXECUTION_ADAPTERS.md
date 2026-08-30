@@ -39,6 +39,25 @@ width, this output includes `REQUESTED_CPUS_EXCEED_USEFUL_PARALLELISM` and the
 effective cap. Generated launchers use the effective cap, including Slurm array
 concurrency and any multiprocess coordinate-cache request.
 
+The structural-integrity task is internally replica-parallel when its validated
+lossless coordinate cache is enabled. The planner caps it at the number of
+replicas, the campaign CPU ceiling, and the number of workers that fit inside
+the aggregate memory ceiling. The execution adapter requests those CPU slots
+and the workers reuse the already-written cache; the task does not unwrap or
+decode the original solvated trajectories a second time. Structural QC depends
+on cache completion, but unrelated modules do not depend on structural QC or
+the cache unless their declared inputs require them.
+
+Every planned task whose module has trajectory-ensemble semantics carries an
+`ensemble_parallelism_contract`. The scheduler may partition structural QC,
+RMSD/Rg, individual PCA, and continuous unwrapping into complete replica-local
+work. For pooled RMSF, DCCM, common PCA, TICA, FES, clustering, and MSMs,
+replica workers are limited to mergeable statistics, identity-preserving
+features, or ordered segment records. Their primary result is finalized once at
+the contract's pooled scope. A task that declares an independent replica
+partition for one of those pooled estimators is rejected before launch. See
+[`ENSEMBLE_PARALLELISM.md`](ENSEMBLE_PARALLELISM.md).
+
 ## Local desktop or workstation
 
 Local mode is the default. It needs Python 3.10 or newer plus the package's analysis
@@ -146,11 +165,22 @@ module or clustering-method switches and their dependents, and replans. Review
 memory only; CPU-hour, critical-path, calibration, and scratch limits still
 fail closed.
 
+Use `--auto-disable-optional-to-fit-resources` when the user wants the same
+explicit reduction across CPU, critical-path wall time, and memory. The
+planner applies its dependency-closed optional switch set, replans, and writes
+`analysis-config.resource-fit.json` plus `resource-fit-report.json`. Protected
+modules remain enabled. If the protected subset does not fit, preparation
+returns `NO_ACCEPTABLE_REDUCED_PLAN` and submits nothing.
+
 Slurm requests can be larger than the estimated working set because the site
 profile adds explicit safety margins. Preparation applies those margins before
-testing memory feasibility. It then packs individual array elements and ordinary
-jobs into deterministic resource waves. The sum of CPU slots and the sum of
-buffered memory requests in one wave cannot exceed the two campaign caps.
+testing memory feasibility. A profile may also declare its CPU and memory per
+node. Preparation then rejects a safety-adjusted task request that cannot fit
+one node and packs the concurrent resource lanes into valid node bins; the sum
+of padded reservations assigned to a planned node cannot exceed that node's
+CPU or memory. It then packs individual array elements and ordinary jobs into
+deterministic resource waves. The sum of CPU slots and the sum of buffered
+memory requests in one wave cannot exceed the two aggregate campaign caps.
 `submit.sh` uses `afterany` between resource waves so a failed job releases the
 next allocation. It uses `afterok` only for a task's `depends_on_task_ids` and
 asks Slurm to terminate a descendant whose required job failed instead of
@@ -205,16 +235,28 @@ to `large` while leaving ordinary short jobs on `small`.
 The profile schema is `salsbury-slurm-profile-v1`. It records scheduler submit,
 status, and cancel commands; account, Unix group, QoS, and role-specific partitions;
 Python and package paths; environment setup commands and variables; shared-write
-umask; storage and scratch roots; and conservative resource policy metadata. The
-adapter converts every planner task estimate to a time and memory request using the
+umask; storage and scratch roots; conservative resource policy metadata; and an
+optional `node_policy` with `cpus_per_node`, `memory_gib_per_node`, and
+`maximum_nodes_per_campaign`. The generic template leaves the node shape null;
+the supplied DEAC profile uses a conservative 44-CPU, 185-GiB node shape. These
+are editable profile values, not hard-coded planner constants; use the real node
+shape for another cluster, or leave the fields null when no homogeneous shape is
+available. The adapter converts every planner task estimate to a time and memory request using the
 profile safety factors. `scheduler-resource-requests.json` records every mapped
 planner task, the safety margin, selected partition, final request, and exact
-aggregate-resource wave. The canonical `submit.sh` submits individual array
+aggregate-resource wave. `slurm-submission-preview.json` also records the
+planned node count, lane-to-node mapping, and padded reservation totals for each
+node. Replica-final modules and coordinate-cache construction can use an
+identity-preserving `srun` worker group across several nodes; pooled reducers
+still run once after all replica workers finish. Non-distributed modules remain
+single-node jobs, and independent tasks provide additional cross-node
+parallelism. The canonical `submit.sh` submits individual array
 elements when needed so that both CPU and memory are bounded across all jobs that
 can run at the same time. Only requests that cross
-`large_memory_threshold_gib` use the `large_memory` partition role. The generated
-worker retains the largest request as a safe direct-submission fallback, while
-`submit.sh` applies the task-specific overrides used for a normal campaign launch.
+`large_memory_threshold_gib` use the `large_memory` partition role. Use the
+generated `submit.sh` for a planned campaign: it applies the task-specific node,
+task-count, CPU, memory, and time requests. Individual worker scripts are
+implementation artifacts, not a substitute for the resource-bounded launcher.
 `slurm-submission-preview.json` is the concise preflight view of that complete
 mapping; `execution_started: false` and `jobs_submitted: false` describe the
 preview itself, not the state after `./submit.sh` is executed.

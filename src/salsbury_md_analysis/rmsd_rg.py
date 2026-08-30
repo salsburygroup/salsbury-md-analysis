@@ -9,7 +9,12 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 from .atom_mapping import AtomMappingError, AtomRecord, read_topology_atoms
 from .context import compile_project_context_file
 from .coordinates import CoordinateReadError, iter_coordinate_frames
-from .frame_sampling import frame_selected, reader_frame_indices, source_frame_count
+from .frame_sampling import (
+    frame_selected,
+    integer_stride_indices,
+    reader_frame_indices,
+    source_frame_count,
+)
 from .geometry import (
     GeometryError,
     apply_transform,
@@ -24,6 +29,12 @@ from .manifests import (
     sha256_file,
 )
 from .periodic import PeriodicFrameProcessor, PeriodicReconstructionError
+from .replica_execution import ReplicaPartial
+from .replica_module_execution import (
+    execute_replica_final_module,
+    restore_source_provenance,
+    unique_issues,
+)
 from .reporting import issue_record
 from .selections import AtomCorrespondence, build_common_correspondences
 from .trajectory_contracts import (
@@ -204,7 +215,7 @@ def _mapping_bundles(
     return tuple(result)
 
 
-def replica_rmsd_rg_project(
+def _replica_rmsd_rg_project_serial(
     project_path: Path, hash_content: bool = False
 ) -> Dict[str, object]:
     """Analyze every declared replica/segment without writing analysis outputs."""
@@ -367,7 +378,11 @@ def replica_rmsd_rg_project(
                     trajectory_path, coordinate_unit, error_type=RMSDRGError
                 )
                 selected_indices = (
-                    set(range(0, source_frames, int(settings["frame_stride"])))
+                    integer_stride_indices(
+                        source_frames,
+                        int(settings["frame_stride"]),
+                        error_type=RMSDRGError,
+                    )
                     if int(settings["frame_stride"]) > 1 else None
                 )
                 decoded_frames = 0
@@ -557,6 +572,55 @@ def replica_rmsd_rg_project(
             "No real-project regression fixture has yet been approved; status remains experimental.",
         ],
     }
+
+
+def _reduce_rmsd_rg_replica_reports(
+    partials: Sequence[ReplicaPartial[Dict[str, object]]],
+    source_context: Dict[str, object],
+) -> Dict[str, object]:
+    reports = [partial.value for partial in partials]
+    first = dict(reports[0])
+    for report in reports[1:]:
+        for key in (
+            "module_id", "reference", "settings", "common_atom_policy",
+            "periodic_coordinate_policy", "time_unit",
+        ):
+            if report.get(key) != first.get(key):
+                raise RMSDRGError(f"replica RMSD/Rg reports disagree on {key}")
+    grouped: Dict[str, List[Dict[str, object]]] = {}
+    for report in reports:
+        for system in report.get("systems", []):
+            if not isinstance(system, dict):
+                continue
+            grouped.setdefault(str(system["system_id"]), []).extend(
+                row for row in system.get("replicas", []) if isinstance(row, dict)
+            )
+    first["systems"] = [
+        {"system_id": system_id, "replicas": grouped[system_id]}
+        for system_id in grouped
+    ]
+    issues = unique_issues(reports)
+    first["issues"] = issues
+    first["error_count"] = sum(issue.get("severity") == "error" for issue in issues)
+    first["warning_count"] = sum(
+        issue.get("severity") == "warning" for issue in issues
+    )
+    first["technical_status"] = "failed" if first["error_count"] else "complete"
+    restore_source_provenance(first, source_context)
+    return first
+
+
+def replica_rmsd_rg_project(
+    project_path: Path, hash_content: bool = False
+) -> Dict[str, object]:
+    """Run each replica independently and retain its complete ordered series."""
+
+    return execute_replica_final_module(
+        project_path,
+        runner_id="rmsd_rg",
+        hash_content=hash_content,
+        reducer=_reduce_rmsd_rg_replica_reports,
+    )
 
 
 def replica_rmsd_rg_project_safe(

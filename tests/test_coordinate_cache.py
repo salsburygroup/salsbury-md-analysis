@@ -1,18 +1,25 @@
 import json
+import os
 import struct
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from salsbury_md_analysis.coordinate_cache import (
     CoordinateCacheError,
+    _execute_coordinate_cache_workers,
     build_coordinate_cache,
     build_coordinate_cache_safe,
     validate_reusable_coordinate_cache,
 )
+from salsbury_md_analysis.cache_routing import (
+    materialize_cache_backed_base_project,
+)
 from salsbury_md_analysis.coordinates import iter_coordinate_frames
 from salsbury_md_analysis.manifests import load_json, validate_system
 from salsbury_md_analysis.preflight import probe_trajectory
+from salsbury_md_analysis.structural_qc import structural_qc_project
 
 
 def record(payload: bytes) -> bytes:
@@ -44,6 +51,33 @@ def write_dcd(path: Path) -> None:
 
 
 class CoordinateCacheTests(unittest.TestCase):
+    def test_distributed_cache_workers_use_the_complete_slurm_allocation(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(
+            os.environ,
+            {
+                "SMA_DISTRIBUTED_REPLICA_WORKERS": "1",
+                "SLURM_NNODES": "2",
+                "SMA_REPLICA_WORKERS_PER_NODE": "40",
+            },
+        ), patch(
+            "salsbury_md_analysis.coordinate_cache.subprocess.run"
+        ) as run:
+            run.return_value.returncode = 0
+            run.return_value.stderr = ""
+            run.return_value.stdout = ""
+            task = ("manifest.json", "output", False, 4.0, 0.1, 1)
+            _execute_coordinate_cache_workers(
+                [task] * 63,
+                maximum_workers=63,
+                worker_root=Path(temporary),
+            )
+            command = run.call_args.args[0]
+            self.assertEqual(command[command.index("--nodes") + 1], "2")
+            self.assertEqual(command[command.index("--ntasks") + 1], "63")
+            self.assertEqual(
+                command[command.index("--ntasks-per-node") + 1], "40"
+            )
+
     def test_cache_is_made_whole_solute_only_and_atomic(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -130,7 +164,7 @@ class CoordinateCacheTests(unittest.TestCase):
             self.assertEqual(strided["source_frame_scan"], "all source frames decoded in order")
             strided_row = strided["rows"][0]
             self.assertEqual(strided_row["decoded_frame_count"], 3)
-            self.assertEqual(strided_row["retained_frame_count"], 2)
+            self.assertEqual(strided_row["retained_frame_count"], 1)
             strided_manifest = load_json(strided_output / "system-cache.json")
             strided_replica = strided_manifest["systems"][0]["replicas"][0]
             strided_segment = strided_replica["segments"][0]
@@ -138,10 +172,55 @@ class CoordinateCacheTests(unittest.TestCase):
             strided_frames = list(iter_coordinate_frames(
                 strided_output / strided_segment["trajectory"], "angstrom"
             ))
-            self.assertEqual(len(strided_frames), 2)
+            self.assertEqual(len(strided_frames), 1)
             self.assertAlmostEqual(
-                strided_frames[1].coordinates_angstrom[0][0], 10.7, places=5
+                strided_frames[0].coordinates_angstrom[0][0], 9.5, places=5
             )
+            strided_reuse = validate_reusable_coordinate_cache(
+                strided_output, manifest
+            )
+            self.assertEqual(strided_reuse["cache_stride"], 2)
+            self.assertIn(
+                "Every 2 frame", strided_reuse["reuse_boundary"]
+            )
+            cache_source_project = root / "cache-source-project.json"
+            cache_source_project.write_text(json.dumps({
+                "project_id": "cache-routing",
+                "analysis_profile": "standard_md_v1",
+                "system_manifest": str(manifest),
+                "analysis_output_root": str(root / "cache-routing-output"),
+                "sampling_mode": "UNBIASED_MD",
+                "coordinate_unit": "angstrom",
+                "time_unit": "ps",
+                "periodic_coordinate_policy": "unwrap_continuous",
+                "periodic_reconstruction": {
+                    "maximum_bond_length_angstrom": 3.0,
+                    "cycle_closure_tolerance_angstrom": 0.25,
+                    "maximum_anchor_displacement_angstrom": 20.0,
+                },
+                "reference_structure": str(pdb),
+                "reference_connectivity": str(bonds),
+                "selections": {
+                    "alignment": {"preset": "heavy"},
+                    "analysis": {"preset": "heavy"},
+                },
+                "definitions": {"replica_rmsd_rg": {}},
+                "requested_modules": ["replica_rmsd_rg"],
+                "protected_locations": [],
+            }), encoding="utf-8")
+            cache_project = root / "project-cache-base.json"
+            routing = materialize_cache_backed_base_project(
+                cache_source_project, strided_output, cache_project
+            )
+            self.assertEqual(routing["technical_status"], "complete")
+            cached_project = load_json(cache_project)
+            self.assertEqual(
+                cached_project["periodic_coordinate_policy"],
+                "preprocessed_make_whole",
+            )
+            self.assertEqual(cached_project["requested_modules"], [
+                "replica_rmsd_rg"
+            ])
 
             second_replica = json.loads(json.dumps(
                 system["systems"][0]["replicas"][0]
@@ -161,10 +240,53 @@ class CoordinateCacheTests(unittest.TestCase):
             self.assertEqual(
                 len(list(parallel_output.glob("*-segment-00.dcd"))), 2
             )
-            with self.assertRaisesRegex(
-                CoordinateCacheError, "stride 1"
-            ):
-                validate_reusable_coordinate_cache(strided_output, manifest)
+            project = root / "project.json"
+            project.write_text(json.dumps({
+                "project_id": "parallel-cache-qc",
+                "analysis_profile": "standard_md_v1",
+                "system_manifest": str(manifest),
+                "analysis_output_root": str(root / "qc-output"),
+                "sampling_mode": "UNBIASED_MD",
+                "coordinate_unit": "angstrom",
+                "time_unit": "ps",
+                "periodic_coordinate_policy": "unwrap_continuous",
+                "periodic_reconstruction": {
+                    "maximum_bond_length_angstrom": 3.0,
+                    "cycle_closure_tolerance_angstrom": 0.25,
+                    "maximum_anchor_displacement_angstrom": 20.0,
+                },
+                "selections": {
+                    "alignment": {"preset": "heavy"},
+                    "analysis": {"preset": "heavy"},
+                },
+                "definitions": {"structural_qc": {
+                    "near_coincident_distance_angstrom": 0.2,
+                    "maximum_near_coincident_pairs_per_frame": 100,
+                    "maximum_absolute_coordinate_angstrom": 1000.0,
+                    "frame_stride": 1,
+                    "parallel_execution": {
+                        "enabled": True,
+                        "maximum_workers": 2,
+                        "coordinate_cache_system_manifest": str(
+                            parallel_output / "system-cache.json"
+                        ),
+                        "coordinate_cache_report": str(
+                            parallel_output / "coordinate-cache-report.json"
+                        ),
+                    },
+                }},
+                "requested_modules": ["structural_integrity_qc"],
+                "protected_locations": [],
+            }), encoding="utf-8")
+            qc = structural_qc_project(project, hash_content=True)
+            self.assertEqual(qc["technical_status"], "complete", qc)
+            self.assertEqual(qc["parallel_execution"]["workers_used"], 2)
+            self.assertEqual(qc["parallel_execution"]["shard_count"], 2)
+            self.assertEqual(qc["frame_selection"]["selected_frame_count"], 6)
+            self.assertEqual(len(qc["systems"][0]["replicas"]), 2)
+            self.assertEqual(
+                qc["periodic_coordinate_policy"], "preprocessed_make_whole"
+            )
             pdb.write_text(
                 pdb.read_text(encoding="utf-8") + "REMARK source changed\n",
                 encoding="utf-8",

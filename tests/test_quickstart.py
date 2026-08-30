@@ -20,6 +20,7 @@ from salsbury_md_analysis.quickstart import (
     _slurm_files,
     prepare_standard_analysis,
     prepare_standard_analysis_memory_fit,
+    prepare_standard_analysis_resource_fit,
 )
 
 
@@ -958,34 +959,46 @@ class QuickstartTests(unittest.TestCase):
                 "salsbury-local-execution-plan-v4",
             )
             self.assertEqual(local_plan["dependency_model"], "task_dag_v1")
+            local_tasks = [
+                task for phase in local_plan["phases"] for task in phase["tasks"]
+            ]
+            cache_task = next(
+                task for task in local_tasks
+                if task["script"] == "run_coordinate_cache.slurm"
+            )
+            cache_consumers = [
+                task for task in local_tasks
+                if isinstance(task.get("project_filename"), str)
+                and task["project_filename"].endswith(
+                    "project-cache-base.json"
+                )
+            ]
+            self.assertTrue(cache_consumers)
+            self.assertTrue(all(
+                cache_task["task_id"] in task["depends_on_task_ids"]
+                for task in cache_consumers
+            ))
+            self.assertEqual(local_plan["maximum_parallel_cpus"], 16)
             campaign = json.loads(
                 (output / "campaign-resource-plan.json").read_text()
             )
             self.assertEqual(campaign["maximum_parallel_cpus_input"], 16)
             effective_cpus = campaign["effective_parallel_cpu_cap"]
-            self.assertIn(effective_cpus, (8, 9))
-            self.assertEqual(
-                local_plan["maximum_parallel_cpus"], effective_cpus
-            )
-            self.assertEqual(
-                campaign["resource_warnings"][0]["code"],
-                "REQUESTED_CPUS_EXCEED_USEFUL_PARALLELISM",
-            )
-            self.assertIn(
-                f"Slurm submission will be changed to {effective_cpus} CPUs",
-                campaign["resource_warnings"][0]["message"],
-            )
+            self.assertEqual(effective_cpus, 16)
+            self.assertFalse(campaign["resource_warnings"])
             self.assertEqual(local_plan["maximum_parallel_memory_gib"], 128.0)
             worker_paths = sorted(output.glob("run_stage_*_array.slurm"))
             workers = [path.read_text(encoding="utf-8") for path in worker_paths]
             worker = "\n".join(workers)
+            self.assertIn("PROJECTS=(", worker)
+            self.assertIn("project-cache-base.json", worker)
+            self.assertTrue((output / "base-cache-routing.json").is_file())
             preflight = (output / "run_preflight.slurm").read_text(encoding="utf-8")
             submit = (output / "submit.sh").read_text(encoding="utf-8")
             stages = json.loads((output / "workflow-stages.json").read_text())
             views = json.loads((output / "conformational-views.json").read_text())
             stage_lengths = [len(stage["commands"]) for stage in stages["stages"]]
-            self.assertIn(stage_lengths[0], (8, 9))
-            self.assertEqual(stage_lengths[0], effective_cpus)
+            self.assertLessEqual(stage_lengths[0], effective_cpus)
             self.assertEqual(stage_lengths[1:], [2])
             for stage_worker in workers:
                 self.assertIn("#SBATCH --time=24:00:00", stage_worker)
@@ -1194,6 +1207,59 @@ class QuickstartTests(unittest.TestCase):
                 reduced["modules"]["solvent_accessible_surface_area"]["enabled"]
             )
 
+    @patch(
+        "salsbury_md_analysis.quickstart._discover_dssp_executable",
+        return_value=None,
+    )
+    def test_resource_fit_applies_dependency_closed_optional_reduction(
+        self, _discover_dssp,
+    ):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "inputs"
+            source.mkdir()
+            pdb, psf, trajectories = _write_inputs(source)
+            config_path = root / "constrained.json"
+            config_path.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "execution": {"maximum_memory_gib": 4.0},
+            }), encoding="utf-8")
+            output = root / "analysis-resource-fit"
+            report = prepare_standard_analysis_resource_fit(
+                pdb_path=pdb,
+                psf_path=psf,
+                trajectories=trajectories,
+                output_directory=output,
+                project_id="resource-fit-system",
+                frame_interval_ps=10.0,
+                config_path=config_path,
+            )
+            self.assertEqual(report["technical_status"], "complete")
+            resource_fit = json.loads(
+                (output / "resource-fit-report.json").read_text()
+            )
+            self.assertTrue(resource_fit["automatic_changes_applied"])
+            self.assertTrue(resource_fit["protected_set_preserved"])
+            self.assertIn(
+                "modules.solvent_accessible_surface_area.enabled",
+                resource_fit["directly_disabled_configuration_switches"],
+            )
+            requested = json.loads(
+                (output / "analysis-config.requested.json").read_text()
+            )
+            reduced = json.loads(
+                (output / "analysis-config.resource-fit.json").read_text()
+            )
+            self.assertTrue(
+                requested["modules"]["structural_integrity_qc"]["enabled"]
+            )
+            self.assertTrue(
+                reduced["modules"]["structural_integrity_qc"]["enabled"]
+            )
+            self.assertFalse(
+                reduced["modules"]["solvent_accessible_surface_area"]["enabled"]
+            )
+
     @patch("salsbury_md_analysis.quickstart.export_pdb_connectivity")
     def test_single_system_preparation_can_generate_openmm_connectivity(
         self, export_connectivity,
@@ -1371,7 +1437,7 @@ class QuickstartTests(unittest.TestCase):
             )
             self.assertEqual(
                 structural["selected_frame_count"],
-                3 * ((300_000 + structural_stride - 1) // structural_stride),
+                3 * (300_000 // structural_stride),
             )
             for module_id, definition_id in (
                 ("replica_rmsd_rg", "replica_rmsd_rg"),
@@ -1383,7 +1449,7 @@ class QuickstartTests(unittest.TestCase):
                 self.assertEqual(project["definitions"][definition_id]["frame_stride"], stride)
                 self.assertEqual(
                     plans[module_id]["selected_frame_count"],
-                    3 * ((300_000 + stride - 1) // stride),
+                    3 * (300_000 // stride),
                 )
             individual = plans["individual_pca"]
             individual_selection = individual["frame_selection"]
@@ -1399,7 +1465,7 @@ class QuickstartTests(unittest.TestCase):
             )
             self.assertEqual(
                 individual["selected_frame_count"],
-                3 * ((300_000 + individual_stride - 1) // individual_stride),
+                3 * (300_000 // individual_stride),
             )
 
 

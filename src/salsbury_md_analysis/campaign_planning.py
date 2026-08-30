@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Mapping, MutableMapping, Optional, Sequence
 
 from .automatic_sampling import _apply_campaign_direct_allocations
+from .ensemble_parallelism import annotate_task_parallelism
 from .execution_adapters import load_slurm_profile
 from .frame_sampling import (
     integer_stride_for_budget,
@@ -180,10 +181,26 @@ def _apply_measured_resource_calibrations(
                     f"task {task.get('task_id')} {label} must be finite and positive"
                 )
         measured_rate = (
-            float(calibration["conservative_cpu_seconds_per_frame"])
+            float(calibration.get(
+                "conservative_affine_cpu_seconds_per_frame",
+                calibration["conservative_cpu_seconds_per_frame"],
+            ))
             * time_safety_factor
             * float(rate_multiplier)
         )
+        measured_fixed_hours = (
+            float(calibration.get("conservative_fixed_cpu_seconds", 0.0))
+            * time_safety_factor
+            * float(rate_multiplier)
+            / 3600.0
+        )
+        current_fixed = task.get("fixed_cpu_hours", 0.0)
+        if isinstance(current_fixed, (int, float)) and not isinstance(
+            current_fixed, bool
+        ):
+            task["fixed_cpu_hours"] = max(
+                float(current_fixed), measured_fixed_hours
+            )
         current_rate = task.get("cpu_seconds_per_physical_frame")
         if (
             "power_law_cost_model" not in task
@@ -247,6 +264,9 @@ def _apply_measured_resource_calibrations(
                 "maximum_resident_memory_mib"
             ],
             "cpu_rate_workload_multiplier": float(rate_multiplier),
+            "affine_fixed_cpu_hours_after_workload_scaling": (
+                measured_fixed_hours
+            ),
             "memory_workload_multiplier": float(memory_multiplier),
             "policy": (
                 "conservative maximum after the task's declared workload scaling; "
@@ -274,7 +294,19 @@ def _apply_system_memory_scaling(
         current = task.get("estimated_peak_memory_gib")
         if isinstance(current, (int, float)) and not isinstance(current, bool):
             task["reference_peak_memory_gib"] = float(current)
-            task["estimated_peak_memory_gib"] = max(1.0, float(current) * scale)
+            materialization_floor = task.get(
+                "minimum_materialized_working_set_gib", 0.0
+            )
+            if not isinstance(materialization_floor, (int, float)) or isinstance(
+                materialization_floor, bool
+            ):
+                raise CampaignPlanningError(
+                    f"task {task.get('task_id')} has an invalid fixed "
+                    "artifact-materialization memory floor"
+                )
+            task["estimated_peak_memory_gib"] = max(
+                1.0, float(current) * scale, float(materialization_floor)
+            )
         power_model = task.get("power_law_cost_model")
         if isinstance(power_model, dict):
             calibration_memory = power_model.get("calibration_memory_gib")
@@ -462,9 +494,15 @@ _AUTOMATIC_CONTEXT_MODELS: Mapping[str, Mapping[str, object]] = {
         "calibration": "conservative-external-dssr-proxy-v1",
     },
     "interaction_fingerprints": {
+        # The sparse result itself is small, but validating and joining the
+        # configured upstream interaction reports materialized a 13.70-GiB
+        # working set in the completed TBA retry (Slurm job 8288001).  Model
+        # that as a fixed task working set rather than pretending it scales
+        # with the tiny output report or with fingerprint frame count.
         "seconds_per_frame": 0.002, "memory_gib": 2.0,
+        "minimum_materialized_working_set_gib": 16.0,
         "stage": 2, "priority": 6.0,
-        "calibration": "provisional-sparse-interaction-join-v1",
+        "calibration": "apollo-tba-upstream-materialization-20260829",
     },
     "spatial_interaction_ensembles": {
         "seconds_per_frame": 0.02, "memory_gib": 4.0,
@@ -526,6 +564,7 @@ def _automatic_context_tasks(
             f"automatic-context project {resolved_context_id} has no requested_modules"
         )
     tasks: List[Dict[str, object]] = []
+    replica_parallel_modules = {"ion_coordination_geometry", "ion_atmosphere"}
     for module_id in requested:
         module = str(module_id)
         model = _AUTOMATIC_CONTEXT_MODELS.get(module)
@@ -651,13 +690,30 @@ def _automatic_context_tasks(
             frame_intervals_ns_per_replica=frame_intervals_ns_per_replica,
             source_time_spans_ns_per_replica=source_time_spans_ns_per_replica,
         )
+        materialized_working_set_gib = float(
+            model.get("minimum_materialized_working_set_gib", 0.0)
+        )
+        parallel_workers = len(source_counts) if module in replica_parallel_modules else 1
+        per_worker_memory = max(
+            float(model["memory_gib"]), materialized_working_set_gib
+        )
         tasks.append({
             "task_id": f"{resolved_task_namespace}:{module}",
             "workflow_id": resolved_context_id,
             "module_id": module,
             "task_scope": task_scope,
             "dependency_stage": int(model["stage"]),
-            "effective_cpu_cap": 1,
+            "effective_cpu_cap": parallel_workers,
+            "intrinsic_cpu_cap": parallel_workers,
+            **({
+                "parallel_execution_model": "replica_worker_exact_global_reducer_v1",
+                "parallel_worker_count": parallel_workers,
+                "estimated_peak_memory_gib_per_parallel_worker": per_worker_memory,
+                "reducer_memory_gib": per_worker_memory,
+                "parallel_memory_model": (
+                    "max(reducer, simultaneously_active_replica_workers)"
+                ),
+            } if module in replica_parallel_modules else {}),
             "source_frames_per_replica": list(source_counts),
             "minimum_frames_per_replica": int(
                 scientific["attainable_scientific_minimum_frames_per_replica"]
@@ -669,7 +725,15 @@ def _automatic_context_tasks(
                 float(model["seconds_per_frame"]) * time_safety_factor
             ),
             "fixed_cpu_hours": 0.0,
-            "estimated_peak_memory_gib": float(model["memory_gib"]),
+            "estimated_peak_memory_gib": per_worker_memory * parallel_workers,
+            **({
+                "minimum_materialized_working_set_gib": (
+                    materialized_working_set_gib
+                ),
+                "memory_cost_basis": (
+                    "fixed_upstream_artifact_materialization_floor"
+                ),
+            } if materialized_working_set_gib > 0.0 else {}),
             "priority_weight": float(model["priority"]),
             "member_observation_multiplier": 1,
             "balance_group": balance_group,
@@ -736,10 +800,30 @@ def _view_pca_task(
         if balance_family != view_id
         else f"view:{view_id}:shared_observations"
     )
-    # 11,640.163299 CPU seconds for 30,000 physical frames, 5,616
-    # Cartesian features, and two canonical member observations per frame.
+    # 11,640.163299 CPU seconds for 30,000 projected physical frames, a
+    # 1,500-frame basis, 5,616 Cartesian features, and two canonical member
+    # observations per frame.  The TBA validation showed that treating basis
+    # fitting as free underestimated the global job by about threefold.  The
+    # retained empirical conversion makes one basis frame equivalent to 25
+    # projection frames, while keeping the two counts explicit for future
+    # multi-point calibration.
     feature_factor = max(0.1, (features / 5_616.0) ** 0.75)
-    rate = (11_640.163299 / 30_000.0) * feature_factor * (multiplier / 2.0)
+    basis_equivalent_projection_weight = 25.0
+    reference_equivalent_frames = 30_000 + (
+        basis_equivalent_projection_weight * 1_500
+    )
+    base_rate = 11_640.163299 / reference_equivalent_frames
+    rate = base_rate * feature_factor * (multiplier / 2.0)
+    basis_counts = _basis_physical_counts(project, source_counts)
+    basis_cpu_hours = (
+        base_rate
+        * basis_equivalent_projection_weight
+        * sum(basis_counts)
+        * feature_factor
+        * (multiplier / 2.0)
+        * time_safety_factor
+        / 3600.0
+    )
     technical_pilot = max(5, min(50, math.ceil(50 / feature_factor)))
     scientific = _scientific_task_contract(
         "common_pca", source_counts,
@@ -772,7 +856,14 @@ def _view_pca_task(
         "maximum_frames_per_replica": max(minimum, max(source_counts)),
         "maximum_frame_role": "all_source_frames_subject_to_campaign_resources",
         "cpu_seconds_per_physical_frame": rate * time_safety_factor,
-        "fixed_cpu_hours": 0.0,
+        "fixed_cpu_hours": basis_cpu_hours,
+        "basis_selected_physical_frames_per_replica": basis_counts,
+        "basis_selected_physical_frame_count": sum(basis_counts),
+        "basis_member_observation_count": sum(basis_counts) * multiplier,
+        "basis_equivalent_projection_weight": (
+            basis_equivalent_projection_weight
+        ),
+        "pca_workload_accounting": "basis_plus_projection_v1",
         "estimated_peak_memory_gib": max(
             2.0, min(32.0, 4.0 * feature_factor)
         ),
@@ -789,8 +880,45 @@ def _view_pca_task(
             "feature_exponent": 0.75,
             "reference_member_observation_multiplier": 2,
             "member_observation_multiplier": multiplier,
+            "reference_basis_selected_physical_frame_count": 1_500,
+            "reference_projection_selected_physical_frame_count": 30_000,
+            "basis_equivalent_projection_weight": (
+                basis_equivalent_projection_weight
+            ),
         },
     }
+
+
+def _basis_physical_counts(
+    project: Mapping[str, object], source_counts: Sequence[int]
+) -> List[int]:
+    """Return the fixed PCA basis-fit count for each physical replica."""
+
+    definitions = project.get("definitions")
+    common_pca = definitions.get("common_pca") if isinstance(definitions, dict) else None
+    if not isinstance(common_pca, dict):
+        raise CampaignPlanningError("view has no common_pca definition")
+    basis_stride = int(common_pca.get("frame_stride", 1))
+    selection = common_pca.get("frame_selection", {"mode": "fixed_stride_v1"})
+    if not isinstance(selection, dict):
+        raise CampaignPlanningError("PCA frame_selection is invalid")
+    mode = selection.get("mode")
+    if mode == "fixed_stride_v1":
+        stride = basis_stride
+    elif mode == "integer_stride_per_replica_v1":
+        if basis_stride != 1:
+            raise CampaignPlanningError(
+                "integer PCA basis selection requires frame_stride 1"
+            )
+        stride = int(selection["stride"])
+    else:
+        raise CampaignPlanningError(
+            "campaign planning requires an exact integer PCA basis stride"
+        )
+    return [
+        integer_stride_selected_count(int(value), stride)
+        for value in source_counts
+    ]
 
 
 def _projected_physical_counts(
@@ -1473,7 +1601,7 @@ def _view_tasks(
                     ),
                     "cpu_seconds_per_physical_frame": 0.0,
                     "fixed_cpu_hours": 0.0,
-                    "estimated_peak_memory_gib": 2.3 * 1.5,
+                    "estimated_peak_memory_gib": 4.0,
                     "priority_weight": float(model["priority"]),
                     "member_observation_multiplier": multiplier,
                     "balance_group": (
@@ -1481,7 +1609,7 @@ def _view_tasks(
                     ),
                     "replica_sampling_mode": "balanced_pooled",
                     "calibration_status": (
-                        "globally_coupled_provisional_family_scaling_v2"
+                        "completed_bundle_memory_linear_fit_v3"
                     ),
                     "calibration_id": str(model["calibration"]),
                     "power_law_cost_model": {
@@ -1490,11 +1618,20 @@ def _view_tasks(
                             (268.201244 / 6.0) * time_safety_factor / 3600.0
                         ),
                         "time_exponent": float(profile["time_exponent"]),
-                        "calibration_memory_gib": 2.3 * 1.5,
-                        "memory_exponent": min(
-                            2.0, float(profile["time_exponent"])
-                        ),
+                        # The algorithms run sequentially in one executable
+                        # bundle and reuse its large work arrays.  The completed
+                        # TBA bundle peaked at 27.0 GiB for 40,000 fit
+                        # observations; applying a quadratic memory exponent to
+                        # each algorithm separately produced 98--147 GiB
+                        # requests.  A conservative linear observation model is
+                        # used for bundle peak memory; runtime keeps the
+                        # algorithm-specific complexity exponent.
+                        "calibration_memory_gib": 4.0,
+                        "memory_exponent": 1.0,
                     },
+                    "execution_bundle_memory_policy": (
+                        "sequential_shared_buffers_linear_observation_v1"
+                    ),
                     "complexity_class": profile["complexity_class"],
                     "full_fit_only": full_fit_only,
                     "projection_source_counts_iteration_input": list(
@@ -2094,6 +2231,15 @@ def plan_and_apply_complete_campaign(
     execution = analysis_config.get("execution")
     if not isinstance(execution, dict):
         raise CampaignPlanningError("analysis execution configuration is unavailable")
+    configured_modules = analysis_config.get("modules")
+    if not isinstance(configured_modules, Mapping):
+        raise CampaignPlanningError("analysis module configuration is unavailable")
+    protected_module_ids = tuple(sorted({
+        str(module_id)
+        for module_id, module_config in configured_modules.items()
+        if isinstance(module_config, Mapping)
+        and bool(module_config.get("protected", False))
+    } | {"coordinate_cache"}))
     sampling_configuration = analysis_config.get("sampling")
     if not isinstance(sampling_configuration, dict):
         raise CampaignPlanningError("analysis sampling configuration is unavailable")
@@ -2140,6 +2286,11 @@ def plan_and_apply_complete_campaign(
         "walltime_overhead_minutes": 15.0,
         "minimum_wall_minutes": 30.0,
     }
+    node_planning_policy: Dict[str, object] = {
+        "maximum_cpus_per_node": None,
+        "maximum_memory_gib_per_node": None,
+        "maximum_nodes": None,
+    }
     if str(execution.get("submission_adapter", "local")) == "slurm":
         profile_path = execution.get("slurm_profile")
         if not isinstance(profile_path, str) or not profile_path:
@@ -2156,6 +2307,31 @@ def plan_and_apply_complete_campaign(
                 memory_policy[key] = float(policy[key])
             for key in scheduler_time_policy:
                 scheduler_time_policy[key] = float(policy[key])
+        node_policy = profile.get("node_policy")
+        if isinstance(node_policy, Mapping) and node_policy.get(
+            "cpus_per_node"
+        ) is not None:
+            node_cpus = int(node_policy["cpus_per_node"])
+            node_memory = float(node_policy["memory_gib_per_node"])
+            configured_nodes = node_policy.get("maximum_nodes_per_campaign")
+            node_planning_policy = {
+                "maximum_cpus_per_node": node_cpus,
+                "maximum_memory_gib_per_node": node_memory,
+                "maximum_nodes": (
+                    int(configured_nodes)
+                    if configured_nodes is not None else
+                    max(
+                        math.ceil(
+                            int(execution["maximum_parallel_cpus"])
+                            / node_cpus
+                        ),
+                        math.ceil(
+                            float(execution["maximum_memory_gib"])
+                            / node_memory
+                        ),
+                    )
+                ),
+            }
 
     def annotate_permissive_minimum_request(
         request: MutableMapping[str, object],
@@ -2192,7 +2368,18 @@ def plan_and_apply_complete_campaign(
         if isinstance(request, dict):
             annotate_permissive_minimum_request(request)
     cache_mode = str(execution.get("coordinate_cache", "auto"))
-    coordinate_cache_enabled = bool(view_paths) and cache_mode in {"auto", "required"}
+    base_request = load_json(base_project_path)
+    base_requested_modules = (
+        base_request.get("requested_modules", [])
+        if isinstance(base_request, dict) else []
+    )
+    structural_qc_requires_cache = (
+        isinstance(base_requested_modules, list)
+        and "structural_integrity_qc" in base_requested_modules
+    )
+    coordinate_cache_enabled = (
+        bool(view_paths) or structural_qc_requires_cache
+    ) and cache_mode in {"auto", "required"}
     coordinate_cache_input = execution.get("coordinate_cache_input")
     coordinate_cache_build_required = (
         coordinate_cache_enabled and coordinate_cache_input is None
@@ -2223,6 +2410,15 @@ def plan_and_apply_complete_campaign(
                 "dependency_stage": 0,
                 "effective_cpu_cap": cache_workers,
                 "intrinsic_cpu_cap": len(source_counts),
+                "parallel_execution_model": (
+                    "replica_worker_exact_global_reducer_v1"
+                ),
+                "parallel_worker_count": len(source_counts),
+                "estimated_peak_memory_gib_per_parallel_worker": 0.25,
+                "reducer_memory_gib": 0.25,
+                "parallel_memory_model": (
+                    "max(reducer, simultaneously_active_replica_workers)"
+                ),
                 "source_frames_per_replica": list(source_counts),
                 "minimum_frames_per_replica": max(source_counts),
                 "minimum_frame_role": "planner-selected working-cache coverage",
@@ -2331,6 +2527,7 @@ def plan_and_apply_complete_campaign(
                 execution.get("memory_safety_factor", 1.25)
             ),
         )
+        built = [annotate_task_parallelism(task) for task in built]
         return built, current_base
 
     previous_signature: object = None
@@ -2359,6 +2556,7 @@ def plan_and_apply_complete_campaign(
                 "minimum_scheduler_memory_gib": memory_policy[
                     "minimum_memory_gib"
                 ],
+                **node_planning_policy,
             }
             if (
                 coordinate_cache_build_required
@@ -2370,12 +2568,11 @@ def plan_and_apply_complete_campaign(
                     coordinate_cache_full_scan_fraction=float(
                         execution.get("coordinate_cache_full_scan_fraction", 1.0)
                     ),
-                    overall_stride_candidate_strides=list(
-                        execution.get(
-                            "overall_stride_candidates",
-                            [1, 2, 3, 4, 5, 10, 20, 100],
-                        )
-                    ),
+                    overall_stride_candidate_strides=list(execution.get(
+                        "overall_stride_candidates",
+                        [1, 2, 3, 4, 5, 10, 20, 100],
+                    )),
+                    protected_module_ids=protected_module_ids,
                     **planning_kwargs,
                 )
             else:
@@ -2388,7 +2585,21 @@ def plan_and_apply_complete_campaign(
             and bool(execution.get("fail_if_minimum_coverage_unaffordable", True))
         ):
             recommendation = recommend_scientifically_valid_task_subset(
-                tasks, **planning_kwargs
+                tasks,
+                use_global_stride_coupling=(
+                    coordinate_cache_build_required
+                    and cache_materialization == "planned_strided"
+                ),
+                coordinate_cache_minimum_frames_per_replica=1,
+                coordinate_cache_full_scan_fraction=float(
+                    execution.get("coordinate_cache_full_scan_fraction", 1.0)
+                ),
+                overall_stride_candidate_strides=list(execution.get(
+                    "overall_stride_candidates",
+                    [1, 2, 3, 4, 5, 10, 20, 100],
+                )),
+                protected_module_ids=protected_module_ids,
+                **planning_kwargs,
             )
             recommended_plan = recommendation.get("recommended_plan")
             if isinstance(recommended_plan, Mapping):

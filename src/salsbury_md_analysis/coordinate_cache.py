@@ -8,6 +8,8 @@ import math
 import os
 import shutil
 import struct
+import subprocess
+import sys
 import tempfile
 from concurrent.futures import ProcessPoolExecutor
 from copy import deepcopy
@@ -23,6 +25,7 @@ from .coordinates import (
     CoordinateFrame,
     iter_coordinate_frames,
 )
+from .frame_sampling import integer_stride_selected_count
 from .manifests import (
     ManifestValidationError,
     load_json,
@@ -352,6 +355,71 @@ def _coordinate_cache_worker(
     )
 
 
+def _coordinate_cache_distributed_worker_entry(manifest_path: Path) -> None:
+    """Run the cache-worker ordinals assigned to one Slurm task rank."""
+
+    payload = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    raw_tasks = payload.get("tasks")
+    if not isinstance(raw_tasks, list):
+        raise CoordinateCacheError("distributed cache-worker manifest is malformed")
+    rank = int(os.environ.get("SLURM_PROCID", "0"))
+    task_count = int(os.environ.get("SLURM_NTASKS", "1"))
+    if rank < 0 or task_count <= 0 or rank >= task_count:
+        raise CoordinateCacheError("distributed Slurm rank metadata is invalid")
+    for ordinal in range(rank, len(raw_tasks), task_count):
+        raw = raw_tasks[ordinal]
+        if not isinstance(raw, list) or len(raw) != 6:
+            raise CoordinateCacheError("distributed cache-worker task is malformed")
+        _coordinate_cache_worker((
+            str(raw[0]), str(raw[1]), bool(raw[2]), float(raw[3]),
+            float(raw[4]), int(raw[5]),
+        ))
+
+
+def _execute_coordinate_cache_workers(
+    tasks: Sequence[tuple[str, str, bool, float, float, int]],
+    *,
+    maximum_workers: int,
+    worker_root: Path,
+) -> None:
+    """Use local processes or the complete multi-node Slurm allocation."""
+
+    distributed = (
+        os.environ.get("SMA_DISTRIBUTED_REPLICA_WORKERS") == "1"
+        and int(os.environ.get("SLURM_NNODES", "1")) > 1
+    )
+    if not distributed:
+        with ProcessPoolExecutor(
+            max_workers=min(maximum_workers, len(tasks))
+        ) as pool:
+            list(pool.map(_coordinate_cache_worker, tasks))
+        return
+    node_count = int(os.environ["SLURM_NNODES"])
+    task_count = min(maximum_workers, len(tasks))
+    workers_per_node = int(os.environ.get(
+        "SMA_REPLICA_WORKERS_PER_NODE",
+        str(max(1, (task_count + node_count - 1) // node_count)),
+    ))
+    manifest_path = worker_root / "distributed-cache-worker-manifest.json"
+    manifest_path.write_text(json.dumps({
+        "tasks": [list(task) for task in tasks]
+    }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    completed = subprocess.run([
+        os.environ.get("SMA_SRUN_COMMAND", "srun"),
+        "--nodes", str(node_count),
+        "--ntasks", str(task_count),
+        "--ntasks-per-node", str(workers_per_node),
+        sys.executable,
+        "-m", "salsbury_md_analysis.coordinate_cache",
+        "--distributed-worker-manifest", str(manifest_path),
+    ], check=False, capture_output=True, text=True)
+    if completed.returncode != 0:
+        raise CoordinateCacheError(
+            "distributed coordinate-cache workers failed: "
+            + (completed.stderr.strip() or completed.stdout.strip())
+        )
+
+
 def _build_coordinate_cache_parallel(
     *,
     source: Path,
@@ -406,8 +474,11 @@ def _build_coordinate_cache_parallel(
             raise CoordinateCacheError(
                 "parallel cache construction requires at least two replicas"
             )
-        with ProcessPoolExecutor(max_workers=min(maximum_workers, len(tasks))) as pool:
-            list(pool.map(_coordinate_cache_worker, tasks))
+        _execute_coordinate_cache_workers(
+            tasks,
+            maximum_workers=maximum_workers,
+            worker_root=worker_root,
+        )
 
         replicas_by_system: Dict[str, list[Mapping[str, object]]] = {}
         rows_by_system: Dict[str, list[Mapping[str, object]]] = {}
@@ -593,11 +664,13 @@ def build_coordinate_cache(
                 )
                 cached_segments = []
                 segment_reports = []
-                replica_source_offset = 0
-                for segment_index, segment in enumerate(raw_replica["segments"]):
+                segment_inputs = []
+                for segment in raw_replica["segments"]:
                     assert isinstance(segment, dict)
                     segment_id = str(segment["segment_id"])
-                    trajectory = resolve_manifest_path(str(segment["trajectory"]), source)
+                    trajectory = resolve_manifest_path(
+                        str(segment["trajectory"]), source
+                    )
                     try:
                         probe = probe_trajectory(trajectory)
                     except (FileProbeError, OSError) as exc:
@@ -607,13 +680,35 @@ def build_coordinate_cache(
                         raise CoordinateCacheError(
                             f"{system_id}/{replica_id}/{segment_id} has no declared frames"
                         )
+                    segment_inputs.append(
+                        (segment, segment_id, trajectory, probe, declared)
+                    )
+                replica_source_count = sum(row[4] for row in segment_inputs)
+                replica_retained_count = integer_stride_selected_count(
+                    replica_source_count, cache_stride
+                )
+                last_selected_global = (
+                    (replica_retained_count - 1) * cache_stride
+                    if replica_retained_count else -1
+                )
+                replica_source_offset = 0
+                for segment_index, (
+                    segment, segment_id, trajectory, probe, declared
+                ) in enumerate(segment_inputs):
                     processor.begin_segment(
                         bool(segment.get("continuous_with_previous", False))
                     )
                     first_selected_local = (-replica_source_offset) % cache_stride
+                    last_selected_local = min(
+                        declared - 1,
+                        last_selected_global - replica_source_offset,
+                    )
                     retained = (
-                        0 if first_selected_local >= declared else
-                        (declared - 1 - first_selected_local) // cache_stride + 1
+                        0
+                        if first_selected_local > last_selected_local
+                        else (
+                            last_selected_local - first_selected_local
+                        ) // cache_stride + 1
                     )
                     cached_trajectory = (
                         temporary / f"{prefix}-segment-{segment_index:02d}.dcd"
@@ -631,9 +726,10 @@ def build_coordinate_cache(
                                 atom_indices,
                             )
                             decoded += 1
+                            global_index = replica_source_offset + local_index
                             if (
-                                (replica_source_offset + local_index)
-                                % cache_stride != 0
+                                global_index % cache_stride != 0
+                                or global_index > last_selected_global
                             ):
                                 continue
                             if writer is None:
@@ -740,6 +836,7 @@ def build_coordinate_cache(
                     "replica_id": replica_id,
                     "source_atom_count": len(atoms),
                     "cached_atom_count": len(atom_indices),
+                    "source_atom_indices_in_cache_order": list(atom_indices),
                     "selection": "molecular_payload",
                     "cache_stride": cache_stride,
                     "source_frame_count": sum(
@@ -825,7 +922,13 @@ def build_coordinate_cache_safe(
 def validate_reusable_coordinate_cache(
     cache_directory: Path, source_system_manifest: Path
 ) -> Dict[str, object]:
-    """Validate a lossless external cache against the current source inputs."""
+    """Validate a reusable all-frame-scanned cache against source inputs.
+
+    Cache reuse does not require materializing every decoded frame.  It does
+    require a positive declared integer stride, an in-order scan of every raw
+    frame for continuous reconstruction, exact source identities, and the
+    deterministic retained-frame count implied by that stride.
+    """
 
     root = Path(cache_directory).expanduser().resolve(strict=True)
     source = Path(source_system_manifest).expanduser().resolve(strict=True)
@@ -836,9 +939,14 @@ def validate_reusable_coordinate_cache(
     original = load_json(source)
     if not isinstance(report, dict) or report.get("technical_status") != "complete":
         raise CoordinateCacheError("reusable coordinate cache report is incomplete")
-    if report.get("cache_stride") != 1:
+    cache_stride = report.get("cache_stride")
+    if (
+        isinstance(cache_stride, bool)
+        or not isinstance(cache_stride, int)
+        or cache_stride <= 0
+    ):
         raise CoordinateCacheError(
-            "a reusable coordinate cache must materialize every frame at stride 1"
+            "a reusable coordinate cache must declare a positive integer stride"
         )
     if report.get("source_frame_scan") != "all source frames decoded in order":
         raise CoordinateCacheError(
@@ -890,6 +998,8 @@ def validate_reusable_coordinate_cache(
                 raise CoordinateCacheError(
                     f"reusable cache segment count changed for {key[0]}/{key[1]}"
                 )
+            decoded_total = 0
+            retained_total = 0
             for cached_segment, source_segment in zip(
                 cached_segments, source_segments
             ):
@@ -901,12 +1011,22 @@ def validate_reusable_coordinate_cache(
                 _validate_source_identity(
                     cached_segment.get("source"), path, "trajectory"
                 )
-                if int(cached_segment.get("retained_frame_count", -1)) != int(
-                    cached_segment.get("decoded_frame_count", -2)
-                ):
+                decoded = int(cached_segment.get("decoded_frame_count", -1))
+                retained = int(cached_segment.get("retained_frame_count", -1))
+                if decoded <= 0 or retained < 0:
                     raise CoordinateCacheError(
-                        "reusable cache does not retain every decoded source frame"
+                        "reusable cache retained-frame count is inconsistent with "
+                        "its declared integer stride"
                     )
+                decoded_total += decoded
+                retained_total += retained
+            if retained_total != integer_stride_selected_count(
+                decoded_total, cache_stride
+            ):
+                raise CoordinateCacheError(
+                    "reusable cache retained-frame count is inconsistent with "
+                    "its declared integer stride"
+                )
     if set(rows) != expected_keys:
         raise CoordinateCacheError(
             "reusable coordinate cache system/replica identities do not match"
@@ -920,11 +1040,22 @@ def validate_reusable_coordinate_cache(
         "cached_system_manifest_sha256": sha256_file(manifest_path),
         "source_system_manifest": str(source),
         "source_system_manifest_sha256": sha256_file(source),
-        "cache_stride": 1,
+        "cache_stride": cache_stride,
         "replica_count": len(rows),
         "reuse_boundary": (
-            "Validated for conformational and other non-bulk-solvent analyses; "
+            "Every raw frame was scanned in order for continuous reconstruction. "
+            f"Every {cache_stride:g} frame was materialized for conformational "
+            "and other non-bulk-solvent analyses; "
             "water- and solvent-dependent modules continue to read the original "
             "solvated trajectories."
         ),
     }
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3 or sys.argv[1] != "--distributed-worker-manifest":
+        raise SystemExit(
+            "usage: python -m salsbury_md_analysis.coordinate_cache "
+            "--distributed-worker-manifest PATH"
+        )
+    _coordinate_cache_distributed_worker_entry(Path(sys.argv[2]))

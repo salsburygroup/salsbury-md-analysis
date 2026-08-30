@@ -20,6 +20,13 @@ from .frame_sampling import (
 from .hydrogen_bond_chemistry import PROTEIN_RESIDUES
 from .manifests import ManifestValidationError, load_json, resolve_manifest_path
 from .periodic import PeriodicFrameProcessor, PeriodicReconstructionError
+from .replica_execution import ReplicaPartial
+from .replica_module_execution import (
+    execute_replica_final_module,
+    merge_frame_selection_reports,
+    restore_source_provenance,
+    unique_issues,
+)
 from .trajectory_contracts import (
     TrajectoryContractError,
     frame_axis_value,
@@ -216,7 +223,7 @@ def _mkdssp_environment(executable: str) -> Tuple[Dict[str, str], Optional[str],
     return environment, None, "mkdssp-default"
 
 
-def secondary_structure_project(
+def _secondary_structure_project_serial(
     project_path: Path, hash_content: bool = False
 ) -> Dict[str, object]:
     source = Path(project_path).expanduser().resolve(strict=False)
@@ -458,6 +465,69 @@ def secondary_structure_project(
             "Pooled residue populations must be paired with replica-sensitive convergence analysis.",
         ],
     }
+
+
+def _reduce_secondary_structure_reports(
+    partials: Sequence[ReplicaPartial[Dict[str, object]]],
+    source_context: Dict[str, object],
+) -> Dict[str, object]:
+    reports = [partial.value for partial in partials]
+    first = dict(reports[0])
+    for report in reports[1:]:
+        for key in ("module_id", "settings", "implementation"):
+            if report.get(key) != first.get(key):
+                raise SecondaryStructureAnalysisError(
+                    f"replica secondary-structure reports disagree on {key}"
+                )
+    first["frame_selection"] = merge_frame_selection_reports([
+        report["frame_selection"] for report in reports
+        if isinstance(report.get("frame_selection"), dict)
+    ])
+    for key in (
+        "frame_reports", "skipped_nonprotein_replicas",
+        "input_normalization_reports", "residue_populations",
+    ):
+        first[key] = [
+            row for report in reports for row in report.get(key, [])
+        ]
+    first["evaluated_frame_count"] = sum(
+        int(report.get("evaluated_frame_count", 0)) for report in reports
+    )
+    first["applicable_replica_count"] = sum(
+        int(report.get("applicable_replica_count", 0)) for report in reports
+    )
+    first["scientific_status"] = (
+        "not_applicable"
+        if int(first["applicable_replica_count"]) == 0 else "not evaluated"
+    )
+    issues = unique_issues(reports)
+    first["issues"] = issues
+    first["error_count"] = sum(issue.get("severity") == "error" for issue in issues)
+    first["warning_count"] = sum(
+        issue.get("severity") == "warning" for issue in issues
+    )
+    restore_source_provenance(first, source_context)
+    return first
+
+
+def secondary_structure_project(
+    project_path: Path, hash_content: bool = False
+) -> Dict[str, object]:
+    """Run DSSP by replica and reduce residue occupancies without mixing IDs."""
+
+    project = load_json(Path(project_path).expanduser().resolve(strict=False))
+    settings = _settings(project)
+    selection = settings.get("frame_selection")
+    if isinstance(selection, dict) and selection.get("mode") == "auto_resource_budget_v1":
+        return _secondary_structure_project_serial(
+            project_path, hash_content=hash_content
+        )
+    return execute_replica_final_module(
+        project_path,
+        runner_id="secondary_structure",
+        hash_content=hash_content,
+        reducer=_reduce_secondary_structure_reports,
+    )
 
 
 def secondary_structure_project_safe(

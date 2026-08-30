@@ -33,6 +33,13 @@ from .manifests import ManifestValidationError, load_json, resolve_manifest_path
 from .periodic import (
     PeriodicFrameProcessor, PeriodicReconstructionError, load_connectivity,
 )
+from .replica_execution import ReplicaPartial
+from .replica_module_execution import (
+    execute_replica_final_module,
+    merge_frame_selection_reports,
+    restore_source_provenance,
+    unique_issues,
+)
 from .trajectory_contracts import (
     TrajectoryContractError, frame_axis_value, normalize_segment_axis,
 )
@@ -625,7 +632,7 @@ def _residence_runs(
     return any_water_runs, same_water_runs
 
 
-def water_mediated_hydrogen_bond_networks_project(
+def _water_mediated_hydrogen_bond_networks_project_serial(
     project_path: Path, hash_content: bool = False
 ) -> Dict[str, object]:
     source = Path(project_path).expanduser().resolve(strict=False)
@@ -976,6 +983,94 @@ def water_mediated_hydrogen_bond_networks_project(
             "Geometry and occupancy do not establish energetic importance, affinity, causality, or mechanism.",
         ],
     }
+
+
+def _reduce_water_network_reports(
+    partials: Sequence[ReplicaPartial[Dict[str, object]]],
+    source_context: Dict[str, object],
+) -> Dict[str, object]:
+    reports = [partial.value for partial in partials]
+    first = dict(reports[0])
+    for report in reports[1:]:
+        for key in (
+            "module_id", "settings", "geometry_contract", "cutoff_definitions",
+            "bridge_dictionary_contract",
+        ):
+            if report.get(key) != first.get(key):
+                raise WaterMediatedHydrogenBondError(
+                    f"replica water-network reports disagree on {key}"
+                )
+    first["frame_selection"] = merge_frame_selection_reports([
+        report["frame_selection"] for report in reports
+        if isinstance(report.get("frame_selection"), dict)
+    ])
+    list_fields = (
+        "chemistry_reports", "endpoint_dictionary", "water_dictionary",
+        "observed_bridge_dictionary", "frame_networks", "bridge_occupancies",
+        "any_water_bridge_residence_runs", "same_water_bridge_residence_runs",
+        "network_nodes", "network_edges", "representative_frames",
+    )
+    for key in list_fields:
+        first[key] = [row for report in reports for row in report.get(key, [])]
+    for key in (
+        "evaluated_frame_count", "evaluated_neighbor_pair_count",
+        "sparse_path_record_count",
+    ):
+        first[key] = sum(int(report.get(key, 0)) for report in reports)
+    if int(first["evaluated_frame_count"]) > int(  # type: ignore[index]
+        first["settings"]["maximum_evaluated_frames"]  # type: ignore[index]
+    ):
+        raise WaterMediatedHydrogenBondError(
+            "parallel water-network frame count exceeds maximum_evaluated_frames"
+        )
+    if int(first["sparse_path_record_count"]) > int(  # type: ignore[index]
+        first["settings"]["maximum_sparse_records"]  # type: ignore[index]
+    ):
+        raise WaterMediatedHydrogenBondError(
+            "parallel water-network record count exceeds maximum_sparse_records"
+        )
+    issues = [
+        issue for issue in unique_issues(reports)
+        if issue.get("code") != "FRAME_SUBSAMPLING"
+    ]
+    frame_selection = first["frame_selection"]
+    if int(frame_selection["selected_frame_count"]) < int(
+        frame_selection["source_frame_count"]
+    ):
+        issues.append({
+            "severity": "warning", "code": "FRAME_SUBSAMPLING",
+            "location": source_context["project_manifest_path"],
+            "message": (
+                f"Water-network analysis evaluated {frame_selection['selected_frame_count']} "
+                f"of {frame_selection['source_frame_count']} source frames under "
+                f"{frame_selection['mode']}"
+            ),
+        })
+    first["issues"] = issues
+    first["error_count"] = sum(issue.get("severity") == "error" for issue in issues)
+    first["warning_count"] = sum(issue.get("severity") == "warning" for issue in issues)
+    restore_source_provenance(first, source_context)
+    return first
+
+
+def water_mediated_hydrogen_bond_networks_project(
+    project_path: Path, hash_content: bool = False
+) -> Dict[str, object]:
+    """Evaluate sparse water networks by replica and retain segment-safe runs."""
+
+    project = load_json(Path(project_path).expanduser().resolve(strict=False))
+    settings = _settings(project)
+    selection = settings.get("frame_selection")
+    if isinstance(selection, dict) and selection.get("mode") == "auto_resource_budget_v1":
+        return _water_mediated_hydrogen_bond_networks_project_serial(
+            project_path, hash_content=hash_content
+        )
+    return execute_replica_final_module(
+        project_path,
+        runner_id="water_networks",
+        hash_content=hash_content,
+        reducer=_reduce_water_network_reports,
+    )
 
 
 def water_mediated_hydrogen_bond_networks_project_safe(

@@ -27,6 +27,7 @@ from .analysis_config import (
     enabled_modules,
     load_analysis_config,
     make_memory_fit_config,
+    make_resource_fit_config,
 )
 from .automatic_sampling import automatic_sampling_plan, plan_cartesian_pca_basis
 from .automatic_chemistry import (
@@ -47,6 +48,11 @@ from .coordinate_cache import (
     coordinate_cache_prefix,
     coordinate_cache_system_manifest_filename,
     validate_reusable_coordinate_cache,
+)
+from .cache_routing import (
+    CacheRoutingError,
+    cache_routing_plan,
+    materialize_cache_backed_base_project,
 )
 from .geometry import distance3
 from .hydrogen_bond_chemistry import NUCLEIC_RESIDUES, PROTEIN_RESIDUES
@@ -1502,11 +1508,14 @@ def _coordinate_cache_enabled(
         return False
     if mode not in {"auto", "required"}:
         raise QuickstartError(f"unsupported coordinate cache mode: {mode}")
-    if mode == "required" and not view_ids:
+    structural_qc_enabled = (
+        "structural_integrity_qc" in enabled_modules(analysis_config)
+    )
+    if mode == "required" and not view_ids and not structural_qc_enabled:
         raise QuickstartError(
-            "coordinate cache is required but no conformational view is executable"
+            "coordinate cache is required but no cache-consuming analysis is executable"
         )
-    return bool(view_ids)
+    return bool(view_ids) or structural_qc_enabled
 
 
 def _configure_coordinate_cache_views(
@@ -1601,7 +1610,9 @@ def _configure_coordinate_cache_views(
         "source_frame_scan": "all_frames_continuous_unwrap",
         "cache_stride": cache_stride,
         "external_cache_reused": external,
-        "base_workflow_uses_original_solvated_trajectories": True,
+        "bulk_solvent_base_modules_use_original_trajectories": True,
+        "cache_compatible_base_modules_use_validated_cache_project": True,
+        "structural_qc_uses_validated_all_frame_scanned_cache": True,
         "conformational_views_use_cache": True,
         "alignment_is_performed_downstream_per_view": True,
         "bulk_water_excluded": True,
@@ -1610,6 +1621,49 @@ def _configure_coordinate_cache_views(
     }
     _json_write(root / "coordinate-cache-contract.json", contract)
     return ["coordinate-cache-contract.json"]
+
+
+def _configure_structural_qc_parallel_execution(
+    root: Path,
+    campaign_resource_plan: Mapping[str, object],
+    *,
+    coordinate_cache_directory: Path,
+) -> None:
+    """Point structural QC at one validated strided cache and replica workers."""
+
+    project_path = root / "project.json"
+    project = load_json(project_path)
+    if not isinstance(project, dict):
+        raise QuickstartError("base project is unavailable for structural-QC setup")
+    requested = project.get("requested_modules")
+    if not isinstance(requested, list) or "structural_integrity_qc" not in requested:
+        return
+    definitions = project.get("definitions")
+    structural = definitions.get("structural_qc") if isinstance(definitions, dict) else None
+    if not isinstance(structural, dict):
+        raise QuickstartError("base project lacks a structural-QC definition")
+    task_rows = [
+        row for row in campaign_resource_plan.get("tasks", [])
+        if isinstance(row, dict)
+        and row.get("module_id") == "structural_integrity_qc"
+        and row.get("task_scope") == "direct_trajectory_estimator"
+    ]
+    if len(task_rows) != 1:
+        raise QuickstartError(
+            "campaign plan lacks exactly one structural-QC resource task"
+        )
+    # This is the complete replica-worker count.  The execution adapter splits
+    # it into per-node groups when the planner selects a distributed layout.
+    workers = int(task_rows[0]["effective_cpu_cap"])
+    cache_root = coordinate_cache_directory.expanduser().resolve(strict=False)
+    structural["parallel_execution"] = {
+        "enabled": True,
+        "maximum_workers": workers,
+        "coordinate_cache_system_manifest": str(cache_root / "system-cache.json"),
+        "coordinate_cache_report": str(cache_root / "coordinate-cache-report.json"),
+    }
+    _json_write(project_path, project)
+    validate_project(project, source_path=project_path, check_paths=False)
 
 
 def _conformational_view_projects(
@@ -2341,6 +2395,15 @@ def _slurm_files(
         )
     if not stages:
         raise QuickstartError("analysis config disables every executable analysis module")
+    routing_path = root / "base-cache-routing.json"
+    routing = load_json(routing_path) if routing_path.is_file() else {}
+    raw_cache_modules = (
+        routing.get("cache_project_modules", [])
+        if isinstance(routing, dict) else []
+    )
+    cache_project_modules = {
+        str(value) for value in raw_cache_modules
+    } if isinstance(raw_cache_modules, list) else set()
     wall_minutes = int(math.ceil(float(target_wall_hours) * 60.0))
     wall_limit = f"{wall_minutes // 60:02d}:{wall_minutes % 60:02d}:00"
     coordinate_cache_worker = ""
@@ -2383,12 +2446,64 @@ def _slurm_files(
         cache_wall_limit = (
             f"{cache_minutes // 60:02d}:{cache_minutes % 60:02d}:00"
         )
-        cache_memory_gib = max(4, math.ceil(0.5 * coordinate_cache_workers))
+        cache_layout = cache_tasks[0].get(
+            "parallel_node_layout_at_selected_observations", {}
+        )
+        if not isinstance(cache_layout, dict):
+            raise QuickstartError("coordinate cache lacks a parallel node layout")
+        cache_nodes = int(cache_layout.get("node_count", 1))
+        cache_workers_per_node = int(cache_layout.get(
+            "workers_per_node", coordinate_cache_workers
+        ))
+        cache_distributed = bool(
+            cache_layout.get("distributed_replica_execution", False)
+        )
+        cache_memory_gib = int(math.ceil(float(cache_tasks[0].get(
+            "estimated_scheduler_memory_gib_per_node_at_selected_observations",
+            max(4, math.ceil(0.5 * coordinate_cache_workers)),
+        ))))
+        cache_sbatch_layout = (
+            f"#SBATCH --nodes={cache_nodes}\n"
+            f"#SBATCH --ntasks={coordinate_cache_workers}\n"
+            f"#SBATCH --ntasks-per-node={cache_workers_per_node}\n"
+            "#SBATCH --cpus-per-task=1"
+            if cache_distributed else
+            f"#SBATCH --nodes=1\n"
+            f"#SBATCH --cpus-per-task={coordinate_cache_workers}"
+        )
+        cache_distributed_environment = (
+            f'export SMA_REPLICA_WORKERS={coordinate_cache_workers}\n'
+            f'export SMA_REPLICA_WORKERS_PER_NODE={cache_workers_per_node}\n'
+            'export SMA_DISTRIBUTED_REPLICA_WORKERS=1\n'
+            'export SMA_DISTRIBUTED_WORK_DIR="$ROOT"'
+            if cache_distributed else ""
+        )
         coordinate_cache_filename = "run_coordinate_cache.slurm"
+        cache_project_materialization = f"""ROUTING_TMP="$ROOT/base-cache-routing.validated.json.tmp.$SLURM_JOB_ID"
+"$PYTHON" -m salsbury_md_analysis materialize-cache-base-project \
+  "$ROOT/project.json" "$ROOT/coordinate-cache" \
+  "$ROOT/project-cache-base.json" > "$ROUTING_TMP"
+"$PYTHON" - "$ROUTING_TMP" <<'PY'
+import json, sys
+report = json.load(open(sys.argv[1], encoding='utf-8'))
+if report.get('technical_status') != 'complete':
+    raise SystemExit('cache-backed base project did not validate')
+PY
+ROUTING_FINAL="$ROOT/base-cache-routing.validated.json"
+if [[ -e "$ROUTING_FINAL" ]]; then
+  if ! cmp -s "$ROUTING_TMP" "$ROUTING_FINAL"; then
+    printf 'Refreshed cache routing differs from retained routing evidence.\n' >&2
+    exit 1
+  fi
+  rm "$ROUTING_TMP"
+else
+  ln "$ROUTING_TMP" "$ROUTING_FINAL"
+  rm "$ROUTING_TMP"
+fi"""
         coordinate_cache_worker = f"""#!/usr/bin/env bash
 #SBATCH --job-name=sma-{project_id[:16]}-cache
 #SBATCH --time={cache_wall_limit}
-#SBATCH --cpus-per-task={coordinate_cache_workers}
+{cache_sbatch_layout}
 #SBATCH --mem={cache_memory_gib}G
 #SBATCH --output={root}/logs/%j-coordinate-cache.out
 #SBATCH --error={root}/logs/%j-coordinate-cache.err
@@ -2399,6 +2514,7 @@ PYTHON="${{SALSBURY_MD_ANALYSIS_PYTHON:-$PYTHON_DEFAULT}}"
 PACKAGE_ROOT_DEFAULT={json.dumps(package_root)}
 PACKAGE_ROOT="${{SALSBURY_MD_ANALYSIS_PYTHONPATH:-$PACKAGE_ROOT_DEFAULT}}"
 export PYTHONPATH="$PACKAGE_ROOT${{PYTHONPATH:+:$PYTHONPATH}}"
+{cache_distributed_environment}
 mkdir -p "$ROOT/results/coordinate-cache" "$ROOT/logs"
 FINAL="$ROOT/results/coordinate-cache/report.json"
 SUMMARY="$FINAL.summary.json"
@@ -2419,6 +2535,7 @@ cached = json.load(open(manifest_path, encoding='utf-8'))
 if not cached.get('systems'):
     raise SystemExit('existing coordinate-cache manifest has no systems')
 PY
+  {cache_project_materialization}
   printf 'Reusing complete coordinate cache %s.\n' "$ROOT/coordinate-cache"
   exit 0
 fi
@@ -2452,6 +2569,7 @@ PY
 ln "$SUMMARY_TMP" "$SUMMARY"
 ln "$TMP" "$FINAL"
 rm "$TMP" "$SUMMARY_TMP"
+{cache_project_materialization}
 """
         cache_submit_lines = [
             'CACHE_JOB=$(sbatch --parsable "$ROOT/run_coordinate_cache.slurm")',
@@ -2559,6 +2677,14 @@ rm "$TMP" "$SUMMARY_TMP"
         command_lines = "\n".join(
             f"  {json.dumps(command)}" for command in stage_commands
         )
+        project_lines = "\n".join(
+            "  " + json.dumps(str(
+                root / "project-cache-base.json"
+                if COMMAND_MODULES[command] in cache_project_modules
+                else root / "project.json"
+            ))
+            for command in stage_commands
+        )
         return f"""#!/usr/bin/env bash
 #SBATCH --job-name=sma-{project_id[:20]}
 #SBATCH --time={wall_limit}
@@ -2568,11 +2694,14 @@ rm "$TMP" "$SUMMARY_TMP"
 #SBATCH --error={root}/logs/%A_%a.err
 set -euo pipefail
 ROOT={json.dumps(str(root))}
-PROJECT="$ROOT/project.json"
 COMMANDS=(
 {command_lines}
 )
+PROJECTS=(
+{project_lines}
+)
 COMMAND="${{COMMANDS[$SLURM_ARRAY_TASK_ID]}}"
+PROJECT="${{PROJECTS[$SLURM_ARRAY_TASK_ID]}}"
 PYTHON_DEFAULT={json.dumps(python_executable)}
 PYTHON="${{SALSBURY_MD_ANALYSIS_PYTHON:-$PYTHON_DEFAULT}}"
 PACKAGE_ROOT_DEFAULT={json.dumps(package_root)}
@@ -3503,9 +3632,53 @@ def prepare_standard_analysis(
         if coordinate_cache_enabled else []
     )
     coordinate_cache_workers = min(
-        effective_parallel_cpu_cap,
-        len(trajectory_paths),
+        effective_parallel_cpu_cap, len(trajectory_paths)
     )
+    if coordinate_cache_enabled:
+        _configure_structural_qc_parallel_execution(
+            root,
+            campaign_resource_plan,
+            coordinate_cache_directory=(
+                Path(str(coordinate_cache_input))
+                if coordinate_cache_input is not None
+                else root / "coordinate-cache"
+            ),
+        )
+        base_project = load_json(root / "project.json")
+        if not isinstance(base_project, dict):
+            raise QuickstartError("base project is unavailable for cache routing")
+        try:
+            base_cache_routing = cache_routing_plan(base_project)
+            base_cache_routing.update({
+                "routing_status": (
+                    "validated_external_cache"
+                    if coordinate_cache_input is not None else
+                    "planned_after_coordinate_cache_validation"
+                ),
+                "source_project": "project.json",
+                "runtime_cache_project": "project-cache-base.json",
+                "cache_stride": coordinate_cache_stride,
+            })
+            _json_write(root / "base-cache-routing.json", base_cache_routing)
+            if coordinate_cache_input is not None:
+                validated_routing = materialize_cache_backed_base_project(
+                    root / "project.json",
+                    Path(str(coordinate_cache_input)),
+                    root / "project-cache-base.json",
+                )
+                _json_write(
+                    root / "base-cache-routing.validated.json",
+                    validated_routing,
+                )
+        except (CacheRoutingError, OSError, ValueError) as exc:
+            raise QuickstartError("base coordinate-cache routing failed: " + str(exc)) from exc
+        coordinate_cache_files.extend([
+            "base-cache-routing.json",
+            *(
+                ["base-cache-routing.validated.json", "project-cache-base.json"]
+                if coordinate_cache_input is not None else []
+            ),
+        ])
     deferred = {
         **exclusions,
         **config_disabled,
@@ -3652,9 +3825,9 @@ intentionally outside this first zero-configuration workflow. `conformational-vi
     records the topology-derived global-common-heavy, chemical-interface when applicable,
     and optional macromolecular-trace views. The active launcher runs every enabled,
     automatically applicable view; the trace view is disabled by default. Conformational
-    views read a reusable, made-whole molecular-payload
-    cache built from every physical frame; base solvent-dependent analyses continue to
-    read the original solvated trajectories. The launchers retain the
+    views and replica-parallel structural QC read a validated, reusable, made-whole
+    molecular-payload cache built from every physical frame. Solvent-dependent analyses
+    continue to read the original solvated trajectories. The launchers retain the
 Python executable and package source used here; after an intentional installation move,
 override them with `SALSBURY_MD_ANALYSIS_PYTHON` and
 `SALSBURY_MD_ANALYSIS_PYTHONPATH`.
@@ -3695,6 +3868,160 @@ override them with `SALSBURY_MD_ANALYSIS_PYTHON` and
         "slurm_profile_id": execution_artifacts["slurm_profile_id"],
         "next_command": execution_artifacts["next_command"],
     }
+
+
+def prepare_standard_analysis_resource_fit(
+    *,
+    pdb_path: Path,
+    psf_path: Optional[Path],
+    trajectories: Sequence[Path],
+    output_directory: Path,
+    project_id: str,
+    frame_interval_ps: float,
+    first_frame_time_ps: float = 0.0,
+    temperature_kelvin: float = 300.0,
+    target_wall_hours: Optional[float] = None,
+    dssp_executable: Optional[str] = None,
+    config_path: Optional[Path] = None,
+    generate_connectivity_openmm: bool = False,
+    openmm_bond_definitions: Sequence[Path] = (),
+) -> Dict[str, object]:
+    """Prepare an explicit dependency-closed optional resource reduction.
+
+    The ordinary entry point remains fail-closed. This opt-in entry point first
+    plans the complete requested workflow, applies the planner's optional
+    dependency-closed switch set only when necessary, and fails if the protected
+    core cannot fit the requested CPU, wall-time, and memory envelope.
+    """
+
+    destination = output_directory.expanduser().resolve(strict=False)
+    if destination.exists() and (
+        not destination.is_dir() or any(destination.iterdir())
+    ):
+        raise QuickstartError(
+            f"output directory is not empty: {destination}; choose a new "
+            "versioned directory"
+        )
+    common = {
+        "pdb_path": pdb_path,
+        "psf_path": psf_path,
+        "trajectories": trajectories,
+        "project_id": project_id,
+        "frame_interval_ps": frame_interval_ps,
+        "first_frame_time_ps": first_frame_time_ps,
+        "temperature_kelvin": temperature_kelvin,
+        "dssp_executable": dssp_executable,
+        "generate_connectivity_openmm": generate_connectivity_openmm,
+        "openmm_bond_definitions": openmm_bond_definitions,
+    }
+    with tempfile.TemporaryDirectory(
+        prefix="salsbury-resource-fit-planning-"
+    ) as temporary:
+        temporary_root = Path(temporary)
+        requested_output = temporary_root / "requested-plan"
+        recommendation: Mapping[str, object] = {}
+        try:
+            prepare_standard_analysis(
+                **common,
+                output_directory=requested_output,
+                target_wall_hours=target_wall_hours,
+                config_path=config_path,
+            )
+            requested_config = load_json(
+                requested_output / "analysis-config.json"
+            )
+            requested_plan = load_json(
+                requested_output / "campaign-resource-plan.json"
+            )
+            active_config = deepcopy(requested_config)
+            direct_disabled: list[str] = []
+            transitive_disabled: list[str] = []
+        except QuickstartPlanningError as exc:
+            requested_config = deepcopy(exc.analysis_config)
+            requested_plan = deepcopy(exc.plan)
+            raw_recommendation = exc.plan.get(
+                "method_reduction_recommendation"
+            )
+            if not isinstance(raw_recommendation, Mapping):
+                raise QuickstartError(
+                    "resource-fit planning produced no dependency-closed "
+                    "reduction recommendation"
+                ) from exc
+            recommendation = raw_recommendation
+            if recommendation.get("recommendation_status") != (
+                "feasible_subset_found"
+            ):
+                raise
+            patch = recommendation.get("configuration_patch")
+            if not isinstance(patch, Mapping) or not patch:
+                raise QuickstartError(
+                    "resource-fit recommendation contains no configuration patch"
+                ) from exc
+            active_config, direct_disabled, transitive_disabled = (
+                make_resource_fit_config(requested_config, list(patch))
+            )
+
+        resolved_path = temporary_root / "resolved-resource-fit-config.json"
+        _json_write(resolved_path, active_config)
+        report = prepare_standard_analysis(
+            **common,
+            output_directory=destination,
+            target_wall_hours=None,
+            config_path=resolved_path,
+        )
+        final_plan = load_json(destination / "campaign-resource-plan.json")
+        fit_report = {
+            "report_schema": "salsbury-resource-fit-report-v1",
+            "technical_status": "complete",
+            "planning_status": (
+                "replanned_with_dependency_closed_optional_reduction"
+                if direct_disabled or transitive_disabled
+                else "requested_plan_feasible"
+            ),
+            "automatic_changes_applied": bool(
+                direct_disabled or transitive_disabled
+            ),
+            "protected_set_preserved": bool(
+                recommendation.get("protected_set_preserved", True)
+            ),
+            "directly_disabled_configuration_switches": sorted(
+                direct_disabled
+            ),
+            "transitively_disabled_modules": sorted(transitive_disabled),
+            "reduction_decisions": deepcopy(
+                recommendation.get("decisions", [])
+            ),
+            "requested_config": "analysis-config.requested.json",
+            "resolved_config": "analysis-config.resource-fit.json",
+            "requested_plan": "campaign-resource-plan.requested.json",
+            "final_plan": "campaign-resource-plan.json",
+            "final_feasibility_status": final_plan.get("feasibility_status"),
+            "original_request_preserved": True,
+            "failure_boundary": (
+                "Preparation fails when no dependency-closed subset preserving "
+                "every protected module can fit the requested resource envelope."
+            ),
+        }
+        _json_write(
+            destination / "analysis-config.requested.json", requested_config
+        )
+        _json_write(
+            destination / "analysis-config.resource-fit.json", active_config
+        )
+        _json_write(
+            destination / "campaign-resource-plan.requested.json", requested_plan
+        )
+        _json_write(destination / "resource-fit-report.json", fit_report)
+        generated = report.get("generated_files")
+        if isinstance(generated, list):
+            generated.extend([
+                "analysis-config.requested.json",
+                "analysis-config.resource-fit.json",
+                "campaign-resource-plan.requested.json",
+                "resource-fit-report.json",
+            ])
+        report["resource_fit"] = fit_report
+        return report
 
 
 def prepare_standard_analysis_memory_fit(

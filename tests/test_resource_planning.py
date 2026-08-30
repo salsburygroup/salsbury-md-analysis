@@ -12,6 +12,7 @@ from salsbury_md_analysis.resource_planning import (
     recommend_frame_budget,
     recommend_scientifically_valid_task_subset,
     recommend_quadratic_observation_budget,
+    pack_resource_lanes,
     pack_resource_waves,
     workflow_useful_parallel_cpu_ceiling,
 )
@@ -394,9 +395,9 @@ class ResourcePlanningTests(unittest.TestCase):
         )
         rows = {row["task_id"]: row for row in plan["tasks"]}
         self.assertEqual(
-            rows["projection"]["selected_physical_frames_per_replica"], [334]
+            rows["projection"]["selected_physical_frames_per_replica"], [333]
         )
-        self.assertEqual(rows["fit"]["source_frames_per_replica"], [334])
+        self.assertEqual(rows["fit"]["source_frames_per_replica"], [333])
         coupling = plan["projection_clustering_coupling"]
         self.assertEqual(coupling["dynamic_cycle_resolution_count"], 1)
         self.assertEqual(coupling["iterations"], 4)
@@ -849,7 +850,7 @@ class ResourcePlanningTests(unittest.TestCase):
             memory["oversized_tasks"][0]["task_id"], "view:global:large"
         )
 
-    def test_buffered_memory_controls_feasibility_and_resource_waves(self):
+    def test_buffered_memory_controls_feasibility_and_resource_lanes(self):
         tasks = []
         for task_id in ("first", "second"):
             tasks.append({
@@ -873,10 +874,15 @@ class ResourcePlanningTests(unittest.TestCase):
             minimum_scheduler_memory_gib=2.0,
         )
         self.assertEqual(plan["feasibility_status"], "feasible")
-        waves = plan["stages"][0]["resource_waves"]
-        self.assertEqual(len(waves), 2)
-        self.assertTrue(all(wave["memory_gib"] == 91.0 for wave in waves))
-        self.assertTrue(all(wave["cpu_slots"] == 1 for wave in waves))
+        lanes = plan["stages"][0]["resource_lanes"]
+        self.assertEqual(len(lanes), 1)
+        self.assertEqual(lanes[0]["memory_gib"], 91.0)
+        self.assertEqual(lanes[0]["cpu_slots"], 1)
+        self.assertEqual(len(lanes[0]["items"]), 2)
+        self.assertEqual(
+            plan["stages"][0]["estimated_wall_hours_with_resource_lanes"],
+            200.0 / 3600.0,
+        )
 
     def test_deac_memory_margin_can_make_raw_working_set_infeasible(self):
         plan = plan_campaign_resource_budget(
@@ -919,6 +925,165 @@ class ResourcePlanningTests(unittest.TestCase):
                 maximum_parallel_cpus=2,
                 maximum_parallel_memory_gib=100,
             )
+
+    def test_resource_lane_packer_serializes_only_the_oversized_pair(self):
+        lanes = pack_resource_lanes(
+            [
+                {"item_id": "large", "cpu_slots": 1, "memory_gib": 100,
+                 "wall_hours": 1},
+                {"item_id": "medium", "cpu_slots": 1, "memory_gib": 90,
+                 "wall_hours": 1},
+                {"item_id": "small", "cpu_slots": 1, "memory_gib": 80,
+                 "wall_hours": 1},
+            ],
+            maximum_parallel_cpus=3,
+            maximum_parallel_memory_gib=185,
+        )
+        self.assertEqual(len(lanes), 2)
+        self.assertEqual(sum(lane["memory_gib"] for lane in lanes), 180)
+        self.assertEqual(max(lane["wall_hours"] for lane in lanes), 2)
+        self.assertEqual(
+            sorted(len(lane["items"]) for lane in lanes), [1, 2]
+        )
+
+    def test_resource_lane_packer_bins_padded_lanes_on_physical_nodes(self):
+        lanes = pack_resource_lanes(
+            [
+                {"item_id": "large", "cpu_slots": 1, "memory_gib": 100,
+                 "wall_hours": 1},
+                {"item_id": "medium", "cpu_slots": 1, "memory_gib": 90,
+                 "wall_hours": 1},
+                {"item_id": "small", "cpu_slots": 1, "memory_gib": 80,
+                 "wall_hours": 1},
+            ],
+            maximum_parallel_cpus=6,
+            maximum_parallel_memory_gib=370,
+            maximum_cpus_per_node=3,
+            maximum_memory_gib_per_node=185,
+            maximum_nodes=2,
+        )
+        reservations = {}
+        for lane in lanes:
+            node = lane["planned_node_index"]
+            reserved = reservations.setdefault(node, {"cpus": 0, "memory": 0})
+            reserved["cpus"] += lane["cpu_slots"]
+            reserved["memory"] += lane["memory_gib"]
+        self.assertEqual(len(reservations), 2)
+        self.assertTrue(all(row["cpus"] <= 3 for row in reservations.values()))
+        self.assertTrue(all(row["memory"] <= 185 for row in reservations.values()))
+
+    def test_node_aware_packer_rejects_one_padded_request_over_node_memory(self):
+        with self.assertRaisesRegex(ResourcePlanningError, "per-node limit 185"):
+            pack_resource_lanes(
+                [{
+                    "item_id": "cannot-fit-one-node",
+                    "cpu_slots": 1,
+                    "memory_gib": 186,
+                    "wall_hours": 1,
+                }],
+                maximum_parallel_cpus=88,
+                maximum_parallel_memory_gib=370,
+                maximum_cpus_per_node=44,
+                maximum_memory_gib_per_node=185,
+                maximum_nodes=2,
+            )
+
+    def test_planner_applies_padding_before_per_node_memory_gate(self):
+        plan = plan_campaign_resource_budget(
+            [{
+                "task_id": "structural-qc",
+                "module_id": "structural_integrity_qc",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 88,
+                "source_frames_per_replica": [100],
+                "minimum_frames_per_replica": 10,
+                "maximum_frames_per_replica": 100,
+                "cpu_seconds_per_physical_frame": 0.01,
+                "estimated_peak_memory_gib": 123.0,
+            }],
+            maximum_parallel_cpus=88,
+            maximum_wall_hours=1.0,
+            maximum_memory_gib=370.0,
+            memory_safety_factor=1.5,
+            memory_overhead_gib=1.0,
+            maximum_cpus_per_node=44,
+            maximum_memory_gib_per_node=185.0,
+            maximum_nodes=2,
+        )
+        self.assertEqual(plan["feasibility_status"], "infeasible")
+        self.assertEqual(plan["tasks"][0]["effective_cpu_cap"], 44)
+        self.assertEqual(
+            plan["memory_feasibility"]["single_task_memory_limit_gib"], 185.0
+        )
+        self.assertEqual(
+            plan["memory_feasibility"]["minimum_required_memory_gib"], 186.0
+        )
+        self.assertEqual(
+            plan["node_resource_policy"]["maximum_nodes"], 2
+        )
+
+    def test_replica_workers_are_sharded_by_padded_per_node_memory(self):
+        plan = plan_campaign_resource_budget(
+            [{
+                "task_id": "replica-qc",
+                "module_id": "structural_integrity_qc",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 63,
+                "parallel_execution_model": (
+                    "replica_worker_exact_global_reducer_v1"
+                ),
+                "parallel_worker_count": 63,
+                "estimated_peak_memory_gib_per_parallel_worker": 3.0,
+                "reducer_memory_gib": 3.0,
+                "source_frames_per_replica": [100] * 63,
+                "minimum_frames_per_replica": 10,
+                "maximum_frames_per_replica": 100,
+                "cpu_seconds_per_physical_frame": 0.01,
+                "estimated_peak_memory_gib": 189.0,
+            }],
+            maximum_parallel_cpus=88,
+            maximum_wall_hours=1.0,
+            maximum_memory_gib=370.0,
+            memory_safety_factor=1.5,
+            memory_overhead_gib=1.0,
+            maximum_cpus_per_node=44,
+            maximum_memory_gib_per_node=185.0,
+            maximum_nodes=2,
+        )
+        row = plan["tasks"][0]
+        self.assertEqual(row["effective_cpu_cap"], 63)
+        self.assertEqual(
+            row["active_parallel_workers_at_selected_observations"], 63
+        )
+        self.assertEqual(
+            row["estimated_peak_memory_gib_at_selected_observations"], 189.0
+        )
+        self.assertEqual(
+            row["estimated_scheduler_memory_gib_at_selected_observations"],
+            362.0,
+        )
+        self.assertEqual(
+            row["estimated_scheduler_memory_gib_per_node_at_selected_observations"],
+            181.0,
+        )
+        self.assertEqual(
+            row["parallel_node_layout_at_selected_observations"]["node_count"],
+            2,
+        )
+        self.assertEqual(
+            row["parallel_node_layout_at_selected_observations"]["workers_per_node"],
+            40,
+        )
+        lane = plan["stages"][0]["resource_lanes"][0]
+        self.assertEqual(lane["planned_node_indices"], [0, 1])
+        fragments = lane["planned_node_fragment_reservations"]
+        self.assertEqual(
+            sorted(fragment["cpu_slots"] for fragment in fragments), [23, 40]
+        )
+        self.assertTrue(all(
+            fragment["memory_gib"] <= 185.0 for fragment in fragments
+        ))
+        self.assertEqual(plan["feasibility_status"], "feasible")
 
     def test_measured_memory_scales_from_observation_coverage(self):
         plan = plan_campaign_resource_budget(
@@ -1114,8 +1279,8 @@ class ResourcePlanningTests(unittest.TestCase):
                 "priority_weight": 100.0,
             },
             {
-                "task_id": "dccm",
-                "module_id": "dccm",
+                "task_id": "sasa",
+                "module_id": "solvent_accessible_surface_area",
                 "dependency_stage": 0,
                 "effective_cpu_cap": 1,
                 "source_frames_per_replica": [100],
@@ -1134,12 +1299,171 @@ class ResourcePlanningTests(unittest.TestCase):
             planning_utilization=1.0,
             pilot_budget_fraction=0.0,
         )
-        self.assertEqual(report["recommendation_status"], "feasible_subset_found")
+        self.assertEqual(
+            report["recommendation_status"], "feasible_subset_found",
+            msg=report,
+        )
         self.assertEqual(
             report["disabled_configuration_switches"],
-            ["modules.dccm.enabled"],
+            ["modules.solvent_accessible_surface_area.enabled"],
         )
         self.assertFalse(report["automatic_changes_applied"])
+
+    def test_comparative_config_can_protect_integrated_comparison_in_replanning(self):
+        report = recommend_scientifically_valid_task_subset(
+            [{
+                "task_id": "integrated-comparison",
+                "module_id": "integrated_comparison",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [100],
+                "minimum_frames_per_replica": 100,
+                "maximum_frames_per_replica": 100,
+                "cpu_seconds_per_physical_frame": 100.0,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 1.0,
+            }],
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=0.1,
+            maximum_memory_gib=8.0,
+            planning_utilization=1.0,
+            pilot_budget_fraction=0.0,
+            protected_module_ids=("integrated_comparison",),
+        )
+        self.assertEqual(
+            report["recommendation_status"], "no_feasible_subset_found"
+        )
+        self.assertEqual(report["disabled_configuration_switches"], [])
+        self.assertIn("integrated-comparison", report["retained_task_ids"])
+
+    def test_global_stride_subset_disables_optional_scientific_failure(self):
+        tasks = [
+            {
+                "task_id": "cache",
+                "workflow_id": "cache",
+                "module_id": "coordinate_cache",
+                "task_scope": "lossless_coordinate_preprocessing",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [1_000, 1_000],
+                "minimum_frames_per_replica": 1,
+                "maximum_frames_per_replica": 1_000,
+                "cpu_seconds_per_physical_frame": 0.001,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 100.0,
+            },
+            {
+                "task_id": "rmsd",
+                "workflow_id": "rmsd",
+                "module_id": "replica_rmsd_rg",
+                "task_scope": "direct_trajectory_estimator",
+                "dependency_stage": 1,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [1_000, 1_000],
+                "minimum_frames_per_replica": 100,
+                "maximum_frames_per_replica": 1_000,
+                "cpu_seconds_per_physical_frame": 0.001,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 100.0,
+            },
+            {
+                "task_id": "hbond",
+                "workflow_id": "hbond",
+                "module_id": "hydrogen_bond_discovery",
+                "task_scope": "direct_trajectory_estimator",
+                "dependency_stage": 1,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [1_000, 1_000],
+                "system_ids_per_replica": ["a", "a"],
+                "minimum_frames_per_replica": 334,
+                "maximum_frames_per_replica": 1_000,
+                "scientific_sampling_requirements": profile_contract(
+                    scientific_sampling_profile("hydrogen_bond_discovery")
+                ),
+                "cpu_seconds_per_physical_frame": 10.0,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 1.0,
+            },
+        ]
+        report = recommend_scientifically_valid_task_subset(
+            tasks,
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=0.1,
+            maximum_memory_gib=8.0,
+            planning_utilization=1.0,
+            pilot_budget_fraction=0.0,
+            protected_module_ids=("coordinate_cache", "replica_rmsd_rg"),
+            use_global_stride_coupling=True,
+            coordinate_cache_minimum_frames_per_replica=1,
+            coordinate_cache_full_scan_fraction=0.0,
+            overall_stride_candidate_strides=[1, 2, 5, 10],
+        )
+        self.assertEqual(
+            report["recommendation_status"], "feasible_subset_found",
+            msg=report,
+        )
+        self.assertEqual(
+            report["disabled_configuration_switches"],
+            ["modules.hydrogen_bond_discovery.enabled"],
+        )
+        coupling = report["recommended_plan"]["global_stride_coupling"]
+        self.assertIn(
+            coupling["selected_overall_trajectory_integer_stride"],
+            (1, 2, 5, 10),
+        )
+
+    def test_global_stride_checks_declared_floor_beyond_embedded_profile(self):
+        tasks = [
+            {
+                "task_id": "cache",
+                "workflow_id": "cache",
+                "module_id": "coordinate_cache",
+                "task_scope": "lossless_coordinate_preprocessing",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [2_000] * 4,
+                "minimum_frames_per_replica": 1,
+                "maximum_frames_per_replica": 2_000,
+                "cpu_seconds_per_physical_frame": 0.001,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 100.0,
+            },
+            {
+                "task_id": "grouped",
+                "workflow_id": "grouped",
+                "module_id": "grouped_ml",
+                "task_scope": "conformational_view",
+                "dependency_stage": 1,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [2_000] * 4,
+                "system_ids_per_replica": ["system"] * 4,
+                "minimum_frames_per_replica": 1_001,
+                "maximum_frames_per_replica": 2_000,
+                "scientific_sampling_requirements": profile_contract(
+                    scientific_sampling_profile("grouped_ml")
+                ),
+                "cpu_seconds_per_physical_frame": 0.001,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 1.0,
+            },
+        ]
+        report = plan_global_stride_projection_coupled_campaign_resource_budget(
+            tasks,
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=10.0,
+            maximum_memory_gib=8.0,
+            planning_utilization=1.0,
+            pilot_budget_fraction=0.0,
+            protected_module_ids=("coordinate_cache",),
+            coordinate_cache_full_scan_fraction=0.0,
+            overall_stride_candidate_strides=[5],
+        )
+        self.assertEqual(report["feasibility_status"], "infeasible")
+        failures = report["optional_scientific_minimum_failures"]
+        self.assertEqual([row["task_id"] for row in failures], ["grouped"])
+        self.assertEqual(
+            failures[0]["reason"], "declared_minimum_frames_per_replica"
+        )
 
     def test_method_subset_never_removes_protected_structural_qc(self):
         tasks = [
@@ -1184,9 +1508,7 @@ class ResourcePlanningTests(unittest.TestCase):
         self.assertTrue(report["protected_set_preserved"])
         self.assertEqual(report["disabled_configuration_switches"], [])
         self.assertEqual(report["configuration_patch"], {})
-        self.assertIn(
-            "modules.dccm.enabled", report["attempted_configuration_switches"]
-        )
+        self.assertEqual(report["attempted_configuration_switches"], [])
         minimum_request = report[
             "best_protected_subset_minimum_resource_request"
         ]
@@ -1195,7 +1517,7 @@ class ResourcePlanningTests(unittest.TestCase):
             "best_dependency_closed_subset_that_preserves_all_protected_modules",
         )
         self.assertEqual(
-            minimum_request["recommended_request"]["wall_hours"], 10
+            minimum_request["recommended_request"]["wall_hours"], 11
         )
         self.assertEqual(
             minimum_request["warning"]["code"],

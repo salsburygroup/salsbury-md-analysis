@@ -39,7 +39,8 @@ class FrameSamplingTests(unittest.TestCase):
         self.assertEqual(integer_stride_for_budget([24_700] * 6, 15_360), 2)
         self.assertEqual(integer_stride_selected_count(24_700, 2), 12_350)
         self.assertEqual(integer_stride_for_budget([10], 4), 3)
-        self.assertEqual(integer_stride_indices(10, 3), {0, 3, 6, 9})
+        self.assertEqual(integer_stride_indices(10, 3), {0, 3, 6})
+        self.assertEqual(integer_stride_selected_count(100_000, 401), 249)
 
     def test_integer_stride_selection_requires_stride_one_wrapper(self):
         with self.assertRaisesRegex(ValueError, "requires frame_stride = 1"):
@@ -74,11 +75,11 @@ class FrameSamplingTests(unittest.TestCase):
                 manifest, root / "system.json", "angstrom", selection,
                 frame_stride=1,
             )
-        self.assertEqual(plan[("s", "r1", "a")], {0, 3, 6, 9})
-        self.assertEqual(plan[("s", "r2", "a")], {0, 3, 6, 9})
+        self.assertEqual(plan[("s", "r1", "a")], {0, 3, 6})
+        self.assertEqual(plan[("s", "r2", "a")], {0, 3, 6})
         self.assertEqual(report["mode"], "auto_resource_budget_v1")
         self.assertEqual(report["resolved_mode"], "integer_stride_per_replica_v1")
-        self.assertEqual(report["selected_frame_count"], 8)
+        self.assertEqual(report["selected_frame_count"], 6)
         self.assertTrue(report["resource_estimate"]["subsampling_triggered"])
         self.assertEqual(
             report["replicas"][0]["selection_spacing"],
@@ -175,8 +176,8 @@ class FrameSamplingTests(unittest.TestCase):
                 frame_stride=1,
             )
         self.assertEqual(plan[("s", "r", "a")], {0, 3})
-        self.assertEqual(plan[("s", "r", "b")], {2})
-        self.assertEqual(report["selected_frame_count"], 3)
+        self.assertEqual(plan[("s", "r", "b")], set())
+        self.assertEqual(report["selected_frame_count"], 2)
         self.assertEqual(report["resolved_integer_stride"], 3)
 
     def test_fixed_stride_restarts_at_each_segment(self):
@@ -194,9 +195,9 @@ class FrameSamplingTests(unittest.TestCase):
                 manifest, root / "system.json", "angstrom",
                 {"mode": "fixed_stride_v1"}, frame_stride=2,
             )
-        self.assertEqual(plan[("s", "r", "a")], {0, 2})
+        self.assertEqual(plan[("s", "r", "a")], {0})
         self.assertEqual(plan[("s", "r", "b")], {0, 2})
-        self.assertEqual(report["selected_frame_count"], 4)
+        self.assertEqual(report["selected_frame_count"], 3)
 
 
 if __name__ == "__main__":

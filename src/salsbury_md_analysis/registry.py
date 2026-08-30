@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
+from .ensemble_parallelism import validate_registry_coverage
 from .reporting import DataclassRecordMixin
 
 
@@ -128,6 +129,7 @@ MODULES: Tuple[ModuleSpec, ...] = (
 _BY_ID = {module.module_id: module for module in MODULES}
 if len(_BY_ID) != len(MODULES):
     raise RuntimeError("Duplicate module IDs in registry")
+validate_registry_coverage(set(_BY_ID))
 
 
 def list_modules() -> List[ModuleSpec]:

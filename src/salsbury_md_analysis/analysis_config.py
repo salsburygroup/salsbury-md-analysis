@@ -106,8 +106,20 @@ DEPENDENCIES = {
 }
 
 PROTECTED_MODULES = {
-    "provenance_manifest", "preflight_inventory", "common_atom_mapping",
+    # Reproducibility and input-validity gates.
+    "provenance_manifest",
+    "preflight_inventory",
+    "common_atom_mapping",
     "structural_integrity_qc",
+    # Minimum scientifically interpretable analysis.  These modules may not be
+    # silently removed by reduced-resource planning.
+    "replica_rmsd_rg",
+    "pooled_rmsf",
+    "individual_pca",
+    "common_pca",
+    "dccm",
+    "pca_fes_basins",
+    "representative_frames",
 }
 
 MODULE_GROUPS = {
@@ -116,7 +128,10 @@ MODULE_GROUPS = {
             "Required provenance, input validation, atom identity, and structural "
             "integrity QC."
         ),
-        "modules": PROTECTED_MODULES,
+        "modules": {
+            "provenance_manifest", "preflight_inventory",
+            "common_atom_mapping", "structural_integrity_qc",
+        },
     },
     "02_quality_and_motion": {
         "description": "Replica motion, fluctuations, and uncertainty.",
@@ -1072,22 +1087,22 @@ def enabled_modules(config: Mapping[str, object]) -> set[str]:
     return enabled
 
 
-def make_memory_fit_config(
-    config: Mapping[str, object], module_ids: Sequence[str]
+def make_resource_fit_config(
+    config: Mapping[str, object], configuration_switches: Sequence[str]
 ) -> tuple[Dict[str, object], list[str], list[str]]:
-    """Return an explicit reduced config for a user-approved memory fallback.
+    """Return an explicit dependency-closed reduced resource configuration.
 
-    The caller supplies modules whose technical minima exceed the requested
-    per-campaign memory cap.  Dependency pruning is then materialized into the
-    config so a user can see every resulting on/off decision; the original
-    config is never mutated.
+    The caller supplies configuration switches selected by a resource planner.
+    Dependency pruning is materialized into the config so the user can inspect
+    every resulting on/off decision. Protected modules cannot be disabled and
+    the original configuration is never mutated.
     """
 
     output = deepcopy(dict(config))
     modules = output.get("modules")
     if not isinstance(modules, dict):
         raise AnalysisConfigError("analysis config has no module mapping")
-    requested = sorted(set(str(value) for value in module_ids))
+    requested = sorted(set(str(value) for value in configuration_switches))
     direct = []
     for module_id in requested:
         if module_id in {"coordinate_cache", "execution.coordinate_cache"}:
@@ -1107,7 +1122,7 @@ def make_memory_fit_config(
             row = methods.get(method) if isinstance(methods, dict) else None
             if not isinstance(row, dict):
                 raise AnalysisConfigError(
-                    f"memory fallback clustering switch is invalid: {module_id}"
+                    f"resource-fit clustering switch is invalid: {module_id}"
                 )
             row["enabled"] = False
             direct.append(module_id)
@@ -1116,7 +1131,7 @@ def make_memory_fit_config(
             pald = community.get("pald") if isinstance(community, dict) else None
             if not isinstance(pald, dict):
                 raise AnalysisConfigError(
-                    "memory fallback PaLD configuration is invalid"
+                    "resource-fit PaLD configuration is invalid"
                 )
             pald["enabled"] = False
             pald["community_msm_enabled"] = False
@@ -1131,7 +1146,7 @@ def make_memory_fit_config(
             row = modules.get(resolved_module_id)
             if not isinstance(row, dict):
                 raise AnalysisConfigError(
-                    f"memory fallback module switch is invalid: {module_id}"
+                    f"resource-fit module switch is invalid: {module_id}"
                 )
             row["enabled"] = False
             direct.append(module_id)
@@ -1187,6 +1202,14 @@ def make_memory_fit_config(
         )
     )
     return output, sorted(direct), transitive
+
+
+def make_memory_fit_config(
+    config: Mapping[str, object], module_ids: Sequence[str]
+) -> tuple[Dict[str, object], list[str], list[str]]:
+    """Compatibility wrapper for the memory-specific opt-in fallback."""
+
+    return make_resource_fit_config(config, module_ids)
 
 
 def apply_module_configuration(

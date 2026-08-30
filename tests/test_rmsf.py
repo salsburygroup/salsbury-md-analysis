@@ -161,11 +161,11 @@ class RMSFTests(unittest.TestCase):
                 )
             )
         first_replica = report["systems"][0]["replicas"][0]
-        self.assertEqual(first_replica["segments"][0]["decoded_frame_count"], 2)
+        self.assertEqual(first_replica["segments"][0]["decoded_frame_count"], 1)
         block = first_replica["segments"][0]["time_blocks"][0]
-        self.assertEqual(first_replica["evaluated_frame_count"], 2)
-        self.assertEqual((block["start_frame_index"], block["end_frame_index"]), (0, 2))
-        self.assertEqual((block["start_time"], block["end_time"]), (5.0, 9.0))
+        self.assertEqual(first_replica["evaluated_frame_count"], 1)
+        self.assertEqual((block["start_frame_index"], block["end_frame_index"]), (0, 0))
+        self.assertEqual((block["start_time"], block["end_time"]), (5.0, 5.0))
         self.assertIn("FRAME_SUBSAMPLING", {issue["code"] for issue in report["issues"]})
 
     def test_missing_configuration_fails_machine_readably(self):

@@ -200,6 +200,15 @@ class CampaignPlanningTests(unittest.TestCase):
             row for row in tasks
             if row["module_id"] == "interaction_persistence"
         )
+        fingerprint = next(
+            row for row in tasks
+            if row["module_id"] == "interaction_fingerprints"
+        )
+        self.assertEqual(fingerprint["estimated_peak_memory_gib"], 16.0)
+        self.assertEqual(
+            fingerprint["memory_cost_basis"],
+            "fixed_upstream_artifact_materialization_floor",
+        )
         self.assertEqual(task["upstream_module_id"], "interaction_fingerprints")
         self.assertEqual(task["gap_tolerance_observations"], [0, 1])
         self.assertEqual(task["primary_gap_tolerance_observations"], 0)
@@ -326,6 +335,16 @@ class CampaignPlanningTests(unittest.TestCase):
             tasks[0]["power_law_cost_model"]["calibration_memory_gib"], 1.0
         )
         self.assertEqual(tasks[0]["reference_peak_memory_gib"], 24.0)
+
+    def test_artifact_materialization_memory_floor_is_not_atom_scaled_away(self):
+        tasks = [{
+            "task_id": "small:derived-join",
+            "estimated_peak_memory_gib": 16.0,
+            "minimum_materialized_working_set_gib": 16.0,
+        }]
+        _apply_system_memory_scaling(tasks, 423)
+        self.assertEqual(tasks[0]["memory_atom_scale"], 0.1)
+        self.assertEqual(tasks[0]["estimated_peak_memory_gib"], 16.0)
 
     def test_measured_overlay_preserves_declared_workload_scaling(self):
         calibration = {

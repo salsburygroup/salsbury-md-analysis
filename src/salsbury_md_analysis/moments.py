@@ -81,6 +81,42 @@ class CoordinateMoments:
     def rmsf_values(self) -> Tuple[float, ...]:
         return tuple(self.rmsf(index) for index in range(self.atom_count))
 
+    def to_state(self) -> Dict[str, object]:
+        """Return the exact mergeable sufficient state for one worker shard."""
+
+        return {
+            "state_schema": "coordinate-moments-v1",
+            "atom_count": self.atom_count,
+            "count": self.count,
+            "mean": [values[:] for values in self._mean],
+            "m2": [values[:] for values in self._m2],
+        }
+
+    @classmethod
+    def from_state(cls, state: Dict[str, object]) -> "CoordinateMoments":
+        """Restore a worker state after validating its complete shape."""
+
+        if state.get("state_schema") != "coordinate-moments-v1":
+            raise MomentError("coordinate moment state schema is unsupported")
+        atom_count = state.get("atom_count")
+        count = state.get("count")
+        mean = state.get("mean")
+        m2 = state.get("m2")
+        if (
+            isinstance(atom_count, bool) or not isinstance(atom_count, int)
+            or isinstance(count, bool) or not isinstance(count, int) or count < 0
+            or not isinstance(mean, list) or not isinstance(m2, list)
+            or len(mean) != atom_count or len(m2) != atom_count
+        ):
+            raise MomentError("coordinate moment state is malformed")
+        restored = cls(atom_count)
+        restored.count = count
+        restored._mean = _validated_vector_state(mean, atom_count, "mean")
+        restored._m2 = _validated_vector_state(m2, atom_count, "m2")
+        if count == 0 and any(value != 0.0 for row in restored._m2 for value in row):
+            raise MomentError("empty coordinate moment state has nonzero m2")
+        return restored
+
 
 class DisplacementCovariance:
     """Streaming scalar dot-product covariance between atomic displacement vectors."""
@@ -154,6 +190,62 @@ class DisplacementCovariance:
                 row.append(float(matrix[left, right]))
             rows.append(tuple(row))
         return tuple(rows)
+
+    def to_state(self) -> Dict[str, object]:
+        """Return the exact mergeable covariance state for one worker shard."""
+
+        return {
+            "state_schema": "displacement-covariance-v1",
+            "atom_count": self.atom_count,
+            "count": self.count,
+            "mean": self._mean.tolist(),
+            "co_m2": self._co_m2.tolist(),
+        }
+
+    @classmethod
+    def from_state(cls, state: Dict[str, object]) -> "DisplacementCovariance":
+        """Restore a covariance worker state with exact dimensional checks."""
+
+        if state.get("state_schema") != "displacement-covariance-v1":
+            raise MomentError("displacement covariance state schema is unsupported")
+        atom_count = state.get("atom_count")
+        count = state.get("count")
+        if (
+            isinstance(atom_count, bool) or not isinstance(atom_count, int)
+            or isinstance(count, bool) or not isinstance(count, int) or count < 0
+        ):
+            raise MomentError("displacement covariance state is malformed")
+        mean = np.asarray(state.get("mean"), dtype=float)
+        co_m2 = np.asarray(state.get("co_m2"), dtype=float)
+        if mean.shape != (atom_count, 3) or co_m2.shape != (atom_count, atom_count):
+            raise MomentError("displacement covariance state has invalid dimensions")
+        if not np.isfinite(mean).all() or not np.isfinite(co_m2).all():
+            raise MomentError("displacement covariance state contains non-finite values")
+        if not np.allclose(co_m2, co_m2.T, rtol=0.0, atol=1.0e-10):
+            raise MomentError("displacement covariance state is not symmetric")
+        restored = cls(atom_count)
+        restored.count = count
+        restored._mean = mean.copy()
+        restored._co_m2 = co_m2.copy()
+        return restored
+
+
+def _validated_vector_state(
+    rows: object, atom_count: int, label: str
+) -> List[List[float]]:
+    if not isinstance(rows, list) or len(rows) != atom_count:
+        raise MomentError(f"coordinate moment {label} state is malformed")
+    result: List[List[float]] = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) != 3:
+            raise MomentError(f"coordinate moment {label} state is malformed")
+        values = [float(value) for value in row]
+        if not all(math.isfinite(value) for value in values):
+            raise MomentError(
+                f"coordinate moment {label} state contains non-finite values"
+            )
+        result.append(values)
+    return result
 
 
 def sample_summary(values: Iterable[float]) -> Dict[str, object]:

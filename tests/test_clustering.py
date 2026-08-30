@@ -50,6 +50,62 @@ class ClusteringTests(unittest.TestCase):
             self.assertFalse(first["initialization"]["random_seed_used"])
             self.assertEqual(len(first["initialization"]["initial_center_indices"]), 2)
 
+    def test_pooled_clustering_assigns_one_model_across_replicas(self):
+        replica_points = {
+            "r1": [(-2.0, -2.0), (-1.9, -2.1), (2.0, 2.0)],
+            "r2": [(-2.1, -1.9), (1.9, 2.1), (2.1, 1.9)],
+        }
+        fake_pca = {
+            "project_manifest_sha256": "a" * 64,
+            "system_manifest_path": "/tmp/system.json",
+            "system_manifest_sha256": "b" * 64,
+            "input_content_signature_sha256": "c" * 64,
+            "issues": [],
+            "systems": [{
+                "system_id": "pooled",
+                "replicas": [
+                    {
+                        "replica_id": replica_id,
+                        "segments": [{
+                            "segment_id": "samples",
+                            "projections": [
+                                {
+                                    "source_frame_index": index,
+                                    "sample_index": index,
+                                    "scores_angstrom": [x, y],
+                                }
+                                for index, (x, y) in enumerate(points)
+                            ],
+                        }],
+                    }
+                    for replica_id, points in replica_points.items()
+                ],
+            }],
+        }
+        project = {"definitions": {"clustering_kmeans": {
+            "feature_source": "common_pca", "component_indices": [1, 2],
+            "standardize_features": True, "k_values": [2],
+            "random_seeds": [3, 7], "maximum_iterations": 100,
+            "center_tolerance": 1.0e-10, "minimum_cluster_size": 2,
+            "maximum_silhouette_observations": 100,
+        }}}
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "project.json"
+            path.write_text(json.dumps(project), encoding="utf-8")
+            with patch(
+                "salsbury_md_analysis.feature_matrix.common_pca_project",
+                return_value=fake_pca,
+            ):
+                report = clustering_kmeans_project(path)
+        members_by_cluster = {}
+        for row in report["assignments"]:
+            members_by_cluster.setdefault(row["cluster_id"], set()).add(
+                row["replica_id"]
+            )
+        self.assertEqual(len(report["assignments"]), 6)
+        self.assertEqual(set(members_by_cluster), {1, 2})
+        self.assertTrue(all(value == {"r1", "r2"} for value in members_by_cluster.values()))
+
     def test_hdbscan_dependency_absence_fails_closed(self):
         project = {"definitions": {"clustering_hdbscan": {
             "feature_source": "common_pca", "component_indices": [1, 2],

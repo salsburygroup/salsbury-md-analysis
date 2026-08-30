@@ -31,6 +31,13 @@ from .manifests import ManifestValidationError, load_json, resolve_manifest_path
 from .periodic import (
     PeriodicFrameProcessor, PeriodicReconstructionError, load_connectivity,
 )
+from .replica_execution import ReplicaPartial
+from .replica_module_execution import (
+    execute_replica_final_module,
+    merge_frame_selection_reports,
+    restore_source_provenance,
+    unique_issues,
+)
 from .trajectory_contracts import (
     TrajectoryContractError, frame_axis_value, normalize_segment_axis,
 )
@@ -527,8 +534,12 @@ def _automatic_sparse_atom_dictionary(
     return [used[index] for index in sorted(used)]
 
 
-def hydrogen_bond_discovery_project(
-    project_path: Path, hash_content: bool = False
+def _hydrogen_bond_discovery_project_serial(
+    project_path: Path,
+    hash_content: bool = False,
+    *,
+    harmonized_candidate_keys_override: set[Tuple[int, int, int]] | None = None,
+    candidate_harmonization_report_override: Mapping[str, object] | None = None,
 ) -> Dict[str, object]:
     source = Path(project_path).expanduser().resolve(strict=False)
     project = load_json(source)
@@ -550,7 +561,12 @@ def hydrogen_bond_discovery_project(
         "policy": str(settings["candidate_harmonization"]),
         "selection_basis": "exact candidate dictionary equality across replicas",
     }
-    if (
+    if harmonized_candidate_keys_override is not None:
+        harmonized_candidate_keys = set(harmonized_candidate_keys_override)
+        candidate_harmonization_report = dict(
+            candidate_harmonization_report_override or candidate_harmonization_report
+        )
+    elif (
         settings["mode"] == "automatic"
         and settings["candidate_harmonization"] == "intersection_by_atom_index_v1"
     ):
@@ -1074,6 +1090,130 @@ def hydrogen_bond_discovery_project(
             "Hydrogen-bond occupancy does not establish energetic or mechanistic importance.",
         ],
     }
+
+
+def _reduce_hbond_discovery_reports(
+    partials: Sequence[ReplicaPartial[Dict[str, object]]],
+    source_context: Dict[str, object],
+) -> Dict[str, object]:
+    reports = [partial.value for partial in partials]
+    first = dict(reports[0])
+    for report in reports[1:]:
+        for key in (
+            "module_id", "settings", "geometry_contract", "cutoff_definitions",
+            "candidate_harmonization", "frame_matrix_representation",
+            "candidate_dictionary", "candidate_count",
+        ):
+            if report.get(key) != first.get(key):
+                raise HydrogenBondDiscoveryError(
+                    f"replica hydrogen-bond reports disagree on {key}"
+                )
+    first["frame_selection"] = merge_frame_selection_reports([
+        report["frame_selection"] for report in reports
+        if isinstance(report.get("frame_selection"), dict)
+    ])
+    for key in (
+        "chemistry_reports", "frame_bond_matrix", "occupancies",
+        "packed_cutoff_occupancy_segments",
+    ):
+        if first.get(key) is not None:
+            first[key] = [
+                row for report in reports for row in (report.get(key) or [])
+            ]
+    if first.get("cutoff_occupancies") is not None:
+        first["cutoff_occupancies"] = [
+            row for report in reports
+            for row in (report.get("cutoff_occupancies") or [])
+        ]
+    evaluated = sum(int(report.get("evaluated_frame_count", 0)) for report in reports)
+    feature_count = int(first["candidate_count"]) * evaluated
+    if feature_count > int(first["settings"]["maximum_feature_observations"]):  # type: ignore[index]
+        raise HydrogenBondDiscoveryError(
+            "parallel hydrogen-bond feature count exceeds maximum_feature_observations"
+        )
+    first["planned_feature_observation_count"] = feature_count
+    first["evaluated_frame_count"] = evaluated
+    first["feature_observation_count"] = feature_count
+    frame_selection = first["frame_selection"]
+    first["observation_accounting"] = {
+        "source_physical_frame_count": int(frame_selection["source_frame_count"]),
+        "selected_physical_frame_count": evaluated,
+        "symmetry_expanded_observation_count": evaluated,
+        "candidate_frame_feature_observation_count": feature_count,
+        "subsampling_triggered": evaluated < int(frame_selection["source_frame_count"]),
+    }
+    issues = [
+        issue for issue in unique_issues(reports)
+        if issue.get("code") not in {
+            "FRAME_SUBSAMPLING", "HBOND_CANDIDATE_DICTIONARY_HARMONIZED",
+        }
+    ]
+    harmonization = first["candidate_harmonization"]
+    excluded = int(harmonization.get("excluded_from_common_union_count", 0))
+    if harmonization.get("policy") == "intersection_by_atom_index_v1":
+        issues.append({
+            "severity": "warning" if excluded else "info",
+            "code": "HBOND_CANDIDATE_DICTIONARY_HARMONIZED",
+            "location": source_context["project_manifest_path"],
+            "message": (
+                f"Retained {harmonization.get('common_candidate_count')} candidate "
+                f"triples before coordinate evaluation; {excluded} noncommon triples "
+                "remain outside the comparative matrix."
+            ),
+        })
+    if evaluated < int(frame_selection["source_frame_count"]):
+        issues.append({
+            "severity": "warning", "code": "FRAME_SUBSAMPLING",
+            "location": source_context["project_manifest_path"],
+            "message": (
+                f"Hydrogen-bond discovery evaluated {evaluated} of "
+                f"{frame_selection['source_frame_count']} source frames under "
+                f"{frame_selection['mode']}"
+            ),
+        })
+    first["issues"] = issues
+    first["error_count"] = sum(issue.get("severity") == "error" for issue in issues)
+    first["warning_count"] = sum(issue.get("severity") == "warning" for issue in issues)
+    restore_source_provenance(first, source_context)
+    return first
+
+
+def hydrogen_bond_discovery_project(
+    project_path: Path, hash_content: bool = False
+) -> Dict[str, object]:
+    """Discover chemistry globally, evaluate replicas in parallel, then reduce."""
+
+    source = Path(project_path).expanduser().resolve(strict=False)
+    project = load_json(source)
+    settings = _settings(project)
+    selection = settings.get("frame_selection")
+    if isinstance(selection, dict) and selection.get("mode") == "auto_resource_budget_v1":
+        return _hydrogen_bond_discovery_project_serial(
+            project_path, hash_content=hash_content
+        )
+    keys = None
+    harmonization = None
+    if (
+        settings["mode"] == "automatic"
+        and settings["candidate_harmonization"] == "intersection_by_atom_index_v1"
+    ):
+        context = compile_project_context_file(source, hash_content=hash_content)
+        system_path = Path(context["system_manifest_path"])
+        keys, harmonization = _automatic_candidate_intersection(
+            load_json(system_path), system_path, settings
+        )
+    return execute_replica_final_module(
+        project_path,
+        runner_id="hydrogen_bond_discovery",
+        hash_content=hash_content,
+        reducer=_reduce_hbond_discovery_reports,
+        worker_payload={
+            "harmonized_candidate_keys": (
+                [list(row) for row in sorted(keys)] if keys is not None else None
+            ),
+            "candidate_harmonization_report": harmonization,
+        },
+    )
 
 
 def hydrogen_bond_discovery_project_safe(
