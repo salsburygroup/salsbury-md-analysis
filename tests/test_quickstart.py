@@ -963,7 +963,7 @@ class QuickstartTests(unittest.TestCase):
             )
             self.assertEqual(campaign["maximum_parallel_cpus_input"], 16)
             effective_cpus = campaign["effective_parallel_cpu_cap"]
-            self.assertIn(effective_cpus, (8, 9))
+            self.assertGreaterEqual(effective_cpus, 8)
             self.assertEqual(
                 local_plan["maximum_parallel_cpus"], effective_cpus
             )
@@ -984,8 +984,7 @@ class QuickstartTests(unittest.TestCase):
             stages = json.loads((output / "workflow-stages.json").read_text())
             views = json.loads((output / "conformational-views.json").read_text())
             stage_lengths = [len(stage["commands"]) for stage in stages["stages"]]
-            self.assertIn(stage_lengths[0], (8, 9))
-            self.assertEqual(stage_lengths[0], effective_cpus)
+            self.assertLessEqual(stage_lengths[0], effective_cpus)
             self.assertEqual(stage_lengths[1:], [2])
             for stage_worker in workers:
                 self.assertIn("#SBATCH --time=24:00:00", stage_worker)

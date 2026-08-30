@@ -70,14 +70,24 @@ own declared protein, nucleic-acid, interface, or oligomer-member alignment.
 PCA feature atoms and exported coordinate payload atoms remain separate: a
 common-heavy PCA may export a representative containing the complete solute.
 
+Structural-integrity QC also consumes this validated cache. The planner assigns
+at most one worker to each original replica, and the worker examines only that
+replica. The parent process combines the shards into the ordinary structural-QC
+report with system, replica, frame-selection, cache-hash, and worker provenance.
+Its memory estimate is the sum of concurrently active replica workers; the
+Slurm or local adapter requests that aggregate amount once for the task. A
+missing, incomplete, non-stride-1, or source-mismatched cache fails closed.
+
 ## Methods that must retain the solvated source
 
 Water-mediated hydrogen bonds, water or solvent RDFs, hydration-shell
 observables, and any analysis whose declared atom groups include bulk water
 must read the original solvated trajectories. The cache is not permission to
 drop chemically required solvent. A campaign may therefore use the cache for
-solute conformational work while scheduling water-dependent methods from the
-immutable original inputs.
+solute conformational and structural-integrity work while scheduling
+water-dependent methods from the immutable original inputs. Structural QC of
+the molecular payload does not claim that bulk-solvent coordinates were
+checked.
 
 ## Acceptance boundary
 
