@@ -211,17 +211,37 @@ def _apply_measured_resource_calibrations(
                 float(current_rate), measured_rate
             )
         measured_memory = (
-            float(calibration["maximum_resident_memory_mib"])
+            float(calibration.get(
+                "maximum_completed_resident_memory_mib",
+                calibration["maximum_resident_memory_mib"],
+            ))
             * memory_safety_factor * float(memory_multiplier) / 1024.0
+        )
+        memory_replacement_qualified = bool(
+            calibration.get(
+                "memory_replacement_qualified",
+                int(calibration.get("complete_measurement_count", 0)) >= 2,
+            )
         )
         current_memory = task.get("estimated_peak_memory_gib")
         if isinstance(current_memory, (int, float)) and not isinstance(current_memory, bool):
-            task["estimated_peak_memory_gib"] = max(
-                float(current_memory), measured_memory, 1.0
+            task["estimated_peak_memory_gib"] = (
+                max(measured_memory, 1.0)
+                if memory_replacement_qualified else
+                max(float(current_memory), measured_memory, 1.0)
             )
             if (
-                "power_law_cost_model" not in task
-                and "measured_memory_cost_model" not in task
+                task.get("parallel_execution_model") is not None
+                and bool(calibration.get(
+                    "per_worker_memory_replacement_qualified", False
+                ))
+            ):
+                task["estimated_peak_memory_gib_per_parallel_worker"] = (
+                    task["estimated_peak_memory_gib"]
+                )
+            if (
+                "measured_memory_cost_model" not in task
+                and memory_replacement_qualified
                 and task.get(
                     "measured_memory_observation_scaling_eligible", True
                 ) is not False
@@ -232,12 +252,21 @@ def _apply_measured_resource_calibrations(
                         calibration["maximum_measured_observation_count"]
                     ),
                     "calibration_memory_gib": max(
-                        float(current_memory),
-                        float(calibration["maximum_resident_memory_mib"])
-                        * memory_safety_factor
-                        * float(memory_multiplier) / 1024.0,
+                        1.0,
+                        (
+                            measured_memory
+                            if memory_replacement_qualified else
+                            max(float(current_memory), measured_memory)
+                        ),
                     ),
-                    "memory_exponent": 0.5,
+                    "memory_exponent": (
+                        float(task["power_law_cost_model"].get(
+                            "memory_exponent", 0.5
+                        ))
+                        if isinstance(
+                            task.get("power_law_cost_model"), Mapping
+                        ) else 0.5
+                    ),
                     "minimum_observation_scale": 0.1,
                     "workload_scaling_applied": True,
                 }
@@ -263,6 +292,24 @@ def _apply_measured_resource_calibrations(
             "maximum_measured_resident_memory_mib": calibration[
                 "maximum_resident_memory_mib"
             ],
+            "maximum_completed_resident_memory_mib": calibration.get(
+                "maximum_completed_resident_memory_mib",
+                calibration["maximum_resident_memory_mib"],
+            ),
+            "memory_replacement_qualified": memory_replacement_qualified,
+            "memory_replacement_policy": calibration.get(
+                "memory_replacement_policy",
+                (
+                    "replace_legacy_baseline_with_conservative_completed_measurement"
+                    if memory_replacement_qualified else
+                    "retain_legacy_baseline_and_use_measurement_as_lower_bound"
+                ),
+            ),
+            "per_worker_memory_replacement_qualified": bool(
+                calibration.get(
+                    "per_worker_memory_replacement_qualified", False
+                )
+            ),
             "cpu_rate_workload_multiplier": float(rate_multiplier),
             "affine_fixed_cpu_hours_after_workload_scaling": (
                 measured_fixed_hours
