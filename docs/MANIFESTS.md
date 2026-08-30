@@ -82,8 +82,8 @@ PYTHONPATH=src python3 -m salsbury_md_analysis \
 
 The command validates that all topology, connectivity, trajectory, and weight paths exist and
 are regular files. It prints a deterministic JSON inventory with resolved paths,
-sizes, modification times, and—when `--hash-content` is used—streamed SHA-256
-values. It never edits an input.
+sizes, modification times, and streamed SHA-256 values when `--hash-content` is
+used. It never edits an input.
 
 Hashing trajectories can be expensive. Without `--hash-content`, the inventory
 still hashes the small manifest itself but records `null` content hashes for its

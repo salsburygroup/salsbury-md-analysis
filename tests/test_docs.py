@@ -12,6 +12,57 @@ import generate_docs
 
 
 class GeneratedDocumentationTests(unittest.TestCase):
+    def test_human_documentation_has_no_named_ai_slop_vocabulary(self):
+        banned = {
+            "beacon", "cutting-edge", "delve", "elevate", "embark",
+            "empower", "ever-evolving", "facilitate", "foster", "game changer",
+            "harness", "intricate", "leverage", "meticulous", "multifaceted",
+            "paradigm shift", "paramount", "realm", "robust", "streamline",
+            "supercharge", "tapestry", "transformative", "utilize",
+        }
+        markdown_paths = sorted(ROOT.glob("*.md"))
+        markdown_paths += sorted((ROOT / "docs").rglob("*.md"))
+        markdown_paths += sorted((ROOT / "tutorials").rglob("*.md"))
+        markdown_paths += sorted((ROOT / "validation").rglob("README.md"))
+        for path in markdown_paths:
+            text = path.read_text(encoding="utf-8").lower()
+            for term in banned:
+                self.assertIsNone(
+                    re.search(rf"\b{re.escape(term)}\b", text),
+                    f"{path.relative_to(ROOT)} contains banned wording: {term}",
+                )
+
+    def test_json_documentation_examples_are_strict_json(self):
+        def reject_duplicate_keys(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError(f"duplicate JSON key: {key}")
+                result[key] = value
+            return result
+
+        markdown_paths = sorted(ROOT.glob("*.md"))
+        markdown_paths += sorted((ROOT / "docs").rglob("*.md"))
+        markdown_paths += sorted((ROOT / "tutorials").rglob("*.md"))
+        for path in markdown_paths:
+            text = path.read_text(encoding="utf-8")
+            for index, block in enumerate(
+                re.findall(r"```json\s*\n(.*?)```", text, re.DOTALL), start=1
+            ):
+                try:
+                    json.loads(block, object_pairs_hook=reject_duplicate_keys)
+                except (json.JSONDecodeError, ValueError) as exc:
+                    self.fail(
+                        f"{path.relative_to(ROOT)} JSON block {index} is invalid: {exc}"
+                    )
+
+    def test_documentation_index_links_every_handwritten_method_page(self):
+        index = (ROOT / "docs" / "index.md").read_text(encoding="utf-8")
+        for path in sorted((ROOT / "docs").glob("*.md")):
+            if path.name == "index.md":
+                continue
+            self.assertIn(path.name, index, f"unlinked documentation page: {path.name}")
+
     def test_module_reference_contains_full_scope(self):
         text = generate_docs.render_module_reference()
         self.assertIn("Markov-state models", text)

@@ -137,8 +137,8 @@ remaining CPU-time, wall-time, calibration, or scratch-space failure.
 
 As a bounded check of this path, the current planner was given a 1.5 GiB
 ceiling for this fixture. It reported a 2.4 GiB SASA minimum, recommended a
-3 GiB ceiling to retain every enabled analysis, and—only with the explicit
-flag—wrote a reduced config with SASA off and a 1.2 GiB largest remaining
+3 GiB ceiling to retain every enabled analysis. Only with the explicit flag did
+it write a reduced config with SASA off and a 1.2 GiB largest remaining
 minimum. These numbers are calibration-dependent examples, not universal
 requirements.
 

@@ -17,10 +17,12 @@ does not silently treat an aggregate trajectory as the raw trajectory.
 ## Supported policies
 
 ```json
+{
 "frame_stride": 1,
 "frame_selection": {
   "mode": "integer_stride_per_replica_v1",
   "stride": 20
+}
 }
 ```
 
@@ -59,6 +61,7 @@ separate from the exactness of the selected integer strides.
 An input-aware planner may instead resolve an automatic resource envelope:
 
 ```json
+{
 "frame_selection": {
   "mode": "auto_resource_budget_v1",
   "target_wall_seconds": 14400,
@@ -70,6 +73,7 @@ An input-aware planner may instead resolve an automatic resource envelope:
   "estimated_peak_memory_mib": 2048,
   "target_memory_mib": 16384,
   "calibration_id": "site-and-method-specific-benchmark-id"
+}
 }
 ```
 

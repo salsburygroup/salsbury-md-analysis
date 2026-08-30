@@ -12,7 +12,7 @@ residue matters, whether an ion is biologically bound, a ligand's protonation,
 an element's oxidation state, or what a publication should claim.
 
 The output uses two related labels. `macromolecular_classification` records the
-shared comparison basis—protein, nucleic acid, or a protein–nucleic-acid
+shared comparison basis: protein, nucleic acid, or a protein–nucleic-acid
 complex. The more specific `system_classification` also records additional
 solute such as a ligand or cofactor. This lets ligand-bound and ligand-free
 systems share a common macromolecular basis without pretending that their full

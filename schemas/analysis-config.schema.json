@@ -46,6 +46,11 @@
         "properties": {
           "enabled": {"type": "boolean", "default": true},
           "options": {"type": "object"},
+          "protected": {
+            "type": "boolean",
+            "readOnly": true,
+            "description": "Generated marker for modules that reduced-resource planning may not disable."
+          },
           "depends_on": {"type": "array", "items": {"type": "string"}, "readOnly": true},
           "turning_off_also_disables": {"type": "array", "items": {"type": "string"}, "readOnly": true}
         }
@@ -234,7 +239,7 @@
         "fail_if_minimum_coverage_unaffordable": {"type": "boolean", "default": true},
         "submission_adapter": {
           "enum": ["unspecified", "local", "slurm", "custom"],
-          "default": "unspecified",
+          "default": "local",
           "description": "Optional launcher adapter. Scientific planning and project manifests do not depend on it."
         },
         "coordinate_cache": {
