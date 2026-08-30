@@ -431,9 +431,9 @@ evidence. Finalization streams the full-report hash but reads the compact
 sidecar, avoiding another multi-gigabyte JSON parse. Existing reports without
 a sidecar retain a backward-compatible full-report fallback.
 
-The finding picker uses the documented
-presentation order—FES, FES conformations, silhouette-scored clustering,
-cluster conformations, RMSF, then other physical results—and uses deterministic
+The finding picker uses the documented presentation order (FES, FES
+conformations, silhouette-scored clustering, cluster conformations, RMSF, then
+other physical results) and uses deterministic
 lexicographic ranking rather than an opaque composite score. It is a triage
 aid: report pointers, evidence class, effects, and corrected p-values remain
 visible for scientific review. When the corresponding completed reports are

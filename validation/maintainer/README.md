@@ -1,6 +1,6 @@
 # Maintainer validation
 
-This directory contains validation harnesses for general toolkit methods when
+This directory contains validation programs for general toolkit methods when
 the authoritative fixture cannot be distributed publicly. These programs are
 not user analysis commands, are not registered workflow modules, and are not
 installed as console entry points.

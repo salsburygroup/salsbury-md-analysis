@@ -14,7 +14,7 @@ and explicit 7,522-bond connectivity. Seventy-five long-range frames were used
 for the expanded cross-method analysis. The source coordinates and private
 storage paths are not part of the public distribution.
 
-All 26 executable project runners in the standard validation harness completed
+All 26 executable project runners in the standard validation suite completed
 without a failure or crash. Two supplemental project runners exercised the new
 intrinsic nucleic-acid and generic bound-ion geometry on the same long-range
 frames. The remaining registry capabilities are contract/preflight or
@@ -22,8 +22,8 @@ reusable-kernel layers; the 38-module snapshot is mapped to at least one of 25
 scoped validation cases. All 25 cases passed their predeclared numerical or
 structural tolerances. A refreshed four-case comparison now validates automatic
 topology-template hydrogen-bond discovery on the same 75 real frames, raising
-the independent case total to 29. The two other later additions—scalar
-threshold states and grouped regularized classification—currently have focused
+the independent case total to 29. The two other later additions (scalar
+threshold states and grouped regularized classification) currently have focused
 contract and synthetic numerical tests but have not yet been added to a
 refreshed long-trajectory independent reference comparison. Those additions
 brought the non-water registry to 42 modules. The water-mediated module brought
@@ -156,7 +156,7 @@ The bounded hydrogen-bond evidence is
 Its private-evidence hash permits later integrity verification without
 publishing restricted trajectories or storage paths.
 
-The corresponding real-trajectory rerun harness lives under
+The corresponding real-trajectory rerun program lives under
 [`validation/maintainer`](../validation/maintainer/README.md). It is retained
 for maintainers, is not a generic-workflow module or user command, and requires
 authorized access to the immutable fixture plus its independent reference

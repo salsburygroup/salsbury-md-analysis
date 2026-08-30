@@ -2,6 +2,7 @@ import json
 import unittest
 from pathlib import Path
 
+from salsbury_md_analysis.analysis_config import default_analysis_config
 from salsbury_md_analysis.registry import MODULES
 
 
@@ -57,6 +58,30 @@ class ProfileAndSchemaTests(unittest.TestCase):
         ]
         self.assertEqual(experimental_switch["type"], "boolean")
         self.assertFalse(experimental_switch["default"])
+
+    def test_analysis_config_schema_accepts_generated_metadata_and_defaults(self):
+        schema = json.loads(
+            (ROOT / "schemas" / "analysis-config.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        generated = default_analysis_config(
+            [module.module_id for module in MODULES], ["global_common_heavy"]
+        )
+        module_properties = schema["properties"]["modules"][
+            "additionalProperties"
+        ]["properties"]
+        for field in generated["modules"][MODULES[0].module_id]:
+            self.assertIn(field, module_properties)
+        self.assertTrue(module_properties["protected"]["readOnly"])
+        execution_schema = schema["properties"]["execution"]["properties"]
+        self.assertEqual(
+            execution_schema["submission_adapter"]["default"],
+            generated["execution"]["submission_adapter"],
+        )
+        planning_schema = schema["properties"]["planning"]["properties"]
+        for field, value in generated["planning"].items():
+            self.assertEqual(planning_schema[field]["default"], value)
 
     def test_project_schema_accepts_tica_clustering_and_dual_msm_sources(self):
         schema = json.loads(
