@@ -1,10 +1,10 @@
 cff-version: 1.2.0
-message: "This software is an experimental scientific release. Cite version 0.1.1 and the exact commit used, together with the relevant methods documentation."
+message: "This software is an experimental pre-release. Cite version 0.2.0a2 and the exact commit used, together with the relevant methods documentation."
 title: "Salsbury MD Analysis"
 type: software
 authors:
   - family-names: "Salsbury"
     given-names: "Freddie R."
-version: "0.1.1"
+version: "0.2.0a2"
 repository-code: "https://github.com/salsburygroup/salsbury-md-analysis"
 license: BSD-3-Clause
