@@ -54,5 +54,5 @@ jobs:
         run: sha256sum dist/*
       - uses: actions/upload-artifact@v7
         with:
-          name: salsbury-md-analysis-0.1.0-artifacts
+          name: salsbury-md-analysis-${{ github.sha }}-artifacts
           path: dist/*
