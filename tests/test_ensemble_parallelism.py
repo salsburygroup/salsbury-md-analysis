@@ -52,6 +52,13 @@ class EnsembleParallelismTests(unittest.TestCase):
         self.assertIn("pooled observation set", contract.reduction_rule)
         self.assertIn("basis construction", contract.reduction_rule)
 
+    def test_pald_has_no_out_of_sample_assignment_phase(self):
+        phases = get_ensemble_parallelism_contract(
+            "pald_community_analysis"
+        ).allowed_parallel_phases
+        self.assertIn("global_community_analysis_on_declared_pooled_sample", phases)
+        self.assertFalse(any("assignment_after" in phase for phase in phases))
+
 
 if __name__ == "__main__":
     unittest.main()

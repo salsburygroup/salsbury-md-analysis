@@ -154,14 +154,20 @@ def _build_contracts() -> Dict[str, EnsembleParallelismContract]:
             )
             if module_id == "common_pca" else
             (
+                "replica_feature_extraction_before_global_regular_sample",
+                "global_community_analysis_on_declared_pooled_sample",
+            )
+            if module_id == "pald_community_analysis" else
+            (
                 "replica_feature_extraction",
-                "replica_assignment_after_global_fit",
+                "replica_assignment_after_global_fit_when_supported",
+                "pooled_full_observation_fit_when_assignment_is_unsupported",
                 "focal_validation_chunks_against_global_partition",
             )
             if module_id in {
                 "clustering_kmeans", "clustering_hdbscan",
                 "clustering_imwkmeans", "alternative_clustering",
-                "pald_community_analysis", "hydrogen_bond_patterns",
+                "hydrogen_bond_patterns",
             }
             else ("replica_feature_extraction", "global_model_postprocessing")
         )
