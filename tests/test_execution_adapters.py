@@ -59,6 +59,8 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertEqual(profile["unix_group"], "salsburyGrp")
         self.assertEqual(profile["partitions"]["analysis"], "small")
         self.assertEqual(profile["partitions"]["long_wall"], "large")
+        self.assertEqual(profile["node_policy"]["cpus_per_node"], 44)
+        self.assertEqual(profile["node_policy"]["memory_gib_per_node"], 185.0)
         self.assertEqual(
             profile["partition_maximum_wall_minutes"]["small"], 1440.0,
         )
@@ -111,6 +113,7 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertIn("python3.12", worker)
         self.assertIn("#SBATCH --time=00:47:00", worker)
         self.assertIn("#SBATCH --mem=8G", worker)
+        self.assertIn("#SBATCH --nodes=1", worker)
         self.assertEqual(
             scheduler["scripts"]["run_stage_0_array.slurm"]["selected_partition"],
             "small",
@@ -571,6 +574,7 @@ class ExecutionAdapterTests(unittest.TestCase):
     def test_mixed_resource_array_is_split_into_scheduler_tiers(self):
         repository = Path(__file__).resolve().parents[1]
         profile = load_slurm_profile(repository / "profiles/slurm/deac.json")
+        profile["node_policy"]["memory_gib_per_node"] = 512.0
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "slurm-profile.json").write_text("{}\n", encoding="utf-8")
@@ -783,6 +787,12 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertEqual(preview["maximum_parallel_cpus_in_generated_waves"], 2)
         self.assertEqual(preview["maximum_parallel_memory_gib_configured"], 185)
         self.assertEqual(preview["maximum_parallel_memory_gib_in_generated_waves"], 180)
+        self.assertEqual(preview["planned_node_count"], 1)
+        self.assertEqual(
+            preview["planned_node_reservations"][0]["reserved_memory_gib"],
+            180.0,
+        )
+        self.assertEqual(preview["per_node_padding_validation"], "complete")
         self.assertEqual(
             preview["planner_estimated_dependency_critical_path_hours"], 2,
         )

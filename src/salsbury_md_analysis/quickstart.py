@@ -1652,7 +1652,16 @@ def _configure_structural_qc_parallel_execution(
         raise QuickstartError(
             "campaign plan lacks exactly one structural-QC resource task"
         )
-    workers = int(task_rows[0]["effective_cpu_cap"])
+    node_policy = campaign_resource_plan.get("node_resource_policy")
+    per_node_cpu_cap = (
+        int(node_policy["maximum_cpus_per_node"])
+        if isinstance(node_policy, Mapping)
+        and node_policy.get("maximum_cpus_per_node") is not None
+        else int(task_rows[0]["effective_cpu_cap"])
+    )
+    workers = min(
+        int(task_rows[0]["effective_cpu_cap"]), per_node_cpu_cap
+    )
     cache_root = coordinate_cache_directory.expanduser().resolve(strict=False)
     structural["parallel_execution"] = {
         "enabled": True,
@@ -3597,9 +3606,15 @@ def prepare_standard_analysis(
         )
         if coordinate_cache_enabled else []
     )
+    node_policy = campaign_resource_plan.get("node_resource_policy")
+    node_cpu_cap = (
+        int(node_policy["maximum_cpus_per_node"])
+        if isinstance(node_policy, Mapping)
+        and node_policy.get("maximum_cpus_per_node") is not None
+        else effective_parallel_cpu_cap
+    )
     coordinate_cache_workers = min(
-        effective_parallel_cpu_cap,
-        len(trajectory_paths),
+        effective_parallel_cpu_cap, len(trajectory_paths), node_cpu_cap
     )
     if coordinate_cache_enabled:
         _configure_structural_qc_parallel_execution(

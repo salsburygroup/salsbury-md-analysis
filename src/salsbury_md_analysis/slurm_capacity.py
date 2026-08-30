@@ -644,6 +644,8 @@ def advise_slurm_capacity(
     profile = load_slurm_profile(profile_source)
     policy = profile["resource_policy"]
     assert isinstance(policy, Mapping)
+    node_policy = profile["node_policy"]
+    assert isinstance(node_policy, Mapping)
     useful_peak = _workflow_useful_cpu_peak(planning_tasks)
     live_report: Optional[Dict[str, object]] = None
     scheduler_ceiling: Optional[int] = None
@@ -683,6 +685,21 @@ def advise_slurm_capacity(
             memory_safety_factor=float(policy["memory_safety_factor"]),
             memory_overhead_gib=float(policy["memory_overhead_gib"]),
             minimum_scheduler_memory_gib=float(policy["minimum_memory_gib"]),
+            maximum_cpus_per_node=(
+                None
+                if node_policy.get("cpus_per_node") is None
+                else int(node_policy["cpus_per_node"])
+            ),
+            maximum_memory_gib_per_node=(
+                None
+                if node_policy.get("memory_gib_per_node") is None
+                else float(node_policy["memory_gib_per_node"])
+            ),
+            maximum_nodes=(
+                None
+                if node_policy.get("maximum_nodes_per_campaign") is None
+                else int(node_policy["maximum_nodes_per_campaign"])
+            ),
         )
         tasks = replanned["tasks"]
         assert isinstance(tasks, list)

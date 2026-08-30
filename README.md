@@ -172,12 +172,13 @@ ceiling, the response includes
 counts. The planning record keeps the requested count, but the generated local,
 custom, and Slurm launchers use the smaller effective count; Slurm array widths
 and multiprocess worker requests are capped accordingly. If the envelope cannot
-retain protected preparation and structural-integrity checks at their minima,
+retain the protected scientific core—preparation/QC, RMSD/Rg, RMSF, individual
+and common PCA, DCCM, PCA FES, and observed representative frames—at its minima,
 planning returns
 `planning_outcome: no_acceptable_reduced_plan`; it does not propose disabling
 those checks. The response also reports a
-`protected_subset_minimum_request`: padded CPUs, aggregate memory, and whole
-wall hours for the best dependency-closed subset that retains every protected
+`protected_subset_minimum_request`: padded CPUs, aggregate memory, node count
+when configured, and whole wall hours for the best dependency-closed subset that retains every protected
 module under the supplied CPU and memory caps. This is a permissive execution
 floor, not evidence that the trajectory is converged or scientifically
 adequate; the scientific question may require a larger request.
@@ -309,6 +310,13 @@ are missing, failed, or incompatible. A lower memory cap
 can therefore increase the integer strides or serialize work even when every
 individual task fits. The local executor and the generated `submit.sh` enforce
 the same limits.
+
+Slurm profiles may also declare CPUs and memory per node. The planner applies
+the profile's memory padding before checking that every task fits one node, then
+bin-packs concurrent lanes across the allowed node count. The DEAC profile uses
+a conservative 44-CPU, 185-GiB node shape. The submission preview reports each
+planned node's padded CPU and memory total, and every generated worker requests
+one node explicitly.
 
 For an insufficient memory cap, `campaign-resource-plan.json` and
 `memory-feasibility-report.json` state (1) the largest enabled technical-minimum
@@ -482,8 +490,10 @@ Run `salsbury-md-analysis list-modules` to see the module identifiers. The
 prepared campaign writes the complete resolved configuration to
 `analysis-config.json` and records every enabled, disabled, or deferred module
 in `module-coverage.json`. Disabling an upstream module also disables analyses
-that depend on it; required preflight, provenance, and atom-mapping checks
-cannot be turned off, and neither can structural-integrity QC. Each complete
+that depend on it. The protected core—preflight, provenance, atom mapping,
+structural-integrity QC, RMSD/Rg, pooled RMSF, individual/common PCA, DCCM,
+PCA FES, and representative frames—cannot be turned off. Comparison campaigns
+also protect integrated comparison. Each complete
 module row includes a generated `protected` flag, `depends_on`, and
 `turning_off_also_disables`, while `module_groups` arranges the switches as
 infrastructure, quality/motion, conformational bases, states/kinetics,

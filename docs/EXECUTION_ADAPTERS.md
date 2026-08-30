@@ -174,9 +174,13 @@ returns `NO_ACCEPTABLE_REDUCED_PLAN` and submits nothing.
 
 Slurm requests can be larger than the estimated working set because the site
 profile adds explicit safety margins. Preparation applies those margins before
-testing memory feasibility. It then packs individual array elements and ordinary
-jobs into deterministic resource waves. The sum of CPU slots and the sum of
-buffered memory requests in one wave cannot exceed the two campaign caps.
+testing memory feasibility. A profile may also declare its CPU and memory per
+node. Preparation then rejects a safety-adjusted task request that cannot fit
+one node and packs the concurrent resource lanes into valid node bins; the sum
+of padded reservations assigned to a planned node cannot exceed that node's
+CPU or memory. It then packs individual array elements and ordinary jobs into
+deterministic resource waves. The sum of CPU slots and the sum of buffered
+memory requests in one wave cannot exceed the two aggregate campaign caps.
 `submit.sh` uses `afterany` between resource waves so a failed job releases the
 next allocation. It uses `afterok` only for a task's `depends_on_task_ids` and
 asks Slurm to terminate a descendant whose required job failed instead of
@@ -231,11 +235,17 @@ to `large` while leaving ordinary short jobs on `small`.
 The profile schema is `salsbury-slurm-profile-v1`. It records scheduler submit,
 status, and cancel commands; account, Unix group, QoS, and role-specific partitions;
 Python and package paths; environment setup commands and variables; shared-write
-umask; storage and scratch roots; and conservative resource policy metadata. The
+umask; storage and scratch roots; conservative resource policy metadata; and an
+optional `node_policy` with `cpus_per_node`, `memory_gib_per_node`, and
+`maximum_nodes_per_campaign`. The generic template leaves the node shape null;
+the supplied DEAC profile uses a conservative 44-CPU, 185-GiB node shape. The
 adapter converts every planner task estimate to a time and memory request using the
 profile safety factors. `scheduler-resource-requests.json` records every mapped
 planner task, the safety margin, selected partition, final request, and exact
-aggregate-resource wave. The canonical `submit.sh` submits individual array
+aggregate-resource wave. `slurm-submission-preview.json` also records the
+planned node count, lane-to-node mapping, and padded reservation totals for each
+node. Every generated worker requests one node; independent tasks supply the
+cross-node parallelism. The canonical `submit.sh` submits individual array
 elements when needed so that both CPU and memory are bounded across all jobs that
 can run at the same time. Only requests that cross
 `large_memory_threshold_gib` use the `large_memory` partition role. The generated

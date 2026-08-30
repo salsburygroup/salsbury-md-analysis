@@ -12,6 +12,7 @@ from salsbury_md_analysis.comparative_quickstart import (
     prepare_comparative_analysis_memory_fit,
     prepare_comparative_analysis_resource_fit,
 )
+from salsbury_md_analysis.quickstart import QuickstartError
 from tests.test_quickstart import _write_dcd, _write_inputs, _write_oligomer_inputs
 
 
@@ -478,7 +479,7 @@ class ComparativeQuickstartTests(unittest.TestCase):
             )
             self.assertEqual(capacity["useful_parallel_cpu_ceiling"], 380)
 
-    def test_disabled_common_pca_prepares_without_conformational_projects(self):
+    def test_comparison_rejects_disabling_protected_common_pca(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             pdb, psf, trajectories = _write_inputs(root)
@@ -502,20 +503,16 @@ class ComparativeQuickstartTests(unittest.TestCase):
                 "modules": {"common_pca": {"enabled": False}},
             }), encoding="utf-8")
             output = root / "analysis"
-            report = prepare_comparative_analysis(
-                request_path=request_path,
-                output_directory=output,
-                project_id="no-common-pca",
-                config_path=config_path,
-            )
-            self.assertEqual(report["technical_status"], "complete")
-            resolved = json.loads((output / "analysis-config.json").read_text())
-            self.assertTrue(all(
-                row["enabled"] is False
-                for row in resolved["views"].values()
-            ))
-            self.assertFalse(any(output.glob("project-global_common_heavy*.json")))
-            self.assertTrue((output / "conformational-views.json").exists())
+            with self.assertRaisesRegex(
+                QuickstartError,
+                "protected module common_pca cannot be disabled",
+            ):
+                prepare_comparative_analysis(
+                    request_path=request_path,
+                    output_directory=output,
+                    project_id="no-common-pca",
+                    config_path=config_path,
+                )
 
     def test_schema_v2_preserves_segmented_replica_boundaries_and_counts(self):
         with tempfile.TemporaryDirectory() as temporary:
