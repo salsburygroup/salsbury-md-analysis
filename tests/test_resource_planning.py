@@ -1246,6 +1246,59 @@ class ResourcePlanningTests(unittest.TestCase):
             (1, 2, 5, 10),
         )
 
+    def test_global_stride_checks_declared_floor_beyond_embedded_profile(self):
+        tasks = [
+            {
+                "task_id": "cache",
+                "workflow_id": "cache",
+                "module_id": "coordinate_cache",
+                "task_scope": "lossless_coordinate_preprocessing",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [2_000] * 4,
+                "minimum_frames_per_replica": 1,
+                "maximum_frames_per_replica": 2_000,
+                "cpu_seconds_per_physical_frame": 0.001,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 100.0,
+            },
+            {
+                "task_id": "grouped",
+                "workflow_id": "grouped",
+                "module_id": "grouped_ml",
+                "task_scope": "conformational_view",
+                "dependency_stage": 1,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [2_000] * 4,
+                "system_ids_per_replica": ["system"] * 4,
+                "minimum_frames_per_replica": 1_001,
+                "maximum_frames_per_replica": 2_000,
+                "scientific_sampling_requirements": profile_contract(
+                    scientific_sampling_profile("grouped_ml")
+                ),
+                "cpu_seconds_per_physical_frame": 0.001,
+                "estimated_peak_memory_gib": 1.0,
+                "priority_weight": 1.0,
+            },
+        ]
+        report = plan_global_stride_projection_coupled_campaign_resource_budget(
+            tasks,
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=10.0,
+            maximum_memory_gib=8.0,
+            planning_utilization=1.0,
+            pilot_budget_fraction=0.0,
+            protected_module_ids=("coordinate_cache",),
+            coordinate_cache_full_scan_fraction=0.0,
+            overall_stride_candidate_strides=[5],
+        )
+        self.assertEqual(report["feasibility_status"], "infeasible")
+        failures = report["optional_scientific_minimum_failures"]
+        self.assertEqual([row["task_id"] for row in failures], ["grouped"])
+        self.assertEqual(
+            failures[0]["reason"], "declared_minimum_frames_per_replica"
+        )
+
     def test_method_subset_never_removes_protected_structural_qc(self):
         tasks = [
             {

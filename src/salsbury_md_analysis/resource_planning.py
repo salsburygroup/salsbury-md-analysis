@@ -2784,6 +2784,7 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
                 profile_from_contract(embedded)
                 if isinstance(embedded, Mapping) else None
             )
+            profile_failed = False
             if profile is not None and profile.minimum_frames_per_replica > 0:
                 system_ids = row.get("system_ids_per_replica")
                 raw_intervals = row.get(
@@ -2815,7 +2816,11 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
                         "reason": "scientific_sampling_contract",
                         "assessment": assessment,
                     })
-            elif any(
+                    profile_failed = True
+            # Data-dependent method floors may be stronger than the packaged
+            # generic profile. Reject those cache candidates before resource
+            # pricing instead of passing maximum < minimum to the planner.
+            if not profile_failed and any(
                 chosen < min(
                     int(row["global_stride_declared_minimum_frames_per_replica"]),
                     available,
