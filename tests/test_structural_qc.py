@@ -242,8 +242,8 @@ class StructuralQCTests(unittest.TestCase):
             report = structural_qc_project(project)
         segment = report["systems"][0]["replicas"][0]["segments"][0]
         self.assertEqual(segment["observed_frame_count"], 3)
-        self.assertEqual(segment["decoded_frame_count"], 2)
-        self.assertEqual(segment["evaluated_frame_count"], 2)
+        self.assertEqual(segment["decoded_frame_count"], 1)
+        self.assertEqual(segment["evaluated_frame_count"], 1)
         self.assertIn("FRAME_SUBSAMPLING", {issue["code"] for issue in report["issues"]})
 
     def test_segment_completion_checkpoint_is_reused_without_decoding(self):

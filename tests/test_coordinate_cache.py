@@ -134,7 +134,7 @@ class CoordinateCacheTests(unittest.TestCase):
             self.assertEqual(strided["source_frame_scan"], "all source frames decoded in order")
             strided_row = strided["rows"][0]
             self.assertEqual(strided_row["decoded_frame_count"], 3)
-            self.assertEqual(strided_row["retained_frame_count"], 2)
+            self.assertEqual(strided_row["retained_frame_count"], 1)
             strided_manifest = load_json(strided_output / "system-cache.json")
             strided_replica = strided_manifest["systems"][0]["replicas"][0]
             strided_segment = strided_replica["segments"][0]
@@ -142,9 +142,9 @@ class CoordinateCacheTests(unittest.TestCase):
             strided_frames = list(iter_coordinate_frames(
                 strided_output / strided_segment["trajectory"], "angstrom"
             ))
-            self.assertEqual(len(strided_frames), 2)
+            self.assertEqual(len(strided_frames), 1)
             self.assertAlmostEqual(
-                strided_frames[1].coordinates_angstrom[0][0], 10.7, places=5
+                strided_frames[0].coordinates_angstrom[0][0], 9.5, places=5
             )
             strided_reuse = validate_reusable_coordinate_cache(
                 strided_output, manifest

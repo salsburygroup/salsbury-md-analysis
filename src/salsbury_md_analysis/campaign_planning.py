@@ -2410,6 +2410,15 @@ def plan_and_apply_complete_campaign(
                 "dependency_stage": 0,
                 "effective_cpu_cap": cache_workers,
                 "intrinsic_cpu_cap": len(source_counts),
+                "parallel_execution_model": (
+                    "replica_worker_exact_global_reducer_v1"
+                ),
+                "parallel_worker_count": len(source_counts),
+                "estimated_peak_memory_gib_per_parallel_worker": 0.25,
+                "reducer_memory_gib": 0.25,
+                "parallel_memory_model": (
+                    "max(reducer, simultaneously_active_replica_workers)"
+                ),
                 "source_frames_per_replica": list(source_counts),
                 "minimum_frames_per_replica": max(source_counts),
                 "minimum_frame_role": "planner-selected working-cache coverage",

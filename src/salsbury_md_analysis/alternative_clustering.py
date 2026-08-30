@@ -20,7 +20,7 @@ from .clustering import (
     silhouette_score_report,
 )
 from .feature_matrix import load_feature_matrix, parse_feature_selection
-from .frame_sampling import uniform_indices
+from .frame_sampling import integer_stride_indices, uniform_indices
 from .manifests import ManifestValidationError, load_json
 from .trajectory_features import TrajectoryFeatureError
 from .state_populations import summarize_state_populations
@@ -468,7 +468,10 @@ def _balanced_uniform_sample(
                 "" if item[0][0] is None else item[0][0], item[0][1]
             ),
         ):
-            segment_chosen = indices[::stride]
+            segment_chosen = [
+                indices[position]
+                for position in sorted(integer_stride_indices(len(indices), stride))
+            ]
             chosen.extend(segment_chosen)
             totals = member_totals.setdefault(member_id, [0, 0])
             totals[0] += len(indices)
@@ -555,7 +558,12 @@ def _integer_stride_sample(
         ):
             # Feature-matrix order is the authoritative concatenated trajectory
             # order.  Do not restart the stride at a segment boundary.
-            chosen = timeline[::resolved_stride]
+            chosen = [
+                timeline[position]
+                for position in sorted(
+                    integer_stride_indices(len(timeline), resolved_stride)
+                )
+            ]
             replica_chosen.extend(chosen)
             by_segment: Dict[str, List[int]] = {}
             selected_by_segment: Dict[str, List[int]] = {}

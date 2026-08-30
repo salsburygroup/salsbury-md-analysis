@@ -36,6 +36,7 @@ def _write_project(
     maximum_atoms: int = 10,
     frame_stride: int = 1,
     minimum_frames: int = 3,
+    values=(-1.0, 0.0, 1.0),
 ) -> Path:
     atoms = [
         _pdb_atom(1, "C", 0, 0, 0, "C"),
@@ -47,11 +48,11 @@ def _write_project(
     (root / "reference.pdb").write_text("".join(atoms) + "END\n", encoding="utf-8")
     positive = "".join(
         _frame(value, 2 * value, f"p{index}")
-        for index, value in enumerate((-1.0, 0.0, 1.0))
+        for index, value in enumerate(values)
     )
     negative = "".join(
         _frame(value, -2 * value, f"n{index}")
-        for index, value in enumerate((-1.0, 0.0, 1.0))
+        for index, value in enumerate(values)
     )
     (root / "positive.xyz").write_text(positive, encoding="utf-8")
     (root / "negative.xyz").write_text(negative, encoding="utf-8")
@@ -148,7 +149,10 @@ class DCCMTests(unittest.TestCase):
     def test_frame_stride_is_reported_and_applied_per_segment(self):
         with tempfile.TemporaryDirectory() as temporary:
             report = dccm_project(
-                _write_project(Path(temporary), frame_stride=2, minimum_frames=2)
+                _write_project(
+                    Path(temporary), frame_stride=2, minimum_frames=2,
+                    values=(-1.0, 0.0, 1.0, 2.0),
+                )
             )
         first_replica = report["systems"][0]["replicas"][0]
         self.assertEqual(first_replica["dccm"]["evaluated_frame_count"], 2)

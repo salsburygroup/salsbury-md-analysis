@@ -1437,7 +1437,7 @@ class QuickstartTests(unittest.TestCase):
             )
             self.assertEqual(
                 structural["selected_frame_count"],
-                3 * ((300_000 + structural_stride - 1) // structural_stride),
+                3 * (300_000 // structural_stride),
             )
             for module_id, definition_id in (
                 ("replica_rmsd_rg", "replica_rmsd_rg"),
@@ -1449,7 +1449,7 @@ class QuickstartTests(unittest.TestCase):
                 self.assertEqual(project["definitions"][definition_id]["frame_stride"], stride)
                 self.assertEqual(
                     plans[module_id]["selected_frame_count"],
-                    3 * ((300_000 + stride - 1) // stride),
+                    3 * (300_000 // stride),
                 )
             individual = plans["individual_pca"]
             individual_selection = individual["frame_selection"]
@@ -1465,7 +1465,7 @@ class QuickstartTests(unittest.TestCase):
             )
             self.assertEqual(
                 individual["selected_frame_count"],
-                3 * ((300_000 + individual_stride - 1) // individual_stride),
+                3 * (300_000 // individual_stride),
             )
 
 

@@ -27,6 +27,7 @@ from .clustering import (
 from .context import compile_project_context_file
 from .coordinates import Coordinate, CoordinateReadError, iter_coordinate_frames
 from .geometry import GeometryError, apply_transform, best_fit_transform
+from .frame_sampling import integer_stride_indices
 from .manifests import (
     ManifestValidationError,
     load_json,
@@ -384,14 +385,20 @@ def _selected_state_rows(
     selected: List[Dict[str, object]] = []
     stride = int(settings["frame_stride_within_state"])
     for state in sorted(by_state):
-        ordered = sorted(
+        ordered_source = sorted(
             by_state[state],
             key=lambda row: (
                 str(row["system_id"]), str(row["replica_id"]),
                 str(row["segment_id"]), int(row["source_frame_index"]),
                 str(row.get("member_id", "")),
             ),
-        )[::stride]
+        )
+        ordered = [
+            ordered_source[position]
+            for position in sorted(
+                integer_stride_indices(len(ordered_source), stride)
+            )
+        ]
         if len(ordered) > int(settings["maximum_frames_per_state"]):
             raise StateCoordinateExportError(
                 f"state {state} exceeds maximum_frames_per_state after declared stride"
