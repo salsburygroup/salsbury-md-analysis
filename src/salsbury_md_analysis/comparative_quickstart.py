@@ -364,6 +364,8 @@ def prepare_comparative_analysis(
     target_wall_hours: Optional[float] = None,
     dssp_executable: Optional[str] = None,
     config_path: Optional[Path] = None,
+    protected_core_only: bool = False,
+    uniform_cache_stride: bool = False,
 ) -> Dict[str, object]:
     """Prepare one shared-basis, common-grid workflow for two or more systems."""
 
@@ -701,6 +703,12 @@ def prepare_comparative_analysis(
         analysis_config = load_analysis_config(
             config_path, registry_ids, sorted(view_ids_for_config),
             additional_protected_modules=("integrated_comparison",),
+            module_selection_override=(
+                "protected_core_only" if protected_core_only else None
+            ),
+            stride_mode_override=(
+                "uniform_cache_stride" if uniform_cache_stride else None
+            ),
         )
     except (AnalysisConfigError, OSError) as exc:
         raise QuickstartError(str(exc)) from exc
@@ -1193,6 +1201,8 @@ def prepare_comparative_analysis_resource_fit(
     target_wall_hours: Optional[float] = None,
     dssp_executable: Optional[str] = None,
     config_path: Optional[Path] = None,
+    protected_core_only: bool = False,
+    uniform_cache_stride: bool = False,
 ) -> Dict[str, object]:
     """Prepare an opt-in dependency-closed comparison resource reduction."""
 
@@ -1209,6 +1219,8 @@ def prepare_comparative_analysis_resource_fit(
         "project_id": project_id,
         "temperature_kelvin": temperature_kelvin,
         "dssp_executable": dssp_executable,
+        "protected_core_only": protected_core_only,
+        "uniform_cache_stride": uniform_cache_stride,
     }
     with tempfile.TemporaryDirectory(
         prefix="salsbury-comparison-resource-fit-planning-"
@@ -1330,6 +1342,8 @@ def prepare_comparative_analysis_memory_fit(
     target_wall_hours: Optional[float] = None,
     dssp_executable: Optional[str] = None,
     config_path: Optional[Path] = None,
+    protected_core_only: bool = False,
+    uniform_cache_stride: bool = False,
 ) -> Dict[str, object]:
     """Prepare a comparison with an explicit, opt-in memory-fit reduction."""
 
@@ -1346,6 +1360,8 @@ def prepare_comparative_analysis_memory_fit(
         "project_id": project_id,
         "temperature_kelvin": temperature_kelvin,
         "dssp_executable": dssp_executable,
+        "protected_core_only": protected_core_only,
+        "uniform_cache_stride": uniform_cache_stride,
     }
     with tempfile.TemporaryDirectory(
         prefix="salsbury-comparison-memory-fit-planning-"

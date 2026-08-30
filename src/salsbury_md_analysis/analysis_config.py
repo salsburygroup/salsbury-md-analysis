@@ -18,6 +18,9 @@ MINIMUM_HEADLINE_FINDINGS = 10
 MAXIMUM_HEADLINE_FINDINGS = 12
 HIGHLIGHTED_FINDINGS_TOTAL = 50
 
+MODULE_SELECTION_MODES = {"all_enabled", "protected_core_only"}
+STRIDE_PLANNING_MODES = {"balanced_per_method", "uniform_cache_stride"}
+
 
 COMMAND_MODULES = {
     "structural-qc": "structural_integrity_qc",
@@ -266,6 +269,10 @@ def default_analysis_config(
     return {
         "config_schema": "salsbury-analysis-config-v1",
         "default_module_policy": "all_applicable",
+        "planning": {
+            "module_selection": "all_enabled",
+            "stride_mode": "balanced_per_method",
+        },
         "module_groups": module_groups,
         "modules": module_rows,
         "views": {
@@ -370,13 +377,20 @@ def default_analysis_config(
 def load_analysis_config(
     path: Path | None, module_ids: Sequence[str], view_ids: Sequence[str],
     *, additional_protected_modules: Sequence[str] = (),
+    module_selection_override: str | None = None,
+    stride_mode_override: str | None = None,
 ) -> Dict[str, object]:
     protected_modules = set(PROTECTED_MODULES).union(additional_protected_modules)
     config = default_analysis_config(
         module_ids, view_ids, protected_modules=sorted(protected_modules)
     )
     if path is None:
-        return config
+        return _apply_planning_modes(
+            config,
+            protected_modules=protected_modules,
+            module_selection_override=module_selection_override,
+            stride_mode_override=stride_mode_override,
+        )
     supplied = load_json(Path(path).expanduser().resolve(strict=True))
     if not isinstance(supplied, dict):
         raise AnalysisConfigError("analysis config must be a JSON object")
@@ -384,6 +398,7 @@ def load_analysis_config(
         "config_schema", "default_module_policy", "module_groups", "modules", "views",
         "reporting", "comparisons", "sampling", "oligomers", "exports",
         "execution", "inference", "clustering", "community_analysis",
+        "planning",
     }
     unknown = sorted(set(supplied).difference(allowed_top))
     if unknown:
@@ -541,6 +556,26 @@ def load_analysis_config(
     for field in ("run_per_system_analysis", "run_shared_basis_comparisons"):
         if not isinstance(comparisons[field], bool):
             raise AnalysisConfigError(f"comparisons.{field} must be boolean")
+
+    raw_planning = supplied.get("planning", {})
+    if (
+        not isinstance(raw_planning, dict)
+        or set(raw_planning).difference({"module_selection", "stride_mode"})
+    ):
+        raise AnalysisConfigError("planning configuration is invalid")
+    planning = config["planning"]
+    assert isinstance(planning, dict)
+    planning.update(deepcopy(raw_planning))
+    if planning["module_selection"] not in MODULE_SELECTION_MODES:
+        raise AnalysisConfigError(
+            "planning.module_selection must be all_enabled or "
+            "protected_core_only"
+        )
+    if planning["stride_mode"] not in STRIDE_PLANNING_MODES:
+        raise AnalysisConfigError(
+            "planning.stride_mode must be balanced_per_method or "
+            "uniform_cache_stride"
+        )
 
     raw_sampling = supplied.get("sampling", {})
     allowed_sampling = {
@@ -922,6 +957,12 @@ def load_analysis_config(
     execution["maximum_total_cpu_hours"] = (
         int(maximum_cpus) * float(execution["maximum_hours_per_cpu"])
     )
+    config = _apply_planning_modes(
+        config,
+        protected_modules=protected_modules,
+        module_selection_override=module_selection_override,
+        stride_mode_override=stride_mode_override,
+    )
     if "common_pca" not in enabled_modules(config):
         views = config.get("views")
         if isinstance(views, dict):
@@ -929,6 +970,65 @@ def load_analysis_config(
                 if isinstance(row, dict):
                     row["enabled"] = False
                     row["state_trajectory_exports_enabled"] = False
+    return config
+
+
+def _apply_planning_modes(
+    config: Dict[str, object],
+    *,
+    protected_modules: set[str],
+    module_selection_override: str | None,
+    stride_mode_override: str | None,
+) -> Dict[str, object]:
+    """Resolve explicit planner modes into the generated runnable config."""
+
+    planning = config.get("planning")
+    if not isinstance(planning, dict):
+        raise AnalysisConfigError("analysis config has no planning mapping")
+    if module_selection_override is not None:
+        if module_selection_override not in MODULE_SELECTION_MODES:
+            raise AnalysisConfigError("invalid module-selection override")
+        planning["module_selection"] = module_selection_override
+    if stride_mode_override is not None:
+        if stride_mode_override not in STRIDE_PLANNING_MODES:
+            raise AnalysisConfigError("invalid stride-planning override")
+        planning["stride_mode"] = stride_mode_override
+
+    if planning.get("module_selection") != "protected_core_only":
+        return config
+
+    modules = config.get("modules")
+    if not isinstance(modules, dict):
+        raise AnalysisConfigError("analysis config has no module mapping")
+    selected = set(protected_modules).intersection(modules)
+    changed = True
+    while changed:
+        changed = False
+        for module_id in tuple(selected):
+            for dependency in DEPENDENCIES.get(module_id, set()):
+                if dependency in modules and dependency not in selected:
+                    selected.add(dependency)
+                    changed = True
+    for module_id, row in modules.items():
+        if isinstance(row, dict):
+            row["enabled"] = module_id in selected
+
+    clustering = config.get("clustering")
+    methods = clustering.get("methods") if isinstance(clustering, dict) else None
+    if isinstance(methods, dict):
+        for row in methods.values():
+            if isinstance(row, dict):
+                row["enabled"] = False
+    community = config.get("community_analysis")
+    pald = community.get("pald") if isinstance(community, dict) else None
+    if isinstance(pald, dict):
+        pald["enabled"] = False
+        pald["community_msm_enabled"] = False
+    views = config.get("views")
+    if isinstance(views, dict):
+        for row in views.values():
+            if isinstance(row, dict):
+                row["state_trajectory_exports_enabled"] = False
     return config
 
 

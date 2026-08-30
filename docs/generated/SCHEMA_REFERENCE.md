@@ -10,6 +10,7 @@ Source: `schemas/analysis-config.schema.json`
 |---|---|---|
 | `config_schema` | yes | `structured` |
 | `default_module_policy` | no | `structured` |
+| `planning` | no | `object` |
 | `module_groups` | no | `object` |
 | `modules` | no | `object` |
 | `views` | no | `object` |

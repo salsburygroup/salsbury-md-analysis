@@ -961,7 +961,7 @@ Scientific limits:
 - Category: `md`
 - Status: **experimental**
 
-Measure exact triclinic minimum-image shells for every supported ion species actually present around all-solute, protein, nucleic-acid, and ligand/cofactor polar target groups, retaining system, replica, segment, frame, species, charge-class, and ion identity.
+Measure exact triclinic minimum-image shells for every supported ion species present around all-solute, protein, nucleic-acid, and ligand/cofactor polar target groups, retaining system, replica, segment, frame, species, charge-class, and ion identity.
 
 Required inputs:
 

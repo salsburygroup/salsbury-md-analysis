@@ -3061,6 +3061,7 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
     maximum_memory_gib_per_node: Optional[float] = None,
     maximum_nodes: Optional[int] = None,
     maximum_coupling_iterations: int = 12,
+    uniform_cache_stride: bool = False,
     protected_module_ids: Sequence[str] = (
         "coordinate_cache", "provenance_manifest", "preflight_inventory",
         "common_atom_mapping", "structural_integrity_qc", "replica_rmsd_rg",
@@ -3088,6 +3089,10 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
     as the information-preserving reference; callers supplying an explicit grid
     control the complete evaluated set.  ``coordinate_cache_candidate_strides``
     is retained as a compatibility spelling for the first local prototype.
+    When ``uniform_cache_stride`` is true, every enabled analysis consumes the
+    complete retained cache stream. A candidate is rejected when that stream
+    exceeds a method ceiling or violates a scientific floor; no method-local or
+    projection-fit frame stride is then allowed.
     """
 
     overall_planning_started = time.monotonic()
@@ -3156,6 +3161,16 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
                 protected_replica_minima.append(int(
                     row["global_stride_declared_minimum_frames_per_replica"]
                 ))
+        elif row.get("task_scope") == "conformational_view_algorithm_fit":
+            row["global_stride_declared_minimum_frames_per_replica"] = int(
+                row.get("minimum_frames_per_replica", 1)
+            )
+            row["global_stride_declared_maximum_frames_per_replica"] = int(
+                row.get(
+                    "maximum_frames_per_replica",
+                    max(int(value) for value in row["source_frames_per_replica"]),
+                )
+            )
         base_tasks.append(row)
     declared_minimum = max(protected_replica_minima)
     maximum_stride = _overall_trajectory_maximum_stride(
@@ -3302,6 +3317,9 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
                     candidate_maximum = max(
                         candidate_maximum, declared_task_minimum
                     )
+                if uniform_cache_stride:
+                    candidate_maximum = max(overall_counts)
+                    declared_task_minimum = max(overall_counts)
                 row.update({
                     "source_frames_per_replica": overall_counts,
                     "minimum_frames_per_replica": declared_task_minimum,
@@ -3325,6 +3343,33 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
                     )
                     row.pop("dynamic_coupling_ceiling_per_replica", None)
             candidate_tasks.append(row)
+        if uniform_cache_stride:
+            projection_counts = {
+                str(row["workflow_id"]): [
+                    int(value) for value in row["source_frames_per_replica"]
+                ]
+                for row in candidate_tasks
+                if row.get("task_scope") == "conformational_view"
+                and row.get("module_id") == "common_pca"
+                and isinstance(row.get("workflow_id"), str)
+            }
+            for row in candidate_tasks:
+                if row.get("task_scope") != "conformational_view_algorithm_fit":
+                    continue
+                workflow_id = str(row.get("workflow_id"))
+                if workflow_id not in projection_counts:
+                    continue
+                selected_counts = projection_counts[workflow_id]
+                selected_ceiling = max(selected_counts)
+                row.update({
+                    "source_frames_per_replica": list(selected_counts),
+                    "minimum_frames_per_replica": selected_ceiling,
+                    "maximum_frames_per_replica": selected_ceiling,
+                    "projection_declared_minimum_frames_per_replica": (
+                        selected_ceiling
+                    ),
+                    "uniform_cache_stride_required": True,
+                })
         invalid_protected_tasks: list[Dict[str, object]] = []
         invalid_optional_tasks: list[Dict[str, object]] = []
         for row in candidate_tasks:
@@ -3348,9 +3393,37 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
                     })
                 continue
             if row.get("task_scope") == "conformational_view_algorithm_fit":
-                # This task consumes its parent projection. The parent protected
-                # estimator is checked here; the fit's method stride is checked
-                # by the coupled downstream planner.
+                if uniform_cache_stride:
+                    retained = [
+                        int(value) for value in row["source_frames_per_replica"]
+                    ]
+                    declared_fit_minimum = int(row.get(
+                        "global_stride_declared_minimum_frames_per_replica", 1
+                    ))
+                    declared_fit_maximum = int(row.get(
+                        "global_stride_declared_maximum_frames_per_replica",
+                        max(retained),
+                    ))
+                    if (
+                        max(retained) > declared_fit_maximum
+                        or any(
+                            count < min(declared_fit_minimum, available)
+                            for count, available in zip(retained, retained)
+                        )
+                    ):
+                        invalid_rows.append({
+                            "task_id": task_id,
+                            "reason": "uniform_cache_stride_outside_fit_bounds",
+                            "retained_frames_per_replica": retained,
+                            "declared_minimum_frames_per_replica": (
+                                declared_fit_minimum
+                            ),
+                            "declared_maximum_frames_per_replica": (
+                                declared_fit_maximum
+                            ),
+                        })
+                # This task consumes its parent projection. In balanced mode the
+                # fit's local stride is checked by the coupled downstream planner.
                 continue
             raw_counts = [int(value) for value in row[
                 "global_stride_raw_source_frames_per_replica"
@@ -3365,6 +3438,20 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
                 if isinstance(embedded, Mapping) else None
             )
             profile_failed = False
+            declared_task_maximum = int(row.get(
+                "global_stride_declared_maximum_frames_per_replica",
+                max(retained),
+            ))
+            if uniform_cache_stride and max(retained) > declared_task_maximum:
+                invalid_rows.append({
+                    "task_id": task_id,
+                    "reason": "uniform_cache_stride_exceeds_method_ceiling",
+                    "retained_frames_per_replica": retained,
+                    "declared_maximum_frames_per_replica": (
+                        declared_task_maximum
+                    ),
+                })
+                profile_failed = True
             if profile is not None and profile.minimum_frames_per_replica > 0:
                 system_ids = row.get("system_ids_per_replica")
                 raw_intervals = row.get(
@@ -3524,6 +3611,11 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
                 best_feasible_information,
                 information["balanced_information_utility"],
             )
+            if uniform_cache_stride:
+                early_terminated_candidates = list(
+                    candidates[candidate_index + 1:]
+                )
+                break
         remaining = candidates[candidate_index + 1:]
         if remaining and math.isfinite(best_feasible_information):
             remaining_upper = max(
@@ -3607,6 +3699,11 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
             and row.get("module_id") != "coordinate_cache"
         ):
             local_stride = int(row["integer_stride"])
+            if uniform_cache_stride and local_stride != 1:
+                raise ResourcePlanningError(
+                    "uniform cache-stride planning produced a downstream stride "
+                    f"for task {row.get('task_id')}"
+                )
             row["overall_trajectory_integer_stride"] = selected_stride
             row["coordinate_cache_integer_stride"] = selected_stride
             row["effective_raw_integer_stride"] = selected_stride * local_stride
@@ -3619,6 +3716,13 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
         elif row.get("task_scope") == "conformational_view_algorithm_fit":
             projection_stride = parent_strides[str(row["workflow_id"])]
             fit_stride = int(row["integer_stride"])
+            if uniform_cache_stride and (
+                projection_stride != 1 or fit_stride != 1
+            ):
+                raise ResourcePlanningError(
+                    "uniform cache-stride planning produced a projection or fit "
+                    f"stride for task {row.get('task_id')}"
+                )
             row["coordinate_cache_integer_stride"] = selected_stride
             row["overall_trajectory_integer_stride"] = selected_stride
             row["projection_integer_stride"] = projection_stride
@@ -3650,9 +3754,19 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
         "evaluated_candidate_strides": evaluated_candidates,
         "early_terminated_candidate_strides": early_terminated_candidates,
         "candidate_count": len(evaluated_candidates),
+        "planning_mode": (
+            "uniform_cache_stride" if uniform_cache_stride
+            else "balanced_per_method"
+        ),
         "candidate_evaluations": evaluations,
         "planner_total_wall_seconds": time.monotonic() - overall_planning_started,
         "candidate_policy": (
+            "Evaluate cache strides from finest to coarsest. Every enabled "
+            "analysis must consume every retained cache frame without a further "
+            "method or projection-fit stride; reject candidates outside any "
+            "enabled method's scientific floor or declared frame ceiling, and "
+            "stop at the first resource-feasible candidate."
+            if uniform_cache_stride else
             "Reject a candidate before resource optimization when its raw "
             "stride violates a protected analysis contract. Evaluate every "
             "remaining exact integer overall stride on every retained raw "
@@ -3779,6 +3893,7 @@ def recommend_scientifically_valid_task_subset(
     coordinate_cache_minimum_frames_per_replica: int = 1,
     coordinate_cache_full_scan_fraction: float = 1.0,
     overall_stride_candidate_strides: Optional[Sequence[int]] = None,
+    uniform_cache_stride: bool = False,
 ) -> Dict[str, object]:
     """Propose the broadest scientifically valid task subset for an envelope.
 
@@ -3822,6 +3937,7 @@ def recommend_scientifically_valid_task_subset(
                     overall_stride_candidate_strides
                 ),
                 protected_module_ids=tuple(protected_module_ids),
+                uniform_cache_stride=uniform_cache_stride,
                 **planner_kwargs,
             )
         return plan_campaign_resource_budget(rows, **planner_kwargs)
@@ -3983,7 +4099,12 @@ def recommend_scientifically_valid_task_subset(
             "deterministic dependency-closed removal by normalized CPU, wall, "
             "and memory shortfall relief per lost scientific-priority weight; "
             + (
-                "every subset is repriced with coupled cache and method strides"
+                (
+                    "every subset is repriced with one uniform cache stride and "
+                    "no downstream frame strides"
+                    if uniform_cache_stride else
+                    "every subset is repriced with coupled cache and method strides"
+                )
                 if use_global_stride_coupling else
                 "every subset is repriced with direct method strides"
             )
