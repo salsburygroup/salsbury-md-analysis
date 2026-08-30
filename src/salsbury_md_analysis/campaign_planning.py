@@ -2068,6 +2068,20 @@ def plan_and_apply_complete_campaign(
                 ],
                 **node_planning_policy,
             }
+            planning_mode = analysis_config.get("planning", {})
+            uniform_cache_stride = bool(
+                isinstance(planning_mode, Mapping)
+                and planning_mode.get("stride_mode") == "uniform_cache_stride"
+            )
+            if uniform_cache_stride and not (
+                coordinate_cache_build_required
+                and cache_materialization == "planned_strided"
+            ):
+                raise CampaignPlanningError(
+                    "uniform_cache_stride requires a newly planned strided "
+                    "coordinate cache; it cannot be silently approximated with "
+                    "a lossless/external cache or a cache-disabled workflow"
+                )
             if (
                 coordinate_cache_build_required
                 and cache_materialization == "planned_strided"
@@ -2083,6 +2097,7 @@ def plan_and_apply_complete_campaign(
                         [1, 2, 3, 4, 5, 10, 20, 100],
                     )),
                     protected_module_ids=protected_module_ids,
+                    uniform_cache_stride=uniform_cache_stride,
                     **planning_kwargs,
                 )
             else:
@@ -2109,6 +2124,7 @@ def plan_and_apply_complete_campaign(
                     [1, 2, 3, 4, 5, 10, 20, 100],
                 )),
                 protected_module_ids=protected_module_ids,
+                uniform_cache_stride=uniform_cache_stride,
                 **planning_kwargs,
             )
             recommended_plan = recommendation.get("recommended_plan")

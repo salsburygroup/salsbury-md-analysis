@@ -8,6 +8,22 @@
   "properties": {
     "config_schema": {"const": "salsbury-analysis-config-v1"},
     "default_module_policy": {"const": "all_applicable"},
+    "planning": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "module_selection": {
+          "enum": ["all_enabled", "protected_core_only"],
+          "default": "all_enabled",
+          "description": "Run the resolved enabled set or only the protected scientific core and its dependency closure."
+        },
+        "stride_mode": {
+          "enum": ["balanced_per_method", "uniform_cache_stride"],
+          "default": "balanced_per_method",
+          "description": "Allow method-specific strides after the cache, or require every enabled method to consume one uniformly strided cache stream."
+        }
+      }
+    },
     "module_groups": {
       "type": "object",
       "readOnly": true,

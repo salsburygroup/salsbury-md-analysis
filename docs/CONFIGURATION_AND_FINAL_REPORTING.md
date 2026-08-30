@@ -11,6 +11,40 @@ Supply a reviewed partial or complete configuration with:
 salsbury-md-analysis prepare-analysis ... --config my-analysis-config.json
 ```
 
+The `planning` section provides two independent controls:
+
+```json
+{
+  "config_schema": "salsbury-analysis-config-v1",
+  "planning": {
+    "module_selection": "protected_core_only",
+    "stride_mode": "uniform_cache_stride"
+  }
+}
+```
+
+`module_selection: protected_core_only` disables every non-protected module
+after resolving the normal dependency graph. It keeps the protected modules,
+their prerequisites, enabled conformational views needed by common PCA, and
+observed representative-frame output. Optional clustering methods, PaLD, and
+state-trajectory exports are off in this mode. The equivalent command-line
+switch is `--protected-core-only`.
+
+`stride_mode: uniform_cache_stride` tests one deterministic cache stride at a
+time and requires every enabled method, PCA projection, and clustering fit to
+consume that retained stream without further frame subsampling. A candidate is
+rejected if the retained stream is below a scientific minimum, exceeds a
+method's declared frame ceiling, violates an ordered-method time-gap limit, or
+does not fit the campaign resources. The planner tests from finest to coarsest
+and stops at the first feasible candidate. If none fits, preparation fails
+closed or the existing optional-method reduction can propose a smaller enabled
+set. The equivalent command-line switch is `--uniform-cache-stride`. The
+default `balanced_per_method` mode keeps the two-stage cache plus method-stride
+optimization because it usually retains more information across methods in a
+fixed resource envelope. Uniform mode requires a newly planned
+`planned_strided` cache; preparation rejects cache-off, lossless-cache, and
+external-cache configurations instead of pretending they satisfy this mode.
+
 Each `modules.<module_id>` entry has an `enabled` flag and an `options` object.
 Options replace generated definition fields and then undergo the normal strict
 project-schema validation. Disabling an upstream module also disables its
