@@ -28,5 +28,12 @@ class ReleaseMetadataTests(unittest.TestCase):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn(f"Version {package_version}", readme)
 
+    def test_ci_artifact_name_cannot_drift_with_package_version(self):
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("name: salsbury-md-analysis-${{ github.sha }}-artifacts", workflow)
+
+
 if __name__ == "__main__":
     unittest.main()
