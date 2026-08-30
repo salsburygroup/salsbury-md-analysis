@@ -301,6 +301,8 @@ class ExecutionAdapterTests(unittest.TestCase):
                         "module_id": "structural_integrity_qc",
                         "estimated_wall_hours_at_effective_cpu_cap": 0.5,
                         "estimated_peak_memory_gib_at_selected_observations": 4,
+                        "estimated_scheduler_memory_gib_at_selected_observations": 7,
+                        "estimated_scheduler_memory_gib_per_node_at_selected_observations": 7,
                     },
                     {
                         "task_id": "view:global_common_heavy:alternative_clustering:pam",
@@ -308,6 +310,8 @@ class ExecutionAdapterTests(unittest.TestCase):
                         "module_id": "alternative_clustering",
                         "estimated_wall_hours_at_effective_cpu_cap": 0.5,
                         "estimated_peak_memory_gib_at_selected_observations": 60,
+                        "estimated_scheduler_memory_gib_at_selected_observations": 91,
+                        "estimated_scheduler_memory_gib_per_node_at_selected_observations": 91,
                     },
                     {
                         "task_id": "view:global_common_heavy:alternative_clustering:gmm",
@@ -315,6 +319,8 @@ class ExecutionAdapterTests(unittest.TestCase):
                         "module_id": "alternative_clustering",
                         "estimated_wall_hours_at_effective_cpu_cap": 0.6,
                         "estimated_peak_memory_gib_at_selected_observations": 100,
+                        "estimated_scheduler_memory_gib_at_selected_observations": 151,
+                        "estimated_scheduler_memory_gib_per_node_at_selected_observations": 151,
                     },
                     {
                         "task_id": "context:chemical_a:ion_atmosphere",
@@ -322,6 +328,8 @@ class ExecutionAdapterTests(unittest.TestCase):
                         "module_id": "ion_atmosphere",
                         "estimated_wall_hours_at_effective_cpu_cap": 0.2,
                         "estimated_peak_memory_gib_at_selected_observations": 12,
+                        "estimated_scheduler_memory_gib_at_selected_observations": 19,
+                        "estimated_scheduler_memory_gib_per_node_at_selected_observations": 19,
                     },
                 ]
             }), encoding="utf-8")
@@ -346,6 +354,10 @@ class ExecutionAdapterTests(unittest.TestCase):
             alternative = tasks[(view.name, 0)]
             self.assertEqual(direct["requested_memory_gib"], 7)
             self.assertEqual(
+                direct["resource_request_source"],
+                "campaign_planner_final_memory_reservation_passthrough",
+            )
+            self.assertEqual(
                 chemistry["planner_task_ids"],
                 ["context:chemical_a:ion_atmosphere"],
             )
@@ -358,6 +370,70 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertEqual(
             scheduler["scripts"][view.name]["selected_partition_role"],
             "large_memory",
+        )
+
+    def test_execution_adapter_does_not_repeat_planner_memory_adjustment(self):
+        repository = Path(__file__).resolve().parents[1]
+        profile = load_slurm_profile(repository / "profiles/slurm/deac.json")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            common = (
+                "#!/usr/bin/env bash\n#SBATCH --time=01:00:00\n"
+                "#SBATCH --cpus-per-task=1\n#SBATCH --mem=2G\nset -euo pipefail\n"
+            )
+            (root / "run_preflight.slurm").write_text(
+                common, encoding="utf-8"
+            )
+            (root / "run_finalize_reporting.slurm").write_text(
+                common, encoding="utf-8"
+            )
+            worker = root / "run_stage_0_array.slurm"
+            worker.write_text(
+                common + "COMMANDS=(\n  'structural-qc'\n)\n",
+                encoding="utf-8",
+            )
+            (root / "campaign-resource-plan.json").write_text(json.dumps({
+                "tasks": [{
+                    "task_id": "direct:structural_integrity_qc",
+                    "module_id": "structural_integrity_qc",
+                    "estimated_wall_hours_at_effective_cpu_cap": 0.5,
+                    "estimated_peak_memory_gib_at_selected_observations": 10,
+                    "estimated_scheduler_memory_gib_at_selected_observations": 16,
+                    "estimated_scheduler_memory_gib_per_node_at_selected_observations": 16,
+                }],
+            }), encoding="utf-8")
+            execution = {
+                "maximum_parallel_cpus": 1,
+                "maximum_hours_per_cpu": 24,
+                "maximum_memory_gib": 32,
+            }
+            reporting = {
+                "resource_table_enabled": False,
+                "finding_picker_enabled": False,
+            }
+            deliberately_different_adapter_policy = {
+                **profile["resource_policy"],
+                "memory_safety_factor": 9.0,
+                "memory_overhead_gib": 8.0,
+            }
+            plan = build_local_execution_plan(
+                root,
+                execution,
+                reporting,
+                deliberately_different_adapter_policy,
+                profile["node_policy"],
+            )
+            task = next(
+                task
+                for phase in plan["phases"]
+                for task in phase["tasks"]
+                if task["script"] == worker.name
+            )
+        self.assertEqual(task["planned_peak_memory_gib"], 10)
+        self.assertEqual(task["requested_memory_gib"], 16)
+        self.assertEqual(
+            task["resource_request_source"],
+            "campaign_planner_final_memory_reservation_passthrough",
         )
 
     def test_generated_plan_uses_only_true_task_dependencies(self):

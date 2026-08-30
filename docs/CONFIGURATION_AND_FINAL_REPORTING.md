@@ -109,11 +109,22 @@ The `execution` section describes one campaign envelope. For example,
 `maximum_parallel_cpus: 32` and `maximum_hours_per_cpu: 24` means at most 32
 CPUs for 24 wall hours, or 768 raw CPU-hours before the configured utilization
 and pilot/finalization reserves. It does **not** mean 24 hours for every method.
-`time_safety_factor`, `memory_safety_factor`, and
+`time_safety_factor`, the two named memory-calibration factors, and
 `censored_timeout_safety_factor` are independently configurable.
-The analysis-config `memory_safety_factor` adjusts measured working-set
-calibrations. It is distinct from the execution profile's scheduler-memory
-factor and fixed overhead; both are recorded in `resource_safety_margins`.
+`well_calibrated_memory_uncertainty_factor` defaults to `1.0` for models backed
+by repeated completed evidence. `poorly_calibrated_memory_uncertainty_factor`
+defaults to `1.25` for weak, single-run, censored-only, or unmeasured models.
+The former analysis-config `memory_safety_factor` remains a deprecated alias for
+the latter and cannot be supplied with it. These named factors are part of the
+task working-set model, not a cluster adjustment.
+
+The planner applies the selected cluster profile's memory adjustment once after
+the task model is complete. On DEAC the final reservation is
+`ceil(1.5 × uncertainty-adjusted working set per node + 1 GiB)` for every
+allocated node. The scheduler and custom-launcher adapters consume that
+per-node value without changing it. There is no additional unnamed or
+scheduler-side memory padding. All terms are recorded in
+`resource_safety_margins`.
 The default 1.5 time factor is applied to modeled task costs before frame
 allocation. The planner then uses only the configured utilization fraction
 (normally 0.85) and removes pilot and finalization reserves. A Slurm profile may
@@ -130,9 +141,12 @@ retains measured CPU, memory, frame coverage, evidence hashes, and timeout
 censoring semantics while removing private paths, scheduler IDs, and hostnames.
 The full catalog remains separately hash-pinned as internal provenance.
 Two or more complete measurements for a module qualify the largest completed
-RSS, after the configured safety factor, to replace an older built-in memory
-baseline. A single completed run and timeout-only evidence can raise a memory
-floor but cannot lower it. The report records which rule was applied. A
+RSS to replace an older built-in memory baseline and receive the
+well-calibrated uncertainty factor. A single completed run and timeout-only
+evidence can raise a memory floor but cannot lower it; those cases receive the
+poorly calibrated factor. An upper prediction bound, when fitted, is part of
+the working-set model. The planner then applies the cluster profile's memory
+adjustment once. The report records every rule and term applied. A
 parallel task keeps its per-worker estimate separate from its intrinsic worker
 count; if the campaign cannot hold every worker at once, the planner schedules
 worker waves and increases the wall estimate without reducing frame coverage.

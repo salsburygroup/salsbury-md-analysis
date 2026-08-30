@@ -35,10 +35,19 @@ class AnalysisConfigTests(unittest.TestCase):
         self.assertIsNone(config["execution"]["slurm_profile"])
         self.assertEqual(config["execution"]["finalization_headroom_fraction"], 0.05)
         self.assertEqual(config["execution"]["time_safety_factor"], 1.5)
-        self.assertEqual(config["execution"]["memory_safety_factor"], 1.25)
+        self.assertNotIn("memory_safety_factor", config["execution"])
+        self.assertEqual(
+            config["execution"]["well_calibrated_memory_uncertainty_factor"],
+            1.0,
+        )
+        self.assertEqual(
+            config["execution"]["poorly_calibrated_memory_uncertainty_factor"],
+            1.25,
+        )
         self.assertEqual(
             config["execution"]["censored_timeout_safety_factor"], 1.5
         )
+
         self.assertEqual(len(config["clustering"]["methods"]), 11)
         self.assertFalse(config["clustering"]["methods"]["hdbscan"]["enabled"])
         self.assertTrue(all(
@@ -59,6 +68,22 @@ class AnalysisConfigTests(unittest.TestCase):
         self.assertIn(
             "pca_fes_basins",
             config["modules"]["common_pca"]["turning_off_also_disables"],
+        )
+
+    def test_legacy_analysis_memory_factor_maps_to_named_uncertainty(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "analysis-config.json"
+            path.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "execution": {"memory_safety_factor": 1.25},
+            }), encoding="utf-8")
+            config = load_analysis_config(
+                path, ["common_pca"], ["global"]
+            )
+        self.assertNotIn("memory_safety_factor", config["execution"])
+        self.assertEqual(
+            config["execution"]["poorly_calibrated_memory_uncertainty_factor"],
+            1.25,
         )
 
     def test_generated_complete_config_can_be_reloaded_unchanged(self):

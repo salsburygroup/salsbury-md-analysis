@@ -36,7 +36,11 @@ class ComparativeQuickstartTests(unittest.TestCase):
             config_path = root / "constrained.json"
             config_path.write_text(json.dumps({
                 "config_schema": "salsbury-analysis-config-v1",
-                "execution": {"maximum_memory_gib": 4.0},
+                "execution": {
+                    "maximum_memory_gib": 4.0,
+                    "well_calibrated_memory_uncertainty_factor": 2.0,
+                    "poorly_calibrated_memory_uncertainty_factor": 2.0,
+                },
             }), encoding="utf-8")
             output = root / "comparison-resource-fit"
             report = prepare_comparative_analysis_resource_fit(
@@ -82,7 +86,11 @@ class ComparativeQuickstartTests(unittest.TestCase):
             config_path = root / "low-memory.json"
             config_path.write_text(json.dumps({
                 "config_schema": "salsbury-analysis-config-v1",
-                "execution": {"maximum_memory_gib": 4.0},
+                "execution": {
+                    "maximum_memory_gib": 4.0,
+                    "well_calibrated_memory_uncertainty_factor": 2.0,
+                    "poorly_calibrated_memory_uncertainty_factor": 2.0,
+                },
             }), encoding="utf-8")
             output = root / "comparison-memory-fit"
             report = prepare_comparative_analysis_memory_fit(

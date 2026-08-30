@@ -16,6 +16,11 @@ from .frame_sampling import (
     integer_stride_selected_count,
 )
 from .manifests import load_json, validate_project
+from .memory_policy import (
+    MemoryPolicyError,
+    apply_memory_calibration_uncertainty,
+    resolve_memory_uncertainty_policy,
+)
 from .resource_planning import (
     ResourcePlanningError,
     alternative_clustering_fit_profiles,
@@ -156,7 +161,6 @@ def _apply_measured_resource_calibrations(
     measured: Mapping[str, Mapping[str, object]],
     *,
     time_safety_factor: float,
-    memory_safety_factor: float,
 ) -> None:
     """Conservatively overlay hash-bound measurements on task estimates."""
 
@@ -215,7 +219,7 @@ def _apply_measured_resource_calibrations(
                 "maximum_completed_resident_memory_mib",
                 calibration["maximum_resident_memory_mib"],
             ))
-            * memory_safety_factor * float(memory_multiplier) / 1024.0
+            * float(memory_multiplier) / 1024.0
         )
         memory_replacement_qualified = bool(
             calibration.get(
@@ -315,6 +319,7 @@ def _apply_measured_resource_calibrations(
                 measured_fixed_hours
             ),
             "memory_workload_multiplier": float(memory_multiplier),
+            "generic_memory_multiplier_applied_here": False,
             "policy": (
                 "conservative maximum after the task's declared workload scaling; "
                 "measured coverage is not a scientific ceiling"
@@ -1834,10 +1839,14 @@ def plan_and_apply_complete_campaign(
                 if str(module_id) in _AUTOMATIC_CONTEXT_MODELS
             )
     memory_policy: Dict[str, float] = {
-        "memory_safety_factor": 1.5,
-        "memory_overhead_gib": 1.0,
-        "minimum_memory_gib": 2.0,
+        "memory_safety_factor": 1.0,
+        "memory_overhead_gib": 0.0,
+        "minimum_memory_gib": 0.0,
     }
+    try:
+        memory_uncertainty_policy = resolve_memory_uncertainty_policy(execution)
+    except MemoryPolicyError as exc:
+        raise CampaignPlanningError(str(exc)) from exc
     scheduler_time_policy: Dict[str, float] = {
         "walltime_safety_factor": 1.5,
         "walltime_overhead_minutes": 15.0,
@@ -1901,9 +1910,7 @@ def plan_and_apply_complete_campaign(
             request["padding_factors"] = padding
         padding.update({
             "modeled_task_time_safety_factor": float(time_safety_factor),
-            "analysis_memory_model_safety_factor": float(
-                execution.get("memory_safety_factor", 1.25)
-            ),
+            "memory_calibration_uncertainty": dict(memory_uncertainty_policy),
             "scheduler_walltime_safety_factor_per_job": scheduler_time_policy[
                 "walltime_safety_factor"
             ],
@@ -2080,10 +2087,13 @@ def plan_and_apply_complete_campaign(
         _apply_measured_resource_calibrations(
             built, measured_calibrations,
             time_safety_factor=time_safety_factor,
-            memory_safety_factor=float(
-                execution.get("memory_safety_factor", 1.25)
-            ),
         )
+        try:
+            apply_memory_calibration_uncertainty(
+                built, memory_uncertainty_policy
+            )
+        except MemoryPolicyError as exc:
+            raise CampaignPlanningError(str(exc)) from exc
         built = [annotate_task_parallelism(task) for task in built]
         return built, current_base
 
@@ -2348,9 +2358,7 @@ def plan_and_apply_complete_campaign(
             "30,000-physical-frame/60,000-member view campaign"
         ),
         "time_safety_factor": time_safety_factor,
-        "analysis_memory_model_safety_factor": float(
-            execution.get("memory_safety_factor", 1.25)
-        ),
+        "memory_calibration_uncertainty": dict(memory_uncertainty_policy),
         "scheduler_memory_safety_factor": memory_policy[
             "memory_safety_factor"
         ],
@@ -2362,8 +2370,8 @@ def plan_and_apply_complete_campaign(
         ],
         "resource_safety_margins": {
             "modeled_task_time_factor": time_safety_factor,
-            "analysis_memory_model_factor": float(
-                execution.get("memory_safety_factor", 1.25)
+            "memory_calibration_uncertainty": dict(
+                memory_uncertainty_policy
             ),
             "planning_utilization": float(execution["planning_utilization"]),
             "pilot_budget_fraction": float(execution["pilot_budget_fraction"]),

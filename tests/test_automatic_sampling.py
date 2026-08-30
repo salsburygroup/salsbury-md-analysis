@@ -299,7 +299,6 @@ class AutomaticSamplingTests(unittest.TestCase):
                 "maximum_memory_gib": 185,
                 "planning_utilization": 0.85,
                 "pilot_budget_fraction": 0.05,
-                "memory_safety_factor": 1.25,
                 "coordinate_cache": "auto",
             },
             time_safety_factor=1.5,
@@ -312,8 +311,8 @@ class AutomaticSamplingTests(unittest.TestCase):
         self.assertEqual(row["intrinsic_cpu_cap"], 3)
         self.assertEqual(row["effective_cpu_cap"], 3)
         self.assertEqual(row["parallel_worker_count"], 3)
-        self.assertEqual(row["estimated_peak_memory_gib_per_parallel_worker"], 4.0)
-        self.assertEqual(row["estimated_peak_memory_gib"], 12.0)
+        self.assertEqual(row["estimated_peak_memory_gib_per_parallel_worker"], 5.0)
+        self.assertEqual(row["estimated_peak_memory_gib"], 15.0)
         self.assertAlmostEqual(
             row["estimated_wall_hours_at_effective_cpu_cap"],
             row["estimated_cpu_hours"] / 3.0,
@@ -330,7 +329,6 @@ class AutomaticSamplingTests(unittest.TestCase):
                 "maximum_memory_gib": 7.5,
                 "planning_utilization": 0.85,
                 "pilot_budget_fraction": 0.05,
-                "memory_safety_factor": 1.25,
                 "coordinate_cache": "auto",
             },
             time_safety_factor=1.5,
@@ -348,7 +346,7 @@ class AutomaticSamplingTests(unittest.TestCase):
             3,
         )
         self.assertEqual(
-            row["estimated_peak_memory_gib_at_selected_observations"], 4.0
+            row["estimated_peak_memory_gib_at_selected_observations"], 5.0
         )
 
     def test_censored_only_memory_does_not_invent_observation_scaling(self):
@@ -375,7 +373,6 @@ class AutomaticSamplingTests(unittest.TestCase):
                 "maximum_memory_gib": 185,
                 "planning_utilization": 0.85,
                 "pilot_budget_fraction": 0.05,
-                "memory_safety_factor": 1.25,
             },
             time_safety_factor=1.5,
             measured_calibrations=measured,
@@ -383,7 +380,7 @@ class AutomaticSamplingTests(unittest.TestCase):
         row = plan["tasks"][0]
         self.assertIsNone(row["measured_memory_cost_model"])
         self.assertLessEqual(
-            row["estimated_peak_memory_gib_at_selected_observations"], 4.0
+            row["estimated_peak_memory_gib_at_selected_observations"], 5.0
         )
 
     def test_measured_memory_model_keeps_system_size_scaling(self):
@@ -413,7 +410,6 @@ class AutomaticSamplingTests(unittest.TestCase):
                 "maximum_memory_gib": 185,
                 "planning_utilization": 0.85,
                 "pilot_budget_fraction": 0.05,
-                "memory_safety_factor": 1.25,
             },
             time_safety_factor=1.5,
             measured_calibrations=measured,
@@ -421,7 +417,7 @@ class AutomaticSamplingTests(unittest.TestCase):
         row = plan["tasks"][0]
         self.assertAlmostEqual(
             row["measured_memory_cost_model"]["calibration_memory_gib"],
-            5.0,
+            4.0,
             places=3,
         )
 

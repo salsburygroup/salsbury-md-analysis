@@ -553,26 +553,26 @@ def _enrich_task_resources(
             maximum_hours * 60.0,
             max(float(policy["minimum_wall_minutes"]), float(safe_minutes)),
         )
-        if distributed_replica_execution:
+        try:
             requested_memory_gib = max(
-                float(policy["minimum_memory_gib"]),
-                max(
-                    float(row[
-                        "estimated_scheduler_memory_gib_per_node_at_selected_observations"
-                    ])
-                    for row in matched
-                ),
+                float(row[
+                    "estimated_scheduler_memory_gib_per_node_at_selected_observations"
+                ])
+                for row in matched
             )
-            aggregate_requested_memory_gib = requested_memory_gib * node_count
-        else:
-            safe_memory = math.ceil(
-                memory_gib * float(policy["memory_safety_factor"])
-                + float(policy["memory_overhead_gib"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ExecutionAdapterError(
+                "planner final per-node memory reservation is missing for "
+                f"{path.name}"
+            ) from exc
+        if not math.isfinite(requested_memory_gib) or requested_memory_gib <= 0.0:
+            raise ExecutionAdapterError(
+                f"planner final per-node memory reservation is invalid for {path.name}"
             )
-            requested_memory_gib = max(
-                float(policy["minimum_memory_gib"]), float(safe_memory)
-            )
-            aggregate_requested_memory_gib = requested_memory_gib
+        # The planner is the sole owner of cluster memory adjustment.  The
+        # execution adapter validates and emits its final reservation without
+        # applying the Slurm profile factor or overhead a second time.
+        aggregate_requested_memory_gib = requested_memory_gib * node_count
         if aggregate_requested_memory_gib > maximum_memory + 1e-9:
             raise ExecutionAdapterError(
                 f"safety-adjusted memory request for {path.name} is "
@@ -600,7 +600,7 @@ def _enrich_task_resources(
         )
         if distributed_replica_execution:
             cpu_slots = distributed_worker_count
-        source = "campaign_planner_with_profile_safety_margin"
+        source = "campaign_planner_final_memory_reservation_passthrough"
     else:
         wall_hours = _existing_wall_minutes(path) / 60.0
         memory_gib = _existing_memory_gib(path)

@@ -76,7 +76,8 @@ dependencies, but it does not need Slurm:
     "pilot_budget_fraction": 0.05,
     "finalization_headroom_fraction": 0.05,
     "time_safety_factor": 1.5,
-    "memory_safety_factor": 1.25,
+    "well_calibrated_memory_uncertainty_factor": 1.0,
+    "poorly_calibrated_memory_uncertainty_factor": 1.25,
     "censored_timeout_safety_factor": 1.5
   }
 }
@@ -86,6 +87,16 @@ Prepare with that config and run `./run-local.sh`. The dependency-aware executor
 runs phases in order and atomically reserves both CPU slots and planner-derived
 memory for independent tasks within a phase. Their combined reservations cannot
 exceed `maximum_parallel_cpus` or `maximum_memory_gib`.
+The two named analysis-config factors express calibration uncertainty inside
+each task's modeled working set. Repeated completed evidence uses the
+well-calibrated factor; weak or absent evidence uses the poorly calibrated
+factor. During planning, the selected cluster profile then contributes its
+separate execution adjustment exactly once. On DEAC, each task receives
+`ceil(1.5 × uncertainty-adjusted working set per node + 1 GiB)` on every
+allocated node. The resulting per-node value is final. Slurm and custom
+execution adapters validate and emit it unchanged; they do not own or repeat
+either adjustment.
+
 The memory value is an aggregate campaign ceiling rather than a per-task limit,
 a prediction, or an amount preallocated at startup. Each task keeps both its
 working-set estimate and safety-adjusted reservation in
@@ -172,15 +183,16 @@ planner applies its dependency-closed optional switch set, replans, and writes
 modules remain enabled. If the protected subset does not fit, preparation
 returns `NO_ACCEPTABLE_REDUCED_PLAN` and submits nothing.
 
-Slurm requests can be larger than the estimated working set because the site
-profile adds explicit safety margins. Preparation applies those margins before
-testing memory feasibility. A profile may also declare its CPU and memory per
-node. Preparation then rejects a safety-adjusted task request that cannot fit
+Slurm requests can be larger than the estimated working set because the
+planner reads explicit adjustments from the site profile. It applies those
+terms before testing memory feasibility. A profile may also declare its CPU and
+memory per node. Planning then rejects an adjusted task request that cannot fit
 one node and packs the concurrent resource lanes into valid node bins; the sum
 of padded reservations assigned to a planned node cannot exceed that node's
 CPU or memory. It then packs individual array elements and ordinary jobs into
 deterministic resource waves. The sum of CPU slots and the sum of buffered
-memory requests in one wave cannot exceed the two aggregate campaign caps.
+memory reservations in one wave cannot exceed the two aggregate campaign caps.
+The Slurm adapter emits those final reservations unchanged.
 `submit.sh` uses `afterany` between resource waves so a failed job releases the
 next allocation. It uses `afterok` only for a task's `depends_on_task_ids` and
 asks Slurm to terminate a descendant whose required job failed instead of
