@@ -1083,6 +1083,13 @@ class ResourcePlanningTests(unittest.TestCase):
         self.assertTrue(all(
             fragment["memory_gib"] <= 185.0 for fragment in fragments
         ))
+        self.assertFalse(
+            plan["node_resource_policy"]["single_node_per_task"]
+        )
+        self.assertTrue(
+            plan["node_resource_policy"]
+            ["distributed_replica_tasks_supported"]
+        )
         self.assertEqual(plan["feasibility_status"], "feasible")
 
     def test_measured_memory_scales_from_observation_coverage(self):
