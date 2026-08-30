@@ -67,6 +67,9 @@ The comprehensive, nonredundant `standard_md_v1` profile includes:
 The exact module contracts, inputs, outputs, status, and interpretation limits
 are generated from the code registry in
 [`docs/generated/MODULE_REFERENCE.md`](docs/generated/MODULE_REFERENCE.md).
+Replica-parallel execution boundaries—including pooled means, covariance,
+bases, clustering, and segment-safe transition rules—are documented in
+[`docs/ENSEMBLE_PARALLELISM.md`](docs/ENSEMBLE_PARALLELISM.md).
 The final non-docking legacy destination review is summarized in
 [`docs/LEGACY_REVIEW.md`](docs/LEGACY_REVIEW.md); it closes repository placement
 without treating experimental modules as scientifically supported.

@@ -401,7 +401,6 @@ def pooled_rmsf_project(
                             transform,
                         )
                         replica_state.update(aligned_analysis)
-                        pooled_moments.update(aligned_analysis)
                         if block_state.count == 0:
                             block_start = frame.frame_index
                             block_start_time = current_time
@@ -477,6 +476,11 @@ def pooled_rmsf_project(
                     "time_blocks": blocks,
                 })
             if replica_state.count:
+                # Merge the replica's count, mean, and centered second moments.
+                # The between-replica mean correction in CoordinateMoments.merge
+                # makes this identical to one pooled serial stream and permits a
+                # future worker to own the replica scan without redefining RMSF.
+                pooled_moments.merge(replica_state)
                 replica_moments.append(replica_state)
                 replica_statistics = _moment_rows(replica_state, analysis_atoms)
             else:
