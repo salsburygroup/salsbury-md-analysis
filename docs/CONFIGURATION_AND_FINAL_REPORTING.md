@@ -150,8 +150,12 @@ scheduler-side memory padding. All terms are recorded in
 The default 1.5 time factor is applied to modeled task costs before frame
 allocation. The planner then uses only the configured utilization fraction
 (normally 0.85) and removes pilot and finalization reserves. A Slurm profile may
-add a further per-job wall-time margin; that is a timeout request, not additional
-planned analysis time.
+request a further per-job timeout margin. That margin must fit inside
+`maximum_hours_per_cpu`, which is the final padded end-to-end execution ceiling.
+The execution adapter retains the largest uniform fraction of the preferred
+margin whose serialized dependency-path kill limits fit inside the ceiling. It
+does not alter sampling or enabled modules. If planner estimates plus minimum
+job limits cannot fit, submission is refused.
 `finalization_headroom_fraction` reserves campaign capacity for dependency
 barriers, summaries, hashes, and fail-closed acceptance rather than allocating
 the entire envelope to scientific estimators. A timed-out job is retained as a
@@ -356,8 +360,9 @@ within both `maximum_parallel_cpus` and the aggregate `maximum_memory_gib`; the
 next epoch waits for completion of the preceding epoch only to release and
 reuse resources. A task waits for successful completion only of its declared
 data prerequisites. The launcher refuses submission when its generated
-critical-path estimate exceeds the campaign wall limit. Queue wait and
-scheduler backfill are not counted as analysis wall time.
+critical-path estimate or serialized scheduler kill-limit path exceeds the
+campaign wall limit. Queue wait and scheduler backfill are not counted as
+analysis wall time.
 
 `advise-slurm-capacity` is an optional, read-only step for prepared Slurm
 campaigns. It can replace the configured CPU count with the smaller of the live
