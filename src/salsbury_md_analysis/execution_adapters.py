@@ -1021,14 +1021,23 @@ def _task_resource_requests(plan: Mapping[str, object]) -> List[Dict[str, object
     return rows
 
 
-def _slurm_resource_lanes(
+def _slurm_resource_epochs(
     execution_plan: Mapping[str, object],
     partitions: Mapping[str, object],
     partition_limits: Mapping[str, object],
     resource_policy: Mapping[str, object],
     node_policy: Mapping[str, object],
 ) -> List[Dict[str, object]]:
-    """Pack dependency-safe tasks into independent serial resource lanes."""
+    """Pack each dependency level into reusable serial resource lanes.
+
+    The local runner and campaign planner treat every execution-plan phase as a
+    dependency level: tasks within a level may run concurrently, and the next
+    level starts after the preceding level has finished.  Slurm must replay the
+    same contract.  Packing all phases into permanent lanes makes the largest
+    task reserve its lane's memory for the rest of the campaign and can create
+    a false critical path even though that memory is free after the task exits.
+    Resource epochs release every lane reservation at the phase boundary.
+    """
 
     maximum_cpus = int(execution_plan.get("maximum_parallel_cpus", 0))
     maximum_memory = float(
@@ -1038,10 +1047,28 @@ def _slurm_resource_lanes(
         raise ExecutionAdapterError(
             "execution plan lacks positive aggregate CPU and memory limits"
         )
-    ordered_items: List[Dict[str, object]] = []
+    node_cpus = node_policy.get("cpus_per_node")
+    node_memory = node_policy.get("memory_gib_per_node")
+    configured_maximum_nodes = node_policy.get(
+        "maximum_nodes_per_campaign"
+    )
+    maximum_nodes = (
+        int(configured_maximum_nodes)
+        if configured_maximum_nodes is not None else
+        (
+            max(
+                math.ceil(maximum_cpus / int(node_cpus)),
+                math.ceil(maximum_memory / float(node_memory)),
+            )
+            if node_cpus is not None and node_memory is not None else None
+        )
+    )
+    resource_epochs: List[Dict[str, object]] = []
+    submission_index = 0
+    lane_index = 0
     for phase_index, phase in enumerate(execution_plan.get("phases", [])):
         phase_id = str(phase["phase_id"])
-        items = []
+        items: List[Dict[str, object]] = []
         for task_index, task in enumerate(phase.get("tasks", [])):
             script = str(task["script"])
             array_task_id = task.get("array_task_id")
@@ -1094,59 +1121,65 @@ def _slurm_resource_lanes(
         for item in items:
             item["phase_index"] = phase_index
             item["phase_id"] = phase_id
-            item["submission_index"] = len(ordered_items)
-            ordered_items.append(item)
-    try:
-        node_cpus = node_policy.get("cpus_per_node")
-        node_memory = node_policy.get("memory_gib_per_node")
-        configured_maximum_nodes = node_policy.get(
-            "maximum_nodes_per_campaign"
-        )
-        maximum_nodes = (
-            int(configured_maximum_nodes)
-            if configured_maximum_nodes is not None else
-            (
-                max(
-                    math.ceil(maximum_cpus / int(node_cpus)),
-                    math.ceil(maximum_memory / float(node_memory)),
-                )
-                if node_cpus is not None and node_memory is not None else None
+            item["submission_index"] = submission_index
+            submission_index += 1
+        try:
+            lanes = pack_resource_lanes(
+                items,
+                maximum_parallel_cpus=maximum_cpus,
+                maximum_parallel_memory_gib=maximum_memory,
+                maximum_cpus_per_node=(
+                    None if node_cpus is None else int(node_cpus)
+                ),
+                maximum_memory_gib_per_node=(
+                    None if node_memory is None else float(node_memory)
+                ),
+                maximum_nodes=maximum_nodes,
             )
-        )
-        lanes = pack_resource_lanes(
-            ordered_items,
-            maximum_parallel_cpus=maximum_cpus,
-            maximum_parallel_memory_gib=maximum_memory,
-            maximum_cpus_per_node=(
-                None if node_cpus is None else int(node_cpus)
+        except ResourcePlanningError as exc:
+            raise ExecutionAdapterError(str(exc)) from exc
+        for local_lane_index, lane in enumerate(lanes):
+            lane["lane_index"] = lane_index
+            lane["epoch_lane_index"] = local_lane_index
+            lane["resource_epoch_index"] = phase_index
+            lane["planned_wall_hours"] = sum(
+                float(item.get("planned_wall_hours", 0.0))
+                for item in lane.get("items", [])
+            )
+            lane["phase_ids"] = [phase_id]
+            lane_index += 1
+        resource_epochs.append({
+            "resource_epoch_index": phase_index,
+            "phase_id": phase_id,
+            "lanes": lanes,
+            "cpu_slots": sum(int(lane["cpu_slots"]) for lane in lanes),
+            "memory_gib": sum(float(lane["memory_gib"]) for lane in lanes),
+            "planned_wall_hours": max(
+                (float(lane["planned_wall_hours"]) for lane in lanes),
+                default=0.0,
             ),
-            maximum_memory_gib_per_node=(
-                None if node_memory is None else float(node_memory)
+            "wall_hours": max(
+                (float(lane["wall_hours"]) for lane in lanes),
+                default=0.0,
             ),
-            maximum_nodes=maximum_nodes,
-        )
-    except ResourcePlanningError as exc:
-        raise ExecutionAdapterError(str(exc)) from exc
-    for lane in lanes:
-        lane["planned_wall_hours"] = sum(
-            float(item.get("planned_wall_hours", 0.0))
-            for item in lane.get("items", [])
-        )
-        lane["phase_ids"] = list(dict.fromkeys(
-            str(item["phase_id"]) for item in lane.get("items", [])
-        ))
-    return lanes
+        })
+    return resource_epochs
 
 
 def _slurm_submission_preview(
     execution_plan: Mapping[str, object],
-    resource_lanes: Sequence[Mapping[str, object]],
+    resource_epochs: Sequence[Mapping[str, object]],
     node_policy: Mapping[str, object],
 ) -> Dict[str, object]:
     """Return a bounded, machine-readable contract shown before submission."""
 
     maximum_cpus = int(execution_plan["maximum_parallel_cpus"])
     maximum_memory = float(execution_plan["maximum_parallel_memory_gib"])
+    resource_lanes = [
+        lane
+        for epoch in resource_epochs
+        for lane in epoch.get("lanes", [])
+    ]
     task_count = sum(
         len(lane.get("items", [])) for lane in resource_lanes
     )
@@ -1158,53 +1191,64 @@ def _slurm_submission_preview(
         len(item.get("wait_for_task_ids", []))
         for lane in resource_lanes for item in lane.get("items", [])
     )
-    peak_cpus = sum(int(lane["cpu_slots"]) for lane in resource_lanes)
-    peak_memory = sum(float(lane["memory_gib"]) for lane in resource_lanes)
-    planner_critical_path = max(
-        (
-            float(lane.get("planned_wall_hours", 0.0))
-            for lane in resource_lanes
-        ),
+    peak_cpus = max(
+        (int(epoch.get("cpu_slots", 0)) for epoch in resource_epochs),
+        default=0,
+    )
+    peak_memory = max(
+        (float(epoch.get("memory_gib", 0.0)) for epoch in resource_epochs),
         default=0.0,
     )
-    scheduler_reservation_path = max(
-        (float(lane.get("wall_hours", 0.0)) for lane in resource_lanes),
-        default=0.0,
+    planner_critical_path = sum(
+        float(epoch.get("planned_wall_hours", 0.0))
+        for epoch in resource_epochs
+    )
+    scheduler_reservation_path = sum(
+        float(epoch.get("wall_hours", 0.0))
+        for epoch in resource_epochs
     )
     warnings: List[Dict[str, object]] = []
     node_cpus = node_policy.get("cpus_per_node")
     node_memory = node_policy.get("memory_gib_per_node")
-    planned_node_indices = {
-        int(node_index)
-        for lane in resource_lanes
-        for node_index in lane.get("planned_node_indices", [])
-    }
     node_reservations = []
-    for node_index in sorted(planned_node_indices):
-        fragments = [
-            fragment
-            for lane in resource_lanes
-            for fragment in lane.get(
-                "planned_node_fragment_reservations", []
-            )
-            if int(fragment["planned_node_index"]) == node_index
-        ]
-        node_lanes = [
-            lane for lane in resource_lanes
-            if node_index in lane.get("planned_node_indices", [])
-        ]
-        node_reservations.append({
-            "planned_node_index": node_index,
-            "resource_lane_indices": [
-                int(lane["lane_index"]) for lane in node_lanes
-            ],
-            "reserved_cpus": sum(
-                int(fragment["cpu_slots"]) for fragment in fragments
-            ),
-            "reserved_memory_gib": sum(
-                float(fragment["memory_gib"]) for fragment in fragments
-            ),
-        })
+    planned_node_count = 0
+    for epoch in resource_epochs:
+        lanes = list(epoch.get("lanes", []))
+        epoch_node_indices = {
+            int(node_index)
+            for lane in lanes
+            for node_index in lane.get("planned_node_indices", [])
+        }
+        planned_node_count = max(planned_node_count, len(epoch_node_indices))
+        for node_index in sorted(epoch_node_indices):
+            fragments = [
+                fragment
+                for lane in lanes
+                for fragment in lane.get(
+                    "planned_node_fragment_reservations", []
+                )
+                if int(fragment["planned_node_index"]) == node_index
+            ]
+            node_lanes = [
+                lane for lane in lanes
+                if node_index in lane.get("planned_node_indices", [])
+            ]
+            node_reservations.append({
+                "resource_epoch_index": int(
+                    epoch["resource_epoch_index"]
+                ),
+                "phase_id": str(epoch["phase_id"]),
+                "planned_node_index": node_index,
+                "resource_lane_indices": [
+                    int(lane["lane_index"]) for lane in node_lanes
+                ],
+                "reserved_cpus": sum(
+                    int(fragment["cpu_slots"]) for fragment in fragments
+                ),
+                "reserved_memory_gib": sum(
+                    float(fragment["memory_gib"]) for fragment in fragments
+                ),
+            })
     if node_cpus is not None and node_memory is not None:
         for reservation in node_reservations:
             if (
@@ -1229,9 +1273,35 @@ def _slurm_submission_preview(
             "generated_parallel_cpu_ceiling": peak_cpus,
             "excess_cpus": maximum_cpus - peak_cpus,
         })
+    campaign_wall_hours = (
+        float(execution_plan["maximum_campaign_wall_hours"])
+        if execution_plan.get("maximum_campaign_wall_hours") is not None
+        else None
+    )
+    generated_schedule_feasible = (
+        campaign_wall_hours is None
+        or planner_critical_path <= campaign_wall_hours + 1.0e-9
+    )
+    if not generated_schedule_feasible:
+        warnings.append({
+            "severity": "error",
+            "code": "GENERATED_SCHEDULE_EXCEEDS_CAMPAIGN_WALL_LIMIT",
+            "message": (
+                "The generated dependency/resource schedule is estimated to "
+                f"require {planner_critical_path:g} hours, exceeding the "
+                f"configured campaign limit of {campaign_wall_hours:g} hours. "
+                "Submission is disabled; reduce optional work, adjust sampling, "
+                "or increase the campaign wall limit and replan."
+            ),
+            "generated_schedule_wall_hours": planner_critical_path,
+            "campaign_wall_limit_hours": campaign_wall_hours,
+        })
     lane_summaries = [
         {
             "resource_lane_index": int(lane.get("lane_index", index)),
+            "resource_epoch_index": int(
+                lane.get("resource_epoch_index", 0)
+            ),
             "phase_ids": list(lane.get("phase_ids", [])),
             "task_count": len(lane.get("items", [])),
             "cpu_slots": int(lane["cpu_slots"]),
@@ -1243,8 +1313,28 @@ def _slurm_submission_preview(
         }
         for index, lane in enumerate(resource_lanes)
     ]
+    epoch_summaries = [
+        {
+            "resource_epoch_index": int(epoch["resource_epoch_index"]),
+            "phase_id": str(epoch["phase_id"]),
+            "resource_lane_count": len(epoch.get("lanes", [])),
+            "task_count": sum(
+                len(lane.get("items", []))
+                for lane in epoch.get("lanes", [])
+            ),
+            "cpu_slots": int(epoch.get("cpu_slots", 0)),
+            "reserved_memory_gib": float(epoch.get("memory_gib", 0.0)),
+            "planner_estimated_wall_hours": float(
+                epoch.get("planned_wall_hours", 0.0)
+            ),
+            "scheduler_time_limit_hours": float(
+                epoch.get("wall_hours", 0.0)
+            ),
+        }
+        for epoch in resource_epochs
+    ]
     return {
-        "slurm_submission_preview_schema": "salsbury-slurm-submission-preview-v1",
+        "slurm_submission_preview_schema": "salsbury-slurm-submission-preview-v2",
         "technical_status": "complete",
         "scientific_status": "not evaluated",
         "execution_started": False,
@@ -1257,14 +1347,15 @@ def _slurm_submission_preview(
             int(item.get("phase_index", 0))
             for lane in resource_lanes for item in lane.get("items", [])
         }),
-        "resource_wave_count": 0,
+        "resource_wave_count": len(resource_epochs),
+        "resource_epoch_count": len(resource_epochs),
         "resource_lane_count": len(resource_lanes),
         "maximum_parallel_cpus_configured": maximum_cpus,
         "maximum_parallel_cpus_in_generated_waves": peak_cpus,
         "maximum_parallel_memory_gib_configured": maximum_memory,
         "maximum_parallel_memory_gib_in_generated_waves": peak_memory,
         "node_policy": dict(node_policy),
-        "planned_node_count": len(planned_node_indices),
+        "planned_node_count": planned_node_count,
         "planned_node_reservations": node_reservations,
         "per_node_padding_validation": (
             "complete" if node_cpus is not None and node_memory is not None
@@ -1276,21 +1367,22 @@ def _slurm_submission_preview(
         "scheduler_time_limit_reservation_critical_path_hours": (
             scheduler_reservation_path
         ),
-        "campaign_planner_wall_hours": (
-            float(execution_plan["maximum_campaign_wall_hours"])
-            if execution_plan.get("maximum_campaign_wall_hours") is not None
-            else None
+        "campaign_planner_wall_hours": campaign_wall_hours,
+        "generated_schedule_feasibility_status": (
+            "feasible" if generated_schedule_feasible else "infeasible"
         ),
-        "dependency_waves": [],
+        "submission_permitted": generated_schedule_feasible,
+        "dependency_waves": epoch_summaries,
+        "resource_epochs": epoch_summaries,
         "resource_lanes": lane_summaries,
         "resource_contract": (
-            "Each resource lane runs at most one task at a time. A task waits "
-            "only for the preceding task in its own lane plus its explicit "
-            "dependencies. Only depends_on_task_ids create success-required "
-            "inputs without a recompute path; wait_for_task_ids create "
-            "failure-tolerant cache-reuse or completion ordering. CPU slots and "
-            "safety-adjusted lane-memory reservations summed across lanes stay "
-            "at or below the configured aggregate caps."
+            "Each dependency level is a resource epoch. Within an epoch, each "
+            "resource lane runs at most one task at a time; the next epoch waits "
+            "for all lanes in the preceding epoch, releasing their CPU and "
+            "memory reservations. Only depends_on_task_ids create success-required "
+            "inputs; epoch barriers and wait_for_task_ids use failure-tolerant "
+            "completion ordering. CPU slots and safety-adjusted lane-memory "
+            "reservations stay within the aggregate and per-node caps in every epoch."
             if execution_plan.get("dependency_model") == "task_dag_v1" else
             "Each later dependency wave waits for successful completion of every "
             "job in the preceding wave. CPU slots and safety-adjusted memory summed "
@@ -1312,9 +1404,10 @@ def _render_resource_bounded_submit(
     root: Path,
     profile: Mapping[str, object],
     profile_path: Path,
-    resource_lanes: Sequence[Mapping[str, object]],
+    resource_epochs: Sequence[Mapping[str, object]],
+    submission_permitted: bool,
 ) -> str:
-    """Render one launcher with separate scientific and resource dependencies."""
+    """Render one launcher with scientific dependencies and resource epochs."""
 
     submit_command = shlex.quote(str(profile["submit_command"]))
     lines = [
@@ -1336,27 +1429,56 @@ def _render_resource_bounded_submit(
         '    ;;',
         'esac',
         'cat "$PREVIEW"',
-        'printf "Submitting the reviewed Slurm resource lanes now.\\n"',
-        "",
     ]
+    if not submission_permitted:
+        lines.extend([
+            'printf "Submission refused: generated schedule exceeds the reviewed campaign limit.\\n" >&2',
+            'exit 3',
+        ])
+    lines.extend([
+        'printf "Submitting the reviewed Slurm resource epochs now.\\n"',
+        "",
+    ])
     submitted_jobs: List[str] = []
     task_jobs: Dict[str, str] = {}
     previous_lane_jobs: Dict[int, str] = {}
+    resource_lanes = [
+        lane
+        for epoch in resource_epochs
+        for lane in epoch.get("lanes", [])
+    ]
     ordered_items = sorted(
         (
-            (int(lane.get("lane_index", lane_index)), item)
+            (
+                int(lane.get("resource_epoch_index", 0)),
+                int(lane.get("lane_index", lane_index)),
+                item,
+            )
             for lane_index, lane in enumerate(resource_lanes)
             for item in lane.get("items", [])
         ),
-        key=lambda pair: int(pair[1].get("submission_index", 0)),
+        key=lambda row: int(row[2].get("submission_index", 0)),
     )
-    for item_index, (lane_index, item) in enumerate(ordered_items):
+    terminal_variables_by_epoch: Dict[int, List[str]] = {}
+    terminal_index_by_lane: Dict[int, int] = {}
+    for item_index, (epoch_index, lane_index, _item) in enumerate(ordered_items):
+        terminal_index_by_lane[lane_index] = item_index
+        terminal_variables_by_epoch.setdefault(epoch_index, [])
+    for lane_index, item_index in terminal_index_by_lane.items():
+        epoch_index = ordered_items[item_index][0]
+        terminal_variables_by_epoch[epoch_index].append(
+            f"JOB_T{item_index:04d}"
+        )
+    for item_index, (epoch_index, lane_index, item) in enumerate(ordered_items):
         if item_index == 0 or (
             item_index > 0
             and str(item.get("phase_id"))
-            != str(ordered_items[item_index - 1][1].get("phase_id"))
+            != str(ordered_items[item_index - 1][2].get("phase_id"))
         ):
-            lines.append(f"# dependency phase {item.get('phase_id')}")
+            lines.append(
+                f"# resource epoch {epoch_index + 1}: "
+                f"dependency phase {item.get('phase_id')}"
+            )
         lines.append(
             f"# resource lane {lane_index + 1}: "
             f"{int(item['cpu_slots'])} CPUs, {float(item['memory_gib']):g} GiB"
@@ -1409,8 +1531,13 @@ def _render_resource_bounded_submit(
             completion_job_variables.append(waited)
         clauses = []
         lane_predecessor = previous_lane_jobs.get(lane_index)
+        previous_epoch_variables = (
+            terminal_variables_by_epoch.get(epoch_index - 1, [])
+            if lane_predecessor is None else []
+        )
         afterany_variables = list(dict.fromkeys([
             *([lane_predecessor] if lane_predecessor else []),
+            *previous_epoch_variables,
             *completion_job_variables,
         ]))
         if afterany_variables:
@@ -1441,11 +1568,13 @@ def _render_resource_bounded_submit(
             task_jobs[str(item["task_id"])] = variable
         lines.append("")
     if submitted_jobs:
+        final_epoch = max(terminal_variables_by_epoch, default=0)
+        final_variables = terminal_variables_by_epoch.get(final_epoch, [])
         lines.extend([
             'printf "Submitted %s jobs; final job IDs: %s\\n" '
             f'"{len(submitted_jobs)}" "'
             + ":".join(
-                f"${{{name}}}" for _, name in sorted(previous_lane_jobs.items())
+                f"${{{name}}}" for name in final_variables
             )
             + '"',
         ])
@@ -1484,7 +1613,7 @@ def apply_slurm_profile(
         partition_limits,
         resource_policy,
     )
-    resource_lanes = _slurm_resource_lanes(
+    resource_epochs = _slurm_resource_epochs(
         execution_plan,
         partitions,
         partition_limits,
@@ -1492,7 +1621,7 @@ def apply_slurm_profile(
         node_policy,
     )
     submission_preview = _slurm_submission_preview(
-        execution_plan, resource_lanes, node_policy
+        execution_plan, resource_epochs, node_policy
     )
     (root / "slurm-submission-preview.json").write_text(
         json.dumps(submission_preview, indent=2, sort_keys=True) + "\n",
@@ -1583,13 +1712,17 @@ def apply_slurm_profile(
     if canonical_submit.is_file():
         canonical_submit.write_text(
             _render_resource_bounded_submit(
-                root, profile, profile_path, resource_lanes
+                root,
+                profile,
+                profile_path,
+                resource_epochs,
+                bool(submission_preview["submission_permitted"]),
             ),
             encoding="utf-8",
         )
         os.chmod(canonical_submit, 0o755)
     return {
-        "scheduler_resource_requests_schema": "salsbury-scheduler-resource-requests-v4",
+        "scheduler_resource_requests_schema": "salsbury-scheduler-resource-requests-v5",
         "dependency_model": execution_plan.get(
             "dependency_model", "legacy_phase_chain"
         ),
@@ -1605,18 +1738,24 @@ def apply_slurm_profile(
         "maximum_parallel_memory_gib": execution_plan[
             "maximum_parallel_memory_gib"
         ],
-        "resource_waves": [],
-        "resource_lanes": resource_lanes,
+        "resource_waves": resource_epochs,
+        "resource_epochs": resource_epochs,
+        "resource_lanes": [
+            lane
+            for epoch in resource_epochs
+            for lane in epoch.get("lanes", [])
+        ],
         "submission_preview": submission_preview,
         "submission_preview_file": "slurm-submission-preview.json",
         "canonical_submit_script": (
             "submit.sh" if canonical_submit.is_file() else None
         ),
         "aggregate_resource_contract": (
-            "each lane runs one task at a time; a task uses afterany only for "
-            "its preceding lane task and explicit completion waits, and afterok "
-            "only for success-required inputs it cannot reconstruct; summed lane "
-            "CPU and safety-adjusted memory reservations stay within campaign limits"
+            "each dependency level is a resource epoch; lanes serialize tasks "
+            "within an epoch, every later epoch waits afterany for completion of "
+            "the preceding epoch, and afterok is reserved for success-required "
+            "inputs; CPU and safety-adjusted memory reservations are released at "
+            "each epoch boundary and remain within campaign and per-node limits"
             if execution_plan.get("dependency_model") == "task_dag_v1" else
             "tasks in one wave may run concurrently; every later wave waits "
             "afterany for every job in the preceding wave, and each wave stays "
