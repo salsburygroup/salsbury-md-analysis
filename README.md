@@ -257,8 +257,11 @@ envelope; `--target-wall-hours` is a command-line override for the latter. It
 is not a separate allowance for every method. The estimate includes a 1.5
 timing safety factor. Only 85% of the raw CPU-hour envelope is normally planned,
 with separate pilot and finalization reserves removed before scientific work is
-allocated. Slurm's additional per-job time margin is a timeout threshold, not
-extra planned science time. The generated `campaign-resource-plan.json` applies
+allocated. The requested wall time is the final padded end-to-end execution
+ceiling. Slurm per-job timeout margins must fit inside that ceiling; the launcher
+retains as much of the preferred margin as fits and refuses submission if the
+planner estimates plus minimum job limits exceed it. The generated
+`campaign-resource-plan.json` applies
 the campaign limits across base trajectory estimators, inherited base analyses,
 and every enabled PCA/FES/clustering/state view. `sampling-plan.json` records the applied
 direct-method selections, while each view project records its shared upstream

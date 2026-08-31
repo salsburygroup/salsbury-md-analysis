@@ -631,6 +631,11 @@ def _enrich_task_resources(
         "planned_wall_hours": wall_hours,
         "planned_peak_memory_gib": memory_gib,
         "requested_wall_minutes": requested_wall_minutes,
+        "preferred_requested_wall_minutes": requested_wall_minutes,
+        "minimum_requested_wall_minutes": max(
+            float(policy["minimum_wall_minutes"]),
+            float(math.ceil(wall_hours * 60.0)),
+        ),
         "requested_memory_gib": requested_memory_gib,
         "aggregate_requested_memory_gib": aggregate_requested_memory_gib,
         "node_count": node_count,
@@ -650,6 +655,161 @@ def _enrich_task_resources(
         "memory_request_limited_by_campaign_cap": False,
     })
     return enriched
+
+
+def _walltime_path_for_phases(
+    phases: Sequence[Mapping[str, object]],
+    *,
+    maximum_parallel_cpus: int,
+    maximum_parallel_memory_gib: float,
+    node_policy: Mapping[str, object],
+) -> float:
+    """Return the serialized scheduler-time path for dependency phases."""
+
+    node_cpus = node_policy.get("cpus_per_node")
+    node_memory = node_policy.get("memory_gib_per_node")
+    configured_maximum_nodes = node_policy.get("maximum_nodes_per_campaign")
+    maximum_nodes = (
+        int(configured_maximum_nodes)
+        if configured_maximum_nodes is not None else
+        (
+            max(
+                math.ceil(maximum_parallel_cpus / int(node_cpus)),
+                math.ceil(maximum_parallel_memory_gib / float(node_memory)),
+            )
+            if node_cpus is not None and node_memory is not None else None
+        )
+    )
+    total = 0.0
+    for phase_index, phase in enumerate(phases):
+        items = []
+        for task_index, task in enumerate(phase.get("tasks", [])):
+            items.append({
+                "item_id": str(task.get("task_id") or (
+                    f"phase-{phase_index}:task-{task_index}"
+                )),
+                "cpu_slots": int(task["cpu_slots"]),
+                "memory_gib": (
+                    float(task["requested_memory_gib"])
+                    * int(task.get("node_count", 1))
+                ),
+                "wall_hours": float(task["requested_wall_minutes"]) / 60.0,
+                "node_count": int(task.get("node_count", 1)),
+                "workers_per_node": int(task.get(
+                    "workers_per_node", task["cpu_slots"]
+                )),
+                "distributed_replica_execution": bool(task.get(
+                    "distributed_replica_execution", False
+                )),
+            })
+        try:
+            lanes = pack_resource_lanes(
+                items,
+                maximum_parallel_cpus=maximum_parallel_cpus,
+                maximum_parallel_memory_gib=maximum_parallel_memory_gib,
+                maximum_cpus_per_node=(
+                    None if node_cpus is None else int(node_cpus)
+                ),
+                maximum_memory_gib_per_node=(
+                    None if node_memory is None else float(node_memory)
+                ),
+                maximum_nodes=maximum_nodes,
+            )
+        except ResourcePlanningError as exc:
+            raise ExecutionAdapterError(str(exc)) from exc
+        total += max(
+            (float(lane["wall_hours"]) for lane in lanes),
+            default=0.0,
+        )
+    return total
+
+
+def _fit_walltime_requests_to_campaign(
+    execution_plan: Dict[str, object],
+) -> Dict[str, object]:
+    """Fit job kill limits inside the padded end-to-end campaign ceiling.
+
+    Planner wall estimates already include the configured model uncertainty.
+    A Slurm profile may request additional per-job timeout padding, but that
+    padding is optional headroom inside the campaign limit rather than a second
+    wall-time budget layered on top of it.
+    """
+
+    campaign_wall = float(execution_plan["maximum_campaign_wall_hours"])
+    maximum_cpus = int(execution_plan["maximum_parallel_cpus"])
+    maximum_memory = float(execution_plan["maximum_parallel_memory_gib"])
+    node_policy = execution_plan.get("node_policy", {})
+    assert isinstance(node_policy, Mapping)
+    phases = execution_plan.get("phases", [])
+    assert isinstance(phases, Sequence)
+    tasks = [
+        task for phase in phases for task in phase.get("tasks", [])
+    ]
+
+    def assign(scale: float) -> float:
+        for task in tasks:
+            minimum = float(task["minimum_requested_wall_minutes"])
+            preferred = float(task["preferred_requested_wall_minutes"])
+            requested = minimum + scale * max(0.0, preferred - minimum)
+            task["requested_wall_minutes"] = min(
+                campaign_wall * 60.0,
+                max(minimum, float(math.ceil(requested))),
+            )
+            task["wall_request_limited_by_campaign_cap"] = (
+                float(task["requested_wall_minutes"]) + 1.0e-9 < preferred
+            )
+        return _walltime_path_for_phases(
+            phases,
+            maximum_parallel_cpus=maximum_cpus,
+            maximum_parallel_memory_gib=maximum_memory,
+            node_policy=node_policy,
+        )
+
+    minimum_path = assign(0.0)
+    preferred_path = assign(1.0)
+    if preferred_path <= campaign_wall + 1.0e-9:
+        scale = 1.0
+        selected_path = preferred_path
+        status = "preferred_padding_fits"
+    elif minimum_path > campaign_wall + 1.0e-9:
+        scale = 0.0
+        selected_path = assign(scale)
+        status = "minimum_time_limits_exceed_campaign"
+    else:
+        low = 0.0
+        high = 1.0
+        for _ in range(50):
+            midpoint = (low + high) / 2.0
+            path = assign(midpoint)
+            if path <= campaign_wall + 1.0e-9:
+                low = midpoint
+            else:
+                high = midpoint
+        scale = low
+        selected_path = assign(scale)
+        status = "preferred_padding_reduced_to_fit"
+
+    allocation = {
+        "walltime_allocation_schema": "salsbury-walltime-allocation-v1",
+        "contract": "padded_end_to_end_campaign_ceiling",
+        "campaign_wall_limit_hours": campaign_wall,
+        "minimum_scheduler_reservation_critical_path_hours": minimum_path,
+        "preferred_scheduler_reservation_critical_path_hours": preferred_path,
+        "selected_scheduler_reservation_critical_path_hours": selected_path,
+        "preferred_padding_scale_applied": scale,
+        "status": status,
+        "submission_time_feasible": (
+            selected_path <= campaign_wall + 1.0e-9
+        ),
+        "interpretation": (
+            "Planner estimates already include modeled task-time uncertainty. "
+            "Profile timeout padding is retained only to the extent that the "
+            "serialized scheduler kill-limit path remains inside the requested "
+            "padded end-to-end campaign wall limit."
+        ),
+    }
+    execution_plan["walltime_allocation"] = allocation
+    return allocation
 
 
 def _format_slurm_time(minutes: float) -> str:
@@ -1278,11 +1438,25 @@ def _slurm_submission_preview(
         if execution_plan.get("maximum_campaign_wall_hours") is not None
         else None
     )
-    generated_schedule_feasible = (
+    planner_path_feasible = (
         campaign_wall_hours is None
         or planner_critical_path <= campaign_wall_hours + 1.0e-9
     )
-    if not generated_schedule_feasible:
+    scheduler_path_feasible = (
+        campaign_wall_hours is None
+        or scheduler_reservation_path <= campaign_wall_hours + 1.0e-9
+    )
+    walltime_allocation = execution_plan.get("walltime_allocation", {})
+    allocation_feasible = (
+        not isinstance(walltime_allocation, Mapping)
+        or bool(walltime_allocation.get("submission_time_feasible", True))
+    )
+    generated_schedule_feasible = (
+        planner_path_feasible
+        and scheduler_path_feasible
+        and allocation_feasible
+    )
+    if not planner_path_feasible:
         warnings.append({
             "severity": "error",
             "code": "GENERATED_SCHEDULE_EXCEEDS_CAMPAIGN_WALL_LIMIT",
@@ -1294,6 +1468,52 @@ def _slurm_submission_preview(
                 "or increase the campaign wall limit and replan."
             ),
             "generated_schedule_wall_hours": planner_critical_path,
+            "campaign_wall_limit_hours": campaign_wall_hours,
+        })
+    elif not scheduler_path_feasible or not allocation_feasible:
+        warnings.append({
+            "severity": "error",
+            "code": "MINIMUM_SCHEDULER_TIMEOUTS_EXCEED_CAMPAIGN_WALL_LIMIT",
+            "message": (
+                "Even the planner estimates with minimum per-job scheduler "
+                f"timeouts require {scheduler_reservation_path:g} hours along "
+                f"the dependency path, exceeding the padded end-to-end campaign "
+                f"limit of {campaign_wall_hours:g} hours. Submission is disabled; "
+                "reduce optional work, adjust sampling, or increase the campaign "
+                "wall limit and replan."
+            ),
+            "scheduler_reservation_critical_path_hours": (
+                scheduler_reservation_path
+            ),
+            "campaign_wall_limit_hours": campaign_wall_hours,
+        })
+    if (
+        isinstance(walltime_allocation, Mapping)
+        and walltime_allocation.get("status")
+        == "preferred_padding_reduced_to_fit"
+    ):
+        warnings.append({
+            "severity": "warning",
+            "code": "SCHEDULER_TIMEOUT_PADDING_REDUCED_TO_FIT_CAMPAIGN",
+            "message": (
+                "The preferred per-job scheduler timeout padding did not fit "
+                "inside the requested padded end-to-end campaign wall limit. "
+                "The launcher retained the largest uniform fraction that fits; "
+                "sampling and enabled analyses were not changed."
+            ),
+            "preferred_padding_scale_applied": float(
+                walltime_allocation.get("preferred_padding_scale_applied", 0.0)
+            ),
+            "preferred_scheduler_reservation_critical_path_hours": float(
+                walltime_allocation.get(
+                    "preferred_scheduler_reservation_critical_path_hours", 0.0
+                )
+            ),
+            "selected_scheduler_reservation_critical_path_hours": float(
+                walltime_allocation.get(
+                    "selected_scheduler_reservation_critical_path_hours", 0.0
+                )
+            ),
             "campaign_wall_limit_hours": campaign_wall_hours,
         })
     lane_summaries = [
@@ -1334,7 +1554,7 @@ def _slurm_submission_preview(
         for epoch in resource_epochs
     ]
     return {
-        "slurm_submission_preview_schema": "salsbury-slurm-submission-preview-v2",
+        "slurm_submission_preview_schema": "salsbury-slurm-submission-preview-v3",
         "technical_status": "complete",
         "scientific_status": "not evaluated",
         "execution_started": False,
@@ -1368,6 +1588,7 @@ def _slurm_submission_preview(
             scheduler_reservation_path
         ),
         "campaign_planner_wall_hours": campaign_wall_hours,
+        "walltime_allocation": dict(walltime_allocation),
         "generated_schedule_feasibility_status": (
             "feasible" if generated_schedule_feasible else "infeasible"
         ),
@@ -1389,9 +1610,12 @@ def _slurm_submission_preview(
             "within every wave stay at or below the configured aggregate caps."
         ),
         "time_interpretation": (
-            "Planner hours are estimated execution time. Scheduler reservation "
-            "hours sum per-job kill limits along the serialized dependency path; "
-            "they are upper bounds, not an execution-time prediction."
+            "The requested campaign wall time is the padded end-to-end ceiling. "
+            "Planner hours are estimated execution time, while scheduler "
+            "reservation hours sum per-job kill limits along the serialized "
+            "dependency path. Preferred profile padding is reduced uniformly "
+            "when necessary so that those kill limits remain inside the ceiling; "
+            "sampling and module selection are unchanged by this adjustment."
         ),
         "preview_command": "./submit.sh --preview",
         "execution_command": "./submit.sh",
@@ -1722,7 +1946,7 @@ def apply_slurm_profile(
         )
         os.chmod(canonical_submit, 0o755)
     return {
-        "scheduler_resource_requests_schema": "salsbury-scheduler-resource-requests-v5",
+        "scheduler_resource_requests_schema": "salsbury-scheduler-resource-requests-v6",
         "dependency_model": execution_plan.get(
             "dependency_model", "legacy_phase_chain"
         ),
@@ -1738,6 +1962,9 @@ def apply_slurm_profile(
         "maximum_parallel_memory_gib": execution_plan[
             "maximum_parallel_memory_gib"
         ],
+        "walltime_allocation": dict(
+            execution_plan.get("walltime_allocation", {})
+        ),
         "resource_waves": resource_epochs,
         "resource_epochs": resource_epochs,
         "resource_lanes": [
@@ -2222,8 +2449,8 @@ def build_local_execution_plan(
             )
             for task in phase["tasks"]
         ]
-    return {
-        "local_execution_plan_schema": "salsbury-local-execution-plan-v4",
+    plan: Dict[str, object] = {
+        "local_execution_plan_schema": "salsbury-local-execution-plan-v5",
         "dependency_model": "task_dag_v1",
         "maximum_parallel_cpus": maximum_cpus,
         "maximum_campaign_wall_hours": float(execution["maximum_hours_per_cpu"]),
@@ -2239,6 +2466,8 @@ def build_local_execution_plan(
             "creating scientific dependencies"
         ),
     }
+    _fit_walltime_requests_to_campaign(plan)
+    return plan
 
 
 def prepare_execution_artifacts(
@@ -2592,6 +2821,7 @@ def run_local_workflow(root: Path) -> Dict[str, object]:
         "salsbury-local-execution-plan-v2",
         "salsbury-local-execution-plan-v3",
         "salsbury-local-execution-plan-v4",
+        "salsbury-local-execution-plan-v5",
     }
     if not isinstance(plan, dict) or plan.get("local_execution_plan_schema") not in accepted_schemas:
         raise ExecutionAdapterError("local execution plan is invalid")

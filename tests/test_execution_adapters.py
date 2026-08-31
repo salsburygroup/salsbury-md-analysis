@@ -9,6 +9,7 @@ from salsbury_md_analysis.execution_adapters import (
     ExecutionAdapterError,
     _active_python_executable,
     _append_afterany_dependencies,
+    _fit_walltime_requests_to_campaign,
     _render_resource_bounded_submit,
     apply_slurm_profile,
     build_local_execution_plan,
@@ -18,6 +19,93 @@ from salsbury_md_analysis.execution_adapters import (
 
 
 class ExecutionAdapterTests(unittest.TestCase):
+    def test_scheduler_timeout_padding_is_bounded_by_campaign_wall(self):
+        def task(task_id):
+            return {
+                "task_id": task_id,
+                "script": f"{task_id}.slurm",
+                "array_task_id": None,
+                "cpu_slots": 1,
+                "planned_wall_hours": 10,
+                "planned_peak_memory_gib": 2,
+                "requested_memory_gib": 2,
+                "node_count": 1,
+                "workers_per_node": 1,
+                "distributed_replica_execution": False,
+                "minimum_requested_wall_minutes": 600,
+                "preferred_requested_wall_minutes": 960,
+                "requested_wall_minutes": 960,
+                "wall_request_limited_by_campaign_cap": False,
+            }
+
+        plan = {
+            "maximum_parallel_cpus": 1,
+            "maximum_parallel_memory_gib": 8,
+            "maximum_campaign_wall_hours": 25,
+            "node_policy": {},
+            "phases": [
+                {"phase_id": "first", "tasks": [task("first")]},
+                {"phase_id": "second", "tasks": [task("second")]},
+            ],
+        }
+        allocation = _fit_walltime_requests_to_campaign(plan)
+
+        self.assertEqual(
+            allocation["status"], "preferred_padding_reduced_to_fit"
+        )
+        self.assertGreater(
+            allocation["preferred_scheduler_reservation_critical_path_hours"],
+            25,
+        )
+        self.assertLessEqual(
+            allocation["selected_scheduler_reservation_critical_path_hours"],
+            25,
+        )
+        self.assertTrue(all(
+            task["wall_request_limited_by_campaign_cap"]
+            for phase in plan["phases"] for task in phase["tasks"]
+        ))
+
+    def test_scheduler_minimum_timeouts_fail_closed_over_campaign_wall(self):
+        def task(task_id):
+            return {
+                "task_id": task_id,
+                "script": f"{task_id}.slurm",
+                "array_task_id": None,
+                "cpu_slots": 1,
+                "planned_wall_hours": 1,
+                "planned_peak_memory_gib": 2,
+                "requested_memory_gib": 2,
+                "node_count": 1,
+                "workers_per_node": 1,
+                "distributed_replica_execution": False,
+                "minimum_requested_wall_minutes": 120,
+                "preferred_requested_wall_minutes": 180,
+                "requested_wall_minutes": 180,
+                "wall_request_limited_by_campaign_cap": False,
+            }
+
+        plan = {
+            "maximum_parallel_cpus": 1,
+            "maximum_parallel_memory_gib": 8,
+            "maximum_campaign_wall_hours": 3,
+            "node_policy": {},
+            "phases": [
+                {"phase_id": "first", "tasks": [task("first")]},
+                {"phase_id": "second", "tasks": [task("second")]},
+            ],
+        }
+        allocation = _fit_walltime_requests_to_campaign(plan)
+
+        self.assertEqual(
+            allocation["status"], "minimum_time_limits_exceed_campaign"
+        )
+        self.assertFalse(allocation["submission_time_feasible"])
+        self.assertEqual(
+            allocation["selected_scheduler_reservation_critical_path_hours"],
+            4,
+        )
+
     def test_distributed_replica_launcher_spans_configured_nodes(self):
         repository = Path(__file__).resolve().parents[1]
         profile = load_slurm_profile(repository / "profiles/slurm/deac.json")
