@@ -79,13 +79,14 @@ mean/medoid utility. Routine state workflows use `representative_frames` and
 `state_coordinate_exports`; the former selects observed frames nearest the
 declared cluster center or FES basin root in that analysis feature space. The
 export module is protected because it materializes representative state
-structures. Its separate `state_trajectory_exports_enabled` view option is off
-by default and may remain off without disabling representative structures.
+structures. Its separate `state_trajectory_exports_enabled` view option is on
+by default for non-trace conformational views and off for the trace view. It may
+be turned off without disabling representative structures.
 
-The planner models that default as a bounded representative-only
-coordinate-writing task. Measurements from multi-frame trajectory exports are
-not applied to every PCA projection when trajectories are off; state-assignment
-sampling still inherits the pooled conformational-view plan.
+The planner models coordinate writing from the configured maximum output frames
+and representative count. Measurements from the retired repeated-read exporter
+are not applied to every PCA projection; state-assignment sampling still
+inherits the pooled conformational-view plan.
 
 The `clustering.methods` object lists all eleven conventional partitioning
 methods explicitly:

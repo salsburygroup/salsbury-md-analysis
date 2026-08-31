@@ -1377,29 +1377,61 @@ def _view_tasks(
             write_trajectories = bool(
                 definition.get("write_trajectories", True)
             )
-            if not write_trajectories:
-                # The protected representatives-only mode reads the accepted
-                # state assignments but materializes only observed state
-                # representatives. Historical state-export measurements
-                # include multi-frame trajectory writing and therefore cannot
-                # be scaled by every PCA projection used to define the states.
-                measured_rate = 0.0
-                fixed_cpu_hours = max(fixed_cpu_hours, 0.20)
-                method_specific = {
-                    "coordinate_export_mode": "representatives_only",
-                    "state_trajectory_exports_enabled": False,
-                    "measured_calibration_eligible": False,
-                    "measured_calibration_exclusion_reason": (
-                        "historical state-coordinate export measurements "
-                        "include multi-frame trajectory materialization; this "
-                        "task writes only observed representative structures"
-                    ),
-                    "resource_workload_basis": (
-                        "bounded representative coordinate materialization; "
-                        "state-assignment coverage remains inherited from the "
-                        "pooled conformational view"
-                    ),
-                }
+            maximum_states = int(definition.get("maximum_states", 250))
+            representatives_per_state = int(
+                definition.get("representatives_per_state", 1)
+            )
+            maximum_total_frames = int(
+                definition.get("maximum_total_frames", 500)
+            )
+            representative_ceiling = (
+                maximum_states * representatives_per_state
+            )
+            coordinate_write_ceiling = representative_ceiling + (
+                maximum_total_frames if write_trajectories else 0
+            )
+            # Current exports use indexed frame selection and process only the
+            # requested coordinates. Historical measurements predate that
+            # implementation and scaled as repeated full-trajectory reads, so
+            # applying their per-projection rate would overstate this bounded
+            # output task by orders of magnitude. Retain a conservative
+            # provisional allowance of five minutes plus ten CPU seconds for
+            # every possible coordinate write, including the planner's time
+            # safety factor.
+            measured_rate = 0.0
+            fixed_cpu_hours = max(
+                fixed_cpu_hours,
+                (
+                    (300.0 + 10.0 * coordinate_write_ceiling)
+                    * time_safety_factor / 3600.0
+                    if write_trajectories else 0.20
+                ),
+            )
+            method_specific = {
+                "coordinate_export_mode": (
+                    "state_trajectories_and_representatives"
+                    if write_trajectories else "representatives_only"
+                ),
+                "state_trajectory_exports_enabled": write_trajectories,
+                "maximum_trajectory_frames": (
+                    maximum_total_frames if write_trajectories else 0
+                ),
+                "maximum_representative_structures": representative_ceiling,
+                "maximum_coordinate_writes": coordinate_write_ceiling,
+                "measured_calibration_eligible": False,
+                "measured_calibration_exclusion_reason": (
+                    "historical state-coordinate measurements predate indexed "
+                    "requested-frame reads and cannot be scaled by every PCA "
+                    "projection used to define the states"
+                ),
+                "resource_workload_basis": (
+                    "bounded indexed requested-frame coordinate "
+                    "materialization; state-assignment coverage remains "
+                    "inherited from the pooled conformational view"
+                ),
+                "provisional_coordinate_write_seconds": 10.0,
+                "provisional_fixed_seconds": 300.0,
+            }
         task = {
             "task_id": f"view:{view_id}:{module_id}",
             "workflow_id": view_id,
