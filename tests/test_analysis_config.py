@@ -121,7 +121,7 @@ class AnalysisConfigTests(unittest.TestCase):
             module_id for module_id, row in config["modules"].items()
             if row["enabled"]
         }
-        self.assertEqual(enabled, set(module_ids[:11]))
+        self.assertEqual(enabled, set(module_ids[:11] + ["state_coordinate_exports"]))
         self.assertFalse(config["clustering"]["methods"]["kmeans"]["enabled"])
         self.assertFalse(
             config["views"]["global_common_heavy"][

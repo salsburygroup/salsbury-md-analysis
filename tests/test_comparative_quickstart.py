@@ -48,6 +48,7 @@ class ComparativeQuickstartTests(unittest.TestCase):
                 output_directory=output,
                 project_id="comparison-resource-fit",
                 config_path=config_path,
+                target_wall_hours=32.0,
             )
             self.assertEqual(report["technical_status"], "complete")
             resource_fit = json.loads(
@@ -98,6 +99,7 @@ class ComparativeQuickstartTests(unittest.TestCase):
                 output_directory=output,
                 project_id="comparison-memory-fit",
                 config_path=config_path,
+                target_wall_hours=32.0,
             )
             self.assertEqual(report["technical_status"], "complete")
             memory = json.loads(

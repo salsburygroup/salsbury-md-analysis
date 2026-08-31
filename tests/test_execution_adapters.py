@@ -30,24 +30,30 @@ class ExecutionAdapterTests(unittest.TestCase):
                 profile,
                 profile_path,
                 [{
-                    "lane_index": 0,
-                    "items": [{
-                        "submission_index": 0,
-                        "phase_id": "analysis",
-                        "task_id": "replica-qc",
-                        "script": "run_qc.slurm",
-                        "cpu_slots": 63,
-                        "memory_gib": 362.0,
-                        "node_count": 2,
-                        "workers_per_node": 40,
-                        "distributed_worker_count": 63,
-                        "distributed_replica_execution": True,
-                        "slurm_time": "01:00:00",
-                        "slurm_memory": "181G",
-                        "depends_on_task_ids": [],
-                        "wait_for_task_ids": [],
+                    "resource_epoch_index": 0,
+                    "phase_id": "analysis",
+                    "lanes": [{
+                        "lane_index": 0,
+                        "resource_epoch_index": 0,
+                        "items": [{
+                            "submission_index": 0,
+                            "phase_id": "analysis",
+                            "task_id": "replica-qc",
+                            "script": "run_qc.slurm",
+                            "cpu_slots": 63,
+                            "memory_gib": 362.0,
+                            "node_count": 2,
+                            "workers_per_node": 40,
+                            "distributed_worker_count": 63,
+                            "distributed_replica_execution": True,
+                            "slurm_time": "01:00:00",
+                            "slurm_memory": "181G",
+                            "depends_on_task_ids": [],
+                            "wait_for_task_ids": [],
+                        }],
                     }],
                 }],
+                True,
             )
         self.assertIn("--nodes=2", script)
         self.assertIn("--ntasks=63", script)
@@ -937,6 +943,126 @@ class ExecutionAdapterTests(unittest.TestCase):
             scheduler["submission_preview_file"],
             "slurm-submission-preview.json",
         )
+
+    def test_slurm_releases_lane_memory_between_dependency_epochs(self):
+        repository = Path(__file__).resolve().parents[1]
+        profile = load_slurm_profile(repository / "profiles/slurm/deac.json")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "slurm-profile.json").write_text("{}\n", encoding="utf-8")
+            for name in ("large.slurm", "small.slurm", "later-a.slurm", "later-b.slurm"):
+                (root / name).write_text(
+                    "#!/usr/bin/env bash\n#SBATCH --time=01:00:00\n"
+                    "#SBATCH --cpus-per-task=1\n#SBATCH --mem=2G\n"
+                    "set -euo pipefail\n",
+                    encoding="utf-8",
+                )
+            (root / "submit.sh").write_text(
+                "#!/usr/bin/env bash\nset -euo pipefail\n", encoding="utf-8"
+            )
+
+            def task(task_id, script, cpus, memory, wall):
+                return {
+                    "task_id": task_id,
+                    "depends_on_task_ids": [],
+                    "wait_for_task_ids": [],
+                    "script": script,
+                    "array_task_id": None,
+                    "requested_wall_minutes": wall * 60,
+                    "requested_memory_gib": memory,
+                    "planner_task_ids": [task_id],
+                    "cpu_slots": cpus,
+                    "planned_wall_hours": wall,
+                    "planned_peak_memory_gib": memory,
+                    "resource_request_source": "unit_test",
+                    "wall_request_limited_by_campaign_cap": False,
+                    "memory_request_limited_by_campaign_cap": False,
+                }
+
+            scheduler = apply_slurm_profile(root, profile, {
+                "dependency_model": "task_dag_v1",
+                "maximum_parallel_cpus": 44,
+                "maximum_parallel_memory_gib": 185,
+                "maximum_campaign_wall_hours": 3.5,
+                "phases": [
+                    {"phase_id": "first", "tasks": [
+                        task("large", "large.slurm", 20, 172, 2),
+                        task("small", "small.slurm", 20, 9, 1),
+                    ]},
+                    {"phase_id": "later", "tasks": [
+                        task("later-a", "later-a.slurm", 20, 90, 1),
+                        task("later-b", "later-b.slurm", 20, 90, 1),
+                    ]},
+                ],
+            })
+            preview = scheduler["submission_preview"]
+            submit = (root / "submit.sh").read_text(encoding="utf-8")
+
+        self.assertEqual(preview["resource_epoch_count"], 2)
+        self.assertEqual(preview["maximum_parallel_memory_gib_in_generated_waves"], 181)
+        self.assertEqual(preview["planner_estimated_dependency_critical_path_hours"], 3)
+        self.assertEqual(preview["generated_schedule_feasibility_status"], "feasible")
+        self.assertTrue(preview["submission_permitted"])
+        self.assertIn(
+            '--dependency="afterany:${JOB_T0000}:${JOB_T0001}"', submit
+        )
+
+    def test_slurm_refuses_a_generated_schedule_over_campaign_wall_limit(self):
+        repository = Path(__file__).resolve().parents[1]
+        profile = load_slurm_profile(repository / "profiles/slurm/deac.json")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "slurm-profile.json").write_text("{}\n", encoding="utf-8")
+            for name in ("first.slurm", "second.slurm"):
+                (root / name).write_text(
+                    "#!/usr/bin/env bash\n#SBATCH --time=02:00:00\n"
+                    "#SBATCH --cpus-per-task=1\n#SBATCH --mem=2G\n"
+                    "set -euo pipefail\n",
+                    encoding="utf-8",
+                )
+            (root / "submit.sh").write_text(
+                "#!/usr/bin/env bash\nset -euo pipefail\n", encoding="utf-8"
+            )
+
+            def task(task_id, script):
+                return {
+                    "task_id": task_id,
+                    "depends_on_task_ids": [],
+                    "wait_for_task_ids": [],
+                    "script": script,
+                    "array_task_id": None,
+                    "requested_wall_minutes": 120,
+                    "requested_memory_gib": 2,
+                    "planner_task_ids": [task_id],
+                    "cpu_slots": 1,
+                    "planned_wall_hours": 2,
+                    "planned_peak_memory_gib": 2,
+                    "resource_request_source": "unit_test",
+                    "wall_request_limited_by_campaign_cap": False,
+                    "memory_request_limited_by_campaign_cap": False,
+                }
+
+            scheduler = apply_slurm_profile(root, profile, {
+                "dependency_model": "task_dag_v1",
+                "maximum_parallel_cpus": 1,
+                "maximum_parallel_memory_gib": 8,
+                "maximum_campaign_wall_hours": 3,
+                "phases": [
+                    {"phase_id": "first", "tasks": [task("first", "first.slurm")]},
+                    {"phase_id": "second", "tasks": [task("second", "second.slurm")]},
+                ],
+            })
+            preview = scheduler["submission_preview"]
+            submit = (root / "submit.sh").read_text(encoding="utf-8")
+
+        self.assertEqual(preview["generated_schedule_feasibility_status"], "infeasible")
+        self.assertFalse(preview["submission_permitted"])
+        self.assertEqual(
+            preview["warnings"][-1]["code"],
+            "GENERATED_SCHEDULE_EXCEEDS_CAMPAIGN_WALL_LIMIT",
+        )
+        self.assertIn("Submission refused: generated schedule exceeds", submit)
+        self.assertIn("exit 3", submit)
 
     def test_task_dag_uses_afterany_resource_barriers_and_afterok_inputs(self):
         repository = Path(__file__).resolve().parents[1]
