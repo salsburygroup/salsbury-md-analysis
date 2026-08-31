@@ -117,7 +117,10 @@ and acceptor candidates from topology connectivity and chemical identity.
 `representative_structures` is likewise an optional coordinate-space
 mean/medoid utility. Routine state workflows use `representative_frames` and
 `state_coordinate_exports`; the former selects observed frames nearest the
-declared cluster center or FES basin root in that analysis feature space.
+declared cluster center or FES basin root in that analysis feature space. The
+export module is protected because it materializes representative state
+structures. Its separate `state_trajectory_exports_enabled` view option is off
+by default and may remain off without disabling representative structures.
 
 The `clustering.methods` object lists all eleven conventional partitioning
 methods explicitly:
@@ -382,11 +385,13 @@ same workers and output contracts.
 The Slurm adapter records task-specific scheduler requests in
 `scheduler-resource-requests.json` and routes sufficiently large requests through
 the profile's large-memory role. Its canonical launcher submits deterministic
-resource waves. Each wave stays within both `maximum_parallel_cpus` and the
-aggregate `maximum_memory_gib`; the next wave waits for completion of the preceding
-wave only to control allocation. A task waits for successful completion only of
-its declared data prerequisites. This controls active compute allocation; queue
-wait and scheduler backfill are not counted as analysis wall time.
+resource epochs. Each dependency level is packed into serial lanes that stay
+within both `maximum_parallel_cpus` and the aggregate `maximum_memory_gib`; the
+next epoch waits for completion of the preceding epoch only to release and
+reuse resources. A task waits for successful completion only of its declared
+data prerequisites. The launcher refuses submission when its generated
+critical-path estimate exceeds the campaign wall limit. Queue wait and
+scheduler backfill are not counted as analysis wall time.
 
 `advise-slurm-capacity` is an optional, read-only step for prepared Slurm
 campaigns. It can replace the configured CPU count with the smaller of the live

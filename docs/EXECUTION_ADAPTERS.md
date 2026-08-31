@@ -187,14 +187,14 @@ Slurm requests can be larger than the estimated working set because the
 planner reads explicit adjustments from the site profile. It applies those
 terms before testing memory feasibility. A profile may also declare its CPU and
 memory per node. Planning then rejects an adjusted task request that cannot fit
-one node and packs the concurrent resource lanes into valid node bins; the sum
-of padded reservations assigned to a planned node cannot exceed that node's
-CPU or memory. It then packs individual array elements and ordinary jobs into
-deterministic resource waves. The sum of CPU slots and the sum of buffered
-memory reservations in one wave cannot exceed the two aggregate campaign caps.
-The Slurm adapter emits those final reservations unchanged.
-`submit.sh` uses `afterany` between resource waves so a failed job releases the
-next allocation. It uses `afterok` only for a task's `depends_on_task_ids` and
+one node and packs each dependency level into valid resource lanes; the sum of
+padded reservations assigned to a planned node cannot exceed that node's CPU
+or memory. A dependency level is one resource epoch. Its reservations are
+released before the next epoch begins, so a large early task does not reserve
+that memory for the rest of the campaign. The Slurm adapter emits those final
+reservations unchanged. `submit.sh` uses `afterany` at epoch boundaries so a
+failed job releases the next allocation. It uses `afterok` only for a task's
+`depends_on_task_ids` and
 asks Slurm to terminate a descendant whose required job failed instead of
 leaving it pending indefinitely. The complete mapping remains visible in
 `scheduler-resource-requests.json`.
@@ -217,8 +217,10 @@ preview gives the exact job and dependency-wave counts, configured CPU and
 aggregate-memory caps, peak resources in any generated wave, the planner's
 estimated dependency critical path, and the sum of scheduler time-limit
 reservations. It warns when the prepared dependency and memory waves cannot use
-all requested cores. Running `./submit.sh` prints the same contract immediately
-before the first submission.
+all requested cores. If the generated dependency/resource critical path exceeds
+the campaign wall limit, the preview marks the schedule infeasible and
+`submit.sh` refuses to submit it. Running `./submit.sh` prints the same contract
+immediately before the first submission.
 
 ## Slurm cluster
 

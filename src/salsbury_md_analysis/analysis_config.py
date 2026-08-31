@@ -123,6 +123,10 @@ PROTECTED_MODULES = {
     "dccm",
     "pca_fes_basins",
     "representative_frames",
+    # Representative structures are required to interpret FES and clustering
+    # states.  The module remains protected even when the independent
+    # write_trajectories option is false.
+    "state_coordinate_exports",
 }
 
 MODULE_GROUPS = {
