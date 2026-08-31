@@ -345,40 +345,94 @@ def pack_resource_lanes(
             sum(float(lane["memory_gib"]) for lane in lanes),
         )
 
-    for item in ordered:
-        total_cpu, total_memory = totals()
-        can_open = (
-            total_cpu + int(item["cpu_slots"]) <= maximum_parallel_cpus
-            and total_memory + float(item["memory_gib"])
-            <= maximum_parallel_memory_gib + 1.0e-12
+    def merge_lane_pair(first_index: int, second_index: int) -> None:
+        first = lanes[first_index]
+        second = lanes[second_index]
+        first["node_fragments"] = merged_fragments(
+            first["node_fragments"], second["node_fragments"]
         )
-        candidates: list[
-            tuple[float, float, int, Dict[str, object], list[Dict[str, object]]]
-        ] = []
-        for lane in lanes:
-            candidate_fragments = merged_fragments(
-                lane["node_fragments"], item["node_fragments"]
-            )
-            new_cpu = sum(
-                int(row["cpu_slots"]) for row in candidate_fragments
-            )
-            new_memory = sum(
-                float(row["memory_gib"]) for row in candidate_fragments
-            )
-            cpu_delta = new_cpu - int(lane["cpu_slots"])
-            memory_delta = new_memory - float(lane["memory_gib"])
-            if (
-                total_cpu + cpu_delta <= maximum_parallel_cpus
-                and total_memory + memory_delta
+        first["cpu_slots"] = sum(
+            int(row["cpu_slots"]) for row in first["node_fragments"]
+        )
+        first["memory_gib"] = sum(
+            float(row["memory_gib"]) for row in first["node_fragments"]
+        )
+        first["wall_hours"] = (
+            float(first["wall_hours"]) + float(second["wall_hours"])
+        )
+        first["items"].extend(second["items"])  # type: ignore[union-attr]
+        del lanes[second_index]
+        for lane_index, lane in enumerate(lanes):
+            lane["lane_index"] = lane_index
+
+    for item in ordered:
+        while True:
+            total_cpu, total_memory = totals()
+            can_open = (
+                total_cpu + int(item["cpu_slots"]) <= maximum_parallel_cpus
+                and total_memory + float(item["memory_gib"])
                 <= maximum_parallel_memory_gib + 1.0e-12
-            ):
-                candidates.append((
-                    float(lane["wall_hours"]) + float(item["wall_hours"]),
-                    memory_delta + float(cpu_delta),
-                    int(lane["lane_index"]),
-                    lane,
-                    candidate_fragments,
-                ))
+            )
+            candidates: list[
+                tuple[
+                    float, float, int, Dict[str, object],
+                    list[Dict[str, object]],
+                ]
+            ] = []
+            for lane in lanes:
+                candidate_fragments = merged_fragments(
+                    lane["node_fragments"], item["node_fragments"]
+                )
+                new_cpu = sum(
+                    int(row["cpu_slots"]) for row in candidate_fragments
+                )
+                new_memory = sum(
+                    float(row["memory_gib"]) for row in candidate_fragments
+                )
+                cpu_delta = new_cpu - int(lane["cpu_slots"])
+                memory_delta = new_memory - float(lane["memory_gib"])
+                if (
+                    total_cpu + cpu_delta <= maximum_parallel_cpus
+                    and total_memory + memory_delta
+                    <= maximum_parallel_memory_gib + 1.0e-12
+                ):
+                    candidates.append((
+                        float(lane["wall_hours"]) + float(item["wall_hours"]),
+                        memory_delta + float(cpu_delta),
+                        int(lane["lane_index"]),
+                        lane,
+                        candidate_fragments,
+                    ))
+            if can_open or candidates:
+                break
+            if len(lanes) < 2:
+                raise ResourcePlanningError(
+                    f"resource-lane item {item['item_id']} cannot be assigned "
+                    "within the aggregate CPU and memory caps"
+                )
+            # Aggregate-first lane construction can consume nearly the full
+            # envelope with independent large lanes before a later distributed
+            # task is considered. Serialize the least costly existing pair and
+            # retry the item. This makes feasible packing monotone as nodes and
+            # aggregate capacity increase instead of failing at an intermediate
+            # whole-node count.
+            first_index, second_index = min(
+                (
+                    (left, right)
+                    for left in range(len(lanes))
+                    for right in range(left + 1, len(lanes))
+                ),
+                key=lambda pair: (
+                    float(lanes[pair[0]]["wall_hours"])
+                    + float(lanes[pair[1]]["wall_hours"]),
+                    max(
+                        float(lanes[pair[0]]["memory_gib"]),
+                        float(lanes[pair[1]]["memory_gib"]),
+                    ),
+                    pair,
+                ),
+            )
+            merge_lane_pair(first_index, second_index)
         # Prefer a new lane when it reduces the predicted makespan.  Otherwise
         # grow the least-loaded compatible lane by the smallest reservation.
         selected: Optional[Dict[str, object]] = None
@@ -398,11 +452,7 @@ def pack_resource_lanes(
                 lanes.append(selected)
         if selected is None:
             if not candidates:
-                if not can_open:
-                    raise ResourcePlanningError(
-                        f"resource-lane item {item['item_id']} cannot be assigned "
-                        "within the aggregate CPU and memory caps"
-                    )
+                assert can_open
                 selected = {
                     "lane_index": len(lanes),
                     "cpu_slots": int(item["cpu_slots"]),
@@ -523,24 +573,7 @@ def pack_resource_lanes(
                 pair,
             ),
         )
-        first = lanes[first_index]
-        second = lanes[second_index]
-        first["node_fragments"] = merged_fragments(
-            first["node_fragments"], second["node_fragments"]
-        )
-        first["cpu_slots"] = sum(
-            int(row["cpu_slots"]) for row in first["node_fragments"]
-        )
-        first["memory_gib"] = sum(
-            float(row["memory_gib"]) for row in first["node_fragments"]
-        )
-        first["wall_hours"] = (
-            float(first["wall_hours"]) + float(second["wall_hours"])
-        )
-        first["items"].extend(second["items"])  # type: ignore[union-attr]
-        del lanes[second_index]
-        for lane_index, lane in enumerate(lanes):
-            lane["lane_index"] = lane_index
+        merge_lane_pair(first_index, second_index)
         assigned_nodes = node_assignment(lanes)
 
     nodes_by_lane: Dict[int, list[int]] = {}
@@ -624,28 +657,50 @@ def _permissive_minimum_resource_request(
         for stage in minimum_stages
     ]
     lanes = [lane for stage in stage_lanes for lane in stage]
-    parallel_cpus = max(
+    modeled_parallel_cpus = max(
         (sum(int(lane.get("cpu_slots", 0)) for lane in stage) for stage in stage_lanes),
         default=0,
     )
-    aggregate_memory = max(
+    modeled_aggregate_memory = max(
         (
             sum(float(lane.get("memory_gib", 0.0)) for lane in stage)
             for stage in stage_lanes
         ),
         default=0.0,
     )
-    planned_nodes = max(
-        (
-            len({
-                int(lane["planned_node_index"])
-                for lane in stage
-                if lane.get("planned_node_index") is not None
-            })
-            for stage in stage_lanes
-        ),
-        default=0,
-    )
+
+    def lane_node_indices(lane: Mapping[str, object]) -> list[int]:
+        distributed = lane.get("planned_node_indices")
+        if isinstance(distributed, list):
+            return [int(value) for value in distributed]
+        scalar = lane.get("planned_node_index")
+        return [] if scalar is None else [int(scalar)]
+
+    planned_nodes = max((
+        len({
+            node_index
+            for lane in stage
+            for node_index in lane_node_indices(lane)
+        })
+        for stage in stage_lanes
+    ), default=0)
+    requested_parallel_cpus = modeled_parallel_cpus
+    requested_aggregate_memory = modeled_aggregate_memory
+    request_replay_policy = "modeled_peak_lane_reservations"
+    if (
+        planned_nodes > 0
+        and maximum_cpus_per_node is not None
+        and maximum_memory_gib_per_node is not None
+    ):
+        # The packing heuristic considers the aggregate caps while constructing
+        # lanes, before it assigns those lanes to physical nodes. Replaying with
+        # only the nodes that happened to be occupied can therefore produce a
+        # different lane schedule and a longer wall time. Preserve the complete
+        # input envelope here; measured peak use and occupied nodes remain
+        # available separately for utilization reporting and external sweeps.
+        requested_parallel_cpus = maximum_parallel_cpus
+        requested_aggregate_memory = maximum_memory_gib
+        request_replay_policy = "original_input_caps_for_validated_lane_packing"
     exact_requested_wall = (
         float(minimum_wall_hours) / science_wall_fraction
         if minimum_wall_hours is not None and science_wall_fraction > 0.0
@@ -658,9 +713,10 @@ def _permissive_minimum_resource_request(
     resource_schedule_available = (
         minimum_wall_hours is not None
         and bool(lanes)
-        and parallel_cpus <= maximum_parallel_cpus
-        and aggregate_memory <= maximum_memory_gib + 1.0e-12
+        and modeled_parallel_cpus <= maximum_parallel_cpus
+        and modeled_aggregate_memory <= maximum_memory_gib + 1.0e-12
         and minimum_single_task_memory_gib <= maximum_memory_gib + 1.0e-12
+        and (maximum_nodes is None or planned_nodes <= maximum_nodes)
     )
     fits_input_wall_cap = bool(
         resource_schedule_available
@@ -674,21 +730,33 @@ def _permissive_minimum_resource_request(
     else:
         request_status = "requires_larger_wall_time"
     return {
-        "request_schema": "salsbury-permissive-minimum-resource-request-v1",
+        "request_schema": "salsbury-permissive-minimum-resource-request-v2",
         "request_scope": request_scope,
         "status": request_status,
         "recommended_request": {
-            "parallel_cpus": parallel_cpus if parallel_cpus > 0 else None,
+            "parallel_cpus": (
+                requested_parallel_cpus if requested_parallel_cpus > 0 else None
+            ),
             "aggregate_memory_gib": (
-                float(math.ceil(aggregate_memory)) if aggregate_memory > 0.0
+                float(math.ceil(requested_aggregate_memory))
+                if requested_aggregate_memory > 0.0
                 else None
             ),
             "wall_hours": rounded_requested_wall,
-            **({"nodes": planned_nodes} if planned_nodes > 0 else {}),
+            **({
+                "nodes": maximum_nodes
+                if maximum_nodes is not None else planned_nodes
+            } if planned_nodes > 0 else {}),
         },
         "unrounded_request": {
-            "aggregate_memory_gib": aggregate_memory or None,
+            "aggregate_memory_gib": requested_aggregate_memory or None,
             "wall_hours": exact_requested_wall,
+        },
+        "request_replay_policy": request_replay_policy,
+        "modeled_peak_utilization": {
+            "parallel_cpus": modeled_parallel_cpus,
+            "aggregate_memory_gib": modeled_aggregate_memory,
+            **({"nodes": planned_nodes} if planned_nodes > 0 else {}),
         },
         "modeled_minimum": {
             "cpu_hours": minimum_cpu_hours,
@@ -724,8 +792,9 @@ def _permissive_minimum_resource_request(
             ),
         },
         "interpretation": (
-            "CPU and memory preserve the modeled minimum resource-lane schedule "
-            "under the supplied caps. Wall time reverses the configured campaign "
+            "CPU, memory, and node counts are replay-safe request caps for the "
+            "validated minimum resource-lane schedule; modeled peak utilization "
+            "is reported separately. Wall time reverses the configured campaign "
             "utilization and pilot/finalization reserves, then rounds up to a "
             "whole scheduler hour."
         ),
@@ -1885,6 +1954,11 @@ def plan_campaign_resource_budget(
     if minimum_known_cpu_hours > science_cpu_hours:
         infeasibility_reasons.append(
             "minimum calibrated coverage exceeds the campaign science CPU-hour budget"
+        )
+    if minimum_wall is None and not calibration_required:
+        infeasibility_reasons.append(
+            "minimum calibrated task schedule cannot be packed within the "
+            "configured aggregate and per-node CPU/memory caps"
         )
     if minimum_wall is not None and minimum_wall > science_wall_hours:
         infeasibility_reasons.append(
@@ -3603,6 +3677,22 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
             plan["optional_scientific_minimum_failures"] = (
                 invalid_optional_tasks
             )
+        selected_wall = plan.get("estimated_selected_wall_hours_lower_bound")
+        if (
+            plan["feasibility_status"] == "feasible"
+            and (
+                not isinstance(selected_wall, (int, float))
+                or not math.isfinite(float(selected_wall))
+            )
+        ):
+            plan["feasibility_status"] = "infeasible"
+            plan["execution_authorized"] = False
+            reasons = list(plan.get("infeasibility_reasons", []))
+            reasons.append(
+                "planner invariant failure: a feasible candidate must have a "
+                "finite packed critical-path estimate"
+            )
+            plan["infeasibility_reasons"] = reasons
         information = _global_plan_information_metrics(plan)
         evaluation = {
             "overall_trajectory_integer_stride": cache_stride,

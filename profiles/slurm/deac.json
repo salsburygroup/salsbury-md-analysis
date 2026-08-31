@@ -42,7 +42,7 @@
     "minimum_wall_minutes": 30,
     "walltime_safety_factor": 1.5,
     "walltime_overhead_minutes": 15,
-    "minimum_memory_gib": 2,
+    "minimum_memory_gib": 0,
     "memory_safety_factor": 1.5,
     "memory_overhead_gib": 1,
     "large_memory_threshold_gib": 96
