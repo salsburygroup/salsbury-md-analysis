@@ -219,6 +219,15 @@ def load_slurm_profile(path: Path) -> Dict[str, object]:
         ):
             raise ExecutionAdapterError(f"resource_policy.{name} must be finite and nonnegative")
         checked_policy[name] = float(value)
+    if not math.isclose(
+        checked_policy["walltime_safety_factor"], 1.0,
+        rel_tol=0.0, abs_tol=1.0e-12,
+    ):
+        raise ExecutionAdapterError(
+            "resource_policy.walltime_safety_factor must be 1.0 because the "
+            "campaign planner already applies task-time uncertainty; use "
+            "walltime_overhead_minutes for explicit scheduler-only overhead"
+        )
     normalized["resource_policy"] = checked_policy
 
     node_policy = profile.get("node_policy", {})
