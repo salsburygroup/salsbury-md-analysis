@@ -2563,9 +2563,10 @@ def plan_and_apply_complete_campaign(
                 "minimum_wall_minutes"
             ],
             "scheduler_walltime_interpretation": (
-                "per-job timeout allowance; not additional campaign science "
-                "time and therefore not added again to the requested campaign "
-                "wall time"
+                "preferred per-job timeout allowance inside the padded "
+                "end-to-end campaign wall limit; the execution adapter reduces "
+                "this additional padding uniformly when required to keep the "
+                "serialized scheduler kill-limit path inside that limit"
             ),
         })
 
@@ -3031,7 +3032,8 @@ def plan_and_apply_complete_campaign(
             ],
             **scheduler_time_policy,
             "scheduler_walltime_interpretation": (
-                "per-job timeout allowance; not additional planned science time"
+                "preferred per-job timeout allowance bounded by the padded "
+                "end-to-end campaign wall limit"
             ),
         },
         "censored_timeout_safety_factor": float(

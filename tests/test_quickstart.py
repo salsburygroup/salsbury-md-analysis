@@ -958,9 +958,20 @@ class QuickstartTests(unittest.TestCase):
             )
             self.assertEqual(
                 local_plan["local_execution_plan_schema"],
-                "salsbury-local-execution-plan-v4",
+                "salsbury-local-execution-plan-v5",
             )
             self.assertEqual(local_plan["dependency_model"], "task_dag_v1")
+            walltime_allocation = local_plan["walltime_allocation"]
+            self.assertEqual(
+                walltime_allocation["contract"],
+                "padded_end_to_end_campaign_ceiling",
+            )
+            self.assertLessEqual(
+                walltime_allocation[
+                    "selected_scheduler_reservation_critical_path_hours"
+                ],
+                local_plan["maximum_campaign_wall_hours"],
+            )
             local_tasks = [
                 task for phase in local_plan["phases"] for task in phase["tasks"]
             ]
