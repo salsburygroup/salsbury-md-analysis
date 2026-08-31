@@ -529,6 +529,17 @@ def _enrich_task_resources(
                 )
                 for row in matched
             )
+            planned_execution_cpu_slots = max(
+                int(
+                    row.get(
+                        "parallel_node_layout_at_selected_observations", {}
+                    ).get(
+                        "execution_cpu_slots",
+                        min(maximum_cpus, int(row.get("effective_cpu_cap", 1))),
+                    )
+                )
+                for row in matched
+            )
         except (KeyError, TypeError, ValueError) as exc:
             raise ExecutionAdapterError(
                 f"planner estimates are incomplete for {path.name}"
@@ -586,20 +597,7 @@ def _enrich_task_resources(
                 f"{maximum_memory_gib_per_node:g} GiB"
             )
         planner_task_ids = [str(row["task_id"]) for row in matched]
-        cpu_slots = max(
-            min(
-                maximum_cpus,
-                (
-                    maximum_cpus
-                    if distributed_replica_execution
-                    else maximum_cpus_per_node
-                ),
-                int(row.get("effective_cpu_cap", 1)),
-            )
-            for row in matched
-        )
-        if distributed_replica_execution:
-            cpu_slots = distributed_worker_count
+        cpu_slots = planned_execution_cpu_slots
         source = "campaign_planner_final_memory_reservation_passthrough"
     else:
         wall_hours = _existing_wall_minutes(path) / 60.0
