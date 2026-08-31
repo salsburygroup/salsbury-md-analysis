@@ -276,9 +276,11 @@ is not a separate allowance for every method. The estimate includes a 1.5
 timing safety factor. Only 85% of the raw CPU-hour envelope is normally planned,
 with separate pilot and finalization reserves removed before scientific work is
 allocated. The requested wall time is the final padded end-to-end execution
-ceiling. Slurm per-job timeout margins must fit inside that ceiling; the launcher
-retains as much of the preferred margin as fits and refuses submission if the
-planner estimates plus minimum job limits exceed it. The generated
+ceiling. The shipped Slurm profiles use a wall-time factor of 1.0 because the
+planner has already applied the 1.5 timing factor. They add only the explicit
+15-minute job overhead and 30-minute minimum, both inside the campaign ceiling.
+The launcher retains as much of that overhead as fits and refuses submission if
+the planner estimates plus minimum job limits exceed it. The generated
 `campaign-resource-plan.json` applies
 the campaign limits across base trajectory estimators, inherited base analyses,
 and every enabled PCA/FES/clustering/state view. `sampling-plan.json` records the applied

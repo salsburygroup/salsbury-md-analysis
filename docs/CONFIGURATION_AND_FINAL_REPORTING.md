@@ -189,12 +189,13 @@ scheduler-side memory padding. All terms are recorded in
 `resource_safety_margins`.
 The default 1.5 time factor is applied to modeled task costs before frame
 allocation. The planner then uses only the configured utilization fraction
-(normally 0.85) and removes pilot and finalization reserves. A Slurm profile may
-request a further per-job timeout margin. That margin must fit inside
-`maximum_hours_per_cpu`, which is the final padded end-to-end execution ceiling.
-The execution adapter retains the largest uniform fraction of the preferred
-margin whose serialized dependency-path kill limits fit inside the ceiling. It
-does not alter sampling or enabled modules. If planner estimates plus minimum
+(normally 0.85) and removes pilot and finalization reserves. The shipped Slurm
+profiles set their scheduler wall-time factor to 1.0, so that factor is not
+applied again. Their 15-minute per-job overhead and 30-minute minimum must fit
+inside `maximum_hours_per_cpu`, which is the final padded end-to-end execution
+ceiling. The execution adapter retains the largest uniform fraction of the
+overhead whose serialized dependency-path kill limits fit inside the ceiling.
+It does not alter sampling or enabled modules. If planner estimates plus minimum
 job limits cannot fit, submission is refused.
 `finalization_headroom_fraction` reserves campaign capacity for dependency
 barriers, summaries, hashes, and fail-closed acceptance rather than allocating
