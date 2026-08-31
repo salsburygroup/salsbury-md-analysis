@@ -436,6 +436,67 @@ class ExecutionAdapterTests(unittest.TestCase):
             "campaign_planner_final_memory_reservation_passthrough",
         )
 
+    def test_memory_limited_replica_workers_keep_planned_execution_slots(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            common = (
+                "#!/usr/bin/env bash\n#SBATCH --time=01:00:00\n"
+                "#SBATCH --cpus-per-task=12\n#SBATCH --mem=2G\nset -euo pipefail\n"
+            )
+            (root / "run_preflight.slurm").write_text(common, encoding="utf-8")
+            (root / "run_finalize_reporting.slurm").write_text(
+                common, encoding="utf-8"
+            )
+            worker = root / "run_stage_0_array.slurm"
+            worker.write_text(
+                common + "COMMANDS=(\n  'structural-qc'\n)\n",
+                encoding="utf-8",
+            )
+            (root / "campaign-resource-plan.json").write_text(json.dumps({
+                "tasks": [{
+                    "task_id": "direct:structural_integrity_qc",
+                    "module_id": "structural_integrity_qc",
+                    "effective_cpu_cap": 12,
+                    "estimated_wall_hours_at_effective_cpu_cap": 2.0,
+                    "estimated_peak_memory_gib_at_selected_observations": 18.0,
+                    "estimated_scheduler_memory_gib_at_selected_observations": 28.0,
+                    "estimated_scheduler_memory_gib_per_node_at_selected_observations": 28.0,
+                    "parallel_node_layout_at_selected_observations": {
+                        "active_worker_count": 6,
+                        "execution_cpu_slots": 6,
+                        "node_count": 1,
+                        "workers_per_node": 6,
+                        "distributed_replica_execution": False,
+                    },
+                }],
+            }), encoding="utf-8")
+            plan = build_local_execution_plan(
+                root,
+                {
+                    "maximum_parallel_cpus": 12,
+                    "maximum_hours_per_cpu": 8,
+                    "maximum_memory_gib": 64,
+                },
+                {
+                    "resource_table_enabled": False,
+                    "finding_picker_enabled": False,
+                },
+                node_policy={
+                    "cpus_per_node": 44,
+                    "memory_gib_per_node": 185.0,
+                },
+            )
+
+        task = next(
+            task
+            for phase in plan["phases"]
+            for task in phase["tasks"]
+            if task["script"] == worker.name
+        )
+        self.assertEqual(task["cpu_slots"], 6)
+        self.assertEqual(task["distributed_worker_count"], 6)
+        self.assertFalse(task["distributed_replica_execution"])
+
     def test_generated_plan_uses_only_true_task_dependencies(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
