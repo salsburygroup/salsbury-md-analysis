@@ -1447,6 +1447,10 @@ class ResourcePlanningTests(unittest.TestCase):
         self.assertEqual(
             row["estimated_peak_memory_gib_at_selected_observations"], 8.0
         )
+        self.assertAlmostEqual(
+            row["estimated_wall_hours_at_effective_cpu_cap"],
+            row["estimated_cpu_hours"] / 2.0,
+        )
         self.assertEqual(plan["feasibility_status"], "feasible")
 
     def test_measured_memory_scales_from_observation_coverage(self):

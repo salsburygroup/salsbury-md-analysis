@@ -2357,7 +2357,7 @@ def plan_campaign_resource_budget(
             ),
             "estimated_wall_hours_at_effective_cpu_cap": (
                 final_costs[task_id]
-                / min(maximum_parallel_cpus, int(row["effective_cpu_cap"]))
+                / int(selected_parallel_layout["execution_cpu_slots"])
                 if task_id in final_costs else None
             ),
             "source_limited_below_declared_minimum": (
