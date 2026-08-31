@@ -39,7 +39,7 @@ _PROFILE_FIELDS = {
 }
 _RESOURCE_POLICY_DEFAULTS = {
     "minimum_wall_minutes": 30.0,
-    "walltime_safety_factor": 1.5,
+    "walltime_safety_factor": 1.0,
     "walltime_overhead_minutes": 15.0,
     "minimum_memory_gib": 2.0,
     "memory_safety_factor": 1.5,

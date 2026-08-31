@@ -256,13 +256,16 @@ the supplied DEAC profile uses a conservative 44-CPU, 185-GiB node shape. These
 are editable profile values, not hard-coded planner constants; use the real node
 shape for another cluster, or leave the fields null when no homogeneous shape is
 available. The adapter converts every planner task estimate to a time and memory
-request using the profile preferences. The requested campaign wall time is the
-padded end-to-end execution ceiling, not a science estimate to which the adapter
-adds another budget. If the preferred per-job timeout margins would make the
-serialized kill-limit path exceed that ceiling, the adapter reduces the
-additional margins uniformly. It never changes sampling or module selection
-during that adjustment. If the planner estimates plus minimum job limits still
-exceed the ceiling, submission fails closed.
+request using the profile preferences. The shipped profiles set
+`walltime_safety_factor` to 1.0 because the planner has already applied its 1.5
+task-time factor. The scheduler therefore does not multiply planner estimates a
+second time. It adds only the declared per-job overhead and minimum. The
+requested campaign wall time is the padded end-to-end execution ceiling, not a
+science estimate to which the adapter adds another budget. If the overhead
+would make the serialized kill-limit path exceed that ceiling, the adapter
+reduces it uniformly. It never changes sampling or module selection during that
+adjustment. If the planner estimates plus minimum job limits still exceed the
+ceiling, submission fails closed.
 
 `scheduler-resource-requests.json` records every mapped planner task, safety
 margin, selected partition, final request, and exact aggregate-resource wave.
