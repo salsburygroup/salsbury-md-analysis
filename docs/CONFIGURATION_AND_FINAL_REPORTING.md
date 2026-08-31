@@ -191,7 +191,9 @@ The default 1.5 time factor is applied to modeled task costs before frame
 allocation. The planner then uses only the configured utilization fraction
 (normally 0.85) and removes pilot and finalization reserves. The shipped Slurm
 profiles set their scheduler wall-time factor to 1.0, so that factor is not
-applied again. Their 15-minute per-job overhead and 30-minute minimum must fit
+applied again. Profile validation requires 1.0; older profiles that specify 1.5
+must be updated rather than silently double-padding time. Their 15-minute
+per-job overhead and 30-minute minimum must fit
 inside `maximum_hours_per_cpu`, which is the final padded end-to-end execution
 ceiling. The execution adapter retains the largest uniform fraction of the
 overhead whose serialized dependency-path kill limits fit inside the ceiling.

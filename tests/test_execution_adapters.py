@@ -371,6 +371,21 @@ class ExecutionAdapterTests(unittest.TestCase):
             with self.assertRaisesRegex(ExecutionAdapterError, "managed resources"):
                 load_slurm_profile(path)
 
+    def test_profile_rejects_duplicate_scheduler_time_factor(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "double-time-factor.json"
+            path.write_text(json.dumps({
+                "slurm_profile_schema": "salsbury-slurm-profile-v1",
+                "profile_id": "double-time-factor",
+                "cluster_name": "test",
+                "resource_policy": {"walltime_safety_factor": 1.5},
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ExecutionAdapterError,
+                "walltime_safety_factor must be 1.0",
+            ):
+                load_slurm_profile(path)
+
     def test_planner_rows_drive_task_resources_and_large_partition(self):
         repository = Path(__file__).resolve().parents[1]
         profile = load_slurm_profile(repository / "profiles/slurm/deac.json")
