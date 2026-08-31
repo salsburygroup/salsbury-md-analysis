@@ -19,6 +19,18 @@ from salsbury_md_analysis.execution_adapters import (
 
 
 class ExecutionAdapterTests(unittest.TestCase):
+    def test_shipped_slurm_profiles_do_not_repeat_planner_time_factor(self):
+        repository = Path(__file__).resolve().parents[1]
+        for name in ("deac.json", "generic-template.json"):
+            profile = load_slurm_profile(
+                repository / "profiles" / "slurm" / name
+            )
+            self.assertEqual(
+                profile["resource_policy"]["walltime_safety_factor"],
+                1.0,
+                name,
+            )
+
     def test_scheduler_timeout_padding_is_bounded_by_campaign_wall(self):
         def task(task_id):
             return {
