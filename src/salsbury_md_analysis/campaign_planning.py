@@ -1809,6 +1809,42 @@ def _view_tasks(
                 "calibration_wall_seconds": 29.21,
                 "calibration_maximum_rss_mib": 62.21875,
             }
+        elif module_id == "state_coordinate_exports":
+            definitions = project.get("definitions")
+            definition = (
+                definitions.get(module_id)
+                if isinstance(definitions, dict) else None
+            )
+            if not isinstance(definition, dict):
+                raise CampaignPlanningError(
+                    f"view {view_id} has no state-coordinate export definition"
+                )
+            write_trajectories = bool(
+                definition.get("write_trajectories", True)
+            )
+            if not write_trajectories:
+                # The protected representatives-only mode reads the accepted
+                # state assignments but materializes only observed state
+                # representatives. Historical state-export measurements
+                # include multi-frame trajectory writing and therefore cannot
+                # be scaled by every PCA projection used to define the states.
+                measured_rate = 0.0
+                fixed_cpu_hours = max(fixed_cpu_hours, 0.20)
+                method_specific = {
+                    "coordinate_export_mode": "representatives_only",
+                    "state_trajectory_exports_enabled": False,
+                    "measured_calibration_eligible": False,
+                    "measured_calibration_exclusion_reason": (
+                        "historical state-coordinate export measurements "
+                        "include multi-frame trajectory materialization; this "
+                        "task writes only observed representative structures"
+                    ),
+                    "resource_workload_basis": (
+                        "bounded representative coordinate materialization; "
+                        "state-assignment coverage remains inherited from the "
+                        "pooled conformational view"
+                    ),
+                }
         task = {
             "task_id": f"view:{view_id}:{module_id}",
             "workflow_id": view_id,
