@@ -847,6 +847,77 @@ class CampaignPlanningTests(unittest.TestCase):
         self.assertEqual(pald["cpu_seconds_per_physical_frame"], 0.0)
         self.assertEqual(pald["estimated_peak_memory_gib"], 1.0)
 
+    def test_representative_only_state_exports_do_not_scale_as_trajectories(self):
+        project = {
+            "requested_modules": ["common_pca", "state_coordinate_exports"],
+            "definitions": {
+                "common_pca": {
+                    "maximum_features": 100,
+                    "projection_frame_stride": 1,
+                    "projection_frame_selection": {"mode": "fixed_stride_v1"},
+                },
+                "state_coordinate_exports": {"write_trajectories": False},
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "project-representative-exports.json"
+            path.write_text(json.dumps(project), encoding="utf-8")
+            tasks = _view_tasks(
+                path, [1_000, 1_000], 10_000, time_safety_factor=1.5
+            )
+        export = next(
+            row for row in tasks
+            if row["module_id"] == "state_coordinate_exports"
+        )
+        self.assertEqual(export["coordinate_export_mode"], "representatives_only")
+        self.assertFalse(export["state_trajectory_exports_enabled"])
+        self.assertFalse(export["measured_calibration_eligible"])
+        self.assertEqual(export["cpu_seconds_per_physical_frame"], 0.0)
+        self.assertEqual(export["maximum_coordinate_writes"], 250)
+        self.assertEqual(export["fixed_cpu_hours"], 0.20)
+        self.assertIn(
+            "predate indexed requested-frame reads",
+            export["measured_calibration_exclusion_reason"],
+        )
+
+    def test_state_trajectory_export_cost_uses_bounded_output_count(self):
+        project = {
+            "requested_modules": ["common_pca", "state_coordinate_exports"],
+            "definitions": {
+                "common_pca": {
+                    "maximum_features": 100,
+                    "projection_frame_stride": 1,
+                    "projection_frame_selection": {"mode": "fixed_stride_v1"},
+                },
+                "state_coordinate_exports": {
+                    "write_trajectories": True,
+                    "maximum_states": 250,
+                    "representatives_per_state": 1,
+                    "maximum_total_frames": 500,
+                },
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "project-state-trajectories.json"
+            path.write_text(json.dumps(project), encoding="utf-8")
+            tasks = _view_tasks(
+                path, [10_000, 10_000], 10_000, time_safety_factor=1.5
+            )
+        export = next(
+            row for row in tasks
+            if row["module_id"] == "state_coordinate_exports"
+        )
+        self.assertEqual(
+            export["coordinate_export_mode"],
+            "state_trajectories_and_representatives",
+        )
+        self.assertTrue(export["state_trajectory_exports_enabled"])
+        self.assertEqual(export["maximum_coordinate_writes"], 750)
+        self.assertFalse(export["measured_calibration_eligible"])
+        self.assertAlmostEqual(
+            export["fixed_cpu_hours"], (300.0 + 10.0 * 750) * 1.5 / 3600.0
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
