@@ -82,6 +82,11 @@ export module is protected because it materializes representative state
 structures. Its separate `state_trajectory_exports_enabled` view option is off
 by default and may remain off without disabling representative structures.
 
+The planner models that default as a bounded representative-only
+coordinate-writing task. Measurements from multi-frame trajectory exports are
+not applied to every PCA projection when trajectories are off; state-assignment
+sampling still inherits the pooled conformational-view plan.
+
 The `clustering.methods` object lists all eleven conventional partitioning
 methods explicitly:
 `kmeans`, `hdbscan`, `intelligent_minkowski_weighted_kmeans`, `pam`,
