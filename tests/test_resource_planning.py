@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from salsbury_md_analysis.resource_planning import (
     ResourcePlanningError,
@@ -1038,6 +1039,61 @@ class ResourcePlanningTests(unittest.TestCase):
                 maximum_nodes=2,
             )
 
+    def test_node_aware_packer_serializes_large_lanes_before_later_item(self):
+        items = [
+            {
+                "item_id": "large-a",
+                "cpu_slots": 12,
+                "memory_gib": 462.0,
+                "wall_hours": 1.0,
+                "node_count": 3,
+                "workers_per_node": 4,
+                "distributed_replica_execution": True,
+            },
+            {
+                "item_id": "large-b",
+                "cpu_slots": 12,
+                "memory_gib": 462.0,
+                "wall_hours": 1.0,
+                "node_count": 3,
+                "workers_per_node": 4,
+                "distributed_replica_execution": True,
+            },
+            {
+                "item_id": "later-distributed",
+                "cpu_slots": 12,
+                "memory_gib": 346.0,
+                "wall_hours": 0.1,
+                "node_count": 2,
+                "workers_per_node": 9,
+                "distributed_replica_execution": True,
+            },
+        ]
+        lanes = pack_resource_lanes(
+            items,
+            maximum_parallel_cpus=220,
+            maximum_parallel_memory_gib=925.0,
+            maximum_cpus_per_node=44,
+            maximum_memory_gib_per_node=185.0,
+            maximum_nodes=5,
+        )
+        self.assertEqual(
+            sorted(
+                item["item_id"]
+                for lane in lanes
+                for item in lane["items"]
+            ),
+            ["large-a", "large-b", "later-distributed"],
+        )
+        self.assertLessEqual(
+            len({
+                node
+                for lane in lanes
+                for node in lane["planned_node_indices"]
+            }),
+            5,
+        )
+
     def test_planner_applies_padding_before_per_node_memory_gate(self):
         plan = plan_campaign_resource_budget(
             [{
@@ -1073,24 +1129,25 @@ class ResourcePlanningTests(unittest.TestCase):
         )
 
     def test_replica_workers_are_sharded_by_padded_per_node_memory(self):
+        tasks = [{
+            "task_id": "replica-qc",
+            "module_id": "structural_integrity_qc",
+            "dependency_stage": 0,
+            "effective_cpu_cap": 63,
+            "parallel_execution_model": (
+                "replica_worker_exact_global_reducer_v1"
+            ),
+            "parallel_worker_count": 63,
+            "estimated_peak_memory_gib_per_parallel_worker": 3.0,
+            "reducer_memory_gib": 3.0,
+            "source_frames_per_replica": [100] * 63,
+            "minimum_frames_per_replica": 10,
+            "maximum_frames_per_replica": 100,
+            "cpu_seconds_per_physical_frame": 0.01,
+            "estimated_peak_memory_gib": 189.0,
+        }]
         plan = plan_campaign_resource_budget(
-            [{
-                "task_id": "replica-qc",
-                "module_id": "structural_integrity_qc",
-                "dependency_stage": 0,
-                "effective_cpu_cap": 63,
-                "parallel_execution_model": (
-                    "replica_worker_exact_global_reducer_v1"
-                ),
-                "parallel_worker_count": 63,
-                "estimated_peak_memory_gib_per_parallel_worker": 3.0,
-                "reducer_memory_gib": 3.0,
-                "source_frames_per_replica": [100] * 63,
-                "minimum_frames_per_replica": 10,
-                "maximum_frames_per_replica": 100,
-                "cpu_seconds_per_physical_frame": 0.01,
-                "estimated_peak_memory_gib": 189.0,
-            }],
+            tasks,
             maximum_parallel_cpus=88,
             maximum_wall_hours=1.0,
             maximum_memory_gib=370.0,
@@ -1141,6 +1198,115 @@ class ResourcePlanningTests(unittest.TestCase):
             ["distributed_replica_tasks_supported"]
         )
         self.assertEqual(plan["feasibility_status"], "feasible")
+        request = plan["permissive_minimum_resource_request"]
+        self.assertEqual(
+            request["request_replay_policy"],
+            "original_input_caps_for_validated_lane_packing",
+        )
+        self.assertEqual(request["recommended_request"]["nodes"], 2)
+        self.assertEqual(request["recommended_request"]["parallel_cpus"], 88)
+        self.assertEqual(
+            request["recommended_request"]["aggregate_memory_gib"], 370.0
+        )
+        self.assertEqual(
+            request["modeled_peak_utilization"]["parallel_cpus"], 63
+        )
+        self.assertEqual(
+            request["modeled_peak_utilization"]["aggregate_memory_gib"], 362.0
+        )
+        replay = plan_campaign_resource_budget(
+            tasks,
+            maximum_parallel_cpus=request["recommended_request"]["parallel_cpus"],
+            maximum_wall_hours=request["recommended_request"]["wall_hours"],
+            maximum_memory_gib=request["recommended_request"][
+                "aggregate_memory_gib"
+            ],
+            memory_safety_factor=1.5,
+            memory_overhead_gib=1.0,
+            maximum_cpus_per_node=44,
+            maximum_memory_gib_per_node=185.0,
+            maximum_nodes=request["recommended_request"]["nodes"],
+        )
+        self.assertEqual(replay["feasibility_status"], "feasible")
+        self.assertLessEqual(
+            replay["minimum_wall_hours_lower_bound"],
+            plan["minimum_wall_hours_lower_bound"] + 1.0e-12,
+        )
+
+    def test_unpacked_minimum_schedule_fails_closed_without_none_wall_crash(self):
+        common = {
+            "effective_cpu_cap": 1,
+            "source_frames_per_replica": [100],
+            "minimum_frames_per_replica": 10,
+            "maximum_frames_per_replica": 100,
+            "cpu_seconds_per_physical_frame": 0.01,
+            "estimated_peak_memory_gib": 1.0,
+        }
+        tasks = [
+            {
+                **common,
+                "task_id": "cache",
+                "module_id": "coordinate_cache",
+                "dependency_stage": 0,
+            },
+            {
+                **common,
+                "task_id": "protected",
+                "module_id": "structural_integrity_qc",
+                "dependency_stage": 1,
+            },
+        ]
+        with patch(
+            "salsbury_md_analysis.resource_planning.pack_resource_lanes",
+            side_effect=ResourcePlanningError("synthetic node fragmentation"),
+        ):
+            plan = plan_global_stride_projection_coupled_campaign_resource_budget(
+                tasks,
+                maximum_parallel_cpus=5,
+                maximum_wall_hours=24.0,
+                maximum_memory_gib=20.0,
+                planning_utilization=1.0,
+                pilot_budget_fraction=0.0,
+                finalization_headroom_fraction=0.0,
+                maximum_cpus_per_node=1,
+                maximum_memory_gib_per_node=4.0,
+                maximum_nodes=5,
+            )
+        self.assertEqual(plan["feasibility_status"], "infeasible")
+        self.assertFalse(plan["execution_authorized"])
+        self.assertIn(
+            "minimum calibrated task schedule cannot be packed",
+            " ".join(plan["infeasibility_reasons"]),
+        )
+
+    def test_node_aware_request_retains_input_envelope_for_walltime_replay(self):
+        plan = plan_campaign_resource_budget(
+            [{
+                "task_id": "small",
+                "module_id": "structural_integrity_qc",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 1,
+                "source_frames_per_replica": [10],
+                "minimum_frames_per_replica": 10,
+                "maximum_frames_per_replica": 10,
+                "cpu_seconds_per_physical_frame": 1.0,
+                "estimated_peak_memory_gib": 1.0,
+            }],
+            maximum_parallel_cpus=88,
+            maximum_wall_hours=1.0,
+            maximum_memory_gib=370.0,
+            maximum_cpus_per_node=44,
+            maximum_memory_gib_per_node=185.0,
+            maximum_nodes=2,
+        )
+        request = plan["permissive_minimum_resource_request"]
+        self.assertEqual(request["modeled_peak_utilization"]["nodes"], 1)
+        self.assertEqual(request["modeled_peak_utilization"]["parallel_cpus"], 1)
+        self.assertEqual(request["recommended_request"]["nodes"], 2)
+        self.assertEqual(request["recommended_request"]["parallel_cpus"], 88)
+        self.assertEqual(
+            request["recommended_request"]["aggregate_memory_gib"], 370.0
+        )
 
     def test_parallel_worker_concurrency_is_reduced_without_dropping_work(self):
         plan = plan_campaign_resource_budget(
