@@ -441,7 +441,8 @@ class CampaignPlanningTests(unittest.TestCase):
                     "projection_frame_selection": {"mode": "fixed_stride_v1"},
                 },
                 "alternative_clustering": {
-                    "algorithms": ["pam", "gaussian_mixture", "ward"]
+                    "algorithms": ["pam", "gaussian_mixture", "ward"],
+                    "component_indices": list(range(1, 11)),
                 },
             },
         }
@@ -473,6 +474,38 @@ class CampaignPlanningTests(unittest.TestCase):
                 "time_exponent"
             ],
             1.0,
+        )
+        self.assertEqual(
+            algorithms["pam"]["algorithm_memory_model"],
+            "feature_aware_pairwise_matrix",
+        )
+        self.assertEqual(
+            algorithms["pam"]["projection_feature_count"], 10
+        )
+        self.assertAlmostEqual(
+            algorithms["pam"]["measured_memory_cost_model"][
+                "calibration_memory_gib"
+            ],
+            0.125 + 20_000 ** 2 * 186 / 2 ** 30,
+        )
+        self.assertEqual(
+            algorithms["gaussian_mixture"]["measured_memory_cost_model"][
+                "calibration_memory_gib"
+            ],
+            1.0,
+        )
+        self.assertTrue(algorithms["pam"]["memory_replacement_qualified"])
+        self.assertFalse(algorithms["pam"]["measured_calibration_eligible"])
+        self.assertEqual(
+            algorithms["pam"]["performance_calibration_provenance"][
+                "measurement_count"
+            ],
+            120,
+        )
+        self.assertFalse(
+            algorithms["pam"]["performance_calibration_provenance"][
+                "scientific_observations_saved"
+            ]
         )
 
     def test_pald_uses_separate_measured_cubic_observation_model(self):

@@ -814,40 +814,64 @@ def _permissive_minimum_resource_request(
 
 _ALTERNATIVE_CLUSTERING_FIT_PROFILES: Mapping[str, Mapping[str, object]] = {
     "pam": {
-        "reference_fit_observation_ceiling": 6_000,
+        "reference_fit_observation_ceiling": 20_000,
         "minimum_fit_observations": 1_000,
         "time_exponent": 2.0,
         "complexity_class": "pairwise_distance_quadratic",
+        "calibration_observations": 20_000,
+        "calibration_cpu_seconds": 486.782208,
+        "memory_model": "feature_aware_pairwise_matrix",
     },
     "mwpam": {
-        "reference_fit_observation_ceiling": 4_500,
+        "reference_fit_observation_ceiling": 20_000,
         "minimum_fit_observations": 750,
         "time_exponent": 2.0,
         "complexity_class": "weighted_pairwise_distance_quadratic",
+        "calibration_observations": 20_000,
+        "calibration_cpu_seconds": 8_213.019804,
+        "memory_model": "feature_aware_pairwise_matrix",
     },
     "gaussian_mixture": {
-        "reference_fit_observation_ceiling": 30_000,
+        "reference_fit_observation_ceiling": 74_100,
         "minimum_fit_observations": 3_000,
         "time_exponent": 1.0,
         "complexity_class": "iterative_observation_linear",
+        "calibration_observations": 74_100,
+        # The slowest normalized completed run had ten features and 30,000
+        # observations.  Scaling that rate to the reference workload avoids
+        # understating the cost of higher-dimensional projections.
+        "calibration_cpu_seconds": 298.18355447,
+        "memory_model": "one_gib_planner_floor",
     },
     "variational_gaussian_mixture": {
-        "reference_fit_observation_ceiling": 15_000,
+        "reference_fit_observation_ceiling": 74_100,
         "minimum_fit_observations": 1_500,
         "time_exponent": 1.0,
         "complexity_class": "iterative_observation_linear_with_variational_overhead",
+        "calibration_observations": 74_100,
+        "calibration_cpu_seconds": 497.01140671,
+        "memory_model": "one_gib_planner_floor",
     },
     "affinity_propagation": {
-        "reference_fit_observation_ceiling": 4_500,
+        "reference_fit_observation_ceiling": 20_000,
         "minimum_fit_observations": 750,
         "time_exponent": 2.0,
         "complexity_class": "dense_similarity_quadratic",
+        "calibration_observations": 20_000,
+        "calibration_cpu_seconds": 2_252.861438,
+        "memory_model": "dense_similarity_matrix",
     },
     "mean_shift": {
-        "reference_fit_observation_ceiling": 9_000,
+        "reference_fit_observation_ceiling": 20_000,
         "minimum_fit_observations": 1_500,
         "time_exponent": 2.0,
         "complexity_class": "bandwidth_dependent_neighbor_quadratic",
+        "calibration_observations": 20_000,
+        # The 4,200-observation run was the slowest after normalization by
+        # n**2.  This reference value is its conservative 20,000-observation
+        # extrapolation, not the median of unlike datasets.
+        "calibration_cpu_seconds": 487.08619048,
+        "memory_model": "one_gib_planner_floor",
     },
     "ward": {
         "reference_fit_observation_ceiling": 10_000,
@@ -862,6 +886,94 @@ _ALTERNATIVE_CLUSTERING_FIT_PROFILES: Mapping[str, Mapping[str, object]] = {
         "complexity_class": "full_observation_pairwise_or_skip",
     },
 }
+
+
+_ALTERNATIVE_CLUSTERING_CALIBRATION_ID = (
+    "apollo-alternative-clustering-performance-v1-2026-08-31"
+)
+_ALTERNATIVE_CLUSTERING_ACCEPTANCE_SHA256 = (
+    "b021b0520f1292da2bf61138cfcb3d5f0d2eaf5a9ce824d40fea1827bdef7d7f"
+)
+_ALTERNATIVE_CLUSTERING_TASK_MATRIX_SHA256 = (
+    "0c4bc7a87d7fdbaebf4c16caff2011174c6ea279b71e318553535d2a173d269e"
+)
+
+
+def alternative_clustering_performance_model(
+    algorithm: str,
+    *,
+    feature_count: int,
+) -> Optional[Dict[str, object]]:
+    """Return the accepted performance-only model for one clustering family.
+
+    The calibration retained timing and resident-memory evidence only.  No
+    labels, centers, populations, representatives, or scientific scores were
+    retained.  Ward and quality-threshold are intentionally absent because the
+    accepted matrix did not calibrate their full-observation implementations.
+    """
+
+    if (
+        isinstance(feature_count, bool)
+        or not isinstance(feature_count, int)
+        or feature_count <= 0
+    ):
+        raise ResourcePlanningError("feature_count must be a positive integer")
+    profile = _ALTERNATIVE_CLUSTERING_FIT_PROFILES.get(str(algorithm))
+    if (
+        not isinstance(profile, Mapping)
+        or "calibration_observations" not in profile
+    ):
+        return None
+    observations = int(profile["calibration_observations"])
+    memory_kind = str(profile["memory_model"])
+    if memory_kind == "feature_aware_pairwise_matrix":
+        # Repeated PAM/mwPAM runs were bounded by one feature-dependent dense
+        # pairwise working set.  The 0.125-GiB intercept and (26 + 16*d) bytes
+        # per pair conservatively cover the accepted 3-, 5-, and 10-feature
+        # measurements through 20,000 fit observations.
+        memory_gib = 0.125 + (
+            observations ** 2 * (26.0 + 16.0 * feature_count) / (2.0 ** 30)
+        )
+        memory_exponent = 2.0
+        minimum_memory_gib = 1.3
+    elif memory_kind == "dense_similarity_matrix":
+        # Affinity propagation's accepted runs are covered by 37 bytes per
+        # pair plus a small process/interpreter intercept.
+        memory_gib = 0.125 + observations ** 2 * 37.0 / (2.0 ** 30)
+        memory_exponent = 2.0
+        minimum_memory_gib = 1.0
+    elif memory_kind == "one_gib_planner_floor":
+        memory_gib = 1.0
+        memory_exponent = 1.0
+        minimum_memory_gib = 1.0
+    else:  # pragma: no cover - guarded by the in-tree profile table
+        raise ResourcePlanningError(
+            f"unknown alternative-clustering memory model {memory_kind}"
+        )
+    return {
+        "calibration_id": _ALTERNATIVE_CLUSTERING_CALIBRATION_ID,
+        "calibration_acceptance_sha256": (
+            _ALTERNATIVE_CLUSTERING_ACCEPTANCE_SHA256
+        ),
+        "calibration_task_matrix_sha256": (
+            _ALTERNATIVE_CLUSTERING_TASK_MATRIX_SHA256
+        ),
+        "calibration_measurement_count": 120,
+        "calibration_status": "completed_performance_only_matrix_v1",
+        "calibration_observations": observations,
+        "calibration_cpu_seconds": float(profile["calibration_cpu_seconds"]),
+        "time_exponent": float(profile["time_exponent"]),
+        "calibration_memory_gib": memory_gib,
+        "memory_exponent": memory_exponent,
+        "minimum_observation_scale": min(
+            1.0, minimum_memory_gib / memory_gib
+        ),
+        "memory_model": memory_kind,
+        "feature_count": feature_count,
+        "memory_replacement_qualified": True,
+        "scientific_status": "not_evaluated",
+        "scientific_observations_saved": False,
+    }
 
 
 def alternative_clustering_fit_profiles() -> Dict[str, Dict[str, object]]:
@@ -882,11 +994,9 @@ def plan_alternative_clustering_fit_strides(
 ) -> Dict[str, object]:
     """Choose an independent exact integer fit stride for every algorithm.
 
-    The retained TREX 3,000-fit sweep calibrates the bundled implementation,
-    but not the individual algorithms.  These per-family ceilings are therefore
-    explicit conservative complexity profiles, scaled with the requested wall
-    envelope and reported as provisional until per-algorithm pilots replace
-    them. Ward and quality-threshold retain the agreed full-fit-or-skip policy.
+    Six families use the accepted multi-system performance-only calibration.
+    Ward and quality-threshold retain a provisional full-fit-or-skip profile
+    because the calibration did not exercise those implementations.
     """
 
     counts = [int(value) for value in source_physical_frames_per_replica]
@@ -966,7 +1076,14 @@ def plan_alternative_clustering_fit_strides(
             "full_observation_count": full_observations,
             "complexity_class": profile["complexity_class"],
             "time_exponent": exponent,
-            "calibration_status": "provisional_complexity_profile_v1",
+            "calibration_status": (
+                "completed_performance_only_matrix_v1"
+                if "calibration_observations" in profile else
+                "provisional_complexity_profile_v1"
+            ),
+            **({
+                "calibration_id": _ALTERNATIVE_CLUSTERING_CALIBRATION_ID,
+            } if "calibration_observations" in profile else {}),
         }
     return {
         "mode": "algorithm_specific_integer_stride_v1",

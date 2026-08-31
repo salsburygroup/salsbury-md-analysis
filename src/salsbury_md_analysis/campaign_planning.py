@@ -24,6 +24,7 @@ from .memory_policy import (
 from .resource_planning import (
     ResourcePlanningError,
     alternative_clustering_fit_profiles,
+    alternative_clustering_performance_model,
     plan_campaign_resource_budget,
     plan_global_stride_projection_coupled_campaign_resource_budget,
     recommend_scientifically_valid_task_subset,
@@ -1153,6 +1154,23 @@ def _view_tasks(
                 raise CampaignPlanningError(
                     f"view {view_id} lacks alternative-clustering algorithms"
                 )
+            component_indices = definition.get("component_indices")
+            if isinstance(component_indices, list) and component_indices:
+                feature_count = len(component_indices)
+                feature_count_basis = "declared_component_indices"
+            elif (
+                isinstance(definition.get("trajectory_feature_columns"), list)
+                and definition["trajectory_feature_columns"]
+            ):
+                feature_count = len(definition["trajectory_feature_columns"])
+                feature_count_basis = "declared_trajectory_feature_columns"
+            else:
+                # Prepared generic projects declare the projected components.
+                # Keep direct _view_tasks callers compatible while making the
+                # fallback explicit in the task rather than silently using an
+                # atom-count memory multiplier.
+                feature_count = 3
+                feature_count_basis = "planner_fallback_three_components"
             profiles = alternative_clustering_fit_profiles()
             full_observations = sum(projected_counts) * multiplier
             bundle_id = f"view:{view_id}:alternative_clustering"
@@ -1163,6 +1181,10 @@ def _view_tasks(
                         f"view {view_id} has no clustering profile for {algorithm}"
                     )
                 profile = profiles[algorithm]
+                performance = alternative_clustering_performance_model(
+                    algorithm,
+                    feature_count=feature_count,
+                )
                 full_fit_only = algorithm in {"ward", "quality_threshold"}
                 if full_fit_only and full_observations > int(
                     profile["reference_fit_observation_ceiling"]
@@ -1186,6 +1208,56 @@ def _view_tasks(
                 )
                 if full_fit_only:
                     minimum_per_replica = max(projected_counts)
+                if performance is None:
+                    calibration_observations = 3_000
+                    calibration_cpu_hours = (
+                        (268.201244 / 6.0) * time_safety_factor / 3600.0
+                    )
+                    calibration_memory_gib = 4.0
+                    memory_exponent = 1.0
+                    minimum_observation_scale = 0.25
+                    calibration_status = "provisional_complexity_profile_v1"
+                    calibration_id = str(model["calibration"])
+                    memory_model = "provisional_linear_observation"
+                    memory_replacement_qualified = False
+                else:
+                    calibration_observations = int(
+                        performance["calibration_observations"]
+                    )
+                    calibration_cpu_hours = (
+                        float(performance["calibration_cpu_seconds"])
+                        * time_safety_factor / 3600.0
+                    )
+                    calibration_memory_gib = float(
+                        performance["calibration_memory_gib"]
+                    )
+                    memory_exponent = float(performance["memory_exponent"])
+                    minimum_observation_scale = float(
+                        performance["minimum_observation_scale"]
+                    )
+                    calibration_status = str(performance["calibration_status"])
+                    calibration_id = str(performance["calibration_id"])
+                    memory_model = str(performance["memory_model"])
+                    memory_replacement_qualified = bool(
+                        performance["memory_replacement_qualified"]
+                    )
+                calibration_provenance = (
+                    None if performance is None else {
+                        "acceptance_sha256": performance[
+                            "calibration_acceptance_sha256"
+                        ],
+                        "task_matrix_sha256": performance[
+                            "calibration_task_matrix_sha256"
+                        ],
+                        "measurement_count": performance[
+                            "calibration_measurement_count"
+                        ],
+                        "scientific_status": performance["scientific_status"],
+                        "scientific_observations_saved": performance[
+                            "scientific_observations_saved"
+                        ],
+                    }
+                )
                 tasks.append({
                     "task_id": f"{bundle_id}:{algorithm}",
                     "workflow_id": view_id,
@@ -1208,37 +1280,49 @@ def _view_tasks(
                     ),
                     "cpu_seconds_per_physical_frame": 0.0,
                     "fixed_cpu_hours": 0.0,
-                    "estimated_peak_memory_gib": 4.0,
+                    "estimated_peak_memory_gib": calibration_memory_gib,
                     "priority_weight": float(model["priority"]),
                     "member_observation_multiplier": multiplier,
                     "balance_group": (
                         f"{pca_task['balance_group']}:alternative:{algorithm}"
                     ),
                     "replica_sampling_mode": "balanced_pooled",
-                    "calibration_status": (
-                        "completed_bundle_memory_linear_fit_v3"
+                    "calibration_status": calibration_status,
+                    "calibration_id": calibration_id,
+                    "performance_calibration_scope": (
+                        "provisional_uncalibrated_full_fit_only"
+                        if performance is None else
+                        "resource_only_no_scientific_observations"
                     ),
-                    "calibration_id": str(model["calibration"]),
+                    "performance_calibration_provenance": (
+                        calibration_provenance
+                    ),
+                    "projection_feature_count": feature_count,
+                    "projection_feature_count_basis": feature_count_basis,
+                    "memory_replacement_qualified": (
+                        memory_replacement_qualified
+                    ),
+                    "measured_calibration_eligible": False,
+                    "memory_size_scaling_applied": True,
                     "power_law_cost_model": {
-                        "calibration_observations": 3_000,
-                        "calibration_cpu_hours": (
-                            (268.201244 / 6.0) * time_safety_factor / 3600.0
-                        ),
+                        "calibration_observations": calibration_observations,
+                        "calibration_cpu_hours": calibration_cpu_hours,
                         "time_exponent": float(profile["time_exponent"]),
-                        # The algorithms run sequentially in one executable
-                        # bundle and reuse its large work arrays.  The completed
-                        # TBA bundle peaked at 27.0 GiB for 40,000 fit
-                        # observations; applying a quadratic memory exponent to
-                        # each algorithm separately produced 98--147 GiB
-                        # requests.  A conservative linear observation model is
-                        # used for bundle peak memory; runtime keeps the
-                        # algorithm-specific complexity exponent.
-                        "calibration_memory_gib": 4.0,
-                        "memory_exponent": 1.0,
+                        "calibration_memory_gib": calibration_memory_gib,
+                        "memory_exponent": memory_exponent,
+                    },
+                    "measured_memory_cost_model": {
+                        "calibration_observations": calibration_observations,
+                        "calibration_memory_gib": calibration_memory_gib,
+                        "memory_exponent": memory_exponent,
+                        "minimum_observation_scale": (
+                            minimum_observation_scale
+                        ),
                     },
                     "execution_bundle_memory_policy": (
-                        "sequential_shared_buffers_linear_observation_v1"
+                        "sequential_algorithm_specific_working_set_v2"
                     ),
+                    "algorithm_memory_model": memory_model,
                     "complexity_class": profile["complexity_class"],
                     "full_fit_only": full_fit_only,
                     "projection_source_counts_iteration_input": list(

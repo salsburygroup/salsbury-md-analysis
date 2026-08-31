@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from salsbury_md_analysis.resource_planning import (
     ResourcePlanningError,
+    alternative_clustering_performance_model,
     calibrate_from_benchmark,
     calibrate_from_benchmarks,
     calibrate_quadratic_from_benchmarks,
@@ -481,15 +482,118 @@ class ResourcePlanningTests(unittest.TestCase):
             target_wall_hours=24.0,
         )
         methods = plan["algorithm_plans"]
-        self.assertEqual(methods["pam"]["primary_stride"], 25)
-        self.assertEqual(methods["gaussian_mixture"]["primary_stride"], 5)
-        self.assertEqual(methods["affinity_propagation"]["primary_stride"], 33)
+        self.assertEqual(methods["pam"]["primary_stride"], 8)
+        self.assertEqual(methods["gaussian_mixture"]["primary_stride"], 2)
+        self.assertEqual(methods["affinity_propagation"]["primary_stride"], 8)
         self.assertEqual(methods["ward"]["execution"], "skip")
         for method in ("pam", "gaussian_mixture", "affinity_propagation"):
             self.assertLessEqual(
                 methods[method]["selected_fit_observation_count"],
                 methods[method]["fit_observation_ceiling"],
             )
+
+    def test_alternative_clustering_memory_models_are_algorithm_specific(self):
+        pam_3 = alternative_clustering_performance_model(
+            "pam", feature_count=3
+        )
+        pam_10 = alternative_clustering_performance_model(
+            "pam", feature_count=10
+        )
+        affinity = alternative_clustering_performance_model(
+            "affinity_propagation", feature_count=10
+        )
+        mixture = alternative_clustering_performance_model(
+            "gaussian_mixture", feature_count=10
+        )
+        self.assertIsNotNone(pam_3)
+        self.assertIsNotNone(pam_10)
+        self.assertIsNotNone(affinity)
+        self.assertIsNotNone(mixture)
+        assert pam_3 is not None and pam_10 is not None
+        assert affinity is not None and mixture is not None
+        self.assertAlmostEqual(
+            pam_3["calibration_memory_gib"],
+            0.125 + 20_000 ** 2 * 74 / 2 ** 30,
+        )
+        self.assertGreater(
+            pam_10["calibration_memory_gib"],
+            pam_3["calibration_memory_gib"],
+        )
+        self.assertAlmostEqual(
+            pam_3["calibration_memory_gib"]
+            * pam_3["minimum_observation_scale"],
+            1.3,
+        )
+        self.assertEqual(
+            affinity["memory_model"], "dense_similarity_matrix"
+        )
+        affinity_11_856 = (
+            affinity["calibration_memory_gib"]
+            * (11_856 / affinity["calibration_observations"]) ** 2
+        )
+        self.assertGreater(affinity_11_856, 4_940.71484375 / 1_024.0)
+        self.assertEqual(mixture["calibration_memory_gib"], 1.0)
+        self.assertEqual(mixture["memory_exponent"], 1.0)
+        self.assertIsNone(
+            alternative_clustering_performance_model("ward", feature_count=3)
+        )
+
+    def test_pam_calibration_receives_one_deac_reservation_adjustment(self):
+        model = alternative_clustering_performance_model(
+            "pam", feature_count=10
+        )
+        assert model is not None
+        task = {
+            "task_id": "pam",
+            "module_id": "alternative_clustering",
+            "dependency_stage": 0,
+            "effective_cpu_cap": 1,
+            "source_frames_per_replica": [20_000],
+            "minimum_frames_per_replica": 20_000,
+            "maximum_frames_per_replica": 20_000,
+            "fixed_cpu_hours": 0.0,
+            "cpu_seconds_per_physical_frame": 0.0,
+            "estimated_peak_memory_gib": model["calibration_memory_gib"],
+            "power_law_cost_model": {
+                "calibration_observations": model["calibration_observations"],
+                "calibration_cpu_hours": (
+                    model["calibration_cpu_seconds"] / 3_600.0
+                ),
+                "time_exponent": model["time_exponent"],
+                "calibration_memory_gib": model["calibration_memory_gib"],
+                "memory_exponent": model["memory_exponent"],
+            },
+            "measured_memory_cost_model": {
+                "calibration_observations": model["calibration_observations"],
+                "calibration_memory_gib": model["calibration_memory_gib"],
+                "memory_exponent": model["memory_exponent"],
+                "minimum_observation_scale": model[
+                    "minimum_observation_scale"
+                ],
+            },
+        }
+        plan = plan_campaign_resource_budget(
+            [task],
+            maximum_parallel_cpus=1,
+            maximum_wall_hours=1.0,
+            maximum_memory_gib=185.0,
+            planning_utilization=1.0,
+            pilot_budget_fraction=0.0,
+            memory_safety_factor=1.5,
+            memory_overhead_gib=1.0,
+            maximum_cpus_per_node=44,
+            maximum_memory_gib_per_node=185.0,
+            maximum_nodes=1,
+        )
+        row = plan["tasks"][0]
+        self.assertAlmostEqual(
+            row["estimated_peak_memory_gib_at_selected_observations"],
+            69.4153995513916,
+        )
+        self.assertEqual(
+            row["estimated_scheduler_memory_gib_at_selected_observations"],
+            106.0,
+        )
 
     def benchmark(self):
         return {
