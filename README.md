@@ -283,16 +283,19 @@ allowance of a large, long calibration while retaining substantial headroom.
 the complete campaign, not an allowance for every job. The planner first turns
 each estimated working set into a safety-adjusted scheduler request. With the
 DEAC profile this is `ceil(1.5 × working set + 1 GiB)`, with a 2 GiB minimum.
-It then packs independent tasks into resource waves whose summed CPU and
-memory requests stay within the configured campaign caps. Resource waves wait
-for completion of the preceding wave so a failure releases the allocation;
-success-only dependencies are reserved for inputs a task cannot reconstruct.
+It packs each dependency level into resource lanes whose summed CPU and memory
+requests stay within the configured campaign caps. Those reservations are
+released at the next dependency-level boundary, so a large task does not hold
+its memory for the rest of the campaign. Success-only dependencies are reserved
+for inputs a task cannot reconstruct.
 Reusable upstream reports use completion-only ordering, are validated against
 the current project and input hashes, and fall back to recomputation when they
 are missing, failed, or incompatible. A lower memory cap
 can therefore increase the integer strides or serialize work even when every
 individual task fits. The local executor and the generated `submit.sh` enforce
-the same limits.
+the same limits. If the generated Slurm critical path exceeds the requested
+campaign wall limit, the preview marks it infeasible and `submit.sh` refuses to
+submit it.
 
 Slurm profiles may also declare CPUs and memory per node. The planner applies
 the profile's memory adjustment before placing work. A named calibration-
