@@ -145,6 +145,19 @@ calibration and scales time cubically and matrix memory quadratically with its
 configured observation ceiling. The normal workflow safety factor is then
 applied; PaLD is never costed as ordinary linear per-frame clustering.
 
+The conventional alternative-clustering planner uses per-algorithm
+performance models. PAM and Minkowski-weighted PAM use a quadratic,
+feature-count-aware pairwise-memory model; affinity propagation uses its own
+dense-similarity quadratic model. Mean shift and the Gaussian and variational
+Gaussian mixtures remained below the planner's 1-GiB working-set floor in the
+accepted calibration and therefore keep that floor. Each algorithm has an
+independent integer fit stride and runtime curve. Ward and quality-threshold
+retain provisional estimates and are skipped unless every observation can be
+fit exactly. The calibration records timing and resident memory only: cluster
+labels, centers, populations, representatives, scores, and biological results
+were discarded. The cluster profile's memory adjustment is applied after these
+working-set models, in the same way as for other modules.
+
 The `execution` section describes one campaign envelope. For example,
 `maximum_parallel_cpus: 32` and `maximum_hours_per_cpu: 24` means at most 32
 CPUs for 24 wall hours, or 768 raw CPU-hours before the configured utilization
