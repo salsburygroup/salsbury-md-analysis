@@ -8,6 +8,11 @@
   and method-aware finding highlights.
 - Keep the interactive results browser in its separate companion repository;
   the core package produces the complete machine-readable evidence it consumes.
+- Replace the shared alternative-clustering resource estimate with accepted
+  performance-only, per-algorithm runtime and memory models. PAM and weighted
+  PAM now account for both fit observations and projected feature count;
+  affinity propagation, mean shift, and the mixture methods retain their own
+  measured scaling and planner floors.
 - Make structural-integrity QC restartable at exact frame boundaries. Every
   completed trajectory segment receives an atomic checkpoint; an in-progress
   checkpoint is written only when one segment runs longer than the configured
