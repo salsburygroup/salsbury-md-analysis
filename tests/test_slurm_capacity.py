@@ -135,7 +135,7 @@ class SlurmCapacityTests(unittest.TestCase):
             "partition_maximum_wall_minutes": {"small": 1440},
             "resource_policy": {
                 "minimum_wall_minutes": 30,
-                "walltime_safety_factor": 1.5,
+                "walltime_safety_factor": 1.0,
                 "walltime_overhead_minutes": 15,
                 "minimum_memory_gib": 2,
                 "memory_safety_factor": 1.5,

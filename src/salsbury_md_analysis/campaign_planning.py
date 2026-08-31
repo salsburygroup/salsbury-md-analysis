@@ -2000,7 +2000,7 @@ def plan_and_apply_complete_campaign(
     except MemoryPolicyError as exc:
         raise CampaignPlanningError(str(exc)) from exc
     scheduler_time_policy: Dict[str, float] = {
-        "walltime_safety_factor": 1.5,
+        "walltime_safety_factor": 1.0,
         "walltime_overhead_minutes": 15.0,
         "minimum_wall_minutes": 30.0,
     }
