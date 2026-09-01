@@ -518,6 +518,11 @@ salsbury-md-analysis prepare-analysis ... --uniform-cache-stride
 # On the experimental branch, add all applicable experimental modules to the
 # normal main-module workflow.
 salsbury-md-analysis prepare-analysis ... --with-experimental-modules
+
+# On the experimental branch, extend a technically complete main campaign
+# without rerunning its validated modules.
+salsbury-md-analysis prepare-analysis ... \
+  --experimental-after-main /path/to/completed-main-campaign
 ```
 
 The same switches work with `prepare-comparison` and `--plan-only`. The
@@ -535,6 +540,20 @@ newly prepared campaign; it does not modify or consume an already completed
 campaign directory. Explicit per-module `false` entries still win. It is
 mutually exclusive with `--protected-core-only` because those switches request
 opposite module sets.
+
+`--experimental-after-main` is the separate continuation mode. It verifies
+that every reusable main report is technically complete, authenticates the
+report and project hashes, checks that the new inputs reproduce the upstream
+system manifest, and reuses any validated coordinate cache. Reused reports are
+linked read-only into a new output directory. Their original frame allocations
+remain fixed and cost no new analysis time in the extension plan. The workflow
+then schedules only applicable experimental modules, rebuilds the finding
+report, and rebuilds integrated comparisons for comparative campaigns. The
+upstream main directory is never edited.
+An incomplete or mismatched main campaign fails closed rather than silently
+rerunning or mixing results. The same option is available on
+`prepare-comparison`; supply the same comparison request and input files used
+for the main campaign.
 
 Run `salsbury-md-analysis list-modules` to see the module identifiers. The
 prepared campaign writes the complete resolved configuration to

@@ -41,6 +41,19 @@ The command-line equivalent is `--with-experimental-modules` on
 `prepare-analysis` and `prepare-comparison`. It adds applicable experimental
 methods to the normal main-module workflow for the new campaign. It does not
 write into, or reuse results from, a completed campaign directory.
+
+Use `--experimental-after-main /path/to/completed-main-campaign` when the main
+campaign is already complete. This mode creates a separate experimental output
+directory and treats the upstream campaign as immutable. It requires complete
+hash-matched report sidecars, authenticated project and system manifests, and
+the same declared systems, replicas, segments, and timing. If the main campaign
+contains a reusable validated coordinate cache, the extension uses it rather
+than rebuilding it. The planner carries forward each reused module's exact
+frame allocation at negligible new execution cost, plans only missing
+experimental work, and recomputes prioritized findings plus integrated
+comparisons when the campaign is comparative. Any missing, incomplete, or
+mismatched required main result stops preparation. This continuation switch is mutually
+exclusive with `--with-experimental-modules` and `--protected-core-only`.
 Supply a reviewed partial or complete configuration with:
 
 ```bash

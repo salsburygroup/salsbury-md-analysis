@@ -57,6 +57,20 @@ class CLIWorkflowModeTests(unittest.TestCase):
         self.assertTrue(analysis.with_experimental_modules)
         self.assertTrue(comparison.with_experimental_modules)
 
+    def test_prepare_commands_expose_experimental_after_main_switch(self):
+        parser = build_parser()
+        analysis = parser.parse_args([
+            "prepare-analysis", "--pdb", "input.pdb", "--trajectory", "run.dcd",
+            "--output", "out", "--project-id", "test",
+            "--frame-interval-ps", "10", "--experimental-after-main", "main-run",
+        ])
+        comparison = parser.parse_args([
+            "prepare-comparison", "comparison.json", "--output", "out",
+            "--project-id", "test", "--experimental-after-main", "main-run",
+        ])
+        self.assertEqual(analysis.experimental_after_main, Path("main-run"))
+        self.assertEqual(comparison.experimental_after_main, Path("main-run"))
+
     def test_prepare_commands_expose_explicit_resource_fit_mode(self):
         parser = build_parser()
         analysis = parser.parse_args([

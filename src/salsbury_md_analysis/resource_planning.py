@@ -38,6 +38,8 @@ def workflow_useful_parallel_cpu_ceiling(
 
     stages: Dict[int, Dict[str, int]] = {}
     for row in tasks:
+        if bool(row.get("externally_satisfied", False)):
+            continue
         stage = int(row.get("dependency_stage", 0))
         bundle = str(
             row.get("execution_bundle_id") or row.get("task_id", "task")
