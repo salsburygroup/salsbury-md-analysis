@@ -1461,8 +1461,64 @@ def _slurm_resource_epochs(
             key=lambda index: (float(tokens[index]["available"]), index),
         )[:count]
 
+    item_by_id = {str(item["item_id"]): item for item in items}
+    if len(item_by_id) != len(items):
+        raise ExecutionAdapterError("execution plan contains duplicate task IDs")
+
+    declared_dependencies_by_id = {
+        item_id: list(dict.fromkeys([
+            *map(str, item.get("depends_on_task_ids", [])),
+            *map(str, item.get("wait_for_task_ids", [])),
+        ]))
+        for item_id, item in item_by_id.items()
+    }
+    missing_dependencies = {
+        dependency
+        for dependencies in declared_dependencies_by_id.values()
+        for dependency in dependencies
+        if dependency not in item_by_id
+    }
+    if missing_dependencies:
+        raise ExecutionAdapterError(
+            "execution plan contains unknown dependencies: "
+            + ", ".join(sorted(missing_dependencies))
+        )
+
+    successors: Dict[str, List[str]] = {
+        item_id: [] for item_id in item_by_id
+    }
+    for item_id, dependencies in declared_dependencies_by_id.items():
+        for dependency in dependencies:
+            successors[dependency].append(item_id)
+    critical_rank_cache: Dict[str, float] = {}
+    critical_rank_visiting: set[str] = set()
+
+    def critical_rank(item_id: str) -> float:
+        """Return the remaining planned path through declared dependencies."""
+
+        cached = critical_rank_cache.get(item_id)
+        if cached is not None:
+            return cached
+        if item_id in critical_rank_visiting:
+            raise ExecutionAdapterError(
+                "execution plan contains a dependency cycle involving " + item_id
+            )
+        critical_rank_visiting.add(item_id)
+        downstream = max(
+            (critical_rank(successor) for successor in successors[item_id]),
+            default=0.0,
+        )
+        rank = float(item_by_id[item_id]["planned_wall_hours"]) + downstream
+        critical_rank_visiting.remove(item_id)
+        critical_rank_cache[item_id] = rank
+        return rank
+
+    for item_id in item_by_id:
+        critical_rank(item_id)
+
     planned_finishes: Dict[str, float] = {}
-    for item in items:
+
+    def candidate_allocation(item: Mapping[str, object]) -> Dict[str, object]:
         scheduling_id = str(item["item_id"])
         cpu_count = int(item["cpu_slots"])
         memory_count = int(math.ceil(
@@ -1474,20 +1530,9 @@ def _slurm_resource_epochs(
             )
         cpu_indices = selected_token_indices(cpu_tokens, cpu_count)
         memory_indices = selected_token_indices(memory_tokens, memory_count)
-        declared_dependencies = list(dict.fromkeys([
-            *map(str, item.get("depends_on_task_ids", [])),
-            *map(str, item.get("wait_for_task_ids", [])),
-        ]))
-        missing = [
-            task_id for task_id in declared_dependencies
-            if task_id not in planned_finishes
-        ]
-        if missing:
-            raise ExecutionAdapterError(
-                f"task {item['item_id']} appears before dependencies: "
-                + ", ".join(missing)
-            )
+        declared_dependencies = declared_dependencies_by_id[scheduling_id]
         selected_node_tokens: List[tuple[int, List[int], List[int]]] = []
+        assigned_node_indices: List[int] = []
         if node_tokens:
             task_nodes = int(item.get("node_count", 1))
             if task_nodes > len(node_tokens):
@@ -1549,8 +1594,6 @@ def _slurm_resource_epochs(
                         node["memory"], memory_per_node_count
                     ),
                 ))
-            item["planned_node_indices"] = assigned_node_indices
-
         global_cpu_owners = {
             str(owner)
             for index in cpu_indices for owner in [cpu_tokens[index]["owner"]]
@@ -1595,18 +1638,69 @@ def _slurm_resource_epochs(
             + [0.0]
         )
         finish = start + float(item["planned_wall_hours"])
+        return {
+            "cpu_indices": cpu_indices,
+            "memory_indices": memory_indices,
+            "selected_node_tokens": selected_node_tokens,
+            "assigned_node_indices": assigned_node_indices,
+            "resource_predecessors": resource_predecessors,
+            "start": start,
+            "finish": finish,
+            "memory_count": memory_count,
+        }
+
+    unscheduled = dict(item_by_id)
+    scheduled_items: List[Dict[str, object]] = []
+    while unscheduled:
+        ready_items = [
+            item for item_id, item in unscheduled.items()
+            if all(
+                dependency in planned_finishes
+                for dependency in declared_dependencies_by_id[item_id]
+            )
+        ]
+        if not ready_items:
+            raise ExecutionAdapterError(
+                "execution plan contains a dependency cycle among: "
+                + ", ".join(sorted(unscheduled))
+            )
+        candidates = [
+            (item, candidate_allocation(item)) for item in ready_items
+        ]
+        item, allocation = min(
+            candidates,
+            key=lambda row: (
+                float(row[1]["start"]),
+                -critical_rank(str(row[0]["item_id"])),
+                -float(row[0]["memory_gib"]),
+                -int(row[0]["cpu_slots"]),
+                int(row[0]["submission_index"]),
+            ),
+        )
+        scheduling_id = str(item["item_id"])
+        item["original_submission_index"] = int(item["submission_index"])
+        item["submission_index"] = len(scheduled_items)
+        item["planned_node_indices"] = list(
+            allocation["assigned_node_indices"]
+        )
+        resource_predecessors = list(allocation["resource_predecessors"])
+        start = float(allocation["start"])
+        finish = float(allocation["finish"])
+        memory_count = int(allocation["memory_count"])
         item["resource_predecessor_task_ids"] = resource_predecessors
         item["planned_resource_start_hours"] = start
         item["planned_resource_finish_hours"] = finish
         item["memory_token_count"] = memory_count
         item["memory_token_quantum_gib"] = memory_quantum_gib
-        for index in cpu_indices:
+        for index in allocation["cpu_indices"]:
             cpu_tokens[index] = {"available": finish, "owner": scheduling_id}
-        for index in memory_indices:
+        for index in allocation["memory_indices"]:
             memory_tokens[index] = {
                 "available": finish, "owner": scheduling_id
             }
-        for node_index, node_cpu_indices, node_memory_indices in selected_node_tokens:
+        for (
+            node_index, node_cpu_indices, node_memory_indices
+        ) in allocation["selected_node_tokens"]:
             for index in node_cpu_indices:
                 node_tokens[node_index]["cpu"][index] = {
                     "available": finish, "owner": scheduling_id,
@@ -1616,9 +1710,11 @@ def _slurm_resource_epochs(
                     "available": finish, "owner": scheduling_id,
                 }
         planned_finishes[scheduling_id] = finish
+        scheduled_items.append(item)
+        del unscheduled[scheduling_id]
 
     requested_finishes: Dict[str, float] = {}
-    for item in items:
+    for item in scheduled_items:
         requested_dependencies = list(dict.fromkeys([
             *map(str, item.get("depends_on_task_ids", [])),
             *map(str, item.get("wait_for_task_ids", [])),
@@ -1635,7 +1731,7 @@ def _slurm_resource_epochs(
 
     def peak(field_start: str, field_finish: str, field_value: str) -> float:
         events = []
-        for item in items:
+        for item in scheduled_items:
             events.extend([
                 (float(item[field_start]), 1, float(item[field_value])),
                 (float(item[field_finish]), -1, float(item[field_value])),
@@ -1663,7 +1759,7 @@ def _slurm_resource_epochs(
         "resource_epoch_index": 0,
         "phase_id": "task_dag_resource_token_schedule",
         "lanes": [],
-        "scheduled_items": items,
+        "scheduled_items": scheduled_items,
         "cpu_slots": peak_cpus,
         "memory_gib": peak_memory,
         "planned_wall_hours": planned_wall,
