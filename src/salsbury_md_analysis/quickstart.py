@@ -380,6 +380,61 @@ def _frame_stride(rows: Mapping[str, Mapping[str, object]], module_id: str) -> i
     return value
 
 
+def _minimum_selected_frames_per_replica(
+    rows: Mapping[str, Mapping[str, object]],
+    module_id: str,
+    source_frame_counts_per_replica: Sequence[int],
+) -> int:
+    """Return the planner-resolved minimum selected count for one module.
+
+    Block and lag settings operate on the observations emitted by their
+    upstream module, not on the raw trajectory length. Prefer the exact
+    campaign allocation and retain a bounded fallback for older plans.
+    """
+
+    if not source_frame_counts_per_replica or any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 1
+        for value in source_frame_counts_per_replica
+    ):
+        raise QuickstartError(
+            "source_frame_counts_per_replica must contain positive integers"
+        )
+    row = rows.get(module_id)
+    allocation = (
+        row.get("campaign_resource_allocation")
+        if isinstance(row, Mapping) else None
+    )
+    if isinstance(allocation, Mapping):
+        selected = allocation.get("selected_physical_frames_per_replica")
+        if selected is not None:
+            if (
+                not isinstance(selected, list)
+                or len(selected) != len(source_frame_counts_per_replica)
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or value < 1
+                    for value in selected
+                )
+            ):
+                raise QuickstartError(
+                    f"sampling plan returned invalid selected per-replica counts "
+                    f"for {module_id}"
+                )
+            return min(selected)
+    resolved = row.get("resolved_maximum_frames_per_replica") if row else None
+    if isinstance(resolved, int) and not isinstance(resolved, bool) and resolved > 0:
+        return min(
+            min(source_frame_counts_per_replica),
+            resolved,
+        )
+    stride = _frame_stride(rows, module_id)
+    return min(
+        max(1, int(frame_count) // stride)
+        for frame_count in source_frame_counts_per_replica
+    )
+
+
 def _hydrogen_bond_feature_observation_gate(
     sampling_plan: Mapping[str, object],
 ) -> int:
@@ -434,6 +489,11 @@ def _generic_definitions(
     rows = _sampling_rows(sampling_plan)
     total_frames = sum(frame_counts_per_replica)
     minimum_replica_frames = min(frame_counts_per_replica)
+    minimum_rmsd_rg_observations = _minimum_selected_frames_per_replica(
+        rows,
+        "replica_rmsd_rg",
+        frame_counts_per_replica,
+    )
     trace_atoms = int(composition["trace_atom_count"])
     solute_heavy = int(composition["solute_heavy_atom_count"])
     component_count = max(2, min(10, 3 * trace_atoms, minimum_replica_frames - 1))
@@ -729,7 +789,7 @@ def _generic_definitions(
         "convergence_uncertainty": {
             "source_module": "replica_rmsd_rg",
             "metrics": ["rmsd_angstrom", "radius_of_gyration_angstrom"],
-            "block_size_frames": max(10, minimum_replica_frames // 10),
+            "block_size_frames": max(1, minimum_rmsd_rg_observations // 10),
             "include_partial_final_block": True,
             "minimum_blocks": 4,
             "minimum_effective_sample_size": 20.0,

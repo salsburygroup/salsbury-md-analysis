@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Couple convergence block sizing to the planner-selected RMSD/Rg observations
+  per replica. Impossible explicit block contracts now fail technically instead
+  of being mislabeled as scientific nonconvergence.
 - Reuse validated full-project DCCM and RMSD/Rg reports before entering the
   replica-worker path. Downstream correlation-network and convergence modules
   can now consume campaign caches without comparing them to temporary

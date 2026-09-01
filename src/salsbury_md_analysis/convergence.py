@@ -284,9 +284,36 @@ def _block_means(values: Sequence[float], size: int, include_partial: bool) -> L
     return blocks
 
 
+def _minimum_observations_for_blocks(
+    block_size: int, minimum_blocks: int, include_partial: bool
+) -> int:
+    """Return the smallest series that can yield the declared block count."""
+
+    if include_partial:
+        return block_size * (minimum_blocks - 1) + 1
+    return block_size * minimum_blocks
+
+
 def _series_diagnostic(values: Sequence[float], settings: Mapping[str, object]) -> Dict[str, object]:
     if len(values) < 2:
         raise ConvergenceAnalysisError("convergence series requires at least two observations")
+    block_size = int(settings["block_size_frames"])
+    minimum_blocks = int(settings["minimum_blocks"])
+    include_partial = bool(settings["include_partial_final_block"])
+    minimum_observations = _minimum_observations_for_blocks(
+        block_size,
+        minimum_blocks,
+        include_partial,
+    )
+    if len(values) < minimum_observations:
+        raise ConvergenceAnalysisError(
+            "convergence block contract is impossible: "
+            f"{len(values)} selected observations cannot yield "
+            f"{minimum_blocks} blocks of {block_size} observations "
+            f"(minimum required {minimum_observations}); generate the block size "
+            "from the upstream selected-frame count or provide a compatible "
+            "explicit value"
+        )
     summary = sample_summary(values)
     midpoint = len(values) // 2
     first_mean = sum(values[:midpoint]) / midpoint
@@ -296,11 +323,8 @@ def _series_diagnostic(values: Sequence[float], settings: Mapping[str, object]) 
     split_difference = abs(first_mean - second_mean) / scale
     ess = effective_sample_size(values)
     adjusted_uncertainty = autocorrelation_adjusted_mean_uncertainty(values)
-    blocks = _block_means(
-        values, int(settings["block_size_frames"]),
-        bool(settings["include_partial_final_block"]),
-    )
-    passes_blocks = len(blocks) >= int(settings["minimum_blocks"])
+    blocks = _block_means(values, block_size, include_partial)
+    passes_blocks = len(blocks) >= minimum_blocks
     passes_ess = (
         ess["effective_sample_size"] is not None
         and float(ess["effective_sample_size"]) >= float(settings["minimum_effective_sample_size"])
@@ -310,6 +334,14 @@ def _series_diagnostic(values: Sequence[float], settings: Mapping[str, object]) 
         "summary": summary, "first_half_mean": first_mean, "second_half_mean": second_mean,
         "split_mean_difference_in_sd": split_difference,
         "block_means": blocks, "block_mean_summary": sample_summary(blocks),
+        "block_contract": {
+            "block_size_selected_observations": block_size,
+            "minimum_blocks": minimum_blocks,
+            "include_partial_final_block": include_partial,
+            "minimum_required_observations": minimum_observations,
+            "selected_observation_count": len(values),
+            "compatible": True,
+        },
         "effective_sample_size": ess,
         "autocorrelation_adjusted_mean_uncertainty": adjusted_uncertainty,
         "passes_minimum_blocks": passes_blocks,

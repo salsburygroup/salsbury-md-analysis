@@ -2,7 +2,9 @@ import unittest
 import math
 
 from salsbury_md_analysis.convergence import (
+    ConvergenceAnalysisError,
     _exact_observation_accounting,
+    _series_diagnostic,
     autocorrelation_adjusted_mean_uncertainty,
     autocorrelation_sequence,
     effective_sample_size,
@@ -10,6 +12,37 @@ from salsbury_md_analysis.convergence import (
 
 
 class ConvergenceTests(unittest.TestCase):
+    def test_impossible_block_contract_fails_technically_not_scientifically(self):
+        settings = {
+            "block_size_frames": 1000,
+            "minimum_blocks": 4,
+            "include_partial_final_block": True,
+            "minimum_effective_sample_size": 20.0,
+            "maximum_split_mean_difference_in_sd": 1.0,
+        }
+        with self.assertRaisesRegex(
+            ConvergenceAnalysisError,
+            "500 selected observations cannot yield 4 blocks of 1000",
+        ):
+            _series_diagnostic([float(value) for value in range(500)], settings)
+
+    def test_compatible_selected_observation_blocks_are_reported(self):
+        settings = {
+            "block_size_frames": 50,
+            "minimum_blocks": 4,
+            "include_partial_final_block": True,
+            "minimum_effective_sample_size": 20.0,
+            "maximum_split_mean_difference_in_sd": 1.0,
+        }
+        report = _series_diagnostic(
+            [float(value % 7) for value in range(500)], settings
+        )
+        self.assertEqual(len(report["block_means"]), 10)
+        self.assertTrue(report["passes_minimum_blocks"])
+        self.assertEqual(
+            report["block_contract"]["minimum_required_observations"], 151
+        )
+
     def test_exact_frame_and_metric_value_accounting_are_distinct(self):
         upstream = {"systems": [{"replicas": [{"segments": [{
             "segment_id": "s1", "source_frame_count": 10,
