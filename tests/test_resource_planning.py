@@ -491,6 +491,10 @@ class ResourcePlanningTests(unittest.TestCase):
                 methods[method]["selected_fit_observation_count"],
                 methods[method]["fit_observation_ceiling"],
             )
+            self.assertEqual(
+                methods[method]["calibration_status"],
+                "completed_performance_only_matrix_recovery_v1",
+            )
 
     def test_alternative_clustering_memory_models_are_algorithm_specific(self):
         pam_3 = alternative_clustering_performance_model(
