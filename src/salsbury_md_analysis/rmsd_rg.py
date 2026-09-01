@@ -615,8 +615,17 @@ def replica_rmsd_rg_project(
 ) -> Dict[str, object]:
     """Run each replica independently and retain its complete ordered series."""
 
+    source = Path(project_path).expanduser().resolve(strict=False)
+    cached = load_cached_project_report(
+        "replica_rmsd_rg",
+        source,
+        hash_content=hash_content,
+        error_type=RMSDRGError,
+    )
+    if cached is not None:
+        return cached
     return execute_replica_final_module(
-        project_path,
+        source,
         runner_id="rmsd_rg",
         hash_content=hash_content,
         reducer=_reduce_rmsd_rg_replica_reports,

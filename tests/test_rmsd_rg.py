@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 from salsbury_md_analysis.atom_mapping import AtomRecord
 from salsbury_md_analysis.cli import main
@@ -126,6 +127,28 @@ def _replace_with_periodic_gro(project_path: Path, policy: str) -> None:
 
 
 class RMSDRGTests(unittest.TestCase):
+    def test_configured_full_project_cache_is_reused_before_replica_sharding(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            project = _write_project(Path(temporary))
+            cached = {
+                "module_id": "replica_rmsd_rg",
+                "technical_status": "complete",
+            }
+            with patch(
+                "salsbury_md_analysis.rmsd_rg.load_cached_project_report",
+                return_value=cached,
+            ) as load_cache, patch(
+                "salsbury_md_analysis.rmsd_rg.execute_replica_final_module"
+            ) as execute_replicas:
+                observed = replica_rmsd_rg_project(project, hash_content=True)
+        self.assertIs(observed, cached)
+        self.assertEqual(load_cache.call_count, 1)
+        args, kwargs = load_cache.call_args
+        self.assertEqual(args[:2], ("replica_rmsd_rg", project.resolve()))
+        self.assertTrue(kwargs["hash_content"])
+        self.assertEqual(kwargs["error_type"].__name__, "RMSDRGError")
+        execute_replicas.assert_not_called()
+
     def test_rg_selection_is_topology_local_not_global_common_atom_intersection(self):
         reference = [
             AtomRecord(index, index + 1, name, "", "ALA", "A", 1, "", element)

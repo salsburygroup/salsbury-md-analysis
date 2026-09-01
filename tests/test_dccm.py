@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 from salsbury_md_analysis.cli import main
 from salsbury_md_analysis.dccm import dccm_project, dccm_project_safe
@@ -119,6 +120,25 @@ def _write_project(
 
 
 class DCCMTests(unittest.TestCase):
+    def test_configured_full_project_cache_is_reused_before_replica_sharding(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            project = _write_project(Path(temporary))
+            cached = {"module_id": "dccm", "technical_status": "complete"}
+            with patch(
+                "salsbury_md_analysis.dccm.load_cached_project_report",
+                return_value=cached,
+            ) as load_cache, patch(
+                "salsbury_md_analysis.dccm.execute_replica_final_module"
+            ) as execute_replicas:
+                observed = dccm_project(project, hash_content=True)
+        self.assertIs(observed, cached)
+        self.assertEqual(load_cache.call_count, 1)
+        args, kwargs = load_cache.call_args
+        self.assertEqual(args[:2], ("dccm", project.resolve()))
+        self.assertTrue(kwargs["hash_content"])
+        self.assertEqual(kwargs["error_type"].__name__, "DCCMError")
+        execute_replicas.assert_not_called()
+
     def test_positive_negative_and_reference_difference_matrices(self):
         with tempfile.TemporaryDirectory() as temporary:
             report = dccm_project(_write_project(Path(temporary)))

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Reuse validated full-project DCCM and RMSD/Rg reports before entering the
+  replica-worker path. Downstream correlation-network and convergence modules
+  can now consume campaign caches without comparing them to temporary
+  per-replica project contracts.
 - Replace the shared alternative-clustering resource estimate with accepted
   performance-only, per-algorithm runtime and memory models. PAM and weighted
   PAM now account for both fit observations and projected feature count;
