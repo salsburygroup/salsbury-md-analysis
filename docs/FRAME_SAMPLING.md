@@ -152,6 +152,13 @@ costs only.
 | Scalar threshold-state dynamics | 250 | 1,000 | Ordered, segment-safe series; selected spacing is reported, with no universal gap gate |
 | Convergence/uncertainty | 250 | 250 | Ordered per-replica series; duration and spacing are reported, with no universal gap gate |
 
+Convergence block sizes are defined in selected upstream observations. The
+generated workflow derives them from the planner-resolved RMSD/Rg count for
+the shortest replica, rather than from the raw trajectory length. Execution
+fails technically when an explicit block size cannot produce the requested
+minimum number of blocks; that configuration error is never reported as
+scientific nonconvergence.
+
 The complete per-module contract, including inherited upstream sampling and
 source-limited failures, is written into `sampling-plan.json` and
 `campaign-resource-plan.json`. Publication-specific analysis may raise these

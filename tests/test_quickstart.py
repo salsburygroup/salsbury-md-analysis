@@ -13,6 +13,7 @@ from salsbury_md_analysis.quickstart import (
     _composition,
     _discover_dssp_executable,
     _hydrogen_bond_feature_observation_gate,
+    _minimum_selected_frames_per_replica,
     _secondary_structure_applicable,
     _slurm_files,
     prepare_standard_analysis,
@@ -149,6 +150,22 @@ def _write_oligomer_inputs(root: Path):
 
 
 class QuickstartTests(unittest.TestCase):
+    def test_downstream_block_planning_uses_selected_upstream_observations(self):
+        rows = {
+            "replica_rmsd_rg": {
+                "frame_stride": 20,
+                "campaign_resource_allocation": {
+                    "selected_physical_frames_per_replica": [500, 500, 500]
+                },
+            }
+        }
+        self.assertEqual(
+            _minimum_selected_frames_per_replica(
+                rows, "replica_rmsd_rg", [10_000, 10_000, 10_000]
+            ),
+            500,
+        )
+
     def test_independent_reporting_workers_are_generated_separately(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -485,6 +502,24 @@ class QuickstartTests(unittest.TestCase):
             self.assertEqual(report["reference_connectivity_check"]["bond_count"], 3)
             project = json.loads((output / "project.json").read_text())
             sampling = json.loads((output / "sampling-plan.json").read_text())
+            rmsd_plan = next(
+                row for row in sampling["method_plans"]
+                if row["module_id"] == "replica_rmsd_rg"
+            )
+            minimum_selected = min(
+                rmsd_plan["campaign_resource_allocation"]
+                ["selected_physical_frames_per_replica"]
+            )
+            convergence = project["definitions"]["convergence_uncertainty"]
+            self.assertEqual(
+                convergence["block_size_frames"],
+                max(1, minimum_selected // 10),
+            )
+            self.assertLessEqual(
+                convergence["block_size_frames"]
+                * (convergence["minimum_blocks"] - 1) + 1,
+                minimum_selected,
+            )
             self.assertEqual(project["reference_connectivity"], str(psf.resolve()))
             self.assertEqual(
                 project["definitions"]["hydrogen_bond_discovery"]["output_mode"],
