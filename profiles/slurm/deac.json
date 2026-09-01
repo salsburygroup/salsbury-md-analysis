@@ -22,6 +22,10 @@
     "small": 1440,
     "large": 259200
   },
+  "partition_maximum_nodes": {
+    "small": 1,
+    "large": 16
+  },
   "environment": {
     "python_executable": "/deac/phy/salsburyGrp/software/salsbury-md-analysis/environments/v76/bin/python3.12",
     "package_root": null,

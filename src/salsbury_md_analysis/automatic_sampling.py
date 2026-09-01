@@ -656,6 +656,22 @@ def _campaign_direct_resource_plan(
                 calibration.fixed_overhead_seconds
                 * time_safety_factor / 3600.0
             ),
+            "censored_wall_lower_bound_points": (
+                [
+                    {
+                        **dict(point),
+                        "planning_wall_hours_lower_bound": (
+                            float(point["planning_wall_seconds_lower_bound"])
+                            * time_safety_factor / 3600.0
+                        ),
+                    }
+                    for point in measured.get(
+                        "censored_wall_lower_bound_points", []
+                    )
+                    if isinstance(point, Mapping)
+                ]
+                if measured is not None else []
+            ),
             "estimated_peak_memory_gib": aggregate_memory_gib,
             "estimated_peak_memory_gib_per_worker": (
                 memory_gib if replica_parallel_enabled else None

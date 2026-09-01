@@ -79,8 +79,12 @@ PCA feature atoms and exported coordinate payload atoms remain separate: a
 common-heavy PCA may export a representative containing the complete solute.
 
 Preparation writes a validated `project-cache-base.json` after the cache is
-complete. Atom-index definitions are remapped through the cache's recorded
-source-atom order. RMSD/Rg, pooled RMSF, DCCM, individual PCA, dihedrals,
+complete. It also writes one validated cache project per system. Chemistry-based
+definitions remain usable when different systems have different source atom
+indices because each cached trajectory records its own source-to-cache mapping.
+Definitions that embed explicit source atom indices stay on the original
+project unless one shared remapping has been validated; they are never guessed
+across heterogeneous systems. RMSD/Rg, pooled RMSF, DCCM, individual PCA, dihedrals,
 non-water hydrogen-bond discovery, secondary structure, SASA, nucleic-acid
 geometry, ion analyses, trajectory features, and other molecular-payload base
 estimators are routed through that project. A module is routed only when its

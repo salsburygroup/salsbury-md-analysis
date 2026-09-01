@@ -199,6 +199,23 @@ def _apply_measured_resource_calibrations(
             * float(rate_multiplier)
             / 3600.0
         )
+        censored_wall_points = calibration.get(
+            "censored_wall_lower_bound_points", []
+        )
+        if isinstance(censored_wall_points, list) and censored_wall_points:
+            task["censored_wall_lower_bound_points"] = [
+                {
+                    **dict(point),
+                    "planning_wall_hours_lower_bound": (
+                        float(point["planning_wall_seconds_lower_bound"])
+                        * time_safety_factor
+                        * float(rate_multiplier)
+                        / 3600.0
+                    ),
+                }
+                for point in censored_wall_points
+                if isinstance(point, Mapping)
+            ]
         current_fixed = task.get("fixed_cpu_hours", 0.0)
         if isinstance(current_fixed, (int, float)) and not isinstance(
             current_fixed, bool
@@ -215,11 +232,15 @@ def _apply_measured_resource_calibrations(
             task["cpu_seconds_per_physical_frame"] = max(
                 float(current_rate), measured_rate
             )
-        measured_memory = (
+        measured_completed_memory = (
             float(calibration.get(
                 "maximum_completed_resident_memory_mib",
                 calibration["maximum_resident_memory_mib"],
             ))
+            * float(memory_multiplier) / 1024.0
+        )
+        measured_memory_lower_bound = (
+            float(calibration["maximum_resident_memory_mib"])
             * float(memory_multiplier) / 1024.0
         )
         memory_replacement_qualified = bool(
@@ -231,9 +252,9 @@ def _apply_measured_resource_calibrations(
         current_memory = task.get("estimated_peak_memory_gib")
         if isinstance(current_memory, (int, float)) and not isinstance(current_memory, bool):
             task["estimated_peak_memory_gib"] = (
-                max(measured_memory, 1.0)
+                max(measured_completed_memory, measured_memory_lower_bound, 1.0)
                 if memory_replacement_qualified else
-                max(float(current_memory), measured_memory, 1.0)
+                max(float(current_memory), measured_memory_lower_bound, 1.0)
             )
             if (
                 task.get("parallel_execution_model") is not None
@@ -259,9 +280,12 @@ def _apply_measured_resource_calibrations(
                     "calibration_memory_gib": max(
                         1.0,
                         (
-                            measured_memory
+                            max(
+                                measured_completed_memory,
+                                measured_memory_lower_bound,
+                            )
                             if memory_replacement_qualified else
-                            max(float(current_memory), measured_memory)
+                            max(float(current_memory), measured_memory_lower_bound)
                         ),
                     ),
                     "memory_exponent": (
@@ -2119,6 +2143,10 @@ def plan_and_apply_complete_campaign(
             cache_atom_multiplier = max(
                 0.01, int(dimensions["maximum_atom_count"]) / 85_206.0
             )
+            cache_worker_memory_gib = min(
+                4.0,
+                max(0.5, 0.5 * math.sqrt(cache_atom_multiplier)),
+            )
             built.insert(0, {
                 "task_id": "preprocessing:coordinate_cache",
                 "workflow_id": "coordinate_cache",
@@ -2131,8 +2159,10 @@ def plan_and_apply_complete_campaign(
                     "replica_worker_exact_global_reducer_v1"
                 ),
                 "parallel_worker_count": len(source_counts),
-                "estimated_peak_memory_gib_per_parallel_worker": 0.25,
-                "reducer_memory_gib": 0.25,
+                "estimated_peak_memory_gib_per_parallel_worker": (
+                    cache_worker_memory_gib
+                ),
+                "reducer_memory_gib": cache_worker_memory_gib,
                 "parallel_memory_model": (
                     "max(reducer, simultaneously_active_replica_workers)"
                 ),
@@ -2145,7 +2175,9 @@ def plan_and_apply_complete_campaign(
                     (232.39 / 700.0) * cache_atom_multiplier * time_safety_factor
                 ),
                 "fixed_cpu_hours": 0.0,
-                "estimated_peak_memory_gib": max(1.0, 0.25 * cache_workers),
+                "estimated_peak_memory_gib": max(
+                    1.0, cache_worker_memory_gib * cache_workers
+                ),
                 "memory_size_scaling_applied": True,
                 "measured_memory_observation_scaling_eligible": False,
                 "priority_weight": 100.0,
@@ -2167,6 +2199,11 @@ def plan_and_apply_complete_campaign(
                     "reference_source_atom_count": 85_206,
                     "source_atom_count": int(dimensions["maximum_atom_count"]),
                     "atom_runtime_multiplier_floor": 0.01,
+                    "per_worker_memory_gib": cache_worker_memory_gib,
+                    "memory_model": (
+                        "0.5 GiB per worker at the 85,206-source-atom "
+                        "reference, square-root atom scaling, 0.5 GiB floor"
+                    ),
                 },
             })
         current_base = load_json(base_project_path)
