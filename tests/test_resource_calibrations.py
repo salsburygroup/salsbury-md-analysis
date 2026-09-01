@@ -245,6 +245,37 @@ class ResourceCalibrationTests(unittest.TestCase):
         self.assertEqual(extended["censored_timeout_count"], 1)
         self.assertEqual(extended["base_catalogs"][0]["entry_count"], 1)
 
+    def test_overlapping_base_catalogs_deduplicate_identical_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report = root / "report.json"
+            report.write_text("{}\n", encoding="utf-8")
+            digest = hashlib.sha256(report.read_bytes()).hexdigest()
+            sidecar = root / "report.json.summary.json"
+            sidecar.write_text(json.dumps({
+                "technical_status": "complete", "module_id": "dccm",
+                "report_path": str(report), "report_sha256": digest,
+                "resource_evidence": {
+                    "selected_source_physical_frames": 10,
+                    "symmetry_expanded_observations": 10,
+                    "execution_resources": {
+                        "total_cpu_seconds": 20.0, "wall_seconds": 21.0,
+                        "maximum_resident_memory_mib": 30.0,
+                    },
+                },
+            }), encoding="utf-8")
+            first = build_resource_calibration_catalog([sidecar])
+            first_path = root / "first.json"
+            second_path = root / "second.json"
+            first_path.write_text(json.dumps(first), encoding="utf-8")
+            second = redact_resource_calibration_catalog(first)
+            second_path.write_text(json.dumps(second), encoding="utf-8")
+            merged = build_resource_calibration_catalog(
+                [], base_catalogs=[first_path, second_path]
+            )
+        self.assertEqual(merged["entry_count"], 1)
+        self.assertEqual(merged["duplicate_evidence_entry_count"], 1)
+
     def test_redacted_catalog_retains_planner_values_without_private_locations(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

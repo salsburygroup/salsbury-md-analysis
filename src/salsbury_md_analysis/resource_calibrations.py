@@ -241,7 +241,13 @@ def build_resource_calibration_catalog(
         })
     entries.extend(_entry_from_sidecar(path) for path in paths)
     entries.extend(_entry_from_timeout(path) for path in timeout_paths)
-    evidence_keys = []
+    unique_entries: Dict[str, Dict[str, object]] = {}
+    duplicate_count = 0
+    nonplanning_fields = {
+        "computer_hostname", "scheduler_array_task_id", "scheduler_job_id",
+        "source_location_redacted", "source_report_path", "source_sidecar_path",
+        "source_timeout_path",
+    }
     for row in entries:
         if not isinstance(row, dict):
             raise ResourceCalibrationError("base catalog entry must be an object")
@@ -253,11 +259,24 @@ def build_resource_calibration_catalog(
             raise ResourceCalibrationError(
                 "every calibration entry must retain a source evidence hash"
             )
-        evidence_keys.append(key)
-    if len(evidence_keys) != len(set(evidence_keys)):
-        raise ResourceCalibrationError(
-            "duplicate source evidence appears in the combined calibration catalog"
-        )
+        existing = unique_entries.get(key)
+        if existing is None:
+            unique_entries[key] = dict(row)
+            continue
+        normalized_existing = {
+            field: value for field, value in existing.items()
+            if field not in nonplanning_fields
+        }
+        normalized_row = {
+            field: value for field, value in row.items()
+            if field not in nonplanning_fields
+        }
+        if normalized_existing != normalized_row:
+            raise ResourceCalibrationError(
+                "duplicate source evidence has conflicting resource values"
+            )
+        duplicate_count += 1
+    entries = list(unique_entries.values())
     complete_count = sum(
         str(row.get("evidence_status", "complete_execution"))
         == "complete_execution" for row in entries
@@ -271,6 +290,7 @@ def build_resource_calibration_catalog(
         "entry_count": len(entries),
         "complete_execution_count": complete_count,
         "censored_timeout_count": timeout_count,
+        "duplicate_evidence_entry_count": duplicate_count,
         "base_catalogs": base_provenance,
         "entries": entries,
         "planner_policy": {
@@ -280,10 +300,11 @@ def build_resource_calibration_catalog(
                 "timeout safety factor"
             ),
             "memory": (
-                "two or more complete measurements qualify the maximum "
-                "completed RSS, after the planner safety factor, to replace "
-                "a legacy baseline; one-off and timeout-only measurements "
-                "remain conservative lower bounds and cannot lower it"
+                "two or more complete measurements may qualify completed RSS "
+                "to replace a legacy baseline; a single-CPU timeout may set a "
+                "planning lower bound, while multi-CPU timeout MaxRSS remains "
+                "aggregate diagnostic evidence and is never replayed as one "
+                "worker's memory"
             ),
             "frame_coverage": (
                 "maximum technically completed selected physical frames only; "
