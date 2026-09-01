@@ -491,6 +491,10 @@ class ResourcePlanningTests(unittest.TestCase):
                 methods[method]["selected_fit_observation_count"],
                 methods[method]["fit_observation_ceiling"],
             )
+            self.assertEqual(
+                methods[method]["calibration_status"],
+                "completed_performance_only_matrix_recovery_v1",
+            )
 
     def test_alternative_clustering_memory_models_are_algorithm_specific(self):
         pam_3 = alternative_clustering_performance_model(
@@ -534,6 +538,18 @@ class ResourcePlanningTests(unittest.TestCase):
         self.assertGreater(affinity_11_856, 4_940.71484375 / 1_024.0)
         self.assertEqual(mixture["calibration_memory_gib"], 1.0)
         self.assertEqual(mixture["memory_exponent"], 1.0)
+        self.assertEqual(
+            pam_10["calibration_acceptance_sha256"],
+            "22d26e4a3044fbdf193261dda6769966988f988abf5d02af9c9d700a1a6cfc9b",
+        )
+        self.assertEqual(
+            pam_10["calibration_superseded_failed_acceptance_sha256"],
+            "b021b0520f1292da2bf61138cfcb3d5f0d2eaf5a9ce824d40fea1827bdef7d7f",
+        )
+        self.assertEqual(
+            pam_10["calibration_status"],
+            "completed_performance_only_matrix_recovery_v1",
+        )
         self.assertIsNone(
             alternative_clustering_performance_model("ward", feature_count=3)
         )

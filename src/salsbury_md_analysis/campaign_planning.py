@@ -1715,6 +1715,9 @@ def _view_tasks(
                         "acceptance_sha256": performance[
                             "calibration_acceptance_sha256"
                         ],
+                        "superseded_failed_acceptance_sha256": performance[
+                            "calibration_superseded_failed_acceptance_sha256"
+                        ],
                         "task_matrix_sha256": performance[
                             "calibration_task_matrix_sha256"
                         ],
