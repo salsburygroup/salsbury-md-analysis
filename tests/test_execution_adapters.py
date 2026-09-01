@@ -1078,7 +1078,7 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertEqual(preview["maximum_parallel_cpus_configured"], 3)
         self.assertEqual(preview["maximum_parallel_cpus_in_generated_waves"], 2)
         self.assertEqual(preview["maximum_parallel_memory_gib_configured"], 185)
-        self.assertEqual(preview["maximum_parallel_memory_gib_in_generated_waves"], 170)
+        self.assertEqual(preview["maximum_parallel_memory_gib_in_generated_waves"], 180)
         self.assertEqual(preview["planned_node_count"], 1)
         self.assertTrue(all(
             row["reserved_memory_gib_per_node"] <= 185.0
@@ -1288,6 +1288,82 @@ class ExecutionAdapterTests(unittest.TestCase):
         )
         self.assertEqual(
             scheduler["submission_preview"]["completion_wait_edge_count"], 1,
+        )
+
+    def test_task_dag_backfills_critical_high_memory_work_before_fillers(self):
+        repository = Path(__file__).resolve().parents[1]
+        profile = load_slurm_profile(repository / "profiles/slurm/deac.json")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "slurm-profile.json").write_text("{}\n", encoding="utf-8")
+            for name in ("preflight", "qc", "filler", "cluster", "report"):
+                (root / f"{name}.slurm").write_text(
+                    "#!/usr/bin/env bash\n#SBATCH --time=01:00:00\n"
+                    "#SBATCH --cpus-per-task=1\n#SBATCH --mem=1G\n"
+                    "set -euo pipefail\n",
+                    encoding="utf-8",
+                )
+            (root / "submit.sh").write_text(
+                "#!/usr/bin/env bash\nset -euo pipefail\n", encoding="utf-8"
+            )
+
+            def task(task_id, script, wall, memory, requirements=()):
+                return {
+                    "task_id": task_id,
+                    "depends_on_task_ids": list(requirements),
+                    "wait_for_task_ids": [],
+                    "script": script,
+                    "array_task_id": None,
+                    "requested_wall_minutes": wall * 60,
+                    "requested_memory_gib": memory,
+                    "planner_task_ids": [],
+                    "cpu_slots": 1,
+                    "planned_wall_hours": wall,
+                    "planned_peak_memory_gib": memory,
+                    "resource_request_source": "unit_test",
+                    "wall_request_limited_by_campaign_cap": False,
+                    "memory_request_limited_by_campaign_cap": False,
+                }
+
+            scheduler = apply_slurm_profile(root, profile, {
+                "dependency_model": "task_dag_v1",
+                "maximum_parallel_cpus": 88,
+                "maximum_parallel_memory_gib": 370,
+                "phases": [
+                    {"phase_id": "preflight", "tasks": [
+                        task("preflight", "preflight.slurm", 1, 1),
+                    ]},
+                    {"phase_id": "independent", "tasks": [
+                        task("qc", "qc.slurm", 20, 100, ("preflight",)),
+                        task("filler", "filler.slurm", 20, 100, ("preflight",)),
+                        task("cluster", "cluster.slurm", 5, 168, ("preflight",)),
+                    ]},
+                    {"phase_id": "report", "tasks": [
+                        task("report", "report.slurm", 20, 1, ("cluster",)),
+                    ]},
+                ],
+            })
+            scheduled = scheduler["resource_token_schedules"][0][
+                "scheduled_items"
+            ]
+            by_id = {row["task_id"]: row for row in scheduled}
+
+        self.assertEqual(by_id["cluster"]["planned_resource_start_hours"], 1)
+        self.assertNotIn(
+            "qc", by_id["cluster"]["resource_predecessor_task_ids"]
+        )
+        self.assertNotIn(
+            "filler", by_id["cluster"]["resource_predecessor_task_ids"]
+        )
+        self.assertLess(
+            by_id["cluster"]["submission_index"],
+            by_id["qc"]["submission_index"],
+        )
+        self.assertLessEqual(
+            scheduler["submission_preview"][
+                "maximum_parallel_memory_gib_in_generated_waves"
+            ],
+            370,
         )
 
     def test_local_runner_preserves_dependencies_and_stops_after_failure(self):

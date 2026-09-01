@@ -191,6 +191,10 @@ one node and assigns each task global and per-node CPU and padded-memory tokens.
 The sum of concurrently held tokens cannot exceed either the campaign envelope
 or a node's CPU and memory shape. A task waits only for its own scientific
 inputs, explicit completion waits, and prior users of the tokens it needs.
+Among dependency-ready tasks, the adapter schedules the earliest resource fit
+first and uses the remaining declared critical path to break ties. This lets a
+downstream-critical task use an available node instead of waiting behind an
+unrelated long task that happened to appear earlier in the generated plan.
 `submit.sh` uses `afterany` for token and completion-only predecessors, so a
 failed job releases capacity without becoming an accidental scientific gate.
 It uses `afterok` only for a task's `depends_on_task_ids` and
