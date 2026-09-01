@@ -312,6 +312,9 @@ and prior users of the tokens it needs. Resource-only waits use Slurm
 `afterany`, so a timeout releases capacity without authorizing a scientific
 dependent. There is no whole-dependency-level barrier. Success-only
 dependencies are reserved for inputs a task cannot reconstruct.
+Dependency-ready tasks are backfilled by earliest resource availability, with
+the remaining declared critical path used to prioritize ties. Generated task
+order therefore does not turn an unrelated long job into a resource barrier.
 Reusable upstream reports use completion-only ordering, are validated against
 the current project and input hashes, and fall back to recomputation when they
 are missing, failed, or incompatible. A lower memory cap
