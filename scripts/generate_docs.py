@@ -154,6 +154,7 @@ def render_profiles() -> str:
         if profile.get("slurm_profile_schema") != "salsbury-slurm-profile-v1":
             raise ValueError(f"unrecognized Slurm profile: {path}")
         partitions = profile.get("partitions", {})
+        partition_node_limits = profile.get("partition_maximum_nodes", {})
         environment = profile.get("environment", {})
         resource_policy = profile.get("resource_policy", {})
         lines.extend([
@@ -170,6 +171,12 @@ def render_profiles() -> str:
             f"- Analysis partition: `{partitions.get('analysis') or 'default'}`",
             f"- Conformational partition: `{partitions.get('conformational') or 'default'}`",
             f"- Large-memory partition: `{partitions.get('large_memory') or 'default'}`",
+            "- Partition node limits: `"
+            + (
+                json.dumps(partition_node_limits, sort_keys=True)
+                if partition_node_limits else "site defaults"
+            )
+            + "`",
             f"- Large-memory threshold GiB: `{resource_policy.get('large_memory_threshold_gib', 'default')}`",
             f"- Python executable: `{environment.get('python_executable') or 'site/user default'}`",
         ])

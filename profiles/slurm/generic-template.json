@@ -19,6 +19,7 @@
     "long_wall": null
   },
   "partition_maximum_wall_minutes": {},
+  "partition_maximum_nodes": {},
   "environment": {
     "python_executable": null,
     "package_root": null,

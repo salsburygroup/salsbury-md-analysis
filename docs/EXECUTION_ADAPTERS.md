@@ -187,14 +187,13 @@ Slurm requests can be larger than the estimated working set because the
 planner reads explicit adjustments from the site profile. It applies those
 terms before testing memory feasibility. A profile may also declare its CPU and
 memory per node. Planning then rejects an adjusted task request that cannot fit
-one node and packs each dependency level into valid resource lanes; the sum of
-padded reservations assigned to a planned node cannot exceed that node's CPU
-or memory. A dependency level is one resource epoch. Its reservations are
-released before the next epoch begins, so a large early task does not reserve
-that memory for the rest of the campaign. The Slurm adapter emits those final
-reservations unchanged. `submit.sh` uses `afterany` at epoch boundaries so a
-failed job releases the next allocation. It uses `afterok` only for a task's
-`depends_on_task_ids` and
+one node and assigns each task global and per-node CPU and padded-memory tokens.
+The sum of concurrently held tokens cannot exceed either the campaign envelope
+or a node's CPU and memory shape. A task waits only for its own scientific
+inputs, explicit completion waits, and prior users of the tokens it needs.
+`submit.sh` uses `afterany` for token and completion-only predecessors, so a
+failed job releases capacity without becoming an accidental scientific gate.
+It uses `afterok` only for a task's `depends_on_task_ids` and
 asks Slurm to terminate a descendant whose required job failed instead of
 leaving it pending indefinitely. The complete mapping remains visible in
 `scheduler-resource-requests.json`.
@@ -213,10 +212,10 @@ Before submission, run:
 ```
 
 This prints `slurm-submission-preview.json` and exits without calling Slurm. The
-preview gives the exact job and dependency-wave counts, configured CPU and
-aggregate-memory caps, peak resources in any generated wave, the planner's
+preview gives the exact job and dependency counts, configured CPU and
+aggregate-memory caps, resource-token edges, peak scheduled resources, the planner's
 estimated dependency critical path, and the sum of scheduler time-limit
-reservations. It warns when the prepared dependency and memory waves cannot use
+reservations. It warns when the prepared dependency and token schedule cannot use
 all requested cores. If the generated dependency/resource critical path exceeds
 the campaign wall limit, the preview marks the schedule infeasible and
 `submit.sh` refuses to submit it. Running `./submit.sh` prints the same contract
@@ -239,12 +238,13 @@ Set `submission_adapter` to `slurm` and provide `slurm_profile`:
 }
 ```
 
-Site profiles may declare `partition_maximum_wall_minutes` and a `long_wall`
-partition role. A generated request that exceeds its preferred partition's
-declared limit is then routed automatically to `long_wall`; if no acceptable
-fallback is configured, preparation fails before scheduler submission. The
-supplied DEAC profile records the 24-hour `small` limit and routes longer work
-to `large` while leaving ordinary short jobs on `small`.
+Site profiles may declare `partition_maximum_wall_minutes`,
+`partition_maximum_nodes`, and a `long_wall` partition role. A generated request
+that exceeds its preferred partition's wall or node limit is routed
+automatically to `long_wall`; if no acceptable fallback is configured,
+preparation fails before scheduler submission. The supplied DEAC profile records
+the 24-hour, one-node `small` limits and routes longer or multi-node work to
+`large` while leaving ordinary short jobs on `small`.
 
 The profile schema is `salsbury-slurm-profile-v1`. It records scheduler submit,
 status, and cancel commands; account, Unix group, QoS, and role-specific partitions;
@@ -271,9 +271,9 @@ adjustment. If the planner estimates plus minimum job limits still exceed the
 ceiling, submission fails closed.
 
 `scheduler-resource-requests.json` records every mapped planner task, safety
-margin, selected partition, final request, and exact aggregate-resource wave.
-`slurm-submission-preview.json` also records the planned node count,
-lane-to-node mapping, padded reservation totals for each node, preferred timeout
+margin, selected partition, final request, and resource-token schedule.
+`slurm-submission-preview.json` also records the planned node count, each task's
+conceptual node assignment and per-node padded reservation, preferred timeout
 path, selected timeout path, and applied padding scale. Replica-final modules
 and coordinate-cache construction can use an
 identity-preserving `srun` worker group across several nodes; pooled reducers
@@ -362,8 +362,11 @@ Use `profiles/analysis/deac-default.json`. It selects
 
 The measured-resource catalog accepts only hash-bound complete report sidecars
 and explicitly labeled right-censored timeout records. Timeout target frames are
-not completed frame coverage. Their elapsed CPU time is a cost lower bound that
-receives the configured censored-timeout safety factor before planning.
+not completed frame coverage. Their elapsed CPU and wall times are lower bounds
+that receive the configured censored-timeout safety factor before planning.
+Wall lower bounds scale with selected frames and never assume speedup from more
+CPUs than the failed attempt validated. A multi-CPU timeout's MaxRSS remains
+aggregate diagnostic evidence; it is not replayed as one worker's memory.
 Repeated complete measurements may replace a legacy memory baseline; one-off
 or censored evidence cannot lower it. Replica-parallel jobs declare the full
 worker population independently from active concurrency. CPU, aggregate memory,

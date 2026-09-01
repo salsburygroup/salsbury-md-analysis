@@ -306,11 +306,12 @@ allowance of a large, long calibration while retaining substantial headroom.
 the complete campaign, not an allowance for every job. The planner first turns
 each estimated working set into a safety-adjusted scheduler request. With the
 DEAC profile this is `ceil(1.5 × working set + 1 GiB)`, with a 2 GiB minimum.
-It packs each dependency level into resource lanes whose summed CPU and memory
-requests stay within the configured campaign caps. Those reservations are
-released at the next dependency-level boundary, so a large task does not hold
-its memory for the rest of the campaign. Success-only dependencies are reserved
-for inputs a task cannot reconstruct.
+It assigns global and per-node CPU and padded-memory tokens to every generated
+task. A task waits only for its scientific inputs, explicit completion waits,
+and prior users of the tokens it needs. Resource-only waits use Slurm
+`afterany`, so a timeout releases capacity without authorizing a scientific
+dependent. There is no whole-dependency-level barrier. Success-only
+dependencies are reserved for inputs a task cannot reconstruct.
 Reusable upstream reports use completion-only ordering, are validated against
 the current project and input hashes, and fall back to recomputation when they
 are missing, failed, or incompatible. A lower memory cap
@@ -328,8 +329,9 @@ span several nodes; non-distributed tasks must fit one node. The DEAC profile
 uses an editable 44-CPU, 185-GiB node shape. For example, 63 workers with a
 3-GiB working-set estimate each are placed 40 plus 23 under the DEAC
 `1.5x + 1 GiB` padding rule. Forty-four such workers would request 199 GiB and
-cannot occupy one 185-GiB node. The submission preview reports each planned
-node's padded CPU and memory reservation and the aggregate campaign total.
+cannot occupy one 185-GiB node. The submission preview reports every task's
+per-node padded reservation, conceptual node assignment, resource-token
+predecessors, and the aggregate campaign peak.
 Slurm emits the planner's final per-node reservation unchanged.
 
 For an insufficient memory cap, `campaign-resource-plan.json` and

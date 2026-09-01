@@ -424,12 +424,37 @@ def load_resource_calibration_catalog(
             float(row["cpu_seconds_per_selected_physical_frame_lower_bound"])
             for row in timeout_rows
         ]
+        censored_wall_lower_bound_points = sorted(
+            (
+                {
+                    "selected_source_physical_frames": int(
+                        row["selected_source_physical_frames"]
+                    ),
+                    "symmetry_expanded_observations": int(
+                        row["symmetry_expanded_observations"]
+                    ),
+                    "allocated_cpu_count": int(row["allocated_cpu_count"]),
+                    "wall_seconds_lower_bound": float(
+                        row["wall_seconds_lower_bound"]
+                    ),
+                    "planning_wall_seconds_lower_bound": float(
+                        row["wall_seconds_lower_bound"]
+                    ) * timeout_safety,
+                }
+                for row in timeout_rows
+            ),
+            key=lambda row: (
+                int(row["selected_source_physical_frames"]),
+                int(row["allocated_cpu_count"]),
+                float(row["wall_seconds_lower_bound"]),
+            ),
+        )
         planning_rates = list(completed_rates)
         planning_rates.extend(rate * timeout_safety for rate in timeout_rates)
         affine_fixed, affine_rate = _conservative_affine_cpu_model(
             complete_rows, timeout_rows, timeout_safety
         )
-        memories = [
+        observed_memories = [
             float(row["maximum_resident_memory_mib"])
             for row in rows if row.get("maximum_resident_memory_mib") is not None
         ]
@@ -437,6 +462,15 @@ def load_resource_calibration_catalog(
             float(row["maximum_resident_memory_mib"])
             for row in complete_rows
             if row.get("maximum_resident_memory_mib") is not None
+        ]
+        qualified_censored_memories = [
+            float(row["maximum_resident_memory_mib"])
+            for row in timeout_rows
+            if row.get("maximum_resident_memory_mib") is not None
+            and int(row.get("allocated_cpu_count", 0)) == 1
+        ]
+        planning_memories = [
+            *completed_memories, *qualified_censored_memories,
         ]
         complete_observation_counts = [
             int(row["symmetry_expanded_observations"])
@@ -477,8 +511,33 @@ def load_resource_calibration_catalog(
             "maximum_censored_cpu_seconds_per_frame_lower_bound": (
                 max(timeout_rates) if timeout_rates else None
             ),
+            "maximum_censored_wall_seconds_lower_bound": (
+                max(
+                    float(row["wall_seconds_lower_bound"])
+                    for row in timeout_rows
+                )
+                if timeout_rows else None
+            ),
+            "censored_wall_lower_bound_points": (
+                censored_wall_lower_bound_points
+            ),
             "censored_timeout_safety_factor": timeout_safety,
-            "maximum_resident_memory_mib": max(memories) if memories else 0.0,
+            "maximum_resident_memory_mib": (
+                max(planning_memories) if planning_memories else 0.0
+            ),
+            "maximum_observed_resident_memory_mib_all_records": (
+                max(observed_memories) if observed_memories else 0.0
+            ),
+            "maximum_qualified_censored_resident_memory_mib": (
+                max(qualified_censored_memories)
+                if qualified_censored_memories else 0.0
+            ),
+            "memory_timeout_evidence_policy": (
+                "completed executions plus single-CPU censored observations may "
+                "set a planning lower bound; multi-CPU censored MaxRSS is retained "
+                "as aggregate diagnostic evidence but is not treated as per-worker "
+                "memory"
+            ),
             "maximum_completed_resident_memory_mib": (
                 max(completed_memories) if completed_memories else 0.0
             ),
