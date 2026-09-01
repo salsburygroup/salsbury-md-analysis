@@ -78,7 +78,8 @@ class GeneratedDocumentationTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("Every module remains `experimental`", validation)
-        self.assertIn("convergence/population-validity criterion did not pass", validation)
+        self.assertIn("does not turn those values into", validation)
+        self.assertIn("convergence or population-validity verdict", validation)
         self.assertIn("optional peptide-link continuity", structural_qc)
         self.assertNotIn("does **not** yet evaluate residue continuity", structural_qc)
 

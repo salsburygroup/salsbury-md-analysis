@@ -37,7 +37,7 @@
 | `solvent_accessible_surface_area` | 12 | md | **experimental** | Solvent-accessible surface area |
 | `radial_distribution_functions` | 12R | md | **experimental** | Radial distribution functions |
 | `optional_observables` | 12 | md | **experimental** | Question-driven optional observables |
-| `convergence_uncertainty` | 13 | md | **experimental** | Convergence, uncertainty, and population validity |
+| `convergence_uncertainty` | 13 | md | **experimental** | Convergence and uncertainty diagnostics |
 | `integrated_comparison` | 14 | reporting | **experimental** | Integrated comparative analysis |
 | `alternative_clustering` | 8A | md | **experimental** | Alternative clustering and validation |
 | `pald_community_analysis` | 8P | md | **experimental** | Partitioned Local Depth community analysis |
@@ -1072,36 +1072,36 @@ Scientific limits:
 - Water networks, membrane deformation, and experimental forward models require separately validated extensions.
 - Raw wrapped-coordinate distances are diagnostic only.
 
-## Convergence, uncertainty, and population validity
+## Convergence and uncertainty diagnostics
 
 - ID: `convergence_uncertainty`
 - Stage: `13`
 - Category: `md`
 - Status: **experimental**
 
-Evaluate declared RMSD/Rg block stability, split-mean agreement, overlap-normalized autocorrelation sequences, initial-positive-sequence effective sample size, autocorrelation-adjusted mean uncertainty, and population-validity gates; optional replica summaries are exploratory only.
+Report declared RMSD/Rg block summaries, split-mean differences, overlap-normalized autocorrelation sequences, initial-positive-sequence effective sample sizes, and autocorrelation-adjusted mean uncertainty. Configured ESS and split-difference values are references for quantitative reporting, not software-assigned scientific gates.
 
 Required inputs:
 
 - replica RMSD/Rg or other scalar timeseries
 - replica and segment labels
-- block, autocorrelation, ESS, and split-mean gates
+- block definitions and quantitative ESS and split-difference references
 - optional replica-diagnostics choice
 
 Declared outputs:
 
-- per-series convergence and autocorrelation diagnostics
+- per-series autocorrelation and block diagnostics
 - effective-sample-size-adjusted uncertainty
+- counts and distributions relative to configured references
+- per-metric and per-system diagnostic summaries
 - optional exploratory between-replica summaries
-- population-validity status
-- failed-gate evidence
 
 Scientific limits:
 
 - Incompatible sampling methods cannot be pooled without an explicit calibration model.
-- Autocorrelation, ESS, and block analyses are diagnostics rather than proof of independent sampling.
+- Autocorrelation, ESS, split means, and block analyses are diagnostics rather than proof of independent sampling.
 - Replica agreement and leave-one-replica-out are not acceptance measures.
-- Population validity requires all declared non-replica gates, not merely technical execution.
+- The software does not assign a convergence or population-validity conclusion; scientific interpretation requires human review.
 
 ## Integrated comparative analysis
 

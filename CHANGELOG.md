@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Replace convergence and population-validity pass/fail fields with quantitative
+  RMSD/Rg diagnostics. Reports now retain each ESS value, a configurable ESS
+  reference, above/equal/below-reference counts, split-mean statistics, and
+  per-system and per-metric summaries while reserving scientific interpretation
+  for human review.
 - Couple convergence block sizing to the planner-selected RMSD/Rg observations
   per replica. Impossible explicit block contracts now fail technically instead
   of being mislabeled as scientific nonconvergence.

@@ -792,8 +792,8 @@ def _generic_definitions(
             "block_size_frames": max(1, minimum_rmsd_rg_observations // 10),
             "include_partial_final_block": True,
             "minimum_blocks": 4,
-            "minimum_effective_sample_size": 20.0,
-            "maximum_split_mean_difference_in_sd": 1.0,
+            "effective_sample_size_reference": 20.0,
+            "split_mean_difference_reference_in_sd": 1.0,
             "replica_diagnostics": False,
         },
     }

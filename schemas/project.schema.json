@@ -1330,8 +1330,21 @@
           "additionalProperties": false,
           "required": [
             "source_module", "metrics", "block_size_frames", "include_partial_final_block",
-            "minimum_blocks", "minimum_effective_sample_size",
-            "maximum_split_mean_difference_in_sd"
+            "minimum_blocks"
+          ],
+          "oneOf": [
+            {
+              "required": [
+                "effective_sample_size_reference",
+                "split_mean_difference_reference_in_sd"
+              ]
+            },
+            {
+              "required": [
+                "minimum_effective_sample_size",
+                "maximum_split_mean_difference_in_sd"
+              ]
+            }
           ],
           "properties": {
             "source_module": {"const": "replica_rmsd_rg"},
@@ -1342,9 +1355,12 @@
             "block_size_frames": {"type": "integer", "minimum": 1},
             "include_partial_final_block": {"type": "boolean"},
             "minimum_blocks": {"type": "integer", "minimum": 1},
+            "effective_sample_size_reference": {"type": "number", "exclusiveMinimum": 0},
+            "split_mean_difference_reference_in_sd": {"type": "number", "exclusiveMinimum": 0},
             "minimum_effective_sample_size": {"type": "number", "exclusiveMinimum": 0},
             "maximum_split_mean_difference_in_sd": {"type": "number", "exclusiveMinimum": 0},
             "replica_diagnostics": {"type": "boolean", "default": false},
+            "minimum_replicas_for_exploratory_diagnostic": {"type": "integer", "minimum": 1},
             "minimum_replicas_for_population_validity": {"type": "integer", "minimum": 1}
           }
         },

@@ -1,4 +1,4 @@
-"""Timeseries convergence and uncertainty diagnostics with explicit gates."""
+"""Timeseries convergence and uncertainty diagnostics without scientific verdicts."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from .rmsd_rg import RMSDRGError, replica_rmsd_rg_project
 
 
 class ConvergenceAnalysisError(ValueError):
-    """Raised when convergence inputs or gates are incomplete."""
+    """Raised when convergence inputs or technical contracts are incomplete."""
 
 
 def _exact_observation_accounting(
@@ -223,12 +223,35 @@ def _settings(project: Mapping[str, object]) -> Dict[str, object]:
         raise ConvergenceAnalysisError("definitions.convergence_uncertainty must be an object")
     required = {
         "source_module", "metrics", "block_size_frames", "include_partial_final_block",
-        "minimum_blocks", "minimum_effective_sample_size",
-        "maximum_split_mean_difference_in_sd",
+        "minimum_blocks",
     }
     missing = sorted(required.difference(raw))
-    optional = {"replica_diagnostics", "minimum_replicas_for_population_validity"}
-    unknown = sorted(set(raw).difference(required | optional))
+    canonical_references = {
+        "effective_sample_size_reference",
+        "split_mean_difference_reference_in_sd",
+    }
+    legacy_references = {
+        "minimum_effective_sample_size",
+        "maximum_split_mean_difference_in_sd",
+    }
+    if canonical_references.intersection(raw) and legacy_references.intersection(raw):
+        raise ConvergenceAnalysisError(
+            "canonical diagnostic reference fields cannot be mixed with legacy threshold aliases"
+        )
+    has_canonical_references = canonical_references.issubset(raw)
+    has_legacy_references = legacy_references.issubset(raw)
+    if has_canonical_references == has_legacy_references:
+        raise ConvergenceAnalysisError(
+            "convergence settings must contain either the canonical diagnostic "
+            "reference fields or the complete legacy threshold pair, but not both"
+        )
+    optional = {
+        "replica_diagnostics",
+        "minimum_replicas_for_exploratory_diagnostic",
+        "minimum_replicas_for_population_validity",
+    }
+    reference_fields = canonical_references | legacy_references
+    unknown = sorted(set(raw).difference(required | optional | reference_fields))
     if missing:
         raise ConvergenceAnalysisError("convergence settings missing: " + ", ".join(missing))
     if unknown:
@@ -248,17 +271,36 @@ def _settings(project: Mapping[str, object]) -> Dict[str, object]:
     replica_diagnostics = raw.get("replica_diagnostics", False)
     if not isinstance(replica_diagnostics, bool):
         raise ConvergenceAnalysisError("replica_diagnostics must be boolean")
-    minimum_replicas = raw.get("minimum_replicas_for_population_validity", 2)
+    if (
+        "minimum_replicas_for_exploratory_diagnostic" in raw
+        and "minimum_replicas_for_population_validity" in raw
+    ):
+        raise ConvergenceAnalysisError(
+            "use only minimum_replicas_for_exploratory_diagnostic; the population-validity "
+            "name is retained only as a legacy input alias"
+        )
+    minimum_replicas = raw.get(
+        "minimum_replicas_for_exploratory_diagnostic",
+        raw.get("minimum_replicas_for_population_validity", 2),
+    )
     if (
         isinstance(minimum_replicas, bool)
         or not isinstance(minimum_replicas, int)
         or minimum_replicas <= 0
     ):
         raise ConvergenceAnalysisError(
-            "minimum_replicas_for_population_validity must be a positive integer"
+            "minimum_replicas_for_exploratory_diagnostic must be a positive integer"
         )
-    for label in ("minimum_effective_sample_size", "maximum_split_mean_difference_in_sd"):
-        value = raw[label]
+    if has_canonical_references:
+        effective_sample_size_reference = raw["effective_sample_size_reference"]
+        split_mean_difference_reference = raw["split_mean_difference_reference_in_sd"]
+    else:
+        effective_sample_size_reference = raw["minimum_effective_sample_size"]
+        split_mean_difference_reference = raw["maximum_split_mean_difference_in_sd"]
+    for label, value in (
+        ("effective_sample_size_reference", effective_sample_size_reference),
+        ("split_mean_difference_reference_in_sd", split_mean_difference_reference),
+    ):
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) or float(value) <= 0.0:
             raise ConvergenceAnalysisError(f"{label} must be finite and positive")
     return {
@@ -266,8 +308,8 @@ def _settings(project: Mapping[str, object]) -> Dict[str, object]:
         "block_size_frames": raw["block_size_frames"],
         "include_partial_final_block": raw["include_partial_final_block"],
         "minimum_blocks": raw["minimum_blocks"],
-        "minimum_effective_sample_size": float(raw["minimum_effective_sample_size"]),
-        "maximum_split_mean_difference_in_sd": float(raw["maximum_split_mean_difference_in_sd"]),
+        "effective_sample_size_reference": float(effective_sample_size_reference),
+        "split_mean_difference_reference_in_sd": float(split_mean_difference_reference),
         "replica_diagnostics": replica_diagnostics,
         "minimum_replicas_for_exploratory_diagnostic": minimum_replicas,
     }
@@ -324,12 +366,27 @@ def _series_diagnostic(values: Sequence[float], settings: Mapping[str, object]) 
     ess = effective_sample_size(values)
     adjusted_uncertainty = autocorrelation_adjusted_mean_uncertainty(values)
     blocks = _block_means(values, block_size, include_partial)
-    passes_blocks = len(blocks) >= minimum_blocks
-    passes_ess = (
-        ess["effective_sample_size"] is not None
-        and float(ess["effective_sample_size"]) >= float(settings["minimum_effective_sample_size"])
-    )
-    passes_split = split_difference <= float(settings["maximum_split_mean_difference_in_sd"])
+    block_contract_satisfied = len(blocks) >= minimum_blocks
+    ess_reference = float(settings["effective_sample_size_reference"])
+    effective = ess["effective_sample_size"]
+    if effective is None:
+        ess_relation = "unavailable"
+        ess_difference = None
+    else:
+        ess_difference = float(effective) - ess_reference
+        if float(effective) > ess_reference:
+            ess_relation = "above_reference"
+        elif float(effective) < ess_reference:
+            ess_relation = "below_reference"
+        else:
+            ess_relation = "at_reference"
+    split_reference = float(settings["split_mean_difference_reference_in_sd"])
+    if split_difference < split_reference:
+        split_relation = "below_reference"
+    elif split_difference > split_reference:
+        split_relation = "above_reference"
+    else:
+        split_relation = "at_reference"
     return {
         "summary": summary, "first_half_mean": first_mean, "second_half_mean": second_mean,
         "split_mean_difference_in_sd": split_difference,
@@ -343,11 +400,83 @@ def _series_diagnostic(values: Sequence[float], settings: Mapping[str, object]) 
             "compatible": True,
         },
         "effective_sample_size": ess,
+        "effective_sample_size_reference": ess_reference,
+        "effective_sample_size_reference_relation": ess_relation,
+        "effective_sample_size_minus_reference": ess_difference,
         "autocorrelation_adjusted_mean_uncertainty": adjusted_uncertainty,
-        "passes_minimum_blocks": passes_blocks,
-        "passes_minimum_effective_sample_size": passes_ess,
-        "passes_split_mean_gate": passes_split,
-        "passes_all_declared_series_gates": passes_blocks and passes_ess and passes_split,
+        "split_mean_difference_reference_in_sd": split_reference,
+        "split_mean_difference_reference_relation": split_relation,
+        "block_contract_satisfied": block_contract_satisfied,
+        "scientific_conclusion": None,
+    }
+
+
+def _diagnostic_summary(
+    diagnostics: Sequence[Mapping[str, object]], settings: Mapping[str, object]
+) -> Dict[str, object]:
+    """Summarize diagnostic values without assigning a scientific verdict."""
+
+    def summarize(rows: Sequence[Mapping[str, object]]) -> Dict[str, object]:
+        ess_values = sorted(
+            float(row["effective_sample_size"]["effective_sample_size"])
+            for row in rows
+            if isinstance(row.get("effective_sample_size"), dict)
+            and row["effective_sample_size"].get("effective_sample_size") is not None
+        )
+        ess_relations = [
+            str(row.get("effective_sample_size_reference_relation", "unavailable"))
+            for row in rows
+        ]
+        split_relations = [
+            str(row.get("split_mean_difference_reference_relation", "unavailable"))
+            for row in rows
+        ]
+        if ess_values:
+            midpoint = len(ess_values) // 2
+            median = (
+                ess_values[midpoint]
+                if len(ess_values) % 2
+                else (ess_values[midpoint - 1] + ess_values[midpoint]) / 2.0
+            )
+        else:
+            median = None
+        return {
+            "series_count": len(rows),
+            "effective_sample_size_available_count": len(ess_values),
+            "effective_sample_size_above_reference_count": ess_relations.count("above_reference"),
+            "effective_sample_size_at_reference_count": ess_relations.count("at_reference"),
+            "effective_sample_size_below_reference_count": ess_relations.count("below_reference"),
+            "effective_sample_size_unavailable_count": ess_relations.count("unavailable"),
+            "effective_sample_size_minimum": ess_values[0] if ess_values else None,
+            "effective_sample_size_median": median,
+            "effective_sample_size_maximum": ess_values[-1] if ess_values else None,
+            "split_mean_difference_below_reference_count": split_relations.count("below_reference"),
+            "split_mean_difference_at_reference_count": split_relations.count("at_reference"),
+            "split_mean_difference_above_reference_count": split_relations.count("above_reference"),
+        }
+
+    by_metric = {}
+    for metric in sorted({str(row["metric"]) for row in diagnostics}):
+        by_metric[metric] = summarize(
+            [row for row in diagnostics if str(row["metric"]) == metric]
+        )
+    by_system = {}
+    for system_id in sorted({str(row["system_id"]) for row in diagnostics}):
+        by_system[system_id] = summarize(
+            [row for row in diagnostics if str(row["system_id"]) == system_id]
+        )
+    return {
+        **summarize(diagnostics),
+        "effective_sample_size_reference": float(settings["effective_sample_size_reference"]),
+        "split_mean_difference_reference_in_sd": float(
+            settings["split_mean_difference_reference_in_sd"]
+        ),
+        "by_metric": by_metric,
+        "by_system": by_system,
+        "interpretation_policy": (
+            "Quantitative diagnostics are reported for human scientific review; "
+            "the software does not emit a convergence or population-validity verdict."
+        ),
     }
 
 
@@ -405,7 +534,6 @@ def convergence_uncertainty_project(
                     "recommended": False,
                     "acceptance_gate": False,
                 })
-    all_series_pass = bool(diagnostics) and all(row["passes_all_declared_series_gates"] for row in diagnostics)
     small_replica_ensemble = bool(settings["replica_diagnostics"]) and any(
         len(values) < int(settings["minimum_replicas_for_exploratory_diagnostic"])
         for values in system_replicas.values()
@@ -419,17 +547,12 @@ def convergence_uncertainty_project(
                 "have fewer simulations than the exploratory diagnostic target"
             ),
         })
-    if not all_series_pass:
-        issues.append({
-            "severity": "warning", "code": "CONVERGENCE_GATES_NOT_PASSED",
-            "location": str(source),
-            "message": "one or more metric series failed block, ESS, or split-mean gates",
-        })
-    population_valid = all_series_pass
+    diagnostic_summary = _diagnostic_summary(diagnostics, settings)
     return {
         "module_id": "convergence_uncertainty", "technical_status": "complete",
         "scientific_status": "not evaluated",
-        "population_validity_status": "passed" if population_valid else "not passed",
+        "scientific_interpretation_status": "human_review_required",
+        "scientific_conclusion_emitted": False,
         "project_manifest_path": str(source),
         "project_manifest_sha256": upstream["project_manifest_sha256"],
         "system_manifest_path": upstream["system_manifest_path"],
@@ -438,7 +561,7 @@ def convergence_uncertainty_project(
         "content_hashes_included": hash_content, "settings": settings,
         "observation_accounting": observation_accounting,
         "series_diagnostics": diagnostics, "replica_diagnostics": uncertainty,
-        "all_series_pass": all_series_pass,
+        "diagnostic_summary": diagnostic_summary,
         "replica_diagnostics_enabled": bool(settings["replica_diagnostics"]),
         "replica_count_gate_passed": None,
         "additional_replica_simulations_may_be_useful": (
@@ -453,7 +576,7 @@ def convergence_uncertainty_project(
             "Replica agreement and leave-one-replica-out behavior are not acceptance measures and are not calculated.",
             "Optional replica summaries are descriptive only and may suggest collecting additional independent simulations.",
             "Within-timeseries uncertainty uses approximate ESS and time blocks; it does not manufacture independent replicas.",
-            "Population validity here concerns only the declared within-series gates; technical completion alone is insufficient.",
+            "The software reports quantitative diagnostics and does not assign a convergence or population-validity verdict.",
         ],
     }
 
@@ -467,7 +590,9 @@ def convergence_uncertainty_project_safe(
         messages = list(exc.issues) if isinstance(exc, ManifestValidationError) else [str(exc)]
         return {
             "module_id": "convergence_uncertainty", "technical_status": "failed",
-            "scientific_status": "not evaluated", "population_validity_status": "not passed",
+            "scientific_status": "not evaluated",
+            "scientific_interpretation_status": "not_available",
+            "scientific_conclusion_emitted": False,
             "project_manifest_path": str(Path(project_path).expanduser().resolve(strict=False)),
             "error_count": len(messages), "warning_count": 0,
             "issues": [{"severity": "error", "code": "CONVERGENCE_INVALID", "message": message} for message in messages],
