@@ -1085,7 +1085,7 @@ def plan_alternative_clustering_fit_strides(
             "complexity_class": profile["complexity_class"],
             "time_exponent": exponent,
             "calibration_status": (
-                "completed_performance_only_matrix_v1"
+                "completed_performance_only_matrix_recovery_v1"
                 if "calibration_observations" in profile else
                 "provisional_complexity_profile_v1"
             ),
