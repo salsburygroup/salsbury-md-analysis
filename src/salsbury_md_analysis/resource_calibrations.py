@@ -241,7 +241,13 @@ def build_resource_calibration_catalog(
         })
     entries.extend(_entry_from_sidecar(path) for path in paths)
     entries.extend(_entry_from_timeout(path) for path in timeout_paths)
-    evidence_keys = []
+    unique_entries: Dict[str, Dict[str, object]] = {}
+    duplicate_count = 0
+    nonplanning_fields = {
+        "computer_hostname", "scheduler_array_task_id", "scheduler_job_id",
+        "source_location_redacted", "source_report_path", "source_sidecar_path",
+        "source_timeout_path",
+    }
     for row in entries:
         if not isinstance(row, dict):
             raise ResourceCalibrationError("base catalog entry must be an object")
@@ -253,11 +259,24 @@ def build_resource_calibration_catalog(
             raise ResourceCalibrationError(
                 "every calibration entry must retain a source evidence hash"
             )
-        evidence_keys.append(key)
-    if len(evidence_keys) != len(set(evidence_keys)):
-        raise ResourceCalibrationError(
-            "duplicate source evidence appears in the combined calibration catalog"
-        )
+        existing = unique_entries.get(key)
+        if existing is None:
+            unique_entries[key] = dict(row)
+            continue
+        normalized_existing = {
+            field: value for field, value in existing.items()
+            if field not in nonplanning_fields
+        }
+        normalized_row = {
+            field: value for field, value in row.items()
+            if field not in nonplanning_fields
+        }
+        if normalized_existing != normalized_row:
+            raise ResourceCalibrationError(
+                "duplicate source evidence has conflicting resource values"
+            )
+        duplicate_count += 1
+    entries = list(unique_entries.values())
     complete_count = sum(
         str(row.get("evidence_status", "complete_execution"))
         == "complete_execution" for row in entries
@@ -271,6 +290,7 @@ def build_resource_calibration_catalog(
         "entry_count": len(entries),
         "complete_execution_count": complete_count,
         "censored_timeout_count": timeout_count,
+        "duplicate_evidence_entry_count": duplicate_count,
         "base_catalogs": base_provenance,
         "entries": entries,
         "planner_policy": {
@@ -280,10 +300,11 @@ def build_resource_calibration_catalog(
                 "timeout safety factor"
             ),
             "memory": (
-                "two or more complete measurements qualify the maximum "
-                "completed RSS, after the planner safety factor, to replace "
-                "a legacy baseline; one-off and timeout-only measurements "
-                "remain conservative lower bounds and cannot lower it"
+                "two or more complete measurements may qualify completed RSS "
+                "to replace a legacy baseline; a single-CPU timeout may set a "
+                "planning lower bound, while multi-CPU timeout MaxRSS remains "
+                "aggregate diagnostic evidence and is never replayed as one "
+                "worker's memory"
             ),
             "frame_coverage": (
                 "maximum technically completed selected physical frames only; "
@@ -424,12 +445,37 @@ def load_resource_calibration_catalog(
             float(row["cpu_seconds_per_selected_physical_frame_lower_bound"])
             for row in timeout_rows
         ]
+        censored_wall_lower_bound_points = sorted(
+            (
+                {
+                    "selected_source_physical_frames": int(
+                        row["selected_source_physical_frames"]
+                    ),
+                    "symmetry_expanded_observations": int(
+                        row["symmetry_expanded_observations"]
+                    ),
+                    "allocated_cpu_count": int(row["allocated_cpu_count"]),
+                    "wall_seconds_lower_bound": float(
+                        row["wall_seconds_lower_bound"]
+                    ),
+                    "planning_wall_seconds_lower_bound": float(
+                        row["wall_seconds_lower_bound"]
+                    ) * timeout_safety,
+                }
+                for row in timeout_rows
+            ),
+            key=lambda row: (
+                int(row["selected_source_physical_frames"]),
+                int(row["allocated_cpu_count"]),
+                float(row["wall_seconds_lower_bound"]),
+            ),
+        )
         planning_rates = list(completed_rates)
         planning_rates.extend(rate * timeout_safety for rate in timeout_rates)
         affine_fixed, affine_rate = _conservative_affine_cpu_model(
             complete_rows, timeout_rows, timeout_safety
         )
-        memories = [
+        observed_memories = [
             float(row["maximum_resident_memory_mib"])
             for row in rows if row.get("maximum_resident_memory_mib") is not None
         ]
@@ -437,6 +483,15 @@ def load_resource_calibration_catalog(
             float(row["maximum_resident_memory_mib"])
             for row in complete_rows
             if row.get("maximum_resident_memory_mib") is not None
+        ]
+        qualified_censored_memories = [
+            float(row["maximum_resident_memory_mib"])
+            for row in timeout_rows
+            if row.get("maximum_resident_memory_mib") is not None
+            and int(row.get("allocated_cpu_count", 0)) == 1
+        ]
+        planning_memories = [
+            *completed_memories, *qualified_censored_memories,
         ]
         complete_observation_counts = [
             int(row["symmetry_expanded_observations"])
@@ -477,8 +532,33 @@ def load_resource_calibration_catalog(
             "maximum_censored_cpu_seconds_per_frame_lower_bound": (
                 max(timeout_rates) if timeout_rates else None
             ),
+            "maximum_censored_wall_seconds_lower_bound": (
+                max(
+                    float(row["wall_seconds_lower_bound"])
+                    for row in timeout_rows
+                )
+                if timeout_rows else None
+            ),
+            "censored_wall_lower_bound_points": (
+                censored_wall_lower_bound_points
+            ),
             "censored_timeout_safety_factor": timeout_safety,
-            "maximum_resident_memory_mib": max(memories) if memories else 0.0,
+            "maximum_resident_memory_mib": (
+                max(planning_memories) if planning_memories else 0.0
+            ),
+            "maximum_observed_resident_memory_mib_all_records": (
+                max(observed_memories) if observed_memories else 0.0
+            ),
+            "maximum_qualified_censored_resident_memory_mib": (
+                max(qualified_censored_memories)
+                if qualified_censored_memories else 0.0
+            ),
+            "memory_timeout_evidence_policy": (
+                "completed executions plus single-CPU censored observations may "
+                "set a planning lower bound; multi-CPU censored MaxRSS is retained "
+                "as aggregate diagnostic evidence but is not treated as per-worker "
+                "memory"
+            ),
             "maximum_completed_resident_memory_mib": (
                 max(completed_memories) if completed_memories else 0.0
             ),

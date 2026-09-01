@@ -324,8 +324,9 @@ A Slurm profile can also declare `node_policy.cpus_per_node`,
 `node_policy.maximum_nodes_per_campaign`. Node memory is checked against the
 safety-adjusted scheduler request, not the unpadded working-set estimate.
 Replica-parallel tasks are split into node-sized worker groups; other tasks
-must fit one node. Concurrent resource lanes are then bin-packed so no node's
-padded CPU or memory reservation exceeds its declared shape. The campaign's
+must fit one node. Global and per-node resource tokens then ensure that no
+concurrent task set exceeds a node's padded CPU or memory shape. Resource-only
+token predecessors are completion waits, not scientific success gates. The campaign's
 `maximum_memory_gib` remains an aggregate simultaneous-memory limit: a task
 that reserves 181 GiB on each of two nodes consumes 362 GiB of that envelope.
 If the campaign gives only aggregate CPU and memory caps, the planner derives

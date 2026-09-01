@@ -67,7 +67,7 @@ class GeneratedDocumentationTests(unittest.TestCase):
 
     def test_profile_reference_uses_latest_resource_catalog(self):
         text = generate_docs.render_profiles()
-        self.assertIn("apollo_measured_resource_calibrations_v3.json", text)
+        self.assertIn("apollo_measured_resource_calibrations_v4.json", text)
         self.assertIn("Right-censored timeouts:", text)
 
     def test_handwritten_validation_docs_preserve_current_scientific_boundaries(self):

@@ -209,6 +209,7 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertEqual(
             profile["partition_maximum_wall_minutes"]["small"], 1440.0,
         )
+        self.assertEqual(profile["partition_maximum_nodes"]["small"], 1)
         self.assertIn(
             "/software/salsbury-md-analysis/environments/v76/",
             profile["environment"]["python_executable"],
@@ -304,6 +305,52 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertEqual(request["selected_partition_role"], "long_wall")
         self.assertTrue(request["long_wall_routed"])
         self.assertEqual(request["selected_partition_maximum_wall_minutes"], 259200.0)
+
+    def test_deac_profile_routes_multi_node_task_off_single_node_partition(self):
+        repository = Path(__file__).resolve().parents[1]
+        profile = load_slurm_profile(repository / "profiles/slurm/deac.json")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "slurm-profile.json").write_text("{}\n", encoding="utf-8")
+            worker = root / "run_coordinate_cache.slurm"
+            worker.write_text(
+                "#!/usr/bin/env bash\n#SBATCH --time=01:00:00\n"
+                "#SBATCH --cpus-per-task=1\n#SBATCH --mem=50G\n"
+                "set -euo pipefail\n",
+                encoding="utf-8",
+            )
+            (root / "submit.sh").write_text(
+                "#!/usr/bin/env bash\nset -euo pipefail\n", encoding="utf-8"
+            )
+            scheduler = apply_slurm_profile(root, profile, {
+                "maximum_parallel_cpus": 88,
+                "maximum_parallel_memory_gib": 370,
+                "phases": [{"phase_id": "cache", "tasks": [{
+                    "task_id": "cache",
+                    "script": worker.name,
+                    "array_task_id": None,
+                    "requested_wall_minutes": 60,
+                    "requested_memory_gib": 50,
+                    "aggregate_requested_memory_gib": 100,
+                    "planner_task_ids": ["preprocessing:coordinate_cache"],
+                    "cpu_slots": 60,
+                    "node_count": 2,
+                    "workers_per_node": 30,
+                    "distributed_worker_count": 60,
+                    "distributed_replica_execution": True,
+                    "planned_wall_hours": 1,
+                    "planned_peak_memory_gib": 100,
+                    "resource_request_source": "unit_test",
+                    "wall_request_limited_by_campaign_cap": False,
+                    "memory_request_limited_by_campaign_cap": False,
+                }]}],
+            })
+            submit = (root / "submit.sh").read_text(encoding="utf-8")
+        request = scheduler["scripts"][worker.name]
+        self.assertEqual(request["selected_partition"], "large")
+        self.assertEqual(request["selected_partition_role"], "long_wall")
+        self.assertIn("--nodes=2", submit)
+        self.assertIn("--ntasks=60", submit)
 
     def test_profile_fails_closed_when_long_request_has_no_fallback(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1007,10 +1054,10 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertIn("--mem=128G --partition=large --array=1", submit)
         self.assertIn("--mem=4G --partition=small --array=0", submit)
         self.assertIn('--dependency="afterany:${JOB_T0000}"', submit)
-        self.assertEqual(
-            [lane["memory_gib"] for lane in scheduler["resource_lanes"]],
-            [128.0],
-        )
+        self.assertEqual(scheduler["resource_lanes"], [])
+        token_schedule = scheduler["resource_token_schedules"][0]
+        self.assertEqual(token_schedule["policy"]["cpu_token_count"], 1)
+        self.assertEqual(len(token_schedule["scheduled_items"]), 2)
 
     def test_canonical_slurm_launcher_enforces_aggregate_memory_waves(self):
         repository = Path(__file__).resolve().parents[1]
@@ -1067,14 +1114,9 @@ class ExecutionAdapterTests(unittest.TestCase):
             preview = json.loads(preview_run.stdout)
         self.assertEqual(syntax.returncode, 0, syntax.stderr)
         self.assertEqual(preview_run.returncode, 0, preview_run.stderr)
-        self.assertEqual(
-            [lane["memory_gib"] for lane in scheduler["resource_lanes"]],
-            [100.0, 80.0],
-        )
-        self.assertTrue(all(
-            lane["memory_gib"] <= 185.0
-            for lane in scheduler["resource_lanes"]
-        ))
+        self.assertEqual(scheduler["resource_lanes"], [])
+        token_schedule = scheduler["resource_token_schedules"][0]
+        self.assertEqual(len(token_schedule["scheduled_items"]), 3)
         self.assertIn('--dependency="afterany:${JOB_T0000}"', submit)
         self.assertFalse(preview["execution_started"])
         self.assertFalse(preview["jobs_submitted"])
@@ -1083,12 +1125,12 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertEqual(preview["maximum_parallel_cpus_configured"], 3)
         self.assertEqual(preview["maximum_parallel_cpus_in_generated_waves"], 2)
         self.assertEqual(preview["maximum_parallel_memory_gib_configured"], 185)
-        self.assertEqual(preview["maximum_parallel_memory_gib_in_generated_waves"], 180)
+        self.assertEqual(preview["maximum_parallel_memory_gib_in_generated_waves"], 170)
         self.assertEqual(preview["planned_node_count"], 1)
-        self.assertEqual(
-            preview["planned_node_reservations"][0]["reserved_memory_gib"],
-            180.0,
-        )
+        self.assertTrue(all(
+            row["reserved_memory_gib_per_node"] <= 185.0
+            for row in preview["planned_node_reservations"]
+        ))
         self.assertEqual(preview["per_node_padding_validation"], "complete")
         self.assertEqual(
             preview["planner_estimated_dependency_critical_path_hours"], 2,
@@ -1160,7 +1202,7 @@ class ExecutionAdapterTests(unittest.TestCase):
             preview = scheduler["submission_preview"]
             submit = (root / "submit.sh").read_text(encoding="utf-8")
 
-        self.assertEqual(preview["resource_epoch_count"], 2)
+        self.assertEqual(preview["resource_epoch_count"], 1)
         self.assertEqual(preview["maximum_parallel_memory_gib_in_generated_waves"], 181)
         self.assertEqual(preview["planner_estimated_dependency_critical_path_hours"], 3)
         self.assertEqual(preview["generated_schedule_feasibility_status"], "feasible")

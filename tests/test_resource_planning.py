@@ -961,6 +961,34 @@ class ResourcePlanningTests(unittest.TestCase):
         self.assertFalse(plan["execution_authorized"])
         self.assertTrue(plan["infeasibility_reasons"])
 
+    def test_censored_wall_floor_scales_with_frames_without_unproven_cpu_speedup(self):
+        plan = plan_campaign_resource_budget(
+            [{
+                "task_id": "censored-analysis",
+                "dependency_stage": 0,
+                "effective_cpu_cap": 4,
+                "source_frames_per_replica": [1_000],
+                "minimum_frames_per_replica": 1_000,
+                "maximum_frames_per_replica": 1_000,
+                "cpu_seconds_per_physical_frame": 0.001,
+                "estimated_peak_memory_gib": 1.0,
+                "censored_wall_lower_bound_points": [{
+                    "selected_source_physical_frames": 100,
+                    "planning_wall_hours_lower_bound": 1.0,
+                    "allocated_cpu_count": 2,
+                }],
+            }],
+            maximum_parallel_cpus=4,
+            maximum_wall_hours=20.0,
+            maximum_memory_gib=8.0,
+        )
+        row = plan["tasks"][0]
+        self.assertEqual(row["selected_physical_frame_count"], 1_000)
+        self.assertEqual(
+            row["estimated_wall_hours_at_effective_cpu_cap"], 10.0
+        )
+        self.assertTrue(row["censored_wall_lower_bound_applied"])
+
     def test_memory_shortfall_reports_required_cap_and_modules(self):
         tasks = []
         for task_id, module_id, memory in (

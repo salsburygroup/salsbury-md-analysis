@@ -10,6 +10,7 @@ from typing import Dict, Mapping, Sequence
 
 from .coordinate_cache import (
     coordinate_cache_prefix,
+    coordinate_cache_system_manifest_filename,
     validate_reusable_coordinate_cache,
 )
 from .manifests import load_json, validate_project
@@ -74,11 +75,20 @@ def cache_compatibility(
             "cache_compatible": False,
             "reason": "module is infrastructure, derived reporting, or not a base estimator",
         }
+    definitions = project.get("definitions")
+    definition = (
+        definitions.get(module_id) if isinstance(definitions, Mapping) else None
+    )
+    if _contains_explicit_atom_indices(definition):
+        return {
+            "module_id": module_id,
+            "cache_compatible": False,
+            "reason": (
+                "module contains source atom-index definitions; a heterogeneous "
+                "multi-system cache cannot apply one remapping to every system"
+            ),
+        }
     if module_id == "hydrogen_bond_discovery":
-        definitions = project.get("definitions")
-        definition = (
-            definitions.get(module_id) if isinstance(definitions, Mapping) else None
-        )
         if not isinstance(definition, Mapping) or definition.get("water_policy") != "exclude":
             return {
                 "module_id": module_id,
@@ -91,6 +101,38 @@ def cache_compatibility(
         "route": "validated_cache_backed_base_project",
         "reason": "all required atoms are in the molecular-payload cache",
     }
+
+
+def _contains_explicit_atom_indices(value: object) -> bool:
+    """Return whether a definition embeds source-topology atom indices."""
+
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            label = str(key)
+            if (
+                label == "atom_index"
+                or label.endswith("_atom_index")
+                or label == "atom_indices"
+                or label.endswith("_atom_indices")
+            ):
+                return True
+            if _contains_explicit_atom_indices(nested):
+                return True
+    elif isinstance(value, list):
+        return any(_contains_explicit_atom_indices(item) for item in value)
+    return False
+
+
+def _write_validated_project(path: Path, payload: Mapping[str, object]) -> str:
+    """Atomically write and validate one cache-backed project."""
+
+    rendered = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(rendered, encoding="utf-8")
+    validate_project(payload, source_path=temporary, check_paths=True)
+    temporary.replace(path)
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
 
 
 def cache_routing_plan(project: Mapping[str, object]) -> Dict[str, object]:
@@ -186,26 +228,34 @@ def materialize_cache_backed_base_project(
                 "coordinate cache lacks source-to-cache atom-index provenance"
             )
         mappings.append(tuple(int(value) for value in indices))
-    if any(value != mappings[0] for value in mappings[1:]):
-        raise CacheRoutingError(
-            "base-project atom-index definitions cannot be shared because cache "
-            "source-index mappings differ among systems or replicas"
-        )
-    source_to_cache = {
-        source_index: cache_index
-        for cache_index, source_index in enumerate(mappings[0])
-    }
     routing = cache_routing_plan(project)
     cache_modules = set(routing["cache_project_modules"])
     definitions = project.get("definitions")
     if not isinstance(definitions, dict):
         raise CacheRoutingError("source project lacks definitions")
+    mapping_is_shared = all(value == mappings[0] for value in mappings[1:])
+    source_to_cache = {
+        source_index: cache_index
+        for cache_index, source_index in enumerate(mappings[0])
+    }
     remapped_definitions = deepcopy(definitions)
-    for module_id in cache_modules:
-        if module_id in remapped_definitions:
-            remapped_definitions[module_id] = _remap_atom_indices(
-                remapped_definitions[module_id], source_to_cache
-            )
+    if mapping_is_shared:
+        for module_id in cache_modules:
+            if module_id in remapped_definitions:
+                remapped_definitions[module_id] = _remap_atom_indices(
+                    remapped_definitions[module_id], source_to_cache
+                )
+    elif any(
+        _contains_explicit_atom_indices(remapped_definitions.get(module_id))
+        for module_id in cache_modules
+    ):
+        # cache_routing_plan normally excludes these modules before the cache
+        # is built.  Keep the runtime materializer fail closed if a hand-edited
+        # routing file attempts to put one back.
+        raise CacheRoutingError(
+            "heterogeneous cache mappings cannot share explicit atom-index "
+            "definitions; route those modules to their original projects"
+        )
     cached_manifest = Path(str(validation["cached_system_manifest"]))
     cached = load_json(cached_manifest)
     systems = cached.get("systems") if isinstance(cached, dict) else None
@@ -233,16 +283,91 @@ def materialize_cache_backed_base_project(
             "cache_report_sha256": validation["cache_report_sha256"],
         },
     })
-    rendered = json.dumps(payload, indent=2, sort_keys=True) + "\n"
-    output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.with_name(output.name + ".tmp")
-    temporary.write_text(rendered, encoding="utf-8")
-    validate_project(payload, source_path=temporary, check_paths=True)
-    temporary.replace(output)
+    pooled_sha256 = _write_validated_project(output, payload)
+
+    per_system_cache_projects = []
+    per_system_manifests = report.get("cached_per_system_manifests")
+    if not isinstance(per_system_manifests, Mapping):
+        raise CacheRoutingError(
+            "coordinate cache report lacks per-system cached manifests"
+        )
+    rows_by_system: Dict[str, list[Mapping[str, object]]] = {}
+    for row in report_rows:
+        system_id = str(row.get("system_id", ""))
+        if not system_id:
+            raise CacheRoutingError("coordinate cache report row lacks system_id")
+        rows_by_system.setdefault(system_id, []).append(row)
+    for cached_system in systems:
+        if not isinstance(cached_system, Mapping):
+            raise CacheRoutingError("cached system manifest contains an invalid system")
+        system_id = str(cached_system.get("system_id", ""))
+        manifest_row = per_system_manifests.get(system_id)
+        if not isinstance(manifest_row, Mapping):
+            raise CacheRoutingError(
+                f"coordinate cache lacks a per-system manifest for {system_id}"
+            )
+        manifest_name = str(manifest_row.get(
+            "path", coordinate_cache_system_manifest_filename(system_id)
+        ))
+        per_system_manifest = cached_manifest.parent / manifest_name
+        replicas = cached_system.get("replicas")
+        if (
+            not isinstance(replicas, list)
+            or not replicas
+            or not isinstance(replicas[0], Mapping)
+        ):
+            raise CacheRoutingError(
+                f"cached system {system_id} has no replicas"
+            )
+        first_replica_id = str(replicas[0]["replica_id"])
+        system_prefix = coordinate_cache_prefix(system_id, first_replica_id)
+        system_payload = deepcopy(payload)
+        system_payload.update({
+            "project_id": f"{project.get('project_id', 'project')}--cache--{system_id}",
+            "system_manifest": str(per_system_manifest),
+            "reference_structure": str(
+                cached_manifest.parent / f"{system_prefix}.pdb"
+            ),
+            "reference_connectivity": str(
+                cached_manifest.parent / f"{system_prefix}.bonds.json"
+            ),
+        })
+        safe_system = hashlib.sha256(system_id.encode("utf-8")).hexdigest()[:10]
+        system_output = output.with_name(
+            f"{output.stem}--system-{safe_system}{output.suffix}"
+        )
+        system_sha256 = _write_validated_project(system_output, system_payload)
+        system_mappings = []
+        for row in rows_by_system.get(system_id, []):
+            indices = row.get("source_atom_indices_in_cache_order")
+            if isinstance(indices, list):
+                system_mappings.append(tuple(int(value) for value in indices))
+        per_system_cache_projects.append({
+            "system_id": system_id,
+            "cache_project": str(system_output),
+            "cache_project_sha256": system_sha256,
+            "cached_system_manifest": str(per_system_manifest),
+            "replica_count": len(replicas),
+            "source_index_mapping_count": len(system_mappings),
+            "source_index_mappings_identical_within_system": (
+                bool(system_mappings)
+                and all(value == system_mappings[0] for value in system_mappings[1:])
+            ),
+        })
     routing.update({
         "cache_validation": validation,
         "cache_project": str(output),
-        "cache_project_sha256": hashlib.sha256(rendered.encode("utf-8")).hexdigest(),
-        "source_to_cache_atom_mapping_count": len(source_to_cache),
+        "cache_project_sha256": pooled_sha256,
+        "cache_mapping_policy": (
+            "one shared source-to-cache mapping"
+            if mapping_is_shared else
+            "chemistry-based definitions on a heterogeneous per-replica cache; "
+            "explicit source atom-index modules remain on original projects"
+        ),
+        "source_index_mappings_identical_across_replicas": mapping_is_shared,
+        "source_to_cache_atom_mapping_count": (
+            len(source_to_cache) if mapping_is_shared else None
+        ),
+        "per_system_cache_projects": per_system_cache_projects,
     })
     return routing

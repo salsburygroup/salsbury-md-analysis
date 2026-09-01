@@ -1447,6 +1447,37 @@ def plan_campaign_resource_budget(
             raw.get("fixed_cpu_hours", 0.0),
             f"task {task_id} fixed_cpu_hours",
         )
+        raw_censored_wall_points = raw.get(
+            "censored_wall_lower_bound_points", []
+        )
+        if not isinstance(raw_censored_wall_points, list):
+            raise ResourcePlanningError(
+                f"task {task_id} censored_wall_lower_bound_points must be a list"
+            )
+        censored_wall_points = []
+        for point_index, point in enumerate(raw_censored_wall_points):
+            if not isinstance(point, Mapping):
+                raise ResourcePlanningError(
+                    f"task {task_id} censored wall point {point_index} must be an object"
+                )
+            point_frames = point.get("selected_source_physical_frames")
+            if (
+                isinstance(point_frames, bool)
+                or not isinstance(point_frames, int)
+                or point_frames <= 0
+            ):
+                raise ResourcePlanningError(
+                    f"task {task_id} censored wall point frame count must be positive"
+                )
+            point_hours = _positive_number(
+                point.get("planning_wall_hours_lower_bound"),
+                f"task {task_id} censored wall point planning wall hours",
+            )
+            censored_wall_points.append({
+                "selected_source_physical_frames": int(point_frames),
+                "planning_wall_hours_lower_bound": float(point_hours),
+                "allocated_cpu_count": int(point.get("allocated_cpu_count", 1)),
+            })
         if rate is None and fixed == 0.0 and power_model is None:
             calibration_status = "project_pilot_required"
         else:
@@ -1539,6 +1570,7 @@ def plan_campaign_resource_budget(
             "maximum_frames_per_replica": int(maximum),
             "cpu_seconds_per_physical_frame": rate,
             "fixed_cpu_hours": fixed,
+            "censored_wall_lower_bound_points": censored_wall_points,
             "power_law_cost_model": power_model,
             "measured_memory_cost_model": measured_memory_model,
             "estimated_peak_memory_gib": task_memory,
@@ -1681,6 +1713,31 @@ def plan_campaign_resource_budget(
         if rate is None:
             return None
         return float(row["fixed_cpu_hours"]) + float(rate) * sum(counts) / 3600.0
+
+    def task_wall_hours(
+        row: Mapping[str, object], counts: Sequence[int], cpu_hours: float,
+    ) -> float:
+        """Respect both modeled CPU work and right-censored wall lower bounds."""
+
+        current_slots = int(task_parallel_layout(row)["execution_cpu_slots"])
+        modeled = cpu_hours / current_slots
+        selected_frames = sum(int(value) for value in counts)
+        censored_floor = max(
+            (
+                float(point["planning_wall_hours_lower_bound"])
+                * (
+                    selected_frames
+                    / int(point["selected_source_physical_frames"])
+                )
+                * (
+                    int(point["allocated_cpu_count"])
+                    / min(current_slots, int(point["allocated_cpu_count"]))
+                )
+                for point in row.get("censored_wall_lower_bound_points", [])
+            ),
+            default=0.0,
+        )
+        return max(modeled, censored_floor)
 
     def task_parallel_layout(row: Mapping[str, object]) -> Dict[str, object]:
         """Resolve one logical task into safe single- or multi-node workers."""
@@ -1843,8 +1900,11 @@ def plan_campaign_resource_budget(
             bundles.setdefault(str(row["execution_bundle_id"]), []).append(row)
         bundle_walls = {
             bundle_id: sum(
-                costs[str(row["task_id"])]
-                / int(task_parallel_layout(row)["execution_cpu_slots"])
+                task_wall_hours(
+                    row,
+                    selection[str(row["task_id"])],
+                    costs[str(row["task_id"])],
+                )
                 for row in bundle_rows
             )
             for bundle_id, bundle_rows in bundles.items()
@@ -2356,9 +2416,11 @@ def plan_campaign_resource_budget(
                 selected_parallel_layout
             ),
             "estimated_wall_hours_at_effective_cpu_cap": (
-                final_costs[task_id]
-                / int(selected_parallel_layout["execution_cpu_slots"])
+                task_wall_hours(row, counts, final_costs[task_id])
                 if task_id in final_costs else None
+            ),
+            "censored_wall_lower_bound_applied": bool(
+                row.get("censored_wall_lower_bound_points")
             ),
             "source_limited_below_declared_minimum": (
                 sum(source_counts)

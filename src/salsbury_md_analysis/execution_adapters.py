@@ -34,7 +34,8 @@ _PARTITION_ROLES = {
 _PROFILE_FIELDS = {
     "slurm_profile_schema", "profile_id", "cluster_name", "submit_command",
     "status_command", "cancel_command", "account", "unix_group", "qos",
-    "partitions", "partition_maximum_wall_minutes", "environment", "paths", "resource_policy",
+    "partitions", "partition_maximum_wall_minutes", "partition_maximum_nodes",
+    "environment", "paths", "resource_policy",
     "node_policy", "additional_sbatch_directives",
 }
 _RESOURCE_POLICY_DEFAULTS = {
@@ -60,6 +61,26 @@ def _plain_string(value: object, label: str, *, nullable: bool = False) -> Optio
     if not isinstance(value, str) or not value.strip() or "\n" in value or "\x00" in value:
         raise ExecutionAdapterError(f"{label} must be a nonempty single-line string")
     return value.strip()
+
+
+def _normalized_package_root(value: object) -> Optional[str]:
+    """Resolve an accessible repository root to its importable ``src`` tree."""
+
+    checked = _plain_string(
+        value, "environment.package_root", nullable=True
+    )
+    if checked is None:
+        return None
+    candidate = Path(checked).expanduser()
+    if (candidate / "salsbury_md_analysis").is_dir():
+        return str(candidate.resolve())
+    source_tree = candidate / "src"
+    if (source_tree / "salsbury_md_analysis").is_dir():
+        return str(source_tree.resolve())
+    # Profiles are sometimes prepared on a host that cannot mount the target
+    # cluster path.  Preserve such paths; the generated worker preflight still
+    # verifies the import source before computation begins.
+    return checked
 
 
 def load_slurm_profile(path: Path) -> Dict[str, object]:
@@ -140,6 +161,30 @@ def load_slurm_profile(path: Path) -> Dict[str, object]:
         checked_partition_limits[str(partition_name)] = float(value)
     normalized["partition_maximum_wall_minutes"] = checked_partition_limits
 
+    partition_node_limits = profile.get("partition_maximum_nodes", {})
+    if not isinstance(partition_node_limits, dict):
+        raise ExecutionAdapterError("partition_maximum_nodes must be an object")
+    unknown_node_limit_partitions = sorted(
+        set(partition_node_limits).difference(configured_partitions)
+    )
+    if unknown_node_limit_partitions:
+        raise ExecutionAdapterError(
+            "partition_maximum_nodes contains unconfigured partitions: "
+            + ", ".join(unknown_node_limit_partitions)
+        )
+    checked_partition_node_limits: Dict[str, int] = {}
+    for partition_name, value in partition_node_limits.items():
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value <= 0
+        ):
+            raise ExecutionAdapterError(
+                "partition_maximum_nodes values must be positive integers"
+            )
+        checked_partition_node_limits[str(partition_name)] = int(value)
+    normalized["partition_maximum_nodes"] = checked_partition_node_limits
+
     environment = profile.get("environment", {})
     allowed_environment = {
         "python_executable", "package_root", "setup_commands", "variables", "umask"
@@ -172,9 +217,8 @@ def load_slurm_profile(path: Path) -> Dict[str, object]:
             environment.get("python_executable"),
             "environment.python_executable", nullable=True,
         ),
-        "package_root": _plain_string(
-            environment.get("package_root"),
-            "environment.package_root", nullable=True,
+        "package_root": _normalized_package_root(
+            environment.get("package_root")
         ),
         "setup_commands": checked_commands,
         "variables": checked_variables,
@@ -839,6 +883,33 @@ def _replace_sbatch(text: str, name: str, value: str) -> str:
     return text[: first_newline + 1] + replacement + "\n" + text[first_newline + 1 :]
 
 
+def _inject_package_source_validation(text: str) -> str:
+    """Make generated workers fail before importing an unintended installation."""
+
+    marker = 'export PYTHONPATH="$PACKAGE_ROOT${PYTHONPATH:+:$PYTHONPATH}"\n'
+    if marker not in text or "SALSBURY_PACKAGE_SOURCE_VALIDATED" in text:
+        return text
+    validation = marker + r'''if [[ ! -d "$PACKAGE_ROOT/salsbury_md_analysis" && -d "$PACKAGE_ROOT/src/salsbury_md_analysis" ]]; then
+  PACKAGE_ROOT="$PACKAGE_ROOT/src"
+  export PYTHONPATH="$PACKAGE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+fi
+if [[ ! -d "$PACKAGE_ROOT/salsbury_md_analysis" ]]; then
+  printf 'Configured package root is not an importable source tree: %s\n' "$PACKAGE_ROOT" >&2
+  exit 2
+fi
+SALSBURY_PACKAGE_SOURCE_ACTUAL=$("$PYTHON" -c 'import pathlib, salsbury_md_analysis; print(pathlib.Path(salsbury_md_analysis.__file__).resolve())')
+case "$SALSBURY_PACKAGE_SOURCE_ACTUAL" in
+  "$PACKAGE_ROOT"/salsbury_md_analysis/*) ;;
+  *)
+    printf 'Imported salsbury_md_analysis from %s instead of %s\n' "$SALSBURY_PACKAGE_SOURCE_ACTUAL" "$PACKAGE_ROOT" >&2
+    exit 2
+    ;;
+esac
+export SALSBURY_PACKAGE_SOURCE_VALIDATED=1
+'''
+    return text.replace(marker, validation, 1)
+
+
 def _script_resource_requests(plan: Mapping[str, object]) -> Dict[str, Dict[str, object]]:
     requests: Dict[str, Dict[str, object]] = {}
     for phase in plan.get("phases", []):
@@ -848,6 +919,7 @@ def _script_resource_requests(plan: Mapping[str, object]) -> Dict[str, Dict[str,
                 "requested_wall_minutes": 0.0,
                 "requested_memory_gib": 0.0,
                 "cpu_slots": 1,
+                "node_count": 1,
                 "planner_task_ids": [],
                 "aggregation": "maximum across concurrently schedulable array elements",
             })
@@ -862,6 +934,9 @@ def _script_resource_requests(plan: Mapping[str, object]) -> Dict[str, Dict[str,
             row["cpu_slots"] = max(
                 int(row["cpu_slots"]), int(task["cpu_slots"])
             )
+            row["node_count"] = max(
+                int(row["node_count"]), int(task.get("node_count", 1))
+            )
             row["planner_task_ids"].extend(task.get("planner_task_ids", []))
     for row in requests.values():
         row["planner_task_ids"] = sorted(set(row["planner_task_ids"]))
@@ -874,10 +949,19 @@ def _partition_for_request(
     requested_memory_gib: float,
     partitions: Mapping[str, object],
     partition_limits: Mapping[str, object],
+    partition_node_limits: Mapping[str, object],
     resource_policy: Mapping[str, object],
+    *,
+    requested_nodes: int = 1,
 ) -> Dict[str, object]:
     """Select a scheduler role for one task or resource-compatible task tier."""
 
+    if (
+        isinstance(requested_nodes, bool)
+        or not isinstance(requested_nodes, int)
+        or requested_nodes <= 0
+    ):
+        raise ExecutionAdapterError("requested_nodes must be a positive integer")
     role = _script_role(script)
     if (
         requested_memory_gib
@@ -889,14 +973,26 @@ def _partition_for_request(
     partition_limit = (
         None if partition is None else partition_limits.get(str(partition))
     )
+    partition_node_limit = (
+        None if partition is None else partition_node_limits.get(str(partition))
+    )
     long_wall_routed = False
-    if partition_limit is not None and requested_wall_minutes > float(partition_limit):
+    multi_node_routed = False
+    wall_exceeds = (
+        partition_limit is not None
+        and requested_wall_minutes > float(partition_limit)
+    )
+    nodes_exceed = (
+        partition_node_limit is not None
+        and requested_nodes > int(partition_node_limit)
+    )
+    if wall_exceeds or nodes_exceed:
         long_wall_partition = partitions.get("long_wall")
         if not long_wall_partition:
             raise ExecutionAdapterError(
-                f"{script} requests {requested_wall_minutes:g} minutes, "
-                f"exceeding partition {partition!r} limit "
-                f"{float(partition_limit):g}, but partitions.long_wall is unset"
+                f"{script} requests {requested_wall_minutes:g} minutes and "
+                f"{requested_nodes} node(s), exceeding partition {partition!r} "
+                "limits, but partitions.long_wall is unset"
             )
         long_wall_limit = partition_limits.get(str(long_wall_partition))
         if (
@@ -908,15 +1004,33 @@ def _partition_for_request(
                 f"exceeding long-wall partition {long_wall_partition!r} limit "
                 f"{float(long_wall_limit):g}"
             )
+        long_wall_node_limit = partition_node_limits.get(
+            str(long_wall_partition)
+        )
+        if (
+            long_wall_node_limit is not None
+            and requested_nodes > int(long_wall_node_limit)
+        ):
+            raise ExecutionAdapterError(
+                f"{script} requests {requested_nodes} nodes, exceeding "
+                f"partition {long_wall_partition!r} limit "
+                f"{int(long_wall_node_limit)}"
+            )
         role = "long_wall"
         partition = long_wall_partition
-        long_wall_routed = True
+        long_wall_routed = wall_exceeds
+        multi_node_routed = nodes_exceed
     return {
         "selected_partition_role": role,
         "selected_partition": partition,
         "long_wall_routed": long_wall_routed,
+        "multi_node_routed": multi_node_routed,
         "selected_partition_maximum_wall_minutes": (
             None if partition is None else partition_limits.get(str(partition))
+        ),
+        "selected_partition_maximum_nodes": (
+            None if partition is None
+            else partition_node_limits.get(str(partition))
         ),
     }
 
@@ -943,6 +1057,7 @@ def _submission_resource_tiers(
     plan: Mapping[str, object],
     partitions: Mapping[str, object],
     partition_limits: Mapping[str, object],
+    partition_node_limits: Mapping[str, object],
     resource_policy: Mapping[str, object],
 ) -> Dict[str, List[Dict[str, object]]]:
     """Group each array's elements by their effective scheduler request."""
@@ -969,7 +1084,9 @@ def _submission_resource_tiers(
                 memory_gib,
                 partitions,
                 partition_limits,
+                partition_node_limits,
                 resource_policy,
+                requested_nodes=int(task.get("node_count", 1)),
             )
             key = (
                 int(math.ceil(memory_gib)),
@@ -998,7 +1115,11 @@ def _submission_resource_tiers(
                 requested_memory_gib,
                 partitions,
                 partition_limits,
+                partition_node_limits,
                 resource_policy,
+                requested_nodes=max(
+                    int(task.get("node_count", 1)) for task in tier_tasks
+                ),
             )
             tiers.append({
                 "tier_id": tier_index,
@@ -1194,18 +1315,18 @@ def _slurm_resource_epochs(
     execution_plan: Mapping[str, object],
     partitions: Mapping[str, object],
     partition_limits: Mapping[str, object],
+    partition_node_limits: Mapping[str, object],
     resource_policy: Mapping[str, object],
     node_policy: Mapping[str, object],
 ) -> List[Dict[str, object]]:
-    """Pack each dependency level into reusable serial resource lanes.
+    """Add resource-token edges to a dependency-safe task order.
 
-    The local runner and campaign planner treat every execution-plan phase as a
-    dependency level: tasks within a level may run concurrently, and the next
-    level starts after the preceding level has finished.  Slurm must replay the
-    same contract.  Packing all phases into permanent lanes makes the largest
-    task reserve its lane's memory for the rest of the campaign and can create
-    a false critical path even though that memory is free after the task exits.
-    Resource epochs release every lane reservation at the phase boundary.
+    Scientific prerequisites remain ``afterok`` edges.  CPU and padded-memory
+    tokens add only ``afterany`` edges, so a failed or slow task releases its
+    capacity without becoming an accidental scientific gate.  Tokens are kept
+    both globally and on conceptual physical nodes.  This prevents aggregate
+    overcommit and node-memory fragmentation without imposing a whole-wave or
+    fixed-lane barrier on unrelated work.
     """
 
     maximum_cpus = int(execution_plan.get("maximum_parallel_cpus", 0))
@@ -1232,12 +1353,10 @@ def _slurm_resource_epochs(
             if node_cpus is not None and node_memory is not None else None
         )
     )
-    resource_epochs: List[Dict[str, object]] = []
+    items: List[Dict[str, object]] = []
     submission_index = 0
-    lane_index = 0
     for phase_index, phase in enumerate(execution_plan.get("phases", [])):
         phase_id = str(phase["phase_id"])
-        items: List[Dict[str, object]] = []
         for task_index, task in enumerate(phase.get("tasks", [])):
             script = str(task["script"])
             array_task_id = task.get("array_task_id")
@@ -1249,15 +1368,17 @@ def _slurm_resource_epochs(
                 requested_memory_gib,
                 partitions,
                 partition_limits,
+                partition_node_limits,
                 resource_policy,
+                requested_nodes=int(task.get("node_count", 1)),
             )
             item_id = str(task.get("task_id") or (
                 f"{phase_id}:{script}:"
                 f"{'single' if array_task_id is None else array_task_id}"
             ))
-            items.append({
+            item = {
                 "item_id": item_id,
-                "task_id": task.get("task_id"),
+                "task_id": str(task.get("task_id") or item_id),
                 "depends_on_task_ids": list(task.get("depends_on_task_ids", [])),
                 "wait_for_task_ids": list(task.get("wait_for_task_ids", [])),
                 "source_phase_id": task.get("source_phase_id"),
@@ -1285,54 +1406,278 @@ def _slurm_resource_epochs(
                 "slurm_time": _format_slurm_time(requested_wall_minutes),
                 "slurm_memory": f"{int(math.ceil(requested_memory_gib))}G",
                 "planner_task_ids": list(task.get("planner_task_ids", [])),
+                "phase_index": phase_index,
+                "phase_id": phase_id,
+                "submission_index": submission_index,
                 **route,
-            })
-        for item in items:
-            item["phase_index"] = phase_index
-            item["phase_id"] = phase_id
-            item["submission_index"] = submission_index
+            }
+            items.append(item)
             submission_index += 1
-        try:
-            lanes = pack_resource_lanes(
-                items,
-                maximum_parallel_cpus=maximum_cpus,
-                maximum_parallel_memory_gib=maximum_memory,
-                maximum_cpus_per_node=(
-                    None if node_cpus is None else int(node_cpus)
-                ),
-                maximum_memory_gib_per_node=(
-                    None if node_memory is None else float(node_memory)
-                ),
-                maximum_nodes=maximum_nodes,
+    if (node_cpus is None) != (node_memory is None):
+        raise ExecutionAdapterError(
+            "resource-token scheduling requires both node CPU and memory limits"
+        )
+    memory_quantum_gib = 0.25
+    memory_token_count = int(
+        math.floor(maximum_memory / memory_quantum_gib + 1.0e-9)
+    )
+    if memory_token_count <= 0:
+        raise ExecutionAdapterError(
+            "aggregate memory is below the resource-token quantum"
+        )
+    cpu_tokens = [
+        {"available": 0.0, "owner": None} for _ in range(maximum_cpus)
+    ]
+    memory_tokens = [
+        {"available": 0.0, "owner": None}
+        for _ in range(memory_token_count)
+    ]
+    if node_cpus is not None and node_memory is not None:
+        if maximum_nodes is None:
+            raise ExecutionAdapterError(
+                "resource-token scheduling could not determine a node count"
             )
-        except ResourcePlanningError as exc:
-            raise ExecutionAdapterError(str(exc)) from exc
-        for local_lane_index, lane in enumerate(lanes):
-            lane["lane_index"] = lane_index
-            lane["epoch_lane_index"] = local_lane_index
-            lane["resource_epoch_index"] = phase_index
-            lane["planned_wall_hours"] = sum(
-                float(item.get("planned_wall_hours", 0.0))
-                for item in lane.get("items", [])
+        per_node_memory_tokens = int(math.floor(
+            float(node_memory) / memory_quantum_gib + 1.0e-9
+        ))
+        node_tokens = [{
+            "cpu": [
+                {"available": 0.0, "owner": None}
+                for _ in range(int(node_cpus))
+            ],
+            "memory": [
+                {"available": 0.0, "owner": None}
+                for _ in range(per_node_memory_tokens)
+            ],
+        } for _ in range(maximum_nodes)]
+    else:
+        node_tokens = []
+
+    def selected_token_indices(
+        tokens: Sequence[Mapping[str, object]], count: int,
+    ) -> List[int]:
+        return sorted(
+            range(len(tokens)),
+            key=lambda index: (float(tokens[index]["available"]), index),
+        )[:count]
+
+    planned_finishes: Dict[str, float] = {}
+    for item in items:
+        scheduling_id = str(item["item_id"])
+        cpu_count = int(item["cpu_slots"])
+        memory_count = int(math.ceil(
+            float(item["memory_gib"]) / memory_quantum_gib - 1.0e-12
+        ))
+        if cpu_count > len(cpu_tokens) or memory_count > len(memory_tokens):
+            raise ExecutionAdapterError(
+                f"task {item['item_id']} exceeds the aggregate resource envelope"
             )
-            lane["phase_ids"] = [phase_id]
-            lane_index += 1
-        resource_epochs.append({
-            "resource_epoch_index": phase_index,
-            "phase_id": phase_id,
-            "lanes": lanes,
-            "cpu_slots": sum(int(lane["cpu_slots"]) for lane in lanes),
-            "memory_gib": sum(float(lane["memory_gib"]) for lane in lanes),
-            "planned_wall_hours": max(
-                (float(lane["planned_wall_hours"]) for lane in lanes),
-                default=0.0,
+        cpu_indices = selected_token_indices(cpu_tokens, cpu_count)
+        memory_indices = selected_token_indices(memory_tokens, memory_count)
+        declared_dependencies = list(dict.fromkeys([
+            *map(str, item.get("depends_on_task_ids", [])),
+            *map(str, item.get("wait_for_task_ids", [])),
+        ]))
+        missing = [
+            task_id for task_id in declared_dependencies
+            if task_id not in planned_finishes
+        ]
+        if missing:
+            raise ExecutionAdapterError(
+                f"task {item['item_id']} appears before dependencies: "
+                + ", ".join(missing)
+            )
+        selected_node_tokens: List[tuple[int, List[int], List[int]]] = []
+        if node_tokens:
+            task_nodes = int(item.get("node_count", 1))
+            if task_nodes > len(node_tokens):
+                raise ExecutionAdapterError(
+                    f"task {item['item_id']} requests {task_nodes} nodes, exceeding "
+                    f"the campaign limit {len(node_tokens)}"
+                )
+            per_node_cpus = []
+            remaining_cpus = cpu_count
+            workers_per_node = int(item.get("workers_per_node", cpu_count))
+            for _node_offset in range(task_nodes):
+                fragment_cpus = min(workers_per_node, remaining_cpus)
+                remaining_cpus -= fragment_cpus
+                per_node_cpus.append(fragment_cpus)
+            if remaining_cpus or any(value <= 0 for value in per_node_cpus):
+                raise ExecutionAdapterError(
+                    f"task {item['item_id']} has an invalid distributed CPU layout"
+                )
+            memory_per_node = float(item["requested_memory_gib"])
+            memory_per_node_count = int(math.ceil(
+                memory_per_node / memory_quantum_gib - 1.0e-12
+            ))
+            candidate_nodes = []
+            for node_index, node in enumerate(node_tokens):
+                node_cpu_indices = selected_token_indices(
+                    node["cpu"], max(per_node_cpus)
+                )
+                node_memory_indices = selected_token_indices(
+                    node["memory"], memory_per_node_count
+                )
+                if (
+                    len(node_cpu_indices) < max(per_node_cpus)
+                    or len(node_memory_indices) < memory_per_node_count
+                ):
+                    continue
+                ready = max(
+                    [float(node["cpu"][index]["available"])
+                     for index in node_cpu_indices]
+                    + [float(node["memory"][index]["available"])
+                       for index in node_memory_indices]
+                    + [0.0]
+                )
+                candidate_nodes.append((ready, node_index))
+            if len(candidate_nodes) < task_nodes:
+                raise ExecutionAdapterError(
+                    f"task {item['item_id']} cannot fit on the configured nodes"
+                )
+            assigned_node_indices = [
+                node_index for _ready, node_index in sorted(candidate_nodes)[:task_nodes]
+            ]
+            for fragment_cpus, node_index in zip(
+                per_node_cpus, assigned_node_indices
+            ):
+                node = node_tokens[node_index]
+                selected_node_tokens.append((
+                    node_index,
+                    selected_token_indices(node["cpu"], fragment_cpus),
+                    selected_token_indices(
+                        node["memory"], memory_per_node_count
+                    ),
+                ))
+            item["planned_node_indices"] = assigned_node_indices
+
+        global_cpu_owners = {
+            str(owner)
+            for index in cpu_indices for owner in [cpu_tokens[index]["owner"]]
+            if owner is not None
+        }
+        global_memory_owners = {
+            str(owner)
+            for index in memory_indices
+            for owner in [memory_tokens[index]["owner"]]
+            if owner is not None
+        }
+        node_owners = {
+            str(owner)
+            for node_index, node_cpu_indices, node_memory_indices
+            in selected_node_tokens
+            for tokens, indices in (
+                (node_tokens[node_index]["cpu"], node_cpu_indices),
+                (node_tokens[node_index]["memory"], node_memory_indices),
+            )
+            for index in indices
+            for owner in [tokens[index]["owner"]]
+            if owner is not None
+        }
+        resource_predecessors = sorted(
+            (global_cpu_owners | global_memory_owners | node_owners)
+            .difference(declared_dependencies)
+        )
+        start = max(
+            [planned_finishes[value] for value in declared_dependencies]
+            + [float(cpu_tokens[index]["available"]) for index in cpu_indices]
+            + [float(memory_tokens[index]["available"]) for index in memory_indices]
+            + [
+                float(tokens[index]["available"])
+                for node_index, node_cpu_indices, node_memory_indices
+                in selected_node_tokens
+                for tokens, indices in (
+                    (node_tokens[node_index]["cpu"], node_cpu_indices),
+                    (node_tokens[node_index]["memory"], node_memory_indices),
+                )
+                for index in indices
+            ]
+            + [0.0]
+        )
+        finish = start + float(item["planned_wall_hours"])
+        item["resource_predecessor_task_ids"] = resource_predecessors
+        item["planned_resource_start_hours"] = start
+        item["planned_resource_finish_hours"] = finish
+        item["memory_token_count"] = memory_count
+        item["memory_token_quantum_gib"] = memory_quantum_gib
+        for index in cpu_indices:
+            cpu_tokens[index] = {"available": finish, "owner": scheduling_id}
+        for index in memory_indices:
+            memory_tokens[index] = {
+                "available": finish, "owner": scheduling_id
+            }
+        for node_index, node_cpu_indices, node_memory_indices in selected_node_tokens:
+            for index in node_cpu_indices:
+                node_tokens[node_index]["cpu"][index] = {
+                    "available": finish, "owner": scheduling_id,
+                }
+            for index in node_memory_indices:
+                node_tokens[node_index]["memory"][index] = {
+                    "available": finish, "owner": scheduling_id,
+                }
+        planned_finishes[scheduling_id] = finish
+
+    requested_finishes: Dict[str, float] = {}
+    for item in items:
+        requested_dependencies = list(dict.fromkeys([
+            *map(str, item.get("depends_on_task_ids", [])),
+            *map(str, item.get("wait_for_task_ids", [])),
+            *map(str, item.get("resource_predecessor_task_ids", [])),
+        ]))
+        requested_start = max(
+            [requested_finishes[value] for value in requested_dependencies]
+            + [0.0]
+        )
+        requested_finish = requested_start + float(item["wall_hours"])
+        item["scheduler_reservation_start_hours"] = requested_start
+        item["scheduler_reservation_finish_hours"] = requested_finish
+        requested_finishes[str(item["item_id"])] = requested_finish
+
+    def peak(field_start: str, field_finish: str, field_value: str) -> float:
+        events = []
+        for item in items:
+            events.extend([
+                (float(item[field_start]), 1, float(item[field_value])),
+                (float(item[field_finish]), -1, float(item[field_value])),
+            ])
+        current = maximum = 0.0
+        # End events precede starts at a shared boundary.
+        for _time, direction, value in sorted(
+            events, key=lambda row: (row[0], row[1])
+        ):
+            current += direction * value
+            maximum = max(maximum, current)
+        return maximum
+
+    planned_wall = max(planned_finishes.values(), default=0.0)
+    reservation_wall = max(requested_finishes.values(), default=0.0)
+    peak_cpus = int(round(peak(
+        "planned_resource_start_hours", "planned_resource_finish_hours",
+        "cpu_slots",
+    )))
+    peak_memory = peak(
+        "planned_resource_start_hours", "planned_resource_finish_hours",
+        "memory_gib",
+    )
+    return [{
+        "resource_epoch_index": 0,
+        "phase_id": "task_dag_resource_token_schedule",
+        "lanes": [],
+        "scheduled_items": items,
+        "cpu_slots": peak_cpus,
+        "memory_gib": peak_memory,
+        "planned_wall_hours": planned_wall,
+        "wall_hours": reservation_wall,
+        "resource_token_policy": {
+            "cpu_token_count": maximum_cpus,
+            "memory_token_count": memory_token_count,
+            "memory_token_quantum_gib": memory_quantum_gib,
+            "contract": (
+                "a task acquires fixed CPU and memory token chains; afterany "
+                "predecessors release those tokens regardless of success"
             ),
-            "wall_hours": max(
-                (float(lane["wall_hours"]) for lane in lanes),
-                default=0.0,
-            ),
-        })
-    return resource_epochs
+        },
+    }]
 
 
 def _slurm_submission_preview(
@@ -1349,16 +1694,26 @@ def _slurm_submission_preview(
         for epoch in resource_epochs
         for lane in epoch.get("lanes", [])
     ]
-    task_count = sum(
-        len(lane.get("items", [])) for lane in resource_lanes
-    )
+    scheduled_items = [
+        item
+        for epoch in resource_epochs
+        for item in epoch.get("scheduled_items", [])
+    ]
+    preview_items = scheduled_items or [
+        item for lane in resource_lanes for item in lane.get("items", [])
+    ]
+    task_count = len(preview_items)
     scientific_dependency_edge_count = sum(
         len(item.get("depends_on_task_ids", []))
-        for lane in resource_lanes for item in lane.get("items", [])
+        for item in preview_items
     )
     completion_wait_edge_count = sum(
         len(item.get("wait_for_task_ids", []))
-        for lane in resource_lanes for item in lane.get("items", [])
+        for item in preview_items
+    )
+    resource_token_edge_count = sum(
+        len(item.get("resource_predecessor_task_ids", []))
+        for item in preview_items
     )
     peak_cpus = max(
         (int(epoch.get("cpu_slots", 0)) for epoch in resource_epochs),
@@ -1380,61 +1735,41 @@ def _slurm_submission_preview(
     node_cpus = node_policy.get("cpus_per_node")
     node_memory = node_policy.get("memory_gib_per_node")
     node_reservations = []
-    planned_node_count = 0
-    for epoch in resource_epochs:
-        lanes = list(epoch.get("lanes", []))
-        epoch_node_indices = {
-            int(node_index)
-            for lane in lanes
-            for node_index in lane.get("planned_node_indices", [])
-        }
-        planned_node_count = max(planned_node_count, len(epoch_node_indices))
-        for node_index in sorted(epoch_node_indices):
-            fragments = [
-                fragment
-                for lane in lanes
-                for fragment in lane.get(
-                    "planned_node_fragment_reservations", []
-                )
-                if int(fragment["planned_node_index"]) == node_index
-            ]
-            node_lanes = [
-                lane for lane in lanes
-                if node_index in lane.get("planned_node_indices", [])
-            ]
-            node_reservations.append({
-                "resource_epoch_index": int(
-                    epoch["resource_epoch_index"]
-                ),
-                "phase_id": str(epoch["phase_id"]),
-                "planned_node_index": node_index,
-                "resource_lane_indices": [
-                    int(lane["lane_index"]) for lane in node_lanes
-                ],
-                "reserved_cpus": sum(
-                    int(fragment["cpu_slots"]) for fragment in fragments
-                ),
-                "reserved_memory_gib": sum(
-                    float(fragment["memory_gib"]) for fragment in fragments
-                ),
-            })
+    planned_node_count = len({
+        int(node_index)
+        for item in preview_items
+        for node_index in item.get("planned_node_indices", [])
+    })
     if node_cpus is not None and node_memory is not None:
-        for reservation in node_reservations:
+        for item in preview_items:
+            per_node_cpus = int(item.get(
+                "workers_per_node", item["cpu_slots"]
+            ))
+            per_node_memory = float(item["requested_memory_gib"])
             if (
-                int(reservation["reserved_cpus"]) > int(node_cpus)
-                or float(reservation["reserved_memory_gib"])
-                > float(node_memory) + 1.0e-9
+                per_node_cpus > int(node_cpus)
+                or per_node_memory > float(node_memory) + 1.0e-9
             ):
                 raise ExecutionAdapterError(
-                    "planned padded lane reservations exceed one node"
+                    "planned padded task reservation exceeds one node"
                 )
+            node_reservations.append({
+                "task_id": item.get("task_id"),
+                "planned_node_indices": list(
+                    item.get("planned_node_indices", [])
+                ),
+                "node_count": int(item.get("node_count", 1)),
+                "reserved_cpus_per_node": per_node_cpus,
+                "reserved_memory_gib_per_node": per_node_memory,
+            })
     if peak_cpus < maximum_cpus:
         warnings.append({
             "severity": "warning",
             "code": "REQUESTED_CPUS_EXCEED_GENERATED_PARALLELISM",
             "message": (
                 f"The campaign allows {maximum_cpus} simultaneous CPUs, but its "
-                f"generated dependency and memory lanes can use at most {peak_cpus}; "
+                "generated dependency and resource-token schedule can use at "
+                f"most {peak_cpus}; "
                 f"the remaining {maximum_cpus - peak_cpus} CPUs cannot shorten "
                 "this prepared schedule."
             ),
@@ -1547,7 +1882,7 @@ def _slurm_submission_preview(
             "resource_epoch_index": int(epoch["resource_epoch_index"]),
             "phase_id": str(epoch["phase_id"]),
             "resource_lane_count": len(epoch.get("lanes", [])),
-            "task_count": sum(
+            "task_count": len(epoch.get("scheduled_items", [])) or sum(
                 len(lane.get("items", []))
                 for lane in epoch.get("lanes", [])
             ),
@@ -1572,9 +1907,9 @@ def _slurm_submission_preview(
         "dependency_model": execution_plan.get("dependency_model", "legacy_phase_chain"),
         "scientific_dependency_edge_count": scientific_dependency_edge_count,
         "completion_wait_edge_count": completion_wait_edge_count,
+        "resource_token_edge_count": resource_token_edge_count,
         "dependency_wave_count": len({
-            int(item.get("phase_index", 0))
-            for lane in resource_lanes for item in lane.get("items", [])
+            int(item.get("phase_index", 0)) for item in preview_items
         }),
         "resource_wave_count": len(resource_epochs),
         "resource_epoch_count": len(resource_epochs),
@@ -1606,13 +1941,13 @@ def _slurm_submission_preview(
         "resource_epochs": epoch_summaries,
         "resource_lanes": lane_summaries,
         "resource_contract": (
-            "Each dependency level is a resource epoch. Within an epoch, each "
-            "resource lane runs at most one task at a time; the next epoch waits "
-            "for all lanes in the preceding epoch, releasing their CPU and "
-            "memory reservations. Only depends_on_task_ids create success-required "
-            "inputs; epoch barriers and wait_for_task_ids use failure-tolerant "
-            "completion ordering. CPU slots and safety-adjusted lane-memory "
-            "reservations stay within the aggregate and per-node caps in every epoch."
+            "The complete task DAG is guarded by global and per-node CPU and "
+            "padded-memory tokens. "
+            "A task waits only for its own success-required inputs, explicit "
+            "completion-only inputs, and prior users of its resource tokens; "
+            "there is no whole-depth barrier. Resource-token predecessors use "
+            "afterany, so a failed task releases capacity without authorizing a "
+            "scientifically dependent task."
             if execution_plan.get("dependency_model") == "task_dag_v1" else
             "Each later dependency wave waits for successful completion of every "
             "job in the preceding wave. CPU slots and safety-adjusted memory summed "
@@ -1680,8 +2015,17 @@ def _render_resource_bounded_submit(
         for epoch in resource_epochs
         for lane in epoch.get("lanes", [])
     ]
-    ordered_items = sorted(
+    scheduled_rows = [
         (
+            int(epoch.get("resource_epoch_index", 0)),
+            -1,
+            item,
+        )
+        for epoch in resource_epochs
+        for item in epoch.get("scheduled_items", [])
+    ]
+    ordered_items = sorted(
+        scheduled_rows or [
             (
                 int(lane.get("resource_epoch_index", 0)),
                 int(lane.get("lane_index", lane_index)),
@@ -1689,19 +2033,25 @@ def _render_resource_bounded_submit(
             )
             for lane_index, lane in enumerate(resource_lanes)
             for item in lane.get("items", [])
-        ),
+        ],
         key=lambda row: int(row[2].get("submission_index", 0)),
     )
-    terminal_variables_by_epoch: Dict[int, List[str]] = {}
-    terminal_index_by_lane: Dict[int, int] = {}
-    for item_index, (epoch_index, lane_index, _item) in enumerate(ordered_items):
-        terminal_index_by_lane[lane_index] = item_index
-        terminal_variables_by_epoch.setdefault(epoch_index, [])
-    for lane_index, item_index in terminal_index_by_lane.items():
-        epoch_index = ordered_items[item_index][0]
-        terminal_variables_by_epoch[epoch_index].append(
-            f"JOB_T{item_index:04d}"
+    referenced_task_ids = {
+        str(task_id)
+        for _epoch_index, _lane_index, item in ordered_items
+        for key in (
+            "depends_on_task_ids", "wait_for_task_ids",
+            "resource_predecessor_task_ids",
         )
+        for task_id in item.get(key, [])
+    }
+    terminal_variables = [
+        f"JOB_T{item_index:04d}"
+        for item_index, (_epoch_index, _lane_index, item)
+        in enumerate(ordered_items)
+        if str(item.get("task_id") or item.get("item_id"))
+        not in referenced_task_ids
+    ]
     for item_index, (epoch_index, lane_index, item) in enumerate(ordered_items):
         if item_index == 0 or (
             item_index > 0
@@ -1712,10 +2062,18 @@ def _render_resource_bounded_submit(
                 f"# resource epoch {epoch_index + 1}: "
                 f"dependency phase {item.get('phase_id')}"
             )
-        lines.append(
-            f"# resource lane {lane_index + 1}: "
-            f"{int(item['cpu_slots'])} CPUs, {float(item['memory_gib']):g} GiB"
-        )
+        if lane_index >= 0:
+            lines.append(
+                f"# resource lane {lane_index + 1}: "
+                f"{int(item['cpu_slots'])} CPUs, "
+                f"{float(item['memory_gib']):g} GiB"
+            )
+        else:
+            lines.append(
+                "# resource tokens: "
+                f"{int(item['cpu_slots'])} CPUs, "
+                f"{float(item['memory_gib']):g} GiB aggregate"
+            )
         variable = f"JOB_T{item_index:04d}"
         options = [
             "--parsable",
@@ -1762,16 +2120,29 @@ def _render_resource_bounded_submit(
                     f"completion wait {waited_task_id}"
                 )
             completion_job_variables.append(waited)
+        resource_job_variables = []
+        for predecessor_task_id in item.get(
+            "resource_predecessor_task_ids", []
+        ):
+            predecessor = task_jobs.get(str(predecessor_task_id))
+            if predecessor is None:
+                raise ExecutionAdapterError(
+                    f"task {item.get('task_id')} is scheduled before its "
+                    f"resource predecessor {predecessor_task_id}"
+                )
+            resource_job_variables.append(predecessor)
         clauses = []
-        lane_predecessor = previous_lane_jobs.get(lane_index)
+        lane_predecessor = (
+            previous_lane_jobs.get(lane_index) if lane_index >= 0 else None
+        )
         previous_epoch_variables = (
-            terminal_variables_by_epoch.get(epoch_index - 1, [])
-            if lane_predecessor is None else []
+            [] if scheduled_rows else []
         )
         afterany_variables = list(dict.fromkeys([
             *([lane_predecessor] if lane_predecessor else []),
             *previous_epoch_variables,
             *completion_job_variables,
+            *resource_job_variables,
         ]))
         if afterany_variables:
             clauses.append(
@@ -1795,14 +2166,14 @@ def _render_resource_bounded_submit(
             f'"$ROOT"/{script})',
             f'{variable}="${{{variable}%%;*}}"',
         ])
-        previous_lane_jobs[lane_index] = variable
+        if lane_index >= 0:
+            previous_lane_jobs[lane_index] = variable
         submitted_jobs.append(variable)
         if item.get("task_id"):
             task_jobs[str(item["task_id"])] = variable
         lines.append("")
     if submitted_jobs:
-        final_epoch = max(terminal_variables_by_epoch, default=0)
-        final_variables = terminal_variables_by_epoch.get(final_epoch, [])
+        final_variables = terminal_variables or [submitted_jobs[-1]]
         lines.extend([
             'printf "Submitted %s jobs; final job IDs: %s\\n" '
             f'"{len(submitted_jobs)}" "'
@@ -1840,16 +2211,20 @@ def apply_slurm_profile(
     script_requests = _script_resource_requests(execution_plan)
     partition_limits = profile["partition_maximum_wall_minutes"]
     assert isinstance(partition_limits, Mapping)
+    partition_node_limits = profile["partition_maximum_nodes"]
+    assert isinstance(partition_node_limits, Mapping)
     submission_tiers = _submission_resource_tiers(
         execution_plan,
         partitions,
         partition_limits,
+        partition_node_limits,
         resource_policy,
     )
     resource_epochs = _slurm_resource_epochs(
         execution_plan,
         partitions,
         partition_limits,
+        partition_node_limits,
         resource_policy,
         node_policy,
     )
@@ -1876,7 +2251,9 @@ def apply_slurm_profile(
             float(request["requested_memory_gib"]),
             partitions,
             partition_limits,
+            partition_node_limits,
             resource_policy,
+            requested_nodes=int(request.get("node_count", 1)),
         )
         partition = route["selected_partition"]
         directives = []
@@ -1914,6 +2291,7 @@ def apply_slurm_profile(
                 f"PACKAGE_ROOT_DEFAULT={shlex.quote(str(package_root))}",
                 text, flags=re.MULTILINE,
             )
+        text = _inject_package_source_validation(text)
         path.write_text(text, encoding="utf-8")
         request.update(route)
         request["slurm_time"] = _format_slurm_time(
@@ -1940,6 +2318,7 @@ def apply_slurm_profile(
                 f"PACKAGE_ROOT_DEFAULT={shlex.quote(str(package_root))}",
                 text, flags=re.MULTILINE,
             )
+        text = _inject_package_source_validation(text)
         path.write_text(text, encoding="utf-8")
     canonical_submit = root / "submit.sh"
     if canonical_submit.is_file():
@@ -1955,7 +2334,7 @@ def apply_slurm_profile(
         )
         os.chmod(canonical_submit, 0o755)
     return {
-        "scheduler_resource_requests_schema": "salsbury-scheduler-resource-requests-v6",
+        "scheduler_resource_requests_schema": "salsbury-scheduler-resource-requests-v7",
         "dependency_model": execution_plan.get(
             "dependency_model", "legacy_phase_chain"
         ),
@@ -1964,6 +2343,7 @@ def apply_slurm_profile(
         "resource_policy": dict(resource_policy),
         "node_policy": dict(node_policy),
         "partition_maximum_wall_minutes": dict(partition_limits),
+        "partition_maximum_nodes": dict(partition_node_limits),
         "tasks": _task_resource_requests(execution_plan),
         "scripts": script_requests,
         "submission_resource_tiers": submission_tiers,
@@ -1981,17 +2361,27 @@ def apply_slurm_profile(
             for epoch in resource_epochs
             for lane in epoch.get("lanes", [])
         ],
+        "resource_token_schedules": [
+            {
+                "resource_epoch_index": epoch.get("resource_epoch_index"),
+                "policy": dict(epoch.get("resource_token_policy", {})),
+                "scheduled_items": list(epoch.get("scheduled_items", [])),
+            }
+            for epoch in resource_epochs
+            if epoch.get("scheduled_items")
+        ],
         "submission_preview": submission_preview,
         "submission_preview_file": "slurm-submission-preview.json",
         "canonical_submit_script": (
             "submit.sh" if canonical_submit.is_file() else None
         ),
         "aggregate_resource_contract": (
-            "each dependency level is a resource epoch; lanes serialize tasks "
-            "within an epoch, every later epoch waits afterany for completion of "
-            "the preceding epoch, and afterok is reserved for success-required "
-            "inputs; CPU and safety-adjusted memory reservations are released at "
-            "each epoch boundary and remain within campaign and per-node limits"
+            "the complete task DAG is guarded by global and per-node CPU and "
+            "padded-memory tokens; tasks "
+            "wait only for true prerequisites, explicit completion-only inputs, "
+            "and prior users of the resource tokens they acquire, so unrelated "
+            "long tasks do not form whole-depth barriers; resource-only edges use "
+            "afterany while scientific inputs remain afterok"
             if execution_plan.get("dependency_model") == "task_dag_v1" else
             "tasks in one wave may run concurrently; every later wave waits "
             "afterany for every job in the preceding wave, and each wave stays "
@@ -2212,12 +2602,16 @@ def _apply_task_dependency_graph(
     preflight_task = by_script.get("run_preflight.slurm")
     final_task = by_script.get("run_finalize_reporting.slurm")
     module_tasks: Dict[tuple[str, str], List[str]] = {}
+    module_tasks_by_module: Dict[str, List[str]] = {}
     for task in tasks:
         module_id = task.get("module_id")
         if isinstance(module_id, str):
             module_tasks.setdefault(
                 (str(task["scope_id"]), module_id), []
             ).append(str(task["task_id"]))
+            module_tasks_by_module.setdefault(module_id, []).append(
+                str(task["task_id"])
+            )
 
     view_preflights: Dict[str, str] = {}
     for task in tasks:
@@ -2249,7 +2643,12 @@ def _apply_task_dependency_graph(
             ):
                 dependencies.add(str(cache_task["task_id"]))
         elif task.get("module_id") == "rmsf_permutation_inference":
-            dependencies.update(module_tasks.get(("base", "pooled_rmsf"), []))
+            # Reporting jobs do not have a project filename, while the pooled
+            # RMSF producer is scoped to project.json.  Matching the literal
+            # ``base`` scope therefore released inference at dependency level
+            # zero.  The report consumes the campaign-level pooled RMSF file,
+            # so every generated pooled RMSF producer is a true prerequisite.
+            dependencies.update(module_tasks_by_module.get("pooled_rmsf", []))
         elif task.get("module_id") == "integrated_comparison":
             completion_waits.update(
                 str(candidate["task_id"])
