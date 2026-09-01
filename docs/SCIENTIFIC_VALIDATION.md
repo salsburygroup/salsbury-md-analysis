@@ -186,11 +186,12 @@ water kinetics, or a mechanistic conclusion.
 
 ## Required negative and cautionary findings
 
-The validation deliberately preserves nonpassing scientific gates. At least
-one declared convergence/population-validity criterion did not pass on the
-selected long-range frames. Recurring omega outliers were independently
-confirmed as input or scientific findings rather than hidden as an
-implementation error. Clustering and MSM estimators agreed with their scoped
+The validation preserves the quantitative convergence diagnostics, including
+series above and below the configured ESS reference and split-mean differences
+on the selected long-range frames. The software does not turn those values into
+a convergence or population-validity verdict. Recurring omega outliers were
+independently confirmed as input or scientific findings rather than hidden as
+an implementation error. Clustering and MSM estimators agreed with their scoped
 references, but their states and kinetics remain sampling-, feature-, lag-,
 and parameter-sensitive.
 

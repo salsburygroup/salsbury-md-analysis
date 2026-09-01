@@ -83,6 +83,26 @@ structures. Its separate `state_trajectory_exports_enabled` view option is on
 by default for non-trace conformational views and off for the trace view. It may
 be turned off without disabling representative structures.
 
+The generated convergence definition uses quantitative references rather than
+scientific gates:
+
+```json
+{
+  "convergence_uncertainty": {
+    "effective_sample_size_reference": 20.0,
+    "split_mean_difference_reference_in_sd": 1.0
+  }
+}
+```
+
+The report gives every RMSD and radius-of-gyration ESS, its relation to the ESS
+reference, the split-mean statistic, and per-system and per-metric counts. These
+values are not combined into a software-assigned convergence or
+population-validity verdict. Older project manifests using
+`minimum_effective_sample_size` and
+`maximum_split_mean_difference_in_sd` remain readable as input aliases, but
+newly generated manifests use the reference names.
+
 The planner models coordinate writing from the configured maximum output frames
 and representative count. Measurements from the retired repeated-read exporter
 are not applied to every PCA projection; state-assignment sampling still

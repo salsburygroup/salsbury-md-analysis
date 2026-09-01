@@ -70,10 +70,11 @@ QC ledger separate prevents it from overwhelming the shorter findings report.
 ## QC channel
 
 Structural-integrity and convergence results are kept out of the scientific
-ranking. Their statuses and report links appear in `quality_control_records`.
-Warnings and errors reported by other modules also enter this channel. This
-keeps an urgent QC problem visible without presenting it as a biological
-finding.
+ranking. Convergence records show the ESS reference, the number of RMSD and Rg
+series above that reference, and links to every quantitative diagnostic. They
+do not label the campaign converged or unconverged. Warnings and errors reported
+by other modules also enter this channel. This keeps an urgent QC problem
+visible without presenting it as a biological finding.
 
 ## Configuration
 

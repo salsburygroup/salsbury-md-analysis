@@ -126,7 +126,7 @@
     "automatic_hbond_reference_population_sensitivity_monotonic": true
   },
   "unresolved_scientific_findings": [
-    "At least one declared convergence or population-validity gate did not pass on the selected long-range frames.",
+    "The selected long-range frames produced quantitative convergence diagnostics both above and below their configured references; the software does not assign a convergence or population-validity verdict.",
     "Recurring omega outliers were confirmed independently and require review of the source system and simulation lineage.",
     "SASA remains resolution-sensitive; the project runner refuses fewer than 240 points and warns below the 960-point cross-validation setting.",
     "MSM and clustering results remain parameter- and sampling-sensitive and are not validated as metastable states or kinetics.",

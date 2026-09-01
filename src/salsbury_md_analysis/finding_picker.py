@@ -1899,14 +1899,50 @@ def _quality_control_records(
             "report_path": str(path),
         })
     if module_id == "convergence_uncertainty":
-        status = str(report.get("population_validity_status", "not reported"))
-        records.append({
-            "module_id": module_id,
-            "severity": "information" if status == "passed" else "warning",
-            "status": status,
-            "statement": f"Population-validity status is {status}.",
-            "report_path": str(path),
-        })
+        summary = report.get("diagnostic_summary")
+        if isinstance(summary, dict):
+            reference = summary.get("effective_sample_size_reference")
+            above = summary.get("effective_sample_size_above_reference_count", 0)
+            total = summary.get("series_count", 0)
+            metric_parts = []
+            by_metric = summary.get("by_metric")
+            if isinstance(by_metric, dict):
+                for metric, metric_summary in sorted(by_metric.items()):
+                    if not isinstance(metric_summary, dict):
+                        continue
+                    metric_parts.append(
+                        f"{metric}: "
+                        f"{metric_summary.get('effective_sample_size_above_reference_count', 0)}/"
+                        f"{metric_summary.get('series_count', 0)} above reference"
+                    )
+            metric_text = "; ".join(metric_parts)
+            statement = (
+                f"ESS reference {reference:g}: {above}/{total} RMSD/Rg series are above "
+                f"the reference"
+                if isinstance(reference, (int, float))
+                else f"ESS diagnostics are available for {total} RMSD/Rg series"
+            )
+            if metric_text:
+                statement += f" ({metric_text})"
+            statement += ". No convergence or population-validity conclusion was assigned."
+            records.append({
+                "module_id": module_id,
+                "severity": "information",
+                "status": "quantitative_diagnostics",
+                "statement": statement,
+                "report_path": str(path),
+            })
+        else:
+            records.append({
+                "module_id": module_id,
+                "severity": "warning",
+                "status": "legacy_convergence_report",
+                "statement": (
+                    "This legacy convergence report lacks the quantitative diagnostic summary; "
+                    "regenerate it with the current code before interpretation."
+                ),
+                "report_path": str(path),
+            })
     issues = report.get("issues")
     if isinstance(issues, list):
         for issue in issues:

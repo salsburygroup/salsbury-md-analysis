@@ -3,7 +3,9 @@ import math
 
 from salsbury_md_analysis.convergence import (
     ConvergenceAnalysisError,
+    _diagnostic_summary,
     _exact_observation_accounting,
+    _settings,
     _series_diagnostic,
     autocorrelation_adjusted_mean_uncertainty,
     autocorrelation_sequence,
@@ -17,8 +19,8 @@ class ConvergenceTests(unittest.TestCase):
             "block_size_frames": 1000,
             "minimum_blocks": 4,
             "include_partial_final_block": True,
-            "minimum_effective_sample_size": 20.0,
-            "maximum_split_mean_difference_in_sd": 1.0,
+            "effective_sample_size_reference": 20.0,
+            "split_mean_difference_reference_in_sd": 1.0,
         }
         with self.assertRaisesRegex(
             ConvergenceAnalysisError,
@@ -31,17 +33,63 @@ class ConvergenceTests(unittest.TestCase):
             "block_size_frames": 50,
             "minimum_blocks": 4,
             "include_partial_final_block": True,
-            "minimum_effective_sample_size": 20.0,
-            "maximum_split_mean_difference_in_sd": 1.0,
+            "effective_sample_size_reference": 20.0,
+            "split_mean_difference_reference_in_sd": 1.0,
         }
         report = _series_diagnostic(
             [float(value % 7) for value in range(500)], settings
         )
         self.assertEqual(len(report["block_means"]), 10)
-        self.assertTrue(report["passes_minimum_blocks"])
+        self.assertTrue(report["block_contract_satisfied"])
         self.assertEqual(
             report["block_contract"]["minimum_required_observations"], 151
         )
+        self.assertNotIn("passes_minimum_effective_sample_size", report)
+        self.assertNotIn("passes_all_declared_series_gates", report)
+        self.assertIsNone(report["scientific_conclusion"])
+
+    def test_diagnostic_summary_reports_reference_counts_without_verdict(self):
+        settings = {
+            "effective_sample_size_reference": 20.0,
+            "split_mean_difference_reference_in_sd": 1.0,
+        }
+        diagnostics = [
+            {
+                "system_id": "a",
+                "metric": "rmsd_angstrom",
+                "effective_sample_size": {"effective_sample_size": 21.0},
+                "effective_sample_size_reference_relation": "above_reference",
+                "split_mean_difference_reference_relation": "below_reference",
+            },
+            {
+                "system_id": "a",
+                "metric": "radius_of_gyration_angstrom",
+                "effective_sample_size": {"effective_sample_size": 19.0},
+                "effective_sample_size_reference_relation": "below_reference",
+                "split_mean_difference_reference_relation": "above_reference",
+            },
+        ]
+        summary = _diagnostic_summary(diagnostics, settings)
+        self.assertEqual(summary["effective_sample_size_above_reference_count"], 1)
+        self.assertEqual(summary["effective_sample_size_below_reference_count"], 1)
+        self.assertEqual(summary["effective_sample_size_median"], 20.0)
+        self.assertNotIn("passed", summary)
+        self.assertIn("human scientific review", summary["interpretation_policy"])
+
+    def test_legacy_threshold_names_are_input_aliases_only(self):
+        project = {"definitions": {"convergence_uncertainty": {
+            "source_module": "replica_rmsd_rg",
+            "metrics": ["rmsd_angstrom"],
+            "block_size_frames": 10,
+            "include_partial_final_block": True,
+            "minimum_blocks": 4,
+            "minimum_effective_sample_size": 20.0,
+            "maximum_split_mean_difference_in_sd": 1.0,
+        }}}
+        settings = _settings(project)
+        self.assertEqual(settings["effective_sample_size_reference"], 20.0)
+        self.assertEqual(settings["split_mean_difference_reference_in_sd"], 1.0)
+        self.assertNotIn("minimum_effective_sample_size", settings)
 
     def test_exact_frame_and_metric_value_accounting_are_distinct(self):
         upstream = {"systems": [{"replicas": [{"segments": [{
