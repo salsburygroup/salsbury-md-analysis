@@ -894,6 +894,9 @@ _ALTERNATIVE_CLUSTERING_CALIBRATION_ID = (
     "apollo-alternative-clustering-performance-v1-2026-08-31"
 )
 _ALTERNATIVE_CLUSTERING_ACCEPTANCE_SHA256 = (
+    "22d26e4a3044fbdf193261dda6769966988f988abf5d02af9c9d700a1a6cfc9b"
+)
+_ALTERNATIVE_CLUSTERING_SUPERSEDED_FAILED_ACCEPTANCE_SHA256 = (
     "b021b0520f1292da2bf61138cfcb3d5f0d2eaf5a9ce824d40fea1827bdef7d7f"
 )
 _ALTERNATIVE_CLUSTERING_TASK_MATRIX_SHA256 = (
@@ -957,11 +960,16 @@ def alternative_clustering_performance_model(
         "calibration_acceptance_sha256": (
             _ALTERNATIVE_CLUSTERING_ACCEPTANCE_SHA256
         ),
+        "calibration_superseded_failed_acceptance_sha256": (
+            _ALTERNATIVE_CLUSTERING_SUPERSEDED_FAILED_ACCEPTANCE_SHA256
+        ),
         "calibration_task_matrix_sha256": (
             _ALTERNATIVE_CLUSTERING_TASK_MATRIX_SHA256
         ),
         "calibration_measurement_count": 120,
-        "calibration_status": "completed_performance_only_matrix_v1",
+        "calibration_status": (
+            "completed_performance_only_matrix_recovery_v1"
+        ),
         "calibration_observations": observations,
         "calibration_cpu_seconds": float(profile["calibration_cpu_seconds"]),
         "time_exponent": float(profile["time_exponent"]),
@@ -1079,7 +1087,7 @@ def plan_alternative_clustering_fit_strides(
             "complexity_class": profile["complexity_class"],
             "time_exponent": exponent,
             "calibration_status": (
-                "completed_performance_only_matrix_v1"
+                "completed_performance_only_matrix_recovery_v1"
                 if "calibration_observations" in profile else
                 "provisional_complexity_profile_v1"
             ),
