@@ -31,6 +31,16 @@ from .coordinates import CoordinateReadError, iter_coordinate_frames
 from .execution_adapters import (
     ExecutionAdapterError, _active_python_executable, prepare_execution_artifacts,
 )
+from .experimental_extension import (
+    ExperimentalExtensionError,
+    apply_main_report_reuse,
+    bind_system_manifest,
+    filter_base_commands,
+    inspect_main_campaign,
+    materialize_report_links,
+    remove_reused_modules,
+    write_extension_contract,
+)
 from .energetic_network_embeddings import probe_energetic_parameter_source
 from .manifests import (
     load_json, resolve_manifest_path, validate_project, validate_system,
@@ -457,10 +467,28 @@ def prepare_comparative_analysis(
     protected_core_only: bool = False,
     uniform_cache_stride: bool = False,
     with_experimental_modules: bool = False,
+    experimental_after_main: Optional[Path] = None,
 ) -> Dict[str, object]:
     """Prepare one shared-basis, common-grid workflow for two or more systems."""
 
     project_id = _safe_id(project_id, "project_id")
+    if experimental_after_main is not None and with_experimental_modules:
+        raise QuickstartError(
+            "--experimental-after-main cannot be combined with "
+            "--with-experimental-modules"
+        )
+    if experimental_after_main is not None and protected_core_only:
+        raise QuickstartError(
+            "--experimental-after-main cannot be combined with "
+            "--protected-core-only"
+        )
+    try:
+        extension_contract = (
+            inspect_main_campaign(experimental_after_main)
+            if experimental_after_main is not None else None
+        )
+    except ExperimentalExtensionError as exc:
+        raise QuickstartError(str(exc)) from exc
     temperature = _positive_finite(temperature_kelvin, "temperature_kelvin")
     target_hours = (
         _positive_finite(target_wall_hours, "target_wall_hours")
@@ -843,7 +871,13 @@ def prepare_comparative_analysis(
     root = _require_new_directory(output_directory)
     system = {"systems": system_rows}
     system_path = root / "system.json"
-    _json_write(system_path, system)
+    try:
+        if extension_contract is not None:
+            bind_system_manifest(system_path, system, extension_contract)
+        else:
+            _json_write(system_path, system)
+    except ExperimentalExtensionError as exc:
+        raise QuickstartError(str(exc)) from exc
     validate_system(system, source_path=system_path, check_paths=True)
     registry_ids = [module.module_id for module in list_modules()]
     view_ids_for_config = {
@@ -867,13 +901,21 @@ def prepare_comparative_analysis(
                 "uniform_cache_stride" if uniform_cache_stride else None
             ),
             enable_all_experimental_modules_override=(
-                with_experimental_modules
+                with_experimental_modules or extension_contract is not None
             ),
         )
     except (AnalysisConfigError, OSError) as exc:
         raise QuickstartError(str(exc)) from exc
     execution_config = analysis_config["execution"]
     assert isinstance(execution_config, dict)
+    if (
+        extension_contract is not None
+        and execution_config.get("coordinate_cache_input") is None
+        and extension_contract.get("coordinate_cache_input") is not None
+    ):
+        execution_config["coordinate_cache_input"] = str(
+            extension_contract["coordinate_cache_input"]
+        )
     coordinate_cache_input = execution_config.get("coordinate_cache_input")
     if coordinate_cache_input is not None:
         try:
@@ -1099,7 +1141,18 @@ def prepare_comparative_analysis(
             system_filename = f"system-{system_id}.json"
             single_system = {"systems": [deepcopy(system_rows[index])]}
             single_system_path = root / system_filename
-            _json_write(single_system_path, single_system)
+            try:
+                if extension_contract is not None:
+                    bind_system_manifest(
+                        single_system_path,
+                        single_system,
+                        extension_contract,
+                        upstream_relative_path=system_filename,
+                    )
+                else:
+                    _json_write(single_system_path, single_system)
+            except ExperimentalExtensionError as exc:
+                raise QuickstartError(str(exc)) from exc
             validate_system(
                 single_system, source_path=single_system_path, check_paths=True
             )
@@ -1180,6 +1233,20 @@ def prepare_comparative_analysis(
             view_project_files.extend(system_files)
             for view_id in system_ids_for_views:
                 view_frame_counts_by_id[view_id] = list(inputs["frame_counts"])
+    extension_reuse: Dict[str, object] = {
+        "external_modules_by_project": {},
+        "linked_reports": [],
+        "externally_reused_module_ids": [],
+    }
+    if extension_contract is not None:
+        try:
+            extension_reuse = apply_main_report_reuse(
+                root,
+                extension_contract,
+                ["project.json", *view_project_files, *context_project_files],
+            )
+        except ExperimentalExtensionError as exc:
+            raise QuickstartError(str(exc)) from exc
     try:
         campaign_resource_plan = plan_and_apply_complete_campaign(
             root=root,
@@ -1192,6 +1259,10 @@ def prepare_comparative_analysis(
             context_frame_counts_by_id=context_frame_counts_by_id,
             time_safety_factor=float(
                 analysis_config["execution"]["time_safety_factor"]  # type: ignore[index]
+            ),
+            external_task_allocations=(
+                extension_contract["external_task_allocations"]
+                if extension_contract is not None else None
             ),
         )
     except CampaignPlanningError as exc:
@@ -1222,6 +1293,34 @@ def prepare_comparative_analysis(
                 output_directory=root,
             ) from exc
         raise QuickstartError(str(exc)) from exc
+    if extension_contract is not None:
+        try:
+            remove_reused_modules(root, extension_reuse)
+        except ExperimentalExtensionError as exc:
+            raise QuickstartError(str(exc)) from exc
+        commands = filter_base_commands(commands, extension_reuse)
+        refreshed_project = load_json(project_path)
+        refreshed_requested = refreshed_project.get("requested_modules", [])
+        if not isinstance(refreshed_requested, list):
+            raise QuickstartError(
+                "extension base project requested_modules is invalid"
+            )
+        requested = [str(value) for value in refreshed_requested]
+        for row in context_projects:
+            filename = row.get("project_filename")
+            if not isinstance(filename, str):
+                continue
+            refreshed_context = load_json(root / filename)
+            context_requested = refreshed_context.get("requested_modules", [])
+            if not isinstance(context_requested, list):
+                raise QuickstartError(
+                    f"extension context project is invalid: {filename}"
+                )
+            row["commands"] = [
+                _AUTOMATIC_CONTEXT_COMMANDS[str(module_id)]
+                for module_id in context_requested
+                if str(module_id) in _AUTOMATIC_CONTEXT_COMMANDS
+            ]
     planner_exclusions = dict(exclusions)
     for module_id, reasons in context_not_applicable.items():
         planner_exclusions.setdefault(
@@ -1240,6 +1339,18 @@ def prepare_comparative_analysis(
     campaign_resource_plan["experimental_module_coverage"] = (
         experimental_planner_coverage
     )
+    if extension_contract is not None:
+        campaign_resource_plan["upstream_main_reuse"] = {
+            "upstream_main_campaign": extension_contract[
+                "upstream_main_campaign"
+            ],
+            "reusable_report_count": extension_contract[
+                "reusable_report_count"
+            ],
+            "externally_reused_module_ids": extension_reuse[
+                "externally_reused_module_ids"
+            ],
+        }
     _json_write(root / "sampling-plan.json", sampling_plan)
     _json_write(root / "campaign-resource-plan.json", campaign_resource_plan)
     effective_parallel_cpu_cap = _effective_parallel_cpu_cap(
@@ -1276,7 +1387,8 @@ def prepare_comparative_analysis(
         len(frame_counts),
     )
     deferred = _deferred_modules(exclusions, disabled)
-    automatic_ids = set(requested) | {
+    external_ids = set(extension_reuse["externally_reused_module_ids"])
+    automatic_ids = set(requested) | external_ids | {
         module_id
         for filename in view_project_files
         if filename.startswith("project-") and filename.endswith(".json")
@@ -1316,7 +1428,12 @@ def prepare_comparative_analysis(
         "comparison_policy": analysis_config["comparisons"],
         "module_status": {
             module_id: (
-                {"status": "automatic", "reason": "included in the generated workflow"}
+                {
+                    "status": "reused_from_main",
+                    "reason": "hash-validated immutable upstream main report",
+                }
+                if module_id in external_ids
+                else {"status": "automatic", "reason": "included in the generated workflow"}
                 if module_id in automatic_ids
                 else {"status": "deferred", "reason": deferred[module_id]}
             )
@@ -1327,6 +1444,24 @@ def prepare_comparative_analysis(
     _json_write(root / "module-coverage.json", coverage)
     (root / "logs").mkdir()
     (root / "results").mkdir()
+    extension_generated_files: list[str] = []
+    if extension_contract is not None:
+        try:
+            extension_generated_files.extend(
+                materialize_report_links(
+                    root, extension_contract, extension_reuse
+                )
+            )
+            extension_generated_files.append(
+                write_extension_contract(
+                    root,
+                    extension_contract,
+                    extension_reuse,
+                    integrated_comparison_recomputed=True,
+                )
+            )
+        except ExperimentalExtensionError as exc:
+            raise QuickstartError(str(exc)) from exc
     context_slurm_files, context_stage_counts = _automatic_context_slurm_files(
         root,
         project_id,
@@ -1392,6 +1527,15 @@ def prepare_comparative_analysis(
             else "local dependency-aware executor"
         )
     )
+    extension_note = ""
+    if extension_contract is not None:
+        extension_note = (
+            "\nThis workflow extends the immutable main campaign at "
+            f"`{extension_contract['upstream_main_campaign']}`. Completed main "
+            "reports are linked read-only. The generated plan contains only "
+            "missing experimental work and rebuilt combined comparison and "
+            "finding reports.\n"
+        )
     readme = f"""# {project_id}: generated comparative Salsbury MD analysis
 
 This workflow references {len(system_ids)} systems and {len(frame_counts)} replicas in
@@ -1402,6 +1546,7 @@ Strictly equivalent oligomer members are aligned separately and retain member
 provenance; they are not mislabeled as independent replicas.
 Every conformational view reads the all-frame made-whole molecular-payload cache;
 base water-dependent analyses retain the original solvated trajectories.
+{extension_note}
 
 Review `planning-report.md` first. It lists every analysis family, its effective raw
 stride over the original trajectory, and every explicitly disabled, deferred, or
@@ -1452,6 +1597,7 @@ remain visible in `module-coverage.json`.
             *context_generated_files, *context_slurm_files,
             *([energetic_availability_file] if energetic_availability_file else []),
             *coordinate_cache_files, *view_slurm_files,
+            *extension_generated_files,
             "analysis-config.json", *slurm_files,
             *execution_artifacts["generated_files"], *planning_report_files,
             "README.md",
@@ -1475,6 +1621,7 @@ def prepare_comparative_analysis_resource_fit(
     protected_core_only: bool = False,
     uniform_cache_stride: bool = False,
     with_experimental_modules: bool = False,
+    experimental_after_main: Optional[Path] = None,
 ) -> Dict[str, object]:
     """Prepare an opt-in dependency-closed comparison resource reduction."""
 
@@ -1495,6 +1642,7 @@ def prepare_comparative_analysis_resource_fit(
         "protected_core_only": protected_core_only,
         "uniform_cache_stride": uniform_cache_stride,
         "with_experimental_modules": with_experimental_modules,
+        "experimental_after_main": experimental_after_main,
     }
     with tempfile.TemporaryDirectory(
         prefix="salsbury-comparison-resource-fit-planning-"
@@ -1620,6 +1768,7 @@ def prepare_comparative_analysis_memory_fit(
     protected_core_only: bool = False,
     uniform_cache_stride: bool = False,
     with_experimental_modules: bool = False,
+    experimental_after_main: Optional[Path] = None,
 ) -> Dict[str, object]:
     """Prepare a comparison with an explicit, opt-in memory-fit reduction."""
 
@@ -1640,6 +1789,7 @@ def prepare_comparative_analysis_memory_fit(
         "protected_core_only": protected_core_only,
         "uniform_cache_stride": uniform_cache_stride,
         "with_experimental_modules": with_experimental_modules,
+        "experimental_after_main": experimental_after_main,
     }
     with tempfile.TemporaryDirectory(
         prefix="salsbury-comparison-memory-fit-planning-"

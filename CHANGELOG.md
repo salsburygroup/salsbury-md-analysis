@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add an effective `--experimental-after-main` continuation mode for single-
+  and multi-system campaigns. It verifies immutable main reports and their
+  provenance, preserves their exact planner allocations, reuses a validated
+  coordinate cache when available, schedules only new experimental work, and
+  rebuilds combined comparisons and prioritized findings without changing the
+  upstream campaign.
+
 - Rebase the default-off experimental method suite onto the current core,
   including dependency-aware configuration, exhaustive scientific sampling
   policies, resource-planner and scheduler accounting, integrated comparison,

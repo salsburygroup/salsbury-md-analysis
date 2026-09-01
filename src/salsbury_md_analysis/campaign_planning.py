@@ -2425,6 +2425,9 @@ def plan_and_apply_complete_campaign(
     context_project_files: Sequence[str] = (),
     context_frame_counts_by_id: Mapping[str, Sequence[int]] | None = None,
     time_safety_factor: float = 1.5,
+    external_task_allocations: Mapping[
+        str, Mapping[str, object]
+    ] | None = None,
 ) -> Dict[str, object]:
     """Plan and apply one hard envelope to every currently generated task."""
 
@@ -2459,6 +2462,10 @@ def plan_and_apply_complete_campaign(
     execution = analysis_config.get("execution")
     if not isinstance(execution, dict):
         raise CampaignPlanningError("analysis execution configuration is unavailable")
+    external_allocations = (
+        dict(external_task_allocations)
+        if external_task_allocations is not None else {}
+    )
     configured_modules = analysis_config.get("modules")
     if not isinstance(configured_modules, Mapping):
         raise CampaignPlanningError("analysis module configuration is unavailable")
@@ -2775,6 +2782,62 @@ def plan_and_apply_complete_campaign(
         except MemoryPolicyError as exc:
             raise CampaignPlanningError(str(exc)) from exc
         built = [annotate_task_parallelism(task) for task in built]
+        for task in built:
+            task_id = str(task["task_id"])
+            allocation = external_allocations.get(task_id)
+            if not isinstance(allocation, Mapping):
+                continue
+            selected = allocation.get("selected_physical_frames_per_replica")
+            if (
+                not isinstance(selected, list)
+                or len(selected) != len(task["source_frames_per_replica"])
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or value <= 0
+                    for value in selected
+                )
+            ):
+                raise CampaignPlanningError(
+                    f"external task allocation is invalid for {task_id}"
+                )
+            current_minimum = min(
+                int(task["minimum_frames_per_replica"]),
+                min(int(value) for value in task["source_frames_per_replica"]),
+            )
+            if min(selected) < current_minimum:
+                raise CampaignPlanningError(
+                    f"upstream allocation for {task_id} retains {min(selected)} "
+                    f"frames per replica but the current scientific minimum is "
+                    f"{current_minimum}"
+                )
+            task.update({
+                "externally_satisfied": True,
+                "external_report_relative_path": allocation.get(
+                    "report_relative_path"
+                ),
+                "external_selected_physical_frames_per_replica": list(selected),
+                "external_integer_stride": int(
+                    allocation.get("integer_stride", 1)
+                ),
+                "external_frame_selection": deepcopy(allocation.get(
+                    "frame_selection", {"mode": "fixed_stride_v1"}
+                )),
+                "minimum_frames_per_replica": min(selected),
+                "maximum_frames_per_replica": max(selected),
+                "cpu_seconds_per_physical_frame": 0.0,
+                "fixed_cpu_hours": 1.0e-12,
+                "estimated_peak_memory_gib": 1.0e-6,
+                "effective_cpu_cap": 1,
+                "calibration_status": "immutable_upstream_result_reused",
+                "censored_wall_lower_bound_points": [],
+                "power_law_cost_model": None,
+                "measured_memory_cost_model": None,
+                "parallel_execution_model": None,
+                "parallel_worker_count": None,
+                "estimated_peak_memory_gib_per_parallel_worker": None,
+                "reducer_memory_gib": None,
+            })
         return built, current_base
 
     previous_signature: object = None
@@ -2889,6 +2952,38 @@ def plan_and_apply_complete_campaign(
                 message + _campaign_infeasibility_detail(plan),
                 plan=plan,
             )
+        for task in plan["tasks"]:
+            if not isinstance(task, dict):
+                continue
+            allocation = external_allocations.get(str(task.get("task_id")))
+            if not isinstance(allocation, Mapping):
+                continue
+            selected = [
+                int(value) for value in allocation[
+                    "selected_physical_frames_per_replica"
+                ]
+            ]
+            source = [
+                int(value) for value in task["source_frames_per_replica"]
+            ]
+            task.update({
+                "externally_satisfied": True,
+                "selected_physical_frames_per_replica": selected,
+                "selected_physical_frame_count": sum(selected),
+                "selected_member_observation_count": (
+                    sum(selected) * int(task.get("member_observation_multiplier", 1))
+                ),
+                "coverage_fraction": sum(selected) / sum(source),
+                "subsampling_triggered": selected != source,
+                "frame_selection": deepcopy(allocation.get(
+                    "frame_selection", {"mode": "fixed_stride_v1"}
+                )),
+                "integer_stride": int(allocation.get("integer_stride", 1)),
+                "allocated_maximum_frames_per_replica": max(selected),
+                "external_report_relative_path": allocation.get(
+                    "report_relative_path"
+                ),
+            })
         _apply_campaign_direct_allocations(
             sampling_plan["method_plans"],  # type: ignore[arg-type]
             dimensions,

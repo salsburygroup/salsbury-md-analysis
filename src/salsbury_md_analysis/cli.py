@@ -764,6 +764,7 @@ def _prepare_analysis_command(
     protected_core_only: bool,
     uniform_cache_stride: bool,
     with_experimental_modules: bool,
+    experimental_after_main: Optional[Path],
 ) -> int:
     try:
         if protected_core_only and with_experimental_modules:
@@ -797,6 +798,7 @@ def _prepare_analysis_command(
             protected_core_only=protected_core_only,
             uniform_cache_stride=uniform_cache_stride,
             with_experimental_modules=with_experimental_modules,
+            experimental_after_main=experimental_after_main,
         )
         if plan_only and report.get("technical_status") == "complete":
             plan_path = output_directory.expanduser().resolve(strict=True) / (
@@ -870,6 +872,7 @@ def _prepare_comparison_command(
     protected_core_only: bool,
     uniform_cache_stride: bool,
     with_experimental_modules: bool,
+    experimental_after_main: Optional[Path],
 ) -> int:
     try:
         if protected_core_only and with_experimental_modules:
@@ -894,6 +897,7 @@ def _prepare_comparison_command(
             protected_core_only=protected_core_only,
             uniform_cache_stride=uniform_cache_stride,
             with_experimental_modules=with_experimental_modules,
+            experimental_after_main=experimental_after_main,
         )
         if plan_only and report.get("technical_status") == "complete":
             plan_path = output_directory.expanduser().resolve(strict=True) / (
@@ -1744,6 +1748,16 @@ def build_parser() -> argparse.ArgumentParser:
             "false values in --config still win."
         ),
     )
+    prepare_parser.add_argument(
+        "--experimental-after-main", type=Path,
+        help=(
+            "Experimental branch only: validate and reuse the technically "
+            "complete reports and coordinate cache from this immutable main "
+            "campaign, then plan only applicable experimental work and rebuilt "
+            "combined reporting. Inputs must reproduce the upstream system "
+            "manifest exactly."
+        ),
+    )
 
     comparison_parser = subparsers.add_parser(
         "prepare-comparison",
@@ -1955,6 +1969,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "On the experimental branch, add every applicable experimental "
             "module to the normal comparative workflow."
+        ),
+    )
+    comparison_parser.add_argument(
+        "--experimental-after-main", type=Path,
+        help=(
+            "Experimental branch only: validate and reuse the technically "
+            "complete reports and coordinate cache from this immutable main "
+            "comparison campaign, then plan only applicable experimental work "
+            "and rebuilt combined reporting."
         ),
     )
 
@@ -2267,6 +2290,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.protected_core_only,
             args.uniform_cache_stride,
             args.with_experimental_modules,
+            args.experimental_after_main,
         )
     if args.command == "prepare-comparison":
         return _prepare_comparison_command(
@@ -2284,6 +2308,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.protected_core_only,
             args.uniform_cache_stride,
             args.with_experimental_modules,
+            args.experimental_after_main,
         )
     if args.command == "run-local-workflow":
         try:
