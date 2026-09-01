@@ -125,6 +125,43 @@ class ResourceCalibrationTests(unittest.TestCase):
             resolved["conservative_cpu_seconds_per_frame"],
             2.0 * 28_800.0 / 60_000,
         )
+        self.assertEqual(resolved["maximum_resident_memory_mib"], 300.0)
+        self.assertEqual(
+            resolved["maximum_observed_resident_memory_mib_all_records"],
+            300.0,
+        )
+
+    def test_parallel_timeout_memory_is_not_replayed_as_per_worker_memory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            timeout = root / "parallel-timeout.json"
+            timeout.write_text(json.dumps({
+                "evidence_schema": TIMEOUT_SCHEMA,
+                "technical_status": "timeout",
+                "module_id": "pooled_rmsf",
+                "selected_source_physical_frames": 30_000,
+                "symmetry_expanded_observations": 30_000,
+                "elapsed_seconds": 1_800.0,
+                "allocated_cpu_count": 12,
+                "maximum_resident_memory_mib": 116_000.0,
+            }), encoding="utf-8")
+            catalog = build_resource_calibration_catalog(
+                [], timeout_records=[timeout]
+            )
+            catalog_path = root / "catalog.json"
+            catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+            resolved = load_resource_calibration_catalog(catalog_path)[
+                "pooled_rmsf"
+            ]
+        self.assertEqual(resolved["maximum_resident_memory_mib"], 0.0)
+        self.assertEqual(
+            resolved["maximum_observed_resident_memory_mib_all_records"],
+            116_000.0,
+        )
+        self.assertIn(
+            "not treated as per-worker",
+            resolved["memory_timeout_evidence_policy"],
+        )
 
     def test_completed_and_timeout_rates_are_kept_separate(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -207,6 +244,37 @@ class ResourceCalibrationTests(unittest.TestCase):
         self.assertEqual(extended["complete_execution_count"], 1)
         self.assertEqual(extended["censored_timeout_count"], 1)
         self.assertEqual(extended["base_catalogs"][0]["entry_count"], 1)
+
+    def test_overlapping_base_catalogs_deduplicate_identical_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report = root / "report.json"
+            report.write_text("{}\n", encoding="utf-8")
+            digest = hashlib.sha256(report.read_bytes()).hexdigest()
+            sidecar = root / "report.json.summary.json"
+            sidecar.write_text(json.dumps({
+                "technical_status": "complete", "module_id": "dccm",
+                "report_path": str(report), "report_sha256": digest,
+                "resource_evidence": {
+                    "selected_source_physical_frames": 10,
+                    "symmetry_expanded_observations": 10,
+                    "execution_resources": {
+                        "total_cpu_seconds": 20.0, "wall_seconds": 21.0,
+                        "maximum_resident_memory_mib": 30.0,
+                    },
+                },
+            }), encoding="utf-8")
+            first = build_resource_calibration_catalog([sidecar])
+            first_path = root / "first.json"
+            second_path = root / "second.json"
+            first_path.write_text(json.dumps(first), encoding="utf-8")
+            second = redact_resource_calibration_catalog(first)
+            second_path.write_text(json.dumps(second), encoding="utf-8")
+            merged = build_resource_calibration_catalog(
+                [], base_catalogs=[first_path, second_path]
+            )
+        self.assertEqual(merged["entry_count"], 1)
+        self.assertEqual(merged["duplicate_evidence_entry_count"], 1)
 
     def test_redacted_catalog_retains_planner_values_without_private_locations(self):
         with tempfile.TemporaryDirectory() as temporary:

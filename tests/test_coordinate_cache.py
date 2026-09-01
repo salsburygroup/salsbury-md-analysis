@@ -14,6 +14,7 @@ from salsbury_md_analysis.coordinate_cache import (
     validate_reusable_coordinate_cache,
 )
 from salsbury_md_analysis.cache_routing import (
+    cache_compatibility,
     materialize_cache_backed_base_project,
 )
 from salsbury_md_analysis.coordinates import iter_coordinate_frames
@@ -287,6 +288,95 @@ class CoordinateCacheTests(unittest.TestCase):
             self.assertEqual(
                 qc["periodic_coordinate_policy"], "preprocessed_make_whole"
             )
+
+            alternate_pdb = root / "alternate-system.pdb"
+            alternate_pdb.write_text(
+                "HETATM    1  O   TIP W   2       5.000   0.000   0.000  1.00  0.00           O\n"
+                "HETATM    2  H1  TIP W   2       5.500   0.000   0.000  1.00  0.00           H\n"
+                "ATOM      3  C1  LIG A   1       9.500   0.000   0.000  1.00  0.00           C\n"
+                "ATOM      4  C2  LIG A   1       0.500   0.000   0.000  1.00  0.00           C\n"
+                "HETATM    5 MG   MG  M   3       8.000   0.000   0.000  1.00  0.00          MG\n"
+                "END\n",
+                encoding="utf-8",
+            )
+            alternate_bonds = root / "alternate-system.bonds.json"
+            alternate_bonds.write_text(json.dumps({
+                "format": "salsbury-bonds-v1", "atom_count": 5,
+                "index_base": 0, "bonds": [[0, 1], [2, 3]],
+            }), encoding="utf-8")
+            heterogeneous_system = json.loads(json.dumps(system))
+            heterogeneous_system["systems"].append({
+                "system_id": "alternate",
+                "replicas": [{
+                    "replica_id": "replica-1",
+                    "topology": str(alternate_pdb),
+                    "connectivity": str(alternate_bonds),
+                    "segments": [{
+                        "segment_id": "production",
+                        "trajectory": str(dcd),
+                        "timing": {
+                            "first_frame_time": 0.0,
+                            "frame_interval": 1.0,
+                            "unit": "ps",
+                        },
+                    }],
+                }],
+            })
+            heterogeneous_manifest = root / "heterogeneous-system.json"
+            heterogeneous_manifest.write_text(
+                json.dumps(heterogeneous_system), encoding="utf-8"
+            )
+            heterogeneous_cache = root / "heterogeneous-cache"
+            built_heterogeneous = build_coordinate_cache(
+                heterogeneous_manifest, heterogeneous_cache, maximum_workers=3
+            )
+            self.assertEqual(built_heterogeneous["technical_status"], "complete")
+            heterogeneous_project = root / "heterogeneous-project.json"
+            heterogeneous_project.write_text(json.dumps({
+                "project_id": "heterogeneous-cache-routing",
+                "analysis_profile": "standard_md_v1",
+                "system_manifest": str(heterogeneous_manifest),
+                "analysis_output_root": str(root / "heterogeneous-output"),
+                "sampling_mode": "UNBIASED_MD",
+                "coordinate_unit": "angstrom",
+                "time_unit": "ps",
+                "periodic_coordinate_policy": "unwrap_continuous",
+                "periodic_reconstruction": {
+                    "maximum_bond_length_angstrom": 3.0,
+                    "cycle_closure_tolerance_angstrom": 0.25,
+                    "maximum_anchor_displacement_angstrom": 20.0,
+                },
+                "reference_structure": str(pdb),
+                "reference_connectivity": str(bonds),
+                "selections": {
+                    "alignment": {"preset": "heavy"},
+                    "analysis": {"preset": "heavy"},
+                },
+                "definitions": {"replica_rmsd_rg": {}},
+                "requested_modules": ["replica_rmsd_rg"],
+                "protected_locations": [],
+            }), encoding="utf-8")
+            heterogeneous_routing = materialize_cache_backed_base_project(
+                heterogeneous_project,
+                heterogeneous_cache,
+                root / "heterogeneous-project-cache-base.json",
+            )
+            self.assertFalse(
+                heterogeneous_routing[
+                    "source_index_mappings_identical_across_replicas"
+                ]
+            )
+            self.assertEqual(
+                len(heterogeneous_routing["per_system_cache_projects"]), 2
+            )
+            explicit_project = load_json(heterogeneous_project)
+            explicit_project["definitions"]["replica_rmsd_rg"] = {
+                "atom_indices": [0, 1]
+            }
+            explicit_decision = cache_compatibility(
+                "replica_rmsd_rg", explicit_project
+            )
+            self.assertFalse(explicit_decision["cache_compatible"])
             pdb.write_text(
                 pdb.read_text(encoding="utf-8") + "REMARK source changed\n",
                 encoding="utf-8",
