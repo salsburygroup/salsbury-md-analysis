@@ -108,6 +108,15 @@ conceptual and observed counts, interaction-stratum counts, and geometry-work
 avoidance. This avoids hidden outcome-dependent feature selection without a
 million-entry Python dictionary.
 
+Endpoint matching uses chain, residue number, insertion code, atom name, and
+alternate location, so atom-index shifts do not corrupt comparisons. The
+actual residue name and element are retained separately for every system. An
+unchanged endpoint keeps its chemical residue label; a position occupied by
+different homologous residues is labeled `POSITION_HARMONIZED` and retains a
+per-system residue-name map. Element disagreement at a matched position, or
+residue-name disagreement among replicas of one system, fails closed. These
+rules are system-agnostic and require no package-coded residue substitutions.
+
 The older `sparse_implicit_zero_v1` and `sparse_packed_v2` modes retain explicit
 candidate dictionaries for compatibility. `dense_v1` is legacy-only for small
 publication-locked dictionaries. Direct water contacts are excluded from this
