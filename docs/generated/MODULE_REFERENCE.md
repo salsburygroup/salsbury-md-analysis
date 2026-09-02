@@ -764,7 +764,7 @@ Scientific limits:
 - Category: `md`
 - Status: **experimental**
 
-Automatically enumerate and evaluate every direct donor-hydrogen-acceptor candidate within each system from standard protein/nucleic-acid chemistry templates and explicit connectivity, with auditable provisional fallback for untemplated ligands; derive a separate outcome-independent chemical-position feature map for comparisons while preserving system-specific chemistry.
+Automatically define complete per-system direct donor-hydrogen-acceptor universes from standard protein/nucleic-acid chemistry templates and explicit connectivity, with auditable provisional fallback for untemplated ligands; retain an explicit atom-index mode for publication locks, outcome-independent chemical-position harmonization for homologous systems, and a lazy periodic spatial path that materializes only the pooled observed union while preserving exact implicit zeros and system-specific chemistry.
 
 Required inputs:
 
@@ -776,15 +776,22 @@ Required inputs:
 Declared outputs:
 
 - full per-system candidate dictionaries
-- dense, sparse-list, or packed sparse frame-by-bond observations
+- compact donor-H and acceptor endpoint universes with exact conceptual counts by interaction stratum
+- pooled observed candidate dictionary with interaction-stratum labels
+- dense, sparse-list, packed sparse, or lazy-spatial frame-by-bond observations
 - shared chemical-position comparison features
 - chemically absent, present-unobserved, observed, and unmappable statuses
-- chemistry and mapping provenance
+- observed geometry
+- directly readable primary occupancies
+- exact packed sensitivity occupancies
+- chemistry, mapping, and harmonization provenance
 
 Scientific limits:
 
 - Automatic chemistry cannot repair missing or incorrect protonation, tautomer, formal charge, or ligand bond order.
 - Chemical-position mapping assumes declared chain and residue numbering identify homologous positions; explicit mappings are needed when numbering differs.
+- The lazy spatial path evaluates exact minimum-image geometry only for nearby endpoint pairs; identities absent from its pooled observed dictionary are exact global zeros under every declared cutoff.
+- Cross-system comparison must retain per-system-only chemical endpoints as chemically absent outside their source system rather than dropping them from the full per-system feature spaces.
 - Packed sparse frames use single-precision geometry and preserve exact cutoff membership; they do not imply greater physical precision than the source coordinates.
 - Packed sensitivity occupancies are exact nonzero count tables; absent candidate-cutoff records are evaluated zeros under the report's explicit-zero contract.
 - This direct-bond module excludes water-mediated paths, which have a separate contract.

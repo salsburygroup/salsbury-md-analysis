@@ -267,6 +267,7 @@ def _condition_summary(
         raise HydrogenBondComparisonError("source hydrogen-bond report is not technically complete")
     if report.get("frame_matrix_representation") not in {
         "sparse_implicit_zero_v1", "sparse_packed_v2",
+        "sparse_spatial_observed_union_v3",
     }:
         raise HydrogenBondComparisonError(
             "comparison requires a supported sparse frame matrix with an explicit-zero contract"
