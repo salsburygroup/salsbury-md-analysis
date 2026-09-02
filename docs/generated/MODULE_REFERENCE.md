@@ -764,7 +764,7 @@ Scientific limits:
 - Category: `md`
 - Status: **experimental**
 
-Automatically define complete per-system direct donor-hydrogen-acceptor universes from standard protein/nucleic-acid chemistry templates and explicit connectivity, with auditable provisional fallback for untemplated ligands; retain an explicit atom-index mode for publication locks, outcome-independent chemical-position harmonization for homologous systems, and a lazy periodic spatial path that materializes only the pooled observed union while preserving exact implicit zeros and system-specific chemistry.
+Define complete per-system direct donor-hydrogen-acceptor endpoint universes from standard protein/nucleic-acid chemistry templates and explicit connectivity, with auditable provisional fallback for untemplated ligands; retain an explicit atom-index mode for publication locks, outcome-independent chemical-position harmonization for homologous systems, and a periodic spatial path that materializes only the pooled observed union while preserving exact implicit zeros and system-specific chemistry.
 
 Required inputs:
 
@@ -791,8 +791,8 @@ Scientific limits:
 - Automatic chemistry cannot repair missing or incorrect protonation, tautomer, formal charge, or ligand bond order.
 - Chemical-position mapping assumes declared chain and residue numbering identify homologous positions; explicit mappings are needed when numbering differs.
 - The lazy spatial path evaluates exact minimum-image geometry only for nearby endpoint pairs; identities absent from its pooled observed dictionary are exact global zeros under every declared cutoff.
-- Cross-system comparison must retain per-system-only chemical endpoints as chemically absent outside their source system rather than dropping them from the full per-system feature spaces.
-- Lazy cross-system endpoint matching is atom-index independent, preserves residue names by system, labels chemically substituted homologous positions explicitly, and fails closed on element disagreement or within-system replica inconsistency.
+- Cross-system comparison retains per-system-only chemical endpoints as chemically absent outside their source system instead of dropping them from the per-system feature spaces.
+- Lazy cross-system endpoint matching is atom-index independent, preserves residue names by system, labels chemically substituted homologous positions, and fails closed on element disagreement or within-system replica inconsistency.
 - Packed sparse frames use single-precision geometry and preserve exact cutoff membership; they do not imply greater physical precision than the source coordinates.
 - Packed sensitivity occupancies are exact nonzero count tables; absent candidate-cutoff records are evaluated zeros under the report's explicit-zero contract.
 - This direct-bond module excludes water-mediated paths, which have a separate contract.
