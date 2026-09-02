@@ -115,6 +115,8 @@ def _nearest_distances(
     ion_coordinates: Sequence[Sequence[float]],
     target_coordinates: Sequence[Sequence[float]],
     cell: object,
+    *,
+    maximum_pairs_per_chunk: int = 250_000,
 ) -> tuple[float, ...]:
     """Return exact nearest-target distances for every ion.
 
@@ -126,6 +128,12 @@ def _nearest_distances(
     is not exact for that general case.
     """
 
+    if (
+        isinstance(maximum_pairs_per_chunk, bool)
+        or not isinstance(maximum_pairs_per_chunk, int)
+        or maximum_pairs_per_chunk <= 0
+    ):
+        raise IonAtmosphereError("maximum_pairs_per_chunk must be a positive integer")
     if cell is None:
         raise IonAtmosphereError("ion-atmosphere analysis requires a periodic cell")
     ions = np.asarray(ion_coordinates, dtype=np.float64)
@@ -151,16 +159,36 @@ def _nearest_distances(
             inverse_cell = np.linalg.inv(cell_matrix)
         except np.linalg.LinAlgError as exc:  # pragma: no cover - guarded by cell validation
             raise IonAtmosphereError("periodic cell is singular") from exc
-        displacements = targets[np.newaxis, :, :] - ions[:, np.newaxis, :]
-        fractional = displacements @ inverse_cell
-        fractional -= np.floor(fractional + 0.5)
-        images = fractional @ cell_matrix
-        squared = (
-            images[:, :, 0] * images[:, :, 0]
-            + images[:, :, 1] * images[:, :, 1]
-            + images[:, :, 2] * images[:, :, 2]
+        ion_chunk_size = min(
+            len(ions), max(1, int(math.sqrt(maximum_pairs_per_chunk))),
         )
-        nearest_squared = np.min(squared, axis=1)
+        nearest_squared = np.full(len(ions), np.inf, dtype=np.float64)
+        for ion_start in range(0, len(ions), ion_chunk_size):
+            ion_stop = min(len(ions), ion_start + ion_chunk_size)
+            ion_chunk = ions[ion_start:ion_stop]
+            target_chunk_size = max(
+                1, maximum_pairs_per_chunk // len(ion_chunk),
+            )
+            chunk_nearest = nearest_squared[ion_start:ion_stop]
+            for target_start in range(0, len(targets), target_chunk_size):
+                target_chunk = targets[
+                    target_start:target_start + target_chunk_size
+                ]
+                displacements = (
+                    target_chunk[np.newaxis, :, :]
+                    - ion_chunk[:, np.newaxis, :]
+                )
+                fractional = displacements @ inverse_cell
+                fractional -= np.floor(fractional + 0.5)
+                images = fractional @ cell_matrix
+                squared = (
+                    images[:, :, 0] * images[:, :, 0]
+                    + images[:, :, 1] * images[:, :, 1]
+                    + images[:, :, 2] * images[:, :, 2]
+                )
+                np.minimum(
+                    chunk_nearest, np.min(squared, axis=1), out=chunk_nearest,
+                )
         return tuple(math.sqrt(float(value)) for value in nearest_squared)
 
     return tuple(
