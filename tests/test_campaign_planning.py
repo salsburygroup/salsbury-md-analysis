@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from salsbury_md_analysis.campaign_planning import (
+    _apply_direct_project_sampling,
     _apply_measured_resource_calibrations,
     _automatic_context_tasks,
     _campaign_infeasibility_detail,
@@ -13,6 +14,44 @@ from salsbury_md_analysis.campaign_planning import (
 
 
 class CampaignPlanningTests(unittest.TestCase):
+    def test_direct_hbond_gate_tracks_postallocation_selected_frames(self):
+        project = {
+            "definitions": {
+                "hydrogen_bond_discovery": {
+                    "frame_selection": {"mode": "fixed_stride_v1"},
+                    "maximum_feature_observations": 125_001 * 2_028,
+                }
+            }
+        }
+        sampling_plan = {
+            "dimensions": {
+                "hydrogen_bond_candidate_planning": {
+                    "status": "complete",
+                    "common_candidate_count": 125_001,
+                }
+            },
+            "method_plans": [{
+                "module_id": "hydrogen_bond_discovery",
+                "selected_frame_count": 4_134,
+                "frame_selection": {
+                    "mode": "integer_stride_per_replica_v1",
+                    "stride": 29,
+                },
+            }],
+        }
+
+        _apply_direct_project_sampling(project, sampling_plan)
+
+        definition = project["definitions"]["hydrogen_bond_discovery"]
+        self.assertEqual(
+            definition["maximum_feature_observations"],
+            125_001 * 4_134,
+        )
+        self.assertEqual(
+            definition["frame_selection"],
+            {"mode": "integer_stride_per_replica_v1", "stride": 29},
+        )
+
     def test_small_system_memory_scaling_retains_floor_and_headroom(self):
         tasks = [{
             "task_id": "small:sasa",
