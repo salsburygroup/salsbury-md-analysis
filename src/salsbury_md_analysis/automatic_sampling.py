@@ -20,7 +20,7 @@ from .frame_sampling import (
 )
 from .hydrogen_bond_discovery import (
     HydrogenBondDiscoveryError,
-    automatic_candidate_inventory,
+    _automatic_candidate_identity_intersection,
 )
 from .manifests import load_json, resolve_manifest_path, validate_system
 from .memory_policy import (
@@ -1106,16 +1106,15 @@ def inspect_sampling_dimensions(
 
 def _hydrogen_bond_candidate_dimensions(
     system_manifest: Mapping[str, object], system_path: Path,
-    dimensions: Mapping[str, object] | None = None,
 ) -> Dict[str, object]:
-    """Enumerate the default full per-system candidate universes once.
+    """Enumerate the default automatic common candidate universe once.
 
     This is an outcome-independent topology/connectivity calculation. It does
     not read trajectory coordinates or use hydrogen-bond occupancies.
     """
 
     try:
-        report = automatic_candidate_inventory(
+        common, report = _automatic_candidate_identity_intersection(
             system_manifest,
             Path(system_path).expanduser().resolve(strict=False),
             {
@@ -1137,31 +1136,14 @@ def _hydrogen_bond_candidate_dimensions(
         "chemistry_policy": "automatic_topology_templates_v1",
         "interaction_scope": "all_solute",
         "exclude_same_residue": True,
-        "candidate_harmonization": report["policy"],
-        "common_candidate_count": int(report["common_candidate_count"]),
+        "candidate_harmonization": "intersection_by_atom_identity_v2",
+        "common_candidate_count": len(common),
         "union_candidate_count": int(report["union_candidate_count"]),
-        "total_candidate_count_across_replicas": int(
-            report["total_candidate_count_across_replicas"]
-        ),
-        "maximum_candidate_count_per_replica": int(
-            report["maximum_candidate_count_per_replica"]
-        ),
-        "mean_candidate_count_per_replica": float(
-            report["mean_candidate_count_per_replica"]
+        "excluded_from_common_union_count": int(
+            report["excluded_from_common_union_count"]
         ),
         "replica_dictionaries": report["replica_dictionaries"],
         "selection_basis": report["selection_basis"],
-        "full_coverage_feature_observation_count": (
-            sum(
-                int(candidate["raw_candidate_count"])
-                * int(replica["source_frame_count"])
-                for candidate, replica in zip(
-                    report["replica_dictionaries"],
-                    dimensions.get("replicas", []) if dimensions else [],
-                )
-            ) if dimensions and len(dimensions.get("replicas", []))
-            == len(report["replica_dictionaries"]) else None
-        ),
         "coordinate_data_used": False,
     }
 
@@ -1182,20 +1164,13 @@ def _runtime_workload_multiplier(
         and isinstance(candidate_plan, dict)
         and candidate_plan.get("status") == "complete"
     ):
-        candidate_count = float(candidate_plan.get(
-            "mean_candidate_count_per_replica",
-            candidate_plan.get("common_candidate_count", 0),
-        ))
+        candidate_count = int(candidate_plan["common_candidate_count"])
         candidate_multiplier = max(
             MINIMUM_HYDROGEN_BOND_WORKLOAD_MULTIPLIER,
             candidate_count / REFERENCE_HYDROGEN_BOND_CANDIDATE_COUNT,
         )
         return candidate_multiplier, {
-            "dimension": (
-                "mean full per-replica donor-hydrogen-acceptor candidates"
-                if "mean_candidate_count_per_replica" in candidate_plan else
-                "common automatic donor-hydrogen-acceptor candidates"
-            ),
+            "dimension": "common automatic donor-hydrogen-acceptor candidates",
             "observed_candidate_count": candidate_count,
             "reference_candidate_count": REFERENCE_HYDROGEN_BOND_CANDIDATE_COUNT,
             "minimum_multiplier": MINIMUM_HYDROGEN_BOND_WORKLOAD_MULTIPLIER,
@@ -1642,7 +1617,7 @@ def automatic_sampling_plan(
         raise AutomaticSamplingError("unknown sampling modules: " + ", ".join(unknown))
     if "hydrogen_bond_discovery" in requested:
         dimensions["hydrogen_bond_candidate_planning"] = (
-            _hydrogen_bond_candidate_dimensions(manifest, source, dimensions)
+            _hydrogen_bond_candidate_dimensions(manifest, source)
         )
     measured_calibrations: Dict[str, Dict[str, object]] = {}
     if campaign_execution is not None:

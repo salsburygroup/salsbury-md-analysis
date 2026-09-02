@@ -141,6 +141,9 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
         compiled = CompiledSparseHydrogenBondEvaluator.compile(
             candidates, cutoffs, chunk_size=1
         ).evaluate(coordinates, cell=cell)
+        self.assertEqual(compiled["geometry_engine"], "spatial_cell_list_exact_periodic_v1")
+        self.assertEqual(compiled["evaluated_candidate_count"], 2)
+        self.assertEqual(compiled["explicit_geometry_evaluation_count"], 1)
         self.assertEqual(
             compiled["present_candidate_indices_by_cutoff"],
             scalar["present_candidate_indices_by_cutoff"],
@@ -398,17 +401,27 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
                 "ATOM      2  H   ALA A   1       1.000   0.000   0.000  1.00  0.00           H\n",
                 "ATOM      3  O6   DG B   2       2.800   0.000   0.000  1.00  0.00           O\n",
             ]
+            (root / "variant.pdb").write_text("".join(common + [
+                "END\n",
+            ]).replace(
+                common[2],
+                "ATOM      3  C8   DG B   2       3.200   0.000   0.000  1.00  0.00           C\n"
+                "ATOM      4  O6   DG B   2       2.800   0.000   0.000  1.00  0.00           O\n",
+            ), encoding="ascii")
+            # The shared O6 moves from atom index 2 to 3. Raw-index
+            # intersection would falsely align control N7 with variant O6.
             (root / "control.pdb").write_text("".join(common + [
                 "ATOM      4  N7   DG B   2       3.200   0.000   0.000  1.00  0.00           N\n",
                 "END\n",
             ]), encoding="ascii")
-            (root / "variant.pdb").write_text("".join(common + [
-                "ATOM      4  C8   DG B   2       3.200   0.000   0.000  1.00  0.00           C\n",
-                "END\n",
-            ]), encoding="ascii")
-            trajectory = "4\nframe\nN 0 0 0\nH 1 0 0\nO 2.8 0 0\nC 3.2 0 0\n"
-            (root / "control.xyz").write_text(trajectory, encoding="ascii")
-            (root / "variant.xyz").write_text(trajectory, encoding="ascii")
+            (root / "control.xyz").write_text(
+                "4\nframe\nN 0 0 0\nH 1 0 0\nO 2.8 0 0\nN 3.2 0 0\n",
+                encoding="ascii",
+            )
+            (root / "variant.xyz").write_text(
+                "4\nframe\nN 0 0 0\nH 1 0 0\nC 3.2 0 0\nO 2.8 0 0\n",
+                encoding="ascii",
+            )
             (root / "bonds.json").write_text(json.dumps({
                 "format": "salsbury-bonds-v1", "atom_count": 4,
                 "index_base": 0, "bonds": [[0, 1]],
@@ -465,6 +478,11 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
             project_path.write_text(json.dumps(project), encoding="utf-8")
             report = hydrogen_bond_discovery_project(project_path)
         self.assertEqual(report["candidate_count"], 1)
+        self.assertEqual(
+            report["candidate_harmonization"]["policy"],
+            "intersection_by_atom_identity_v2",
+        )
+        self.assertIn(":O6:", report["candidate_dictionary"][0]["bond_id"])
         self.assertEqual(report["candidate_harmonization"]["union_candidate_count"], 2)
         self.assertEqual(
             report["candidate_harmonization"]["system_candidate_counts"],
@@ -564,7 +582,7 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
             [
                 {key: candidate[key] for key in (
                     "bond_id", "donor_atom_index", "hydrogen_atom_index",
-                    "acceptor_atom_index",
+                    "acceptor_atom_index", "interaction_stratum",
                 )}
                 for candidate in report["candidate_dictionary"]
             ],

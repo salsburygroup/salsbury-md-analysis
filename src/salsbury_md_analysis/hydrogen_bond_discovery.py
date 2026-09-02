@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 from pathlib import Path
-from typing import Dict, List, Mapping, Sequence, Tuple
+from typing import Dict, List, Mapping, Sequence, Tuple, Union
 
 from .atom_mapping import AtomMappingError, AtomRecord, read_topology_atoms
 from .context import compile_project_context_file
@@ -28,8 +26,6 @@ from .hydrogen_bond_sparse import (
     PACKED_EVENT_CODEC,
     pack_sparse_cutoff_counts,
     pack_sparse_present_geometry,
-    unpack_sparse_cutoff_counts,
-    unpack_sparse_present_events,
 )
 from .manifests import ManifestValidationError, load_json, resolve_manifest_path
 from .periodic import (
@@ -50,6 +46,38 @@ from .validation import positive_integer
 
 class HydrogenBondDiscoveryError(ValueError):
     """Raised when candidate discovery lacks explicit chemistry/connectivity."""
+
+
+AtomIdentityKey = Tuple[str, int, str, str, str]
+CandidateIdentityKey = Tuple[AtomIdentityKey, AtomIdentityKey, AtomIdentityKey]
+CandidateIndexKey = Tuple[int, int, int]
+HarmonizedCandidateKey = Union[CandidateIdentityKey, CandidateIndexKey]
+
+
+def _atom_identity_key(atom: AtomRecord) -> AtomIdentityKey:
+    """Return the position-stable identity used across homologous systems."""
+
+    return (
+        atom.chain_id,
+        atom.residue_number,
+        atom.insertion_code,
+        atom.atom_name,
+        atom.altloc,
+    )
+
+
+def _candidate_identity_key(
+    atoms: Sequence[AtomRecord], triple: Tuple[int, int, int]
+) -> CandidateIdentityKey:
+    return tuple(_atom_identity_key(atoms[index]) for index in triple)  # type: ignore[return-value]
+
+
+def _identity_bond_id(key: CandidateIdentityKey) -> str:
+    def label(atom: AtomIdentityKey) -> str:
+        chain, residue, insertion, name, altloc = atom
+        return f"{chain}:{residue}{insertion}:{name}:{altloc}"
+
+    return f"D[{label(key[0])}]-H[{label(key[1])}]-A[{label(key[2])}]"
 
 
 def discover_candidate_bonds(
@@ -199,6 +227,9 @@ def discover_automatic_candidate_bonds(
         "acceptor_identity": atoms[acceptor].as_dict(),
         "donor_chemistry": roles[donor].as_dict(),
         "acceptor_chemistry": roles[acceptor].as_dict(),
+        "interaction_stratum": (
+            f"{roles[donor].entity_class}_to_{roles[acceptor].entity_class}"
+        ),
     } for donor, hydrogen, acceptor in triples]
     return candidates, chemistry_summary(roles)
 
@@ -366,21 +397,22 @@ def _settings(project: Mapping[str, object]) -> Dict[str, object]:
             "interaction_scope": str(scope),
             "cutoff_definitions": _cutoff_definitions(raw["cutoff_policy"]),
         }
-        # Evaluate every topology-defined candidate within each system.  A
-        # separate chemical-position view provides comparable features without
-        # discarding system-specific chemistry or assuming atom-index identity.
+        # Generic multi-system and mixed protein--DNA campaigns commonly have
+        # valid system-specific candidates. Use an outcome-independent common
+        # chemical-position intersection unless a publication lock explicitly
+        # asks for exact dictionary equality. Raw atom indices are not stable
+        # when variants add or remove atoms.
         candidate_harmonization = raw.get(
-            "candidate_harmonization",
-            "per_system_full_with_chemical_identity_comparison_v2",
+            "candidate_harmonization", "intersection_by_atom_identity_v2"
         )
         if candidate_harmonization not in {
             "strict_v1", "intersection_by_atom_index_v1",
-            "per_system_full_with_chemical_identity_comparison_v2",
+            "intersection_by_atom_identity_v2",
         }:
             raise HydrogenBondDiscoveryError(
                 "candidate_harmonization must be strict_v1, "
                 "intersection_by_atom_index_v1, or "
-                "per_system_full_with_chemical_identity_comparison_v2"
+                "intersection_by_atom_identity_v2"
             )
         result["candidate_harmonization"] = candidate_harmonization
     else:
@@ -491,18 +523,20 @@ def _automatic_candidate_intersection(
     }
 
 
-def automatic_candidate_inventory(
+def _automatic_candidate_identity_intersection(
     system: Mapping[str, object], system_path: Path, settings: Mapping[str, object],
-) -> Dict[str, object]:
-    """Inventory full per-replica candidates and shared chemical identities.
+) -> Tuple[set[CandidateIdentityKey], Dict[str, object]]:
+    """Build a common universe using stable chain/residue/atom identities.
 
-    The inventory is topology-only and can therefore be used by the resource
-    planner without observing trajectory coordinates or occupancies.
+    Residue name is deliberately omitted, matching the suite's ``position``
+    common-atom policy, so chemically corresponding atoms in variants such as
+    THY and EdU can be compared. Atom name, chain, residue number, insertion
+    code, and altloc must still match exactly and uniquely.
     """
 
-    rows = []
-    unique_sets: List[set[Tuple[object, ...]]] = []
-    union: set[Tuple[object, ...]] = set()
+    reports = []
+    union: set[CandidateIdentityKey] = set()
+    common: set[CandidateIdentityKey] | None = None
     for raw_system in system["systems"]:  # type: ignore[index]
         system_id = str(raw_system["system_id"])
         for replica in raw_system["replicas"]:
@@ -521,51 +555,65 @@ def automatic_candidate_inventory(
                 interaction_scope=str(settings["interaction_scope"]),
                 exclude_same_residue=bool(settings["exclude_same_residue"]),
             )
-            identities = [
-                _chemical_position_key((
-                    atoms[donor].as_dict(), atoms[hydrogen].as_dict(),
-                    atoms[acceptor].as_dict(),
-                ))
-                for donor, hydrogen, acceptor in triples
-            ]
-            counts: Dict[Tuple[object, ...], int] = {}
-            for identity in identities:
-                counts[identity] = counts.get(identity, 0) + 1
-            unique = {identity for identity, count in counts.items() if count == 1}
-            ambiguous = {identity for identity, count in counts.items() if count != 1}
-            unique_sets.append(unique)
-            union.update(unique)
-            union.update(ambiguous)
-            rows.append({
+            keys = {_candidate_identity_key(atoms, triple) for triple in triples}
+            if len(keys) != len(triples):
+                raise HydrogenBondDiscoveryError(
+                    f"{system_id}/{replica_id} has ambiguous duplicate candidate atom identities"
+                )
+            union.update(keys)
+            if common is None:
+                common = keys
+            else:
+                common.intersection_update(keys)
+            reports.append({
                 "system_id": system_id,
                 "replica_id": replica_id,
-                "raw_candidate_count": len(triples),
-                "unique_chemical_identity_count": len(unique),
-                "ambiguous_chemical_identity_count": len(ambiguous),
+                "raw_candidate_count": len(keys),
             })
-    if not rows:
+            del triples, keys
+    if common is None:
         raise HydrogenBondDiscoveryError("system manifest contains no replicas")
-    common = set.intersection(*unique_sets)
-    return {
-        "policy": "per_system_full_with_chemical_identity_comparison_v2",
+    if not common:
+        raise HydrogenBondDiscoveryError(
+            "automatic candidate dictionaries have no common atom-identity intersection"
+        )
+    for report in reports:
+        report["common_candidate_count"] = len(common)
+        report["excluded_noncommon_candidate_count"] = (
+            int(report["raw_candidate_count"]) - len(common)
+        )
+    return common, {
+        "policy": "intersection_by_atom_identity_v2",
+        "identity_fields": [
+            "chain_id", "residue_number", "insertion_code", "atom_name", "altloc",
+        ],
+        "residue_name_policy": "ignored_for_homologous_position_mapping",
         "common_candidate_count": len(common),
         "union_candidate_count": len(union),
-        "replica_dictionaries": rows,
-        "total_candidate_count_across_replicas": sum(
-            int(row["raw_candidate_count"]) for row in rows
-        ),
-        "maximum_candidate_count_per_replica": max(
-            int(row["raw_candidate_count"]) for row in rows
-        ),
-        "mean_candidate_count_per_replica": (
-            sum(int(row["raw_candidate_count"]) for row in rows) / len(rows)
-        ),
+        "excluded_from_common_union_count": len(union - common),
+        "replica_dictionaries": reports,
         "selection_basis": (
-            "Every topology-defined per-system candidate is retained. Shared "
-            "identities are calculated from donor, hydrogen, and acceptor chemical "
-            "role/topology positions before coordinates are read."
+            "candidate chemical-position triples present in every replica before "
+            "trajectory coordinates or occupancies are evaluated"
         ),
     }
+
+
+def _automatic_candidate_harmonization(
+    system: Mapping[str, object], system_path: Path, settings: Mapping[str, object],
+) -> Tuple[set[HarmonizedCandidateKey], Dict[str, object]]:
+    policy = str(settings["candidate_harmonization"])
+    if policy == "intersection_by_atom_identity_v2":
+        keys, report = _automatic_candidate_identity_intersection(
+            system, system_path, settings
+        )
+        return set(keys), report
+    if policy == "intersection_by_atom_index_v1":
+        keys, report = _automatic_candidate_intersection(system, system_path, settings)
+        return set(keys), report
+    raise HydrogenBondDiscoveryError(
+        "automatic candidate harmonization requires an intersection policy"
+    )
 
 
 def _sparse_atom_dictionary(
@@ -617,11 +665,93 @@ def _automatic_sparse_atom_dictionary(
     return [used[index] for index in sorted(used)]
 
 
+def _identity_harmonized_candidate_dictionaries(
+    atoms: Sequence[AtomRecord],
+    roles: Mapping[int, AtomChemicalRole],
+    triples: Sequence[Tuple[int, int, int]],
+    harmonized_candidate_keys: set[HarmonizedCandidateKey],
+) -> Tuple[
+    List[Dict[str, object]],
+    List[Dict[str, object]],
+    List[Dict[str, object]],
+]:
+    """Map stable cross-system identities to replica-local evaluator indices.
+
+    The local dictionary is used only to address coordinates in this replica.
+    The canonical dictionaries use synthetic stable indices so reducer equality
+    remains meaningful when a variant inserts or removes topology atoms.
+    """
+
+    keys = sorted(harmonized_candidate_keys)
+    if keys and not isinstance(keys[0][0], tuple):
+        raise HydrogenBondDiscoveryError(
+            "atom-identity harmonization received raw atom-index keys"
+        )
+    identity_keys = [key for key in keys]  # type: ignore[misc]
+    triple_by_key: Dict[CandidateIdentityKey, Tuple[int, int, int]] = {}
+    for triple in triples:
+        key = _candidate_identity_key(atoms, triple)
+        if key in triple_by_key:
+            raise HydrogenBondDiscoveryError(
+                "replica has ambiguous duplicate candidate atom identities"
+            )
+        triple_by_key[key] = triple
+    missing = [key for key in identity_keys if key not in triple_by_key]
+    if missing:
+        raise HydrogenBondDiscoveryError(
+            "replica lacks a globally harmonized candidate atom identity"
+        )
+
+    atom_keys = sorted({atom_key for key in identity_keys for atom_key in key})
+    stable_atom_index = {key: index for index, key in enumerate(atom_keys)}
+
+    def identity_record(key: AtomIdentityKey) -> Dict[str, object]:
+        return {
+            "chain_id": key[0],
+            "residue_number": key[1],
+            "insertion_code": key[2],
+            "atom_name": key[3],
+            "altloc": key[4],
+        }
+
+    local_candidates: List[Dict[str, object]] = []
+    canonical_candidates: List[Dict[str, object]] = []
+    for key in identity_keys:
+        donor, hydrogen, acceptor = triple_by_key[key]
+        bond_id = _identity_bond_id(key)
+        local_candidates.append({
+            "bond_id": bond_id,
+            "donor_atom_index": donor,
+            "hydrogen_atom_index": hydrogen,
+            "acceptor_atom_index": acceptor,
+            "interaction_stratum": (
+                f"{roles[donor].entity_class}_to_{roles[acceptor].entity_class}"
+            ),
+        })
+        canonical_candidates.append({
+            "bond_id": bond_id,
+            "donor_atom_index": stable_atom_index[key[0]],
+            "hydrogen_atom_index": stable_atom_index[key[1]],
+            "acceptor_atom_index": stable_atom_index[key[2]],
+            "donor_identity": identity_record(key[0]),
+            "hydrogen_identity": identity_record(key[1]),
+            "acceptor_identity": identity_record(key[2]),
+            "interaction_stratum": (
+                f"{roles[donor].entity_class}_to_{roles[acceptor].entity_class}"
+            ),
+        })
+    canonical_atoms = [{
+        "atom_index": stable_atom_index[key],
+        "identity": identity_record(key),
+    } for key in atom_keys]
+    return local_candidates, canonical_candidates, canonical_atoms
+
+
 def _hydrogen_bond_discovery_project_serial(
     project_path: Path,
     hash_content: bool = False,
     *,
-    harmonized_candidate_keys_override: set[Tuple[int, int, int]] | None = None,
+    harmonized_candidate_keys_override: set[HarmonizedCandidateKey] | None = None,
     candidate_harmonization_report_override: Mapping[str, object] | None = None,
 ) -> Dict[str, object]:
     source = Path(project_path).expanduser().resolve(strict=False)
@@ -651,10 +781,10 @@ def _hydrogen_bond_discovery_project_serial(
         )
     elif (
         settings["mode"] == "automatic"
-        and settings["candidate_harmonization"] == "intersection_by_atom_index_v1"
+        and str(settings["candidate_harmonization"]).startswith("intersection_by_atom_")
     ):
         harmonized_candidate_keys, candidate_harmonization_report = (
-            _automatic_candidate_intersection(system, system_path, settings)
+            _automatic_candidate_harmonization(system, system_path, settings)
         )
         excluded = int(
             candidate_harmonization_report["excluded_from_common_union_count"]
@@ -665,7 +795,7 @@ def _hydrogen_bond_discovery_project_serial(
             "location": str(source),
             "message": (
                 f"Retained {candidate_harmonization_report['common_candidate_count']} "
-                "candidate atom-index triples present in every replica before coordinate "
+                "candidate triples present in every replica before coordinate "
                 f"evaluation; {excluded} system- or replica-specific triples remain outside "
                 "this comparative matrix and require per-system discovery for interpretation."
             ),
@@ -696,6 +826,8 @@ def _hydrogen_bond_discovery_project_serial(
     cutoff_definitions = settings["cutoff_definitions"]  # primary first
     evaluated_count = 0
     feature_observation_count = 0
+    spatial_neighbor_pair_count = 0
+    explicit_geometry_evaluation_count = 0
     sparse_output_mode = settings["output_mode"] in {
         "sparse_implicit_zero_v1", "sparse_packed_v2",
     }
@@ -713,14 +845,28 @@ def _hydrogen_bond_discovery_project_serial(
             connectivity_path = resolve_manifest_path(connectivity_value, system_path)
             bonds, connectivity_provenance = load_connectivity(connectivity_path, len(atoms))
             candidate_atom_dictionary = None
+            canonical_compact = None
             if settings["mode"] == "automatic":
-                if sparse_output_mode:
-                    triples, roles = _automatic_candidate_triples(
-                        atoms, bonds,
-                        interaction_scope=str(settings["interaction_scope"]),
-                        exclude_same_residue=bool(settings["exclude_same_residue"]),
+                triples, roles = _automatic_candidate_triples(
+                    atoms, bonds,
+                    interaction_scope=str(settings["interaction_scope"]),
+                    exclude_same_residue=bool(settings["exclude_same_residue"]),
+                )
+                raw_candidate_count = len(triples)
+                if (
+                    harmonized_candidate_keys is not None
+                    and settings["candidate_harmonization"]
+                    == "intersection_by_atom_identity_v2"
+                ):
+                    (
+                        candidates,
+                        canonical_compact,
+                        candidate_atom_dictionary,
+                    ) = _identity_harmonized_candidate_dictionaries(
+                        atoms, roles, triples, harmonized_candidate_keys
                     )
-                    raw_candidate_count = len(triples)
+                    chemistry_report = chemistry_summary(roles)
+                elif sparse_output_mode:
                     if harmonized_candidate_keys is not None:
                         triples = [
                             triple for triple in triples
@@ -731,12 +877,14 @@ def _hydrogen_bond_discovery_project_serial(
                         "donor_atom_index": donor,
                         "hydrogen_atom_index": hydrogen,
                         "acceptor_atom_index": acceptor,
+                        "interaction_stratum": (
+                            f"{roles[donor].entity_class}_to_{roles[acceptor].entity_class}"
+                        ),
                     } for donor, hydrogen, acceptor in triples]
                     chemistry_report = chemistry_summary(roles)
                     candidate_atom_dictionary = _automatic_sparse_atom_dictionary(
                         atoms, roles, triples
                     )
-                    del triples, roles
                 else:
                     candidates, chemistry_report = discover_automatic_candidate_bonds(
                         atoms, bonds,
@@ -749,6 +897,7 @@ def _hydrogen_bond_discovery_project_serial(
                             candidate for candidate in candidates
                             if _candidate_key(candidate) in harmonized_candidate_keys
                         ]
+                del triples, roles
                 if harmonized_candidate_keys is not None:
                     chemistry_report = {
                         **chemistry_report,
@@ -778,20 +927,31 @@ def _hydrogen_bond_discovery_project_serial(
             })
             if len(candidates) > int(settings["maximum_candidate_bonds"]):
                 raise HydrogenBondDiscoveryError("maximum_candidate_bonds gate exceeded")
-            compact = (
-                candidates
-                if settings["mode"] == "automatic" and sparse_output_mode
-                else [
-                    {key: row[key] for key in (
-                        "bond_id", "donor_atom_index", "hydrogen_atom_index",
-                        "acceptor_atom_index",
-                    )}
-                    for row in candidates
-                ]
+            canonical_candidate_rows = (
+                canonical_compact
+                if settings["mode"] == "automatic" and canonical_compact is not None
+                else candidates
             )
+            compact = [
+                {
+                    **{key: row[key] for key in (
+                    "bond_id", "donor_atom_index", "hydrogen_atom_index",
+                    "acceptor_atom_index",
+                    )},
+                    **(
+                        {"interaction_stratum": row["interaction_stratum"]}
+                        if "interaction_stratum" in row else {}
+                    ),
+                }
+                for row in canonical_candidate_rows
+            ]
             sparse_mode = sparse_output_mode
             if canonical_dictionary is None:
-                canonical_dictionary = compact if sparse_mode else candidates
+                canonical_dictionary = (
+                    compact
+                    if sparse_mode
+                    else canonical_candidate_rows
+                )
                 if sparse_mode:
                     canonical_atom_dictionary = (
                         candidate_atom_dictionary
@@ -814,22 +974,23 @@ def _hydrogen_bond_discovery_project_serial(
                             f"gate {settings['maximum_feature_observations']}"
                         )
             else:
-                prior = (
-                    canonical_dictionary
-                    if sparse_mode else [
-                        {key: row[key] for key in (
+                prior = [
+                    {
+                        **{key: row[key] for key in (
                             "bond_id", "donor_atom_index", "hydrogen_atom_index",
                             "acceptor_atom_index",
-                        )}
-                        for row in canonical_dictionary
-                    ]
-                )
+                        )},
+                        **(
+                            {"interaction_stratum": row["interaction_stratum"]}
+                            if "interaction_stratum" in row else {}
+                        ),
+                    }
+                    for row in canonical_dictionary
+                ]
                 if compact != prior:
                     raise HydrogenBondDiscoveryError(
                         "candidate dictionary differs across replicas; use harmonized atom mappings"
                     )
-            if sparse_mode:
-                candidates = compact
             sparse_evaluator = (
                 CompiledSparseHydrogenBondEvaluator.compile(
                     candidates,
@@ -898,6 +1059,14 @@ def _hydrogen_bond_discovery_project_serial(
                         sparse = sparse_evaluator.evaluate(
                             frame.coordinates_angstrom,
                             cell=frame.cell_vectors_angstrom,
+                        )
+                        spatial_neighbor_pair_count += int(
+                            sparse.get("spatial_neighbor_pair_count", len(candidates))
+                        )
+                        explicit_geometry_evaluation_count += int(
+                            sparse.get(
+                                "explicit_geometry_evaluation_count", len(candidates)
+                            )
                         )
                         present_by_cutoff = sparse["present_candidate_indices_by_cutoff"]
                         binary = None
@@ -1016,6 +1185,13 @@ def _hydrogen_bond_discovery_project_serial(
                     "connectivity": connectivity_provenance,
                 })
     assert canonical_dictionary is not None
+    candidate_stratum_counts: Dict[str, int] = {}
+    for candidate in canonical_dictionary:
+        stratum = candidate.get("interaction_stratum")
+        if isinstance(stratum, str):
+            candidate_stratum_counts[stratum] = (
+                candidate_stratum_counts.get(stratum, 0) + 1
+            )
     occupancies = []
     cutoff_occupancies = []
     packed_cutoff_occupancy_segments = []
@@ -1106,6 +1282,16 @@ def _hydrogen_bond_discovery_project_serial(
             "selected_physical_frame_count": evaluated_count,
             "symmetry_expanded_observation_count": evaluated_count,
             "candidate_frame_feature_observation_count": feature_observation_count,
+            "spatial_neighbor_pair_count": (
+                spatial_neighbor_pair_count if sparse_output_mode else None
+            ),
+            "explicit_geometry_evaluation_count": (
+                explicit_geometry_evaluation_count if sparse_output_mode else None
+            ),
+            "geometry_evaluation_avoidance_fraction": (
+                1.0 - explicit_geometry_evaluation_count / feature_observation_count
+                if sparse_output_mode and feature_observation_count else None
+            ),
             "subsampling_triggered": (
                 evaluated_count < int(frame_selection_report["source_frame_count"])
             ),
@@ -1116,6 +1302,10 @@ def _hydrogen_bond_discovery_project_serial(
             "distance_definition": "donor_acceptor_v1",
             "coordinate_reconstruction": project["periodic_coordinate_policy"],
             "water_policy": "exclude",
+            "sparse_geometry_engine": (
+                "spatial_cell_list_exact_periodic_v1"
+                if sparse_output_mode else None
+            ),
         },
         "cutoff_definitions": cutoff_definitions,
         "candidate_harmonization": candidate_harmonization_report,
@@ -1140,6 +1330,7 @@ def _hydrogen_bond_discovery_project_serial(
             if settings["output_mode"] == "sparse_packed_v2" else None
         ),
         "candidate_dictionary": canonical_dictionary,
+        "candidate_stratum_counts": candidate_stratum_counts,
         "atom_dictionary": (
             canonical_atom_dictionary
             if settings["output_mode"] in {
@@ -1169,535 +1360,13 @@ def _hydrogen_bond_discovery_project_serial(
             "Donor-hydrogen association comes only from explicit connectivity and therefore fails closed when connectivity is absent.",
             "This direct-bond module excludes water-mediated paths; use the separately validated one-water network contract.",
             "The full candidate dictionary is retained without outcome-dependent occupancy filtering, preventing a hidden feature-selection step.",
-            "For homologous multi-system comparisons, intersection_by_atom_index_v1 retains only candidate triples present in every replica before coordinates are read; system-specific chemical candidates remain available only through separate per-system discovery reports.",
+            "For homologous multi-system comparisons, intersection_by_atom_identity_v2 retains chemical-position candidate triples present in every replica before coordinates are read; system-specific chemical candidates remain available only through separate per-system discovery reports.",
             "Hydrogen-bond occupancy does not establish energetic or mechanistic importance.",
         ],
     }
 
 
-_COMPARISON_IDENTITY_FIELDS = (
-    "chain_id", "residue_number", "insertion_code", "atom_name", "altloc",
-    "element",
-)
-
-
-def _candidate_identity_records(
-    report: Mapping[str, object],
-) -> List[Tuple[Mapping[str, object], Mapping[str, object], Mapping[str, object]]]:
-    """Return donor, hydrogen, and acceptor identities for every candidate."""
-
-    atom_dictionary = report.get("atom_dictionary")
-    atoms = {
-        int(row["atom_index"]): row["identity"]
-        for row in atom_dictionary or []  # type: ignore[union-attr]
-        if isinstance(row, dict)
-        and isinstance(row.get("atom_index"), int)
-        and isinstance(row.get("identity"), dict)
-    } if isinstance(atom_dictionary, list) else {}
-    result = []
-    candidates = report.get("candidate_dictionary")
-    if not isinstance(candidates, list):
-        raise HydrogenBondDiscoveryError("candidate_dictionary must be an array")
-    for index, candidate in enumerate(candidates):
-        if not isinstance(candidate, dict):
-            raise HydrogenBondDiscoveryError(
-                f"candidate_dictionary[{index}] must be an object"
-            )
-        identities = []
-        for role in ("donor", "hydrogen", "acceptor"):
-            identity = candidate.get(f"{role}_identity")
-            if not isinstance(identity, dict):
-                identity = atoms.get(int(candidate[f"{role}_atom_index"]))
-            if not isinstance(identity, dict):
-                raise HydrogenBondDiscoveryError(
-                    f"candidate_dictionary[{index}] lacks {role} identity"
-                )
-            missing = set(_COMPARISON_IDENTITY_FIELDS).difference(identity)
-            if missing:
-                raise HydrogenBondDiscoveryError(
-                    f"candidate_dictionary[{index}] {role} identity is missing "
-                    + ", ".join(sorted(missing))
-                )
-            identities.append(identity)
-        result.append((identities[0], identities[1], identities[2]))
-    return result
-
-
-def _chemical_position_key(
-    identities: Sequence[Mapping[str, object]],
-) -> Tuple[object, ...]:
-    """Map homologous atoms by chemical role and topology position, not index."""
-
-    return tuple(
-        tuple(identity[field] for field in _COMPARISON_IDENTITY_FIELDS)
-        for identity in identities
-    )
-
-
-def _chemical_feature_id(key: Tuple[object, ...]) -> str:
-    encoded = json.dumps(key, separators=(",", ":"), ensure_ascii=True)
-    return "HBOND-CHEM-" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:20]
-
-
-def _system_feature_space(
-    system_id: str,
-    reports: Sequence[Mapping[str, object]],
-) -> Dict[str, object]:
-    """Reduce full candidate reports within one system across its replicas."""
-
-    first = reports[0]
-    stable = (
-        "candidate_dictionary", "atom_dictionary", "candidate_count",
-        "frame_matrix_representation", "cutoff_definitions",
-    )
-    for report in reports[1:]:
-        for key in stable:
-            if report.get(key) != first.get(key):
-                raise HydrogenBondDiscoveryError(
-                    f"replica candidate dictionaries disagree within system {system_id} on {key}"
-                )
-    evaluated = sum(int(report.get("evaluated_frame_count", 0)) for report in reports)
-    feature_count = sum(int(report.get("feature_observation_count", 0)) for report in reports)
-    view: Dict[str, object] = {
-        "system_id": system_id,
-        "replica_ids": sorted({
-            str(row.get("replica_id"))
-            for report in reports
-            for row in report.get("chemistry_reports", [])  # type: ignore[union-attr]
-            if isinstance(row, dict) and row.get("replica_id") is not None
-        }),
-        "candidate_dictionary": first["candidate_dictionary"],
-        "atom_dictionary": first.get("atom_dictionary"),
-        "candidate_count": int(first["candidate_count"]),
-        "evaluated_frame_count": evaluated,
-        "planned_feature_observation_count": sum(
-            int(report.get("planned_feature_observation_count", 0)) for report in reports
-        ),
-        "feature_observation_count": feature_count,
-        "frame_bond_matrix": [
-            row for report in reports for row in report.get("frame_bond_matrix", [])  # type: ignore[union-attr]
-        ],
-        "occupancies": [
-            row for report in reports for row in report.get("occupancies", [])  # type: ignore[union-attr]
-        ],
-        "cutoff_occupancies": (
-            None if first.get("cutoff_occupancies") is None else [
-                row for report in reports
-                for row in report.get("cutoff_occupancies", [])  # type: ignore[union-attr]
-            ]
-        ),
-        "packed_cutoff_occupancy_segments": (
-            None if first.get("packed_cutoff_occupancy_segments") is None else [
-                row for report in reports
-                for row in report.get("packed_cutoff_occupancy_segments", [])  # type: ignore[union-attr]
-            ]
-        ),
-        "chemistry_reports": [
-            row for report in reports for row in report.get("chemistry_reports", [])  # type: ignore[union-attr]
-        ],
-        "frame_selection": merge_frame_selection_reports([
-            report["frame_selection"] for report in reports
-            if isinstance(report.get("frame_selection"), dict)
-        ]),
-    }
-    return view
-
-
-def _frame_locator(frame: Mapping[str, object]) -> Dict[str, object]:
-    excluded = {
-        "candidate_count", "representation", "binary_values", "present_bond_ids",
-        "primary_present_candidate_indices", "cutoff_present_candidate_indices",
-        "present_geometry", "donor_acceptor_distances_angstrom",
-        "donor_hydrogen_acceptor_angles_degrees", "packed_event_codec",
-        "packed_event_count", "cutoff_ids", "packed_present_events_b64",
-    }
-    return {key: value for key, value in frame.items() if key not in excluded}
-
-
-def _remap_comparison_frame(
-    frame: Mapping[str, object],
-    local_to_common: Mapping[int, int],
-    common_candidates: Sequence[Mapping[str, object]],
-    cutoff_definitions: Sequence[Mapping[str, object]],
-) -> Dict[str, object]:
-    """Project one full per-system frame into the shared chemical feature space."""
-
-    candidate_count = len(common_candidates)
-    locator = _frame_locator(frame)
-    if frame.get("representation") == "sparse_packed_v2":
-        events = unpack_sparse_present_events(frame)
-        geometry = []
-        cutoff_ids = frame["cutoff_ids"]
-        assert isinstance(cutoff_ids, list)
-        for event in events:
-            local_index = int(event["candidate_index"])
-            if local_index not in local_to_common:
-                continue
-            mask = int(event["cutoff_mask"])
-            geometry.append({
-                "candidate_index": local_to_common[local_index],
-                "donor_acceptor_distance_angstrom": float(
-                    event["donor_acceptor_distance_angstrom"]
-                ),
-                "donor_hydrogen_acceptor_angle_degrees": float(
-                    event["donor_hydrogen_acceptor_angle_degrees"]
-                ),
-                "present_cutoff_ids": [
-                    cutoff_id for bit, cutoff_id in enumerate(cutoff_ids)
-                    if mask & (1 << bit)
-                ],
-            })
-        geometry.sort(key=lambda row: int(row["candidate_index"]))
-        return {
-            **locator, "candidate_count": candidate_count,
-            **pack_sparse_present_geometry(
-                geometry, cutoff_definitions, candidate_count
-            ),
-        }
-    if frame.get("representation") == "sparse_implicit_zero_v1":
-        by_cutoff = frame.get("cutoff_present_candidate_indices")
-        if not isinstance(by_cutoff, dict):
-            raise HydrogenBondDiscoveryError("sparse frame lacks cutoff index mapping")
-        remapped_by_cutoff = {
-            str(cutoff_id): sorted(
-                local_to_common[index] for index in indices
-                if index in local_to_common
-            )
-            for cutoff_id, indices in by_cutoff.items()
-            if isinstance(indices, list)
-        }
-        primary = remapped_by_cutoff.get("primary", [])
-        geometry = []
-        for row in frame.get("present_geometry", []):  # type: ignore[union-attr]
-            if not isinstance(row, dict):
-                continue
-            local_index = int(row["candidate_index"])
-            if local_index in local_to_common:
-                geometry.append({
-                    **row, "candidate_index": local_to_common[local_index]
-                })
-        geometry.sort(key=lambda row: int(row["candidate_index"]))
-        return {
-            **locator,
-            "representation": "sparse_implicit_zero_v1",
-            "candidate_count": candidate_count,
-            "primary_present_candidate_indices": primary,
-            "present_bond_ids": [
-                common_candidates[index]["bond_id"] for index in primary
-            ],
-            "cutoff_present_candidate_indices": remapped_by_cutoff,
-            "present_geometry": geometry,
-        }
-    binary = frame.get("binary_values")
-    distances = frame.get("donor_acceptor_distances_angstrom")
-    angles = frame.get("donor_hydrogen_acceptor_angles_degrees")
-    if not all(isinstance(value, list) for value in (binary, distances, angles)):
-        raise HydrogenBondDiscoveryError("dense frame lacks its geometry arrays")
-    common_to_local = {common: local for local, common in local_to_common.items()}
-    ordered_local = [common_to_local[index] for index in range(candidate_count)]
-    remapped_binary = [binary[index] for index in ordered_local]  # type: ignore[index]
-    return {
-        **locator,
-        "binary_values": remapped_binary,
-        "present_bond_ids": [
-            common_candidates[index]["bond_id"]
-            for index, present in enumerate(remapped_binary) if present
-        ],
-        "donor_acceptor_distances_angstrom": [
-            distances[index] for index in ordered_local  # type: ignore[index]
-        ],
-        "donor_hydrogen_acceptor_angles_degrees": [
-            angles[index] for index in ordered_local  # type: ignore[index]
-        ],
-    }
-
-
-def _reduce_per_system_hbond_discovery_reports(
-    partials: Sequence[ReplicaPartial[Dict[str, object]]],
-    source_context: Dict[str, object],
-) -> Dict[str, object]:
-    """Retain full per-system chemistry and derive one shared comparison view."""
-
-    reports = [partial.value for partial in partials]
-    first = dict(reports[0])
-    for report in reports[1:]:
-        for key in (
-            "module_id", "settings", "geometry_contract", "cutoff_definitions",
-            "frame_matrix_representation",
-        ):
-            if report.get(key) != first.get(key):
-                raise HydrogenBondDiscoveryError(
-                    f"replica hydrogen-bond reports disagree on {key}"
-                )
-    by_system: Dict[str, List[Mapping[str, object]]] = {}
-    for partial in partials:
-        by_system.setdefault(partial.system_id, []).append(partial.value)
-    system_views = [
-        _system_feature_space(system_id, by_system[system_id])
-        for system_id in sorted(by_system)
-    ]
-
-    unique_maps: Dict[str, Dict[Tuple[object, ...], int]] = {}
-    ambiguous_maps: Dict[str, set[Tuple[object, ...]]] = {}
-    identities_by_system: Dict[str, Dict[Tuple[object, ...], tuple]] = {}
-    for view in system_views:
-        system_id = str(view["system_id"])
-        raw: Dict[Tuple[object, ...], List[int]] = {}
-        identity_rows = _candidate_identity_records(view)
-        identities_by_system[system_id] = {}
-        for index, identities in enumerate(identity_rows):
-            key = _chemical_position_key(identities)
-            raw.setdefault(key, []).append(index)
-            identities_by_system[system_id][key] = tuple(dict(row) for row in identities)
-        unique_maps[system_id] = {
-            key: indices[0] for key, indices in raw.items() if len(indices) == 1
-        }
-        ambiguous_maps[system_id] = {
-            key for key, indices in raw.items() if len(indices) != 1
-        }
-    system_ids = sorted(unique_maps)
-    all_keys = set().union(*(
-        set(unique_maps[system_id]) | ambiguous_maps[system_id]
-        for system_id in system_ids
-    ))
-    common_keys = sorted(
-        set.intersection(*(set(unique_maps[system_id]) for system_id in system_ids)),
-        key=lambda value: json.dumps(value, separators=(",", ":")),
-    )
-    common_index = {key: index for index, key in enumerate(common_keys)}
-    common_candidates = []
-    for key in common_keys:
-        identities = identities_by_system[system_ids[0]][key]
-        candidate_id = _chemical_feature_id(key)
-        source_candidates = {}
-        for view in system_views:
-            system_id = str(view["system_id"])
-            local = unique_maps[system_id][key]
-            candidate = view["candidate_dictionary"][local]  # type: ignore[index]
-            source_candidates[system_id] = {
-                "candidate_index": local,
-                "bond_id": candidate["bond_id"],
-                "donor_atom_index": candidate["donor_atom_index"],
-                "hydrogen_atom_index": candidate["hydrogen_atom_index"],
-                "acceptor_atom_index": candidate["acceptor_atom_index"],
-            }
-        common_candidates.append({
-            "bond_id": candidate_id,
-            "comparison_feature_id": candidate_id,
-            "identity_policy": "chemical_role_and_topology_position_v2",
-            "donor_identity": identities[0],
-            "hydrogen_identity": identities[1],
-            "acceptor_identity": identities[2],
-            "donor_atom_index": source_candidates[system_ids[0]]["donor_atom_index"],
-            "hydrogen_atom_index": source_candidates[system_ids[0]]["hydrogen_atom_index"],
-            "acceptor_atom_index": source_candidates[system_ids[0]]["acceptor_atom_index"],
-            "source_candidates_by_system": source_candidates,
-        })
-    if len(system_views) == 1:
-        # A one-system report has no cross-topology ambiguity. Preserve the
-        # established candidate dictionary and bond identifiers exactly.
-        common_candidates = list(system_views[0]["candidate_dictionary"])  # type: ignore[arg-type]
-
-    comparative_frames: List[Dict[str, object]] = []
-    comparative_occupancies: List[Dict[str, object]] = []
-    comparative_cutoff_occupancies: List[Dict[str, object]] = []
-    comparative_packed_counts: List[Dict[str, object]] = []
-    feature_status_rows = []
-    if common_candidates:
-        for view in system_views:
-            system_id = str(view["system_id"])
-            local_to_common = {
-                unique_maps[system_id][key]: common_index[key] for key in common_keys
-            }
-            bond_to_common = {
-                str(view["candidate_dictionary"][local]["bond_id"]): common  # type: ignore[index]
-                for local, common in local_to_common.items()
-            }
-            comparative_frames.extend(
-                _remap_comparison_frame(
-                    frame, local_to_common, common_candidates,
-                    first["cutoff_definitions"],  # type: ignore[arg-type]
-                )
-                for frame in view["frame_bond_matrix"]  # type: ignore[union-attr]
-            )
-            for row in view["occupancies"]:  # type: ignore[union-attr]
-                if row["bond_id"] in bond_to_common:
-                    common = bond_to_common[str(row["bond_id"])]
-                    comparative_occupancies.append({
-                        **row, "bond_id": common_candidates[common]["bond_id"]
-                    })
-            if view["cutoff_occupancies"] is not None:
-                for row in view["cutoff_occupancies"]:  # type: ignore[union-attr]
-                    if row["bond_id"] in bond_to_common:
-                        common = bond_to_common[str(row["bond_id"])]
-                        comparative_cutoff_occupancies.append({
-                            **row, "bond_id": common_candidates[common]["bond_id"]
-                        })
-            if view["packed_cutoff_occupancy_segments"] is not None:
-                for row in view["packed_cutoff_occupancy_segments"]:  # type: ignore[union-attr]
-                    counts = unpack_sparse_cutoff_counts(row)
-                    remapped = [dict() for _ in first["cutoff_definitions"]]  # type: ignore[arg-type]
-                    for value in counts:
-                        local = int(value["candidate_index"])
-                        if local in local_to_common:
-                            remapped[int(value["cutoff_index"])][
-                                local_to_common[local]
-                            ] = int(value["present_frame_count"])
-                    comparative_packed_counts.append({
-                        **{
-                            key: row[key] for key in (
-                                "system_id", "replica_id", "segment_id"
-                            )
-                        },
-                        **pack_sparse_cutoff_counts(
-                            remapped,
-                            first["cutoff_definitions"],  # type: ignore[arg-type]
-                            len(common_candidates),
-                            int(row["evaluated_frame_count"]),
-                        ),
-                    })
-
-    observed_by_system = {
-        str(view["system_id"]): {
-            str(row["bond_id"]) for row in view["occupancies"]  # type: ignore[union-attr]
-            if int(row.get("present_frame_count", 0)) > 0
-        }
-        for view in system_views
-    }
-    for key in sorted(
-        all_keys, key=lambda value: json.dumps(value, separators=(",", ":"))
-    ):
-        identity_source = next(
-            identities_by_system[system_id][key]
-            for system_id in system_ids if key in identities_by_system[system_id]
-        )
-        statuses = {}
-        for view in system_views:
-            system_id = str(view["system_id"])
-            if key in ambiguous_maps[system_id]:
-                status = "unmappable_nonunique_identity"
-            elif key not in unique_maps[system_id]:
-                status = "chemically_absent"
-            else:
-                local = unique_maps[system_id][key]
-                bond_id = str(view["candidate_dictionary"][local]["bond_id"])  # type: ignore[index]
-                status = (
-                    "observed" if bond_id in observed_by_system[system_id]
-                    else "chemically_present_never_observed"
-                )
-            statuses[system_id] = status
-        feature_status_rows.append({
-            "comparison_feature_id": _chemical_feature_id(key),
-            "donor_identity": identity_source[0],
-            "hydrogen_identity": identity_source[1],
-            "acceptor_identity": identity_source[2],
-            "status_by_system": statuses,
-            "comparable_across_all_systems": key in common_index,
-        })
-
-    frame_selection = merge_frame_selection_reports([
-        report["frame_selection"] for report in reports
-        if isinstance(report.get("frame_selection"), dict)
-    ])
-    evaluated = sum(int(view["evaluated_frame_count"]) for view in system_views)
-    feature_count = sum(int(view["feature_observation_count"]) for view in system_views)
-    maximum = int(first["settings"]["maximum_feature_observations"])  # type: ignore[index]
-    if feature_count > maximum:
-        raise HydrogenBondDiscoveryError(
-            "parallel full per-system hydrogen-bond feature count exceeds "
-            f"maximum_feature_observations: {feature_count} > {maximum}"
-        )
-    issues = [
-        issue for issue in unique_issues(reports)
-        if issue.get("code") != "FRAME_SUBSAMPLING"
-    ]
-    issues.append({
-        "severity": "info",
-        "code": "HBOND_FULL_PER_SYSTEM_CANDIDATES_RETAINED",
-        "location": source_context["project_manifest_path"],
-        "message": (
-            f"Evaluated every topology-defined candidate in {len(system_views)} systems; "
-            f"the shared chemical-position view contains {len(common_candidates)} features."
-        ),
-    })
-    if evaluated < int(frame_selection["source_frame_count"]):
-        issues.append({
-            "severity": "warning", "code": "FRAME_SUBSAMPLING",
-            "location": source_context["project_manifest_path"],
-            "message": (
-                f"Hydrogen-bond discovery evaluated {evaluated} of "
-                f"{frame_selection['source_frame_count']} source frames under "
-                f"{frame_selection['mode']}"
-            ),
-        })
-    first.update({
-        "frame_selection": frame_selection,
-        "candidate_harmonization": {
-            "policy": "per_system_full_with_chemical_identity_comparison_v2",
-            "selection_basis": (
-                "All per-system candidates are retained. Shared features are the "
-                "outcome-independent intersection of unique donor, hydrogen, and "
-                "acceptor chemical-role/topology-position identities; raw atom indices "
-                "are never compared across systems."
-            ),
-            "system_candidate_counts": {
-                str(view["system_id"]): int(view["candidate_count"])
-                for view in system_views
-            },
-            "common_candidate_count": len(common_candidates),
-            "union_candidate_count": len(all_keys),
-            "unmappable_identity_count": len(set().union(*ambiguous_maps.values())),
-            "feature_statuses": feature_status_rows,
-        },
-        "system_feature_spaces": system_views,
-        "candidate_dictionary": common_candidates,
-        "atom_dictionary": (
-            system_views[0]["atom_dictionary"] if len(system_views) == 1 else None
-        ),
-        "candidate_count": len(common_candidates),
-        "planned_feature_observation_count": feature_count,
-        "evaluated_frame_count": evaluated,
-        "feature_observation_count": feature_count,
-        "frame_bond_matrix": comparative_frames,
-        "occupancies": comparative_occupancies,
-        "cutoff_occupancies": (
-            None if first.get("cutoff_occupancies") is None
-            else comparative_cutoff_occupancies
-        ),
-        "packed_cutoff_occupancy_segments": (
-            comparative_packed_counts
-            if first.get("packed_cutoff_occupancy_segments") is not None else None
-        ),
-        "chemistry_reports": [
-            row for view in system_views
-            for row in view["chemistry_reports"]  # type: ignore[union-attr]
-        ],
-        "observation_accounting": {
-            "source_physical_frame_count": int(frame_selection["source_frame_count"]),
-            "selected_physical_frame_count": evaluated,
-            "symmetry_expanded_observation_count": evaluated,
-            "candidate_frame_feature_observation_count": feature_count,
-            "per_system_candidate_frame_feature_observation_counts": {
-                str(view["system_id"]): int(view["feature_observation_count"])
-                for view in system_views
-            },
-            "subsampling_triggered": evaluated < int(frame_selection["source_frame_count"]),
-        },
-        "issues": issues,
-        "error_count": sum(issue.get("severity") == "error" for issue in issues),
-        "warning_count": sum(issue.get("severity") == "warning" for issue in issues),
-        "limitations": [
-            "Automatic chemistry cannot repair missing or incorrect protonation, formal charge, bond order, or tautomer state.",
-            "Chemical-position mapping assumes declared chain and residue numbering represent homologous positions; explicit homolog mappings remain necessary when numbering differs.",
-            "Chemically absent, chemically present but never observed, observed, and nonunique unmappable features are reported separately.",
-            "Hydrogen-bond occupancy does not establish energy, affinity, causality, or mechanism.",
-        ],
-    })
-    restore_source_provenance(first, source_context)
-    return first
-
-
-def _reduce_common_hbond_discovery_reports(
+def _reduce_hbond_discovery_reports(
     partials: Sequence[ReplicaPartial[Dict[str, object]]],
     source_context: Dict[str, object],
 ) -> Dict[str, object]:
@@ -1732,6 +1401,18 @@ def _reduce_common_hbond_discovery_reports(
         ]
     evaluated = sum(int(report.get("evaluated_frame_count", 0)) for report in reports)
     feature_count = int(first["candidate_count"]) * evaluated
+    spatial_pairs = sum(
+        int(report.get("observation_accounting", {}).get(
+            "spatial_neighbor_pair_count", 0
+        ) or 0)
+        for report in reports
+    )
+    explicit_geometry = sum(
+        int(report.get("observation_accounting", {}).get(
+            "explicit_geometry_evaluation_count", 0
+        ) or 0)
+        for report in reports
+    )
     if feature_count > int(first["settings"]["maximum_feature_observations"]):  # type: ignore[index]
         raise HydrogenBondDiscoveryError(
             "parallel hydrogen-bond feature count exceeds maximum_feature_observations"
@@ -1745,6 +1426,25 @@ def _reduce_common_hbond_discovery_reports(
         "selected_physical_frame_count": evaluated,
         "symmetry_expanded_observation_count": evaluated,
         "candidate_frame_feature_observation_count": feature_count,
+        "spatial_neighbor_pair_count": (
+            spatial_pairs
+            if first["frame_matrix_representation"] in {
+                "sparse_implicit_zero_v1", "sparse_packed_v2",
+            } else None
+        ),
+        "explicit_geometry_evaluation_count": (
+            explicit_geometry
+            if first["frame_matrix_representation"] in {
+                "sparse_implicit_zero_v1", "sparse_packed_v2",
+            } else None
+        ),
+        "geometry_evaluation_avoidance_fraction": (
+            1.0 - explicit_geometry / feature_count
+            if feature_count
+            and first["frame_matrix_representation"] in {
+                "sparse_implicit_zero_v1", "sparse_packed_v2",
+            } else None
+        ),
         "subsampling_triggered": evaluated < int(frame_selection["source_frame_count"]),
     }
     issues = [
@@ -1755,7 +1455,7 @@ def _reduce_common_hbond_discovery_reports(
     ]
     harmonization = first["candidate_harmonization"]
     excluded = int(harmonization.get("excluded_from_common_union_count", 0))
-    if harmonization.get("policy") == "intersection_by_atom_index_v1":
+    if str(harmonization.get("policy", "")).startswith("intersection_by_atom_"):
         issues.append({
             "severity": "warning" if excluded else "info",
             "code": "HBOND_CANDIDATE_DICTIONARY_HARMONIZED",
@@ -1783,18 +1483,6 @@ def _reduce_common_hbond_discovery_reports(
     return first
 
 
-def _reduce_hbond_discovery_reports(
-    partials: Sequence[ReplicaPartial[Dict[str, object]]],
-    source_context: Dict[str, object],
-) -> Dict[str, object]:
-    policy = partials[0].value.get("settings", {}).get(  # type: ignore[union-attr]
-        "candidate_harmonization"
-    )
-    if policy == "per_system_full_with_chemical_identity_comparison_v2":
-        return _reduce_per_system_hbond_discovery_reports(partials, source_context)
-    return _reduce_common_hbond_discovery_reports(partials, source_context)
-
-
 def hydrogen_bond_discovery_project(
     project_path: Path, hash_content: bool = False
 ) -> Dict[str, object]:
@@ -1804,15 +1492,19 @@ def hydrogen_bond_discovery_project(
     project = load_json(source)
     settings = _settings(project)
     selection = settings.get("frame_selection")
+    if isinstance(selection, dict) and selection.get("mode") == "auto_resource_budget_v1":
+        return _hydrogen_bond_discovery_project_serial(
+            project_path, hash_content=hash_content
+        )
     keys = None
     harmonization = None
     if (
         settings["mode"] == "automatic"
-        and settings["candidate_harmonization"] == "intersection_by_atom_index_v1"
+        and str(settings["candidate_harmonization"]).startswith("intersection_by_atom_")
     ):
         context = compile_project_context_file(source, hash_content=hash_content)
         system_path = Path(context["system_manifest_path"])
-        keys, harmonization = _automatic_candidate_intersection(
+        keys, harmonization = _automatic_candidate_harmonization(
             load_json(system_path), system_path, settings
         )
     return execute_replica_final_module(
@@ -1822,7 +1514,14 @@ def hydrogen_bond_discovery_project(
         reducer=_reduce_hbond_discovery_reports,
         worker_payload={
             "harmonized_candidate_keys": (
-                [list(row) for row in sorted(keys)] if keys is not None else None
+                [
+                    [list(atom) for atom in row]
+                    if harmonization is not None
+                    and harmonization.get("policy") == "intersection_by_atom_identity_v2"
+                    else list(row)
+                    for row in sorted(keys)
+                ]
+                if keys is not None else None
             ),
             "candidate_harmonization_report": harmonization,
         },
