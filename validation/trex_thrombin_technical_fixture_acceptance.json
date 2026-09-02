@@ -1,0 +1,77 @@
+{
+  "hydrogen_bond_endpoint_accounting": {
+    "thrombin-protein-ions": {
+      "acceptor_count": 36,
+      "conceptual_candidate_count": 1698,
+      "conceptual_candidate_stratum_counts": {
+        "protein_to_protein": 1698
+      },
+      "donor_hydrogen_group_count": 49,
+      "materialized_precoordinate_candidate_count": 0
+    },
+    "trex-8oxog": {
+      "acceptor_count": 108,
+      "conceptual_candidate_count": 6328,
+      "conceptual_candidate_stratum_counts": {
+        "nucleic_acid_to_nucleic_acid": 1320,
+        "nucleic_acid_to_protein": 1300,
+        "protein_to_nucleic_acid": 2030,
+        "protein_to_protein": 1678
+      },
+      "donor_hydrogen_group_count": 61,
+      "materialized_precoordinate_candidate_count": 0
+    },
+    "trex-control": {
+      "acceptor_count": 110,
+      "conceptual_candidate_count": 6568,
+      "conceptual_candidate_stratum_counts": {
+        "nucleic_acid_to_nucleic_acid": 1220,
+        "nucleic_acid_to_protein": 1248,
+        "protein_to_nucleic_acid": 2204,
+        "protein_to_protein": 1896
+      },
+      "donor_hydrogen_group_count": 62,
+      "materialized_precoordinate_candidate_count": 0
+    }
+  },
+  "periodic_ion_distance_checks": {
+    "thrombin-protein-ions": {
+      "exact_minimum_image_invariant": true,
+      "frame_count": 3,
+      "ion_count": 4,
+      "maximum_lattice_translation_distance_delta_angstrom": 1.0658141036401503e-14,
+      "target_heavy_atom_count": 202
+    },
+    "trex-8oxog": {
+      "exact_minimum_image_invariant": true,
+      "frame_count": 3,
+      "ion_count": 8,
+      "maximum_lattice_translation_distance_delta_angstrom": 7.105427357601002e-15,
+      "target_heavy_atom_count": 360
+    },
+    "trex-control": {
+      "exact_minimum_image_invariant": true,
+      "frame_count": 3,
+      "ion_count": 8,
+      "maximum_lattice_translation_distance_delta_angstrom": 9.547918011776346e-15,
+      "target_heavy_atom_count": 360
+    }
+  },
+  "schema_version": "sma-technical-fixture-acceptance-v1",
+  "scientific_validity": "not evaluated; TREX requires human scientific-QC acceptance before biological use",
+  "scope": "bounded implementation validation only",
+  "screen_docking_data_used": false,
+  "simulation_jobs_submitted": 0,
+  "source_artifact_hashes_verified": true,
+  "source_manifest_sha256": "4943f40124ed2a41d75b5ca6e2da4481fc5afc1ccb53cb8e6e3706f0e5d33908",
+  "technical_acceptance": "pass",
+  "thrombin_verified_scope": "protein plus sodium and chloride; no ligand or cofactor was present in the selected non-SCREEN MD input set",
+  "trex_cross_system_position_mapping": {
+    "common_heavy_atom_count": 329,
+    "per_system_residue_identity_preserved": true,
+    "reference_coverage_fraction": 0.8940217391304348,
+    "reference_heavy_atom_count": 368,
+    "residue_name_mismatch_count": 44
+  },
+  "unexpected_errors": []
+}

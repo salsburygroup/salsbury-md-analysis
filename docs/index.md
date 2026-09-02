@@ -16,6 +16,8 @@ need scientific review.
 
 - Follow the [NEMO zinc-finger tutorial](../tutorials/nemo_zinc_finger/README.md)
   for a complete workstation example using a real published-simulation subset.
+- Use the [local and cluster workflow](../tutorials/local_and_cluster/README.md)
+  when preparing your own system or moving the same plan to Slurm.
 - Start with [general biomolecular systems](GENERAL_BIOMOLECULAR_SYSTEMS.md) to
   see which inputs and chemical compositions the automatic workflow handles.
 - Read [local and Slurm execution](EXECUTION_ADAPTERS.md) before choosing a
@@ -42,6 +44,7 @@ they still agree with the source.
 - [Manifest and provenance workflow](MANIFESTS.md)
 - [FES, clustering, and state-coordinate exports](FES_CLUSTERING_EXPORTS.md)
 - [Scientific reporting standard](REPORTING_STANDARD.md)
+- [Methods and citations](METHODS_AND_CITATIONS.md)
 - [Prioritized findings and complete module accounting](FINDING_PICKER.md)
 - [Automatic and pooled frame sampling](FRAME_SAMPLING.md)
 - [Comparative states, ions, and hydrogen bonds](COMPARATIVE_STATES_INTERACTIONS.md)

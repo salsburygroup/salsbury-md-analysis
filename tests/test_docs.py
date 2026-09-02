@@ -67,8 +67,61 @@ class GeneratedDocumentationTests(unittest.TestCase):
 
     def test_profile_reference_uses_latest_resource_catalog(self):
         text = generate_docs.render_profiles()
-        self.assertIn("apollo_measured_resource_calibrations_v4.json", text)
+        self.assertIn("apollo_measured_resource_calibrations_v5.json", text)
         self.assertIn("Right-censored timeouts:", text)
+
+    def test_methods_citation_map_names_every_registered_module(self):
+        text = (ROOT / "docs" / "METHODS_AND_CITATIONS.md").read_text(
+            encoding="utf-8"
+        )
+        for module in generate_docs.MODULES:
+            self.assertIn(
+                f"`{module.module_id}`", text,
+                f"uncited registered module: {module.module_id}",
+            )
+        self.assertIn("Scite review could\nnot be completed", text)
+        self.assertIn("Do not describe the reference list as\nScite-checked", text)
+
+    def test_recovery_documentation_states_default_and_opt_out(self):
+        execution = (ROOT / "docs" / "EXECUTION_ADAPTERS.md").read_text(
+            encoding="utf-8"
+        )
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        for text in (execution, readme):
+            self.assertIn("execution.autorecovery", text)
+        self.assertIn('"maximum_task_attempts": 2', execution)
+        self.assertIn("one worker per replica", execution)
+        self.assertIn("does not require every saved frame", execution)
+
+    def test_terminal_tutorial_and_bounded_fixture_acceptance(self):
+        tutorial = (ROOT / "tutorials" / "local_and_cluster" / "README.md").read_text()
+        self.assertIn("--plan-only", tutorial)
+        self.assertIn("execution.autorecovery", tutorial)
+        self.assertIn("./submit.sh --preview", tutorial)
+        self.assertIn("scientific validity", tutorial.lower())
+        acceptance = json.loads(
+            (ROOT / "validation" / "trex_thrombin_technical_fixture_acceptance.json").read_text()
+        )
+        self.assertEqual(acceptance["technical_acceptance"], "pass")
+        self.assertEqual(acceptance["simulation_jobs_submitted"], 0)
+        self.assertFalse(acceptance["screen_docking_data_used"])
+        self.assertEqual(acceptance["unexpected_errors"], [])
+        self.assertEqual(
+            set(acceptance["hydrogen_bond_endpoint_accounting"]["trex-control"]
+                ["conceptual_candidate_stratum_counts"]),
+            {
+                "protein_to_protein",
+                "protein_to_nucleic_acid",
+                "nucleic_acid_to_protein",
+                "nucleic_acid_to_nucleic_acid",
+            },
+        )
+        for record in acceptance["periodic_ion_distance_checks"].values():
+            self.assertTrue(record["exact_minimum_image_invariant"])
+            self.assertLess(
+                record["maximum_lattice_translation_distance_delta_angstrom"],
+                1e-10,
+            )
 
     def test_handwritten_validation_docs_preserve_current_scientific_boundaries(self):
         validation = (ROOT / "docs" / "SCIENTIFIC_VALIDATION.md").read_text(

@@ -63,6 +63,8 @@ without treating experimental modules as scientifically supported.
 The current independent numerical and real-trajectory evidence, including its
 nonpassing scientific gates, is summarized in
 [`docs/SCIENTIFIC_VALIDATION.md`](docs/SCIENTIFIC_VALIDATION.md).
+The complete module-to-method reference map is in
+[`docs/METHODS_AND_CITATIONS.md`](docs/METHODS_AND_CITATIONS.md).
 
 ## Install
 
@@ -103,6 +105,9 @@ New users can begin with the
 small, hash-recorded piece of a published Salsbury-group protein–zinc
 simulation to demonstrate preparation, planning, local execution, and careful
 interpretation without requiring access to the cluster archive.
+The companion [local and cluster workflow](tutorials/local_and_cluster/README.md)
+covers installation, plan review, automatic recovery, Slurm setup, and final
+acceptance for a new system.
 
 The command line is `salsbury-md-analysis`. During development it can also be
 run directly from the source tree:
@@ -135,6 +140,13 @@ PYTHONPATH=src python -m salsbury_md_analysis prepare-analysis \
 cd my-study-analysis
 ./run-local.sh
 ```
+
+Prepared campaigns retry a failed or timed-out task once by default. They keep
+separate attempt logs, reuse already accepted reports, and release scientific
+dependents only after the required report passes. To request single-attempt
+execution, set `execution.autorecovery` to `false` in the analysis config. See
+[`docs/EXECUTION_ADAPTERS.md`](docs/EXECUTION_ADAPTERS.md) for the local and
+Slurm behavior, attempt cap, checkpoints, and terminal-failure review.
 
 Add `--plan-only` to `prepare-analysis` or `prepare-comparison` when you want
 the complete resource and sampling plan before deciding whether to run it. The
