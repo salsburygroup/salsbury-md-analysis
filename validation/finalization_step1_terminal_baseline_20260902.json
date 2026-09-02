@@ -1,0 +1,116 @@
+{
+  "validation_schema": "salsbury-finalization-terminal-baseline-v1",
+  "recorded_at": "2026-09-02T17:26:16Z",
+  "source": {
+    "base_branch": "main",
+    "base_commit": "edd1f2082aa2d39d2f6133a5b4df83cc1467b471",
+    "repair_commit": "5b360257a0c9d20d3e5e79a9005f4d51111a7d61",
+    "package_version": "0.1.1",
+    "wheel_sha256": "a6d595c33030d31b6e216779e1787d927687e78e1d3e44279ae801e0f00dd3fc"
+  },
+  "failure_retained": {
+    "scope": "first clean installed-wheel local run",
+    "technical_status": "failed",
+    "failed_modules": [
+      "replica_rmsd_rg",
+      "pooled_rmsf",
+      "dccm",
+      "solvent_accessible_surface_area"
+    ],
+    "cause": "Replica sharding replaced the cache-bound system manifest without creating a matching hash-bound cache report for the temporary worker manifest.",
+    "repair": "Each temporary replica worker now receives a one-row cache-report view bound to its temporary manifest and to the original validated cache-report hash.",
+    "evidence_policy": "The failed result root was retained and was not reused for acceptance."
+  },
+  "local_acceptance": {
+    "platform": "macOS-15.0-arm64-arm-64bit",
+    "python": "3.12.13",
+    "installation_kind": "wheel installed with --no-deps into an isolated target outside the source checkout",
+    "import_path": "/private/tmp/sma-stage1-installed-fix-20260902/salsbury_md_analysis/__init__.py",
+    "fixture": {
+      "name": "NEMO zinc-finger tutorial",
+      "atom_count": 423,
+      "replica_count": 1,
+      "source_frame_count": 1000,
+      "pdb_sha256": "fca08ab6ff7f2b43fe3e02d3da8fe94aaff3db5cab52fcfbbc02bb5e7cdc8ac4",
+      "psf_sha256": "85a5bf380f42f1c607d85e40ac91c6cbfcf60614e418ad667ea63a1e137a3aa0",
+      "trajectory_sha256": "bf7ad649bbb0d7a4bc37d3c2ce5a64140cf7de7b863cc9c6cebb789b80725524"
+    },
+    "execution": {
+      "adapter": "local",
+      "maximum_parallel_cpus": 2,
+      "maximum_parallel_memory_gib": 32.0,
+      "task_count": 31,
+      "failed_task_count": 0,
+      "remaining_phase_count": 0,
+      "module_report_count": 28,
+      "verified_report_sidecar_count": 28,
+      "temporary_report_count": 0,
+      "total_measured_cpu_hours": 0.11545674888888889
+    },
+    "hashes": {
+      "campaign_resource_plan_sha256": "365e87d8908fc38d25d3e7e54db47983ee8778f864ef774f669eb0ca58960cc2",
+      "sampling_plan_sha256": "37df6ddf8f41dc06f72ee7b22714b3c2ddae8435e9c320e2fe77d440c5c66829",
+      "local_execution_status_sha256": "1cae7d034f4b195bfc2dcfd75ebfca370268b93c57b7b26e1c47ae8063f11d13",
+      "resource_summary_sha256": "31e3c83d59b383ab3a0531e355ff37399fabe2609fb0d6a7aa245ef144289b57",
+      "resource_frame_table_sha256": "9dc4ead6a9bf1c41bbef816f1ff130e502240517c1c9571a8853160bf99f93ed",
+      "findings_summary_sha256": "0ccc172555daade82e3d2295a48f6f5e73f684e9c7423c8a3f279530263ae143"
+    },
+    "stderr_review": {
+      "nonempty_file_count": 8,
+      "unexpected_error_count": 0,
+      "classification": "Expected cache-miss diagnostics followed by successful recomputation; every affected task exited 0."
+    },
+    "technical_status": "complete",
+    "scientific_status": "not evaluated"
+  },
+  "apollo_acceptance": {
+    "validation_root": "/deac/phy/salsburyGrp/software/salsbury-md-analysis/validation/finalize_terminal_baseline_20260902_v1",
+    "python": "3.12.13",
+    "installation_kind": "wheel installed with --no-deps into a new versioned group-storage target",
+    "import_path": "/deac/phy/salsburyGrp/software/salsbury-md-analysis/validation/finalize_terminal_baseline_20260902_v1/installed/salsbury_md_analysis/__init__.py",
+    "planning": {
+      "adapter": "slurm",
+      "mode": "plan_only",
+      "jobs_submitted": false,
+      "atom_count": 423,
+      "replica_count": 1,
+      "maximum_parallel_cpus": 32,
+      "maximum_parallel_memory_gib": 128.0,
+      "estimated_selected_cpu_hours": 28.310550145147765,
+      "estimated_selected_wall_hours_lower_bound": 15.673274141895556,
+      "structural_qc_selected_frames": 1000,
+      "hydrogen_bond_selected_frames": 1000,
+      "ion_atmosphere_selected_frames": 1000,
+      "campaign_resource_plan_sha256": "4145694f2ae4113f16a49db8865ebe29758656431c6d6453527eee1260fce84e",
+      "sampling_plan_sha256": "ddc1ad0636152a0a49f733ec79fc8a4073f573a6dab62c200a2e80351ae1f2da",
+      "stderr_bytes": 0
+    },
+    "compute_smoke": {
+      "slurm_job_id": "8298139",
+      "state": "COMPLETED",
+      "exit_code": "0:0",
+      "elapsed": "00:00:01",
+      "allocated_cpus": 1,
+      "requested_memory": "2G",
+      "command": "preflight-system --hash-content",
+      "manifest_sha256": "0269ad4d58a7045214dd9efcea3d2caf3010a62bf1d4942386bc234ca5d162ac",
+      "stderr_bytes": 0,
+      "technical_status": "complete",
+      "scientific_status": "not evaluated"
+    },
+    "technical_status": "complete",
+    "scientific_status": "not evaluated"
+  },
+  "acceptance": {
+    "wheel_entry_point": "pass",
+    "local_plan_only": "pass",
+    "local_full_workflow": "pass",
+    "apollo_slurm_plan_only": "pass",
+    "apollo_compute_node_smoke": "pass",
+    "report_hashes": "pass",
+    "frame_and_resource_accounting": "pass",
+    "unexpected_errors": "none",
+    "technical_status": "complete",
+    "scientific_status": "not evaluated"
+  }
+}
