@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Vectorize exact ion-atmosphere nearest-target distances for orthogonal
+  periodic cells, retain exact finite-lattice enumeration for skewed triclinic
+  cells, and reuse geometry for target labels that declare the same atom set.
+- Read only planner-selected ion-atmosphere frames even when another module
+  requires continuous molecular unwrapping. Exact pairwise minimum-image
+  distances are invariant to independent integer-lattice translations, so
+  local ion shells no longer pay for unnecessary whole-system reconstruction.
 - Replace convergence and population-validity pass/fail fields with quantitative
   RMSD/Rg diagnostics. Reports now retain each ESS value, a configurable ESS
   reference, above/equal/below-reference counts, split-mean statistics, and
