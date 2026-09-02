@@ -138,6 +138,25 @@ class HydrogenBondComparisonTests(unittest.TestCase):
         self.assertAlmostEqual(row["condition_occupancies"]["control"], 0.5)
         self.assertAlmostEqual(row["condition_occupancies"]["lesion"], 0.5)
 
+    def test_accepts_lazy_spatial_observed_union_with_packed_frames(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            control = packed_report("DG", [("r1", [0]), ("r1", [])])
+            lesion = packed_report("8OG", [("r1", [0]), ("r1", [0])])
+            control["frame_matrix_representation"] = (
+                "sparse_spatial_observed_union_v3"
+            )
+            lesion["frame_matrix_representation"] = (
+                "sparse_spatial_observed_union_v3"
+            )
+            path = self.write_request(root, control, lesion)
+            result = compare_hydrogen_bond_reports_file(path)
+        self.assertEqual(result["technical_status"], "complete")
+        self.assertEqual(result["error_count"], 0)
+        row = result["group_comparisons"][0]
+        self.assertAlmostEqual(row["condition_occupancies"]["control"], 0.5)
+        self.assertAlmostEqual(row["condition_occupancies"]["lesion"], 1.0)
+
     def test_rejects_mismatched_interaction_scope(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -213,6 +232,45 @@ class HydrogenBondComparisonTests(unittest.TestCase):
         self.assertEqual(result["condition_summaries"][0]["system_id"], "D0")
         self.assertEqual(result["condition_summaries"][1]["system_id"], "D1")
         self.assertEqual(row["condition_occupancies"], {"control": 0.5, "lesion": 0.0})
+
+    def test_filters_lazy_spatial_multi_system_report_with_implicit_zeros(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            multi = packed_report(
+                "DG", [("r1", [0]), ("r1", []), ("r1", []), ("r1", [])]
+            )
+            multi["frame_matrix_representation"] = (
+                "sparse_spatial_observed_union_v3"
+            )
+            for frame, system_id in zip(
+                multi["frame_bond_matrix"], ["D0", "D0", "D1", "D1"]
+            ):
+                frame["system_id"] = system_id
+            (root / "multi.json").write_text(json.dumps(multi), encoding="utf-8")
+            request = {
+                "comparison_id": "lazy-multi-system-filter",
+                "conditions": [
+                    {
+                        "condition_id": "control",
+                        "system_id": "D0",
+                        "report": "multi.json",
+                    },
+                    {
+                        "condition_id": "lesion",
+                        "system_id": "D1",
+                        "report": "multi.json",
+                    },
+                ],
+                "expected_interaction_scope": "protein_nucleic_acid",
+            }
+            path = root / "request.json"
+            path.write_text(json.dumps(request), encoding="utf-8")
+            result = compare_hydrogen_bond_reports_file(path)
+        self.assertEqual(result["technical_status"], "complete")
+        row = result["group_comparisons"][0]
+        self.assertEqual(
+            row["condition_occupancies"], {"control": 0.5, "lesion": 0.0}
+        )
 
     def test_requires_system_id_for_multi_system_report(self):
         with tempfile.TemporaryDirectory() as temporary:
