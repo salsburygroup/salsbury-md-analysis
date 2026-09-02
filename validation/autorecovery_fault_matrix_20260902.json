@@ -1,0 +1,173 @@
+{
+  "acceptance_schema": "salsbury-autorecovery-fault-matrix-v1",
+  "all_expected_outcomes_observed": true,
+  "default_policy": {
+    "autorecovery": true,
+    "maximum_task_attempts": 2
+  },
+  "failure_policy": "retry only the failed task within the original campaign and resource limits; require a valid declared completion report before releasing success-dependent work",
+  "faults": {
+    "corrupt": {
+      "attempt_count": 2,
+      "attempt_statuses": [
+        "failed",
+        "complete"
+      ],
+      "child_exit_codes": [
+        0,
+        0
+      ],
+      "completion_reports_valid": [
+        false,
+        true
+      ],
+      "exit_codes": [
+        66,
+        0
+      ],
+      "status": "recovered_complete"
+    },
+    "failed-dependent": {
+      "attempt_count": 0,
+      "attempt_statuses": [],
+      "child_exit_codes": [],
+      "completion_reports_valid": [],
+      "exit_codes": [],
+      "status": "skipped_dependency"
+    },
+    "missing": {
+      "attempt_count": 2,
+      "attempt_statuses": [
+        "failed",
+        "complete"
+      ],
+      "child_exit_codes": [
+        0,
+        0
+      ],
+      "completion_reports_valid": [
+        false,
+        true
+      ],
+      "exit_codes": [
+        66,
+        0
+      ],
+      "status": "recovered_complete"
+    },
+    "nonzero": {
+      "attempt_count": 2,
+      "attempt_statuses": [
+        "failed",
+        "complete"
+      ],
+      "child_exit_codes": [
+        7,
+        0
+      ],
+      "completion_reports_valid": [
+        null,
+        true
+      ],
+      "exit_codes": [
+        7,
+        0
+      ],
+      "status": "recovered_complete"
+    },
+    "oom": {
+      "attempt_count": 2,
+      "attempt_statuses": [
+        "failed",
+        "complete"
+      ],
+      "child_exit_codes": [
+        137,
+        0
+      ],
+      "completion_reports_valid": [
+        null,
+        true
+      ],
+      "exit_codes": [
+        137,
+        0
+      ],
+      "status": "recovered_complete"
+    },
+    "persistent": {
+      "attempt_count": 2,
+      "attempt_statuses": [
+        "failed",
+        "failed"
+      ],
+      "child_exit_codes": [
+        9,
+        9
+      ],
+      "completion_reports_valid": [
+        null,
+        null
+      ],
+      "exit_codes": [
+        9,
+        9
+      ],
+      "status": "failed"
+    },
+    "recovered-dependent": {
+      "attempt_count": 1,
+      "attempt_statuses": [
+        "complete"
+      ],
+      "child_exit_codes": [
+        0
+      ],
+      "completion_reports_valid": [
+        true
+      ],
+      "exit_codes": [
+        0
+      ],
+      "status": "complete"
+    },
+    "timeout": {
+      "attempt_count": 2,
+      "attempt_statuses": [
+        "timed_out",
+        "complete"
+      ],
+      "child_exit_codes": [
+        -15,
+        0
+      ],
+      "completion_reports_valid": [
+        null,
+        true
+      ],
+      "exit_codes": [
+        -15,
+        0
+      ],
+      "status": "recovered_complete"
+    }
+  },
+  "optout": {
+    "attempt_count": 1,
+    "attempt_statuses": [
+      "failed"
+    ],
+    "child_exit_codes": [
+      7
+    ],
+    "completion_reports_valid": [
+      null
+    ],
+    "exit_codes": [
+      7
+    ],
+    "status": "failed"
+  },
+  "scientific_status": "not applicable; execution-control test only",
+  "technical_status": "complete"
+}

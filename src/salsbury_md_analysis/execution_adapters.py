@@ -2380,9 +2380,16 @@ def _render_resource_bounded_submit(
             options.append('--dependency="' + ",".join(clauses) + '"')
         command_options = " ".join(options)
         script = shlex.quote(str(item["script"]))
+        completion_report_arguments = " ".join(
+            shlex.quote(str(value))
+            for value in item.get("completion_reports", [])
+        )
+        if completion_report_arguments:
+            completion_report_arguments = " " + completion_report_arguments
         lines.extend([
             f'{variable}=$("$SUBMIT_COMMAND" {command_options} '
-            f'"$RECOVERY_RUNNER" "$ROOT"/{script})',
+            f'"$RECOVERY_RUNNER" "$ROOT"/{script}'
+            f'{completion_report_arguments})',
             f'{variable}="${{{variable}%%;*}}"',
         ])
         if lane_index >= 0:
@@ -2415,6 +2422,7 @@ def _render_task_recovery_runner(
     return f'''#!/usr/bin/env bash
 set -uo pipefail
 TASK="${{1:?worker script is required}}"
+shift
 AUTORECOVERY_ENABLED={enabled}
 MAXIMUM_TASK_ATTEMPTS={maximum_task_attempts}
 RESTART_COUNT="${{SLURM_RESTART_COUNT:-0}}"
@@ -2438,6 +2446,28 @@ record_status() {{
   printf '{{"event":"%s","task":"%s","attempt":%s,"restart_count":%s,"exit_code":%s,"stdout":"%s","stderr":"%s"}}\n' \
     "$event" "${{TASK##*/}}" "$attempt" "$RESTART_COUNT" "$exit_code" \
     "${{ATTEMPT_STDOUT##*/}}" "${{ATTEMPT_STDERR##*/}}" >> "$STATUS_FILE"
+}}
+validate_completion_reports() {{
+  if [[ "$#" -eq 0 ]]; then
+    return 0
+  fi
+  python3 - "$ROOT" "$@" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1]).resolve()
+for name in sys.argv[2:]:
+    path = (root / name).resolve()
+    if root not in path.parents or not path.is_file():
+        raise SystemExit(1)
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise SystemExit(1)
+    if not isinstance(report, dict) or report.get("technical_status") != "complete":
+        raise SystemExit(1)
+PY
 }}
 handle_timeout_signal() {{
   trap - USR1 TERM
@@ -2471,15 +2501,20 @@ for ((attempt=1; attempt<=remaining; attempt++)); do
   bash "$TASK" > "$ATTEMPT_STDOUT" 2> "$ATTEMPT_STDERR" &
   CHILD_PID=$!
   wait "$CHILD_PID"
-  exit_code=$?
+  child_exit_code=$?
   CHILD_PID=""
   cat "$ATTEMPT_STDOUT"
   cat "$ATTEMPT_STDERR" >&2
-  if [[ "$exit_code" -eq 0 ]]; then
+  exit_code="$child_exit_code"
+  if [[ "$child_exit_code" -eq 0 ]] && ! validate_completion_reports "$@"; then
+    exit_code=66
+    record_status output_contract_failed "$exit_code" "$global_attempt"
+  elif [[ "$exit_code" -eq 0 ]]; then
     record_status complete 0 "$global_attempt"
     exit 0
+  else
+    record_status failed "$exit_code" "$global_attempt"
   fi
-  record_status failed "$exit_code" "$global_attempt"
 done
 exit "$exit_code"
 '''
@@ -3296,8 +3331,9 @@ def prepare_execution_artifacts(
             "completion without requiring upstream success"
         ),
         "task_success_policy": (
-            "a task succeeds only with exit code zero; skip only tasks whose own "
-            "depends_on_task_ids failed or timed out, and continue unrelated tasks"
+            "a task succeeds only with exit code zero and valid declared "
+            "completion reports; skip only tasks whose own depends_on_task_ids "
+            "failed or timed out, and continue unrelated tasks"
         ),
         "autorecovery": {
             "enabled": bool(execution.get("autorecovery", True)),
@@ -3578,6 +3614,19 @@ def _run_local_task(
                     except subprocess.TimeoutExpired:
                         os.killpg(process.pid, signal.SIGKILL)
                         exit_code = process.wait()
+            child_exit_code = exit_code
+            completion_reports_valid = None
+            if (
+                not timed_out
+                and child_exit_code == 0
+                and isinstance(completion_reports, list)
+                and completion_reports
+            ):
+                completion_reports_valid = _reports_complete(
+                    root, [str(value) for value in completion_reports]
+                )
+                if not completion_reports_valid:
+                    exit_code = 66
             attempt_status = (
                 "timed_out" if timed_out else
                 "complete" if exit_code == 0 else "failed"
@@ -3586,6 +3635,9 @@ def _run_local_task(
                 "attempt_number": attempt_number,
                 "status": attempt_status,
                 "exit_code": exit_code,
+                "child_exit_code": child_exit_code,
+                "completion_reports_valid": completion_reports_valid,
+                "completion_report_paths": list(completion_reports),
                 "wall_seconds": time.monotonic() - attempt_start,
                 "allowed_wall_minutes": timeout_seconds / 60.0,
                 "stdout": str(stdout_path.relative_to(root)),

@@ -1635,6 +1635,46 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertEqual(report["autorecovery"]["recovered_task_count"], 1)
         self.assertTrue(downstream_exists)
 
+    def test_local_runner_retries_zero_exit_with_missing_report(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "logs").mkdir()
+            worker = root / "missing-report.slurm"
+            worker.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ ! -f first-attempt ]]; then touch first-attempt; exit 0; fi\n"
+                "printf '{\"technical_status\":\"complete\"}\\n' > report.json\n",
+                encoding="utf-8",
+            )
+            plan = {
+                "local_execution_plan_schema": "salsbury-local-execution-plan-v6",
+                "dependency_model": "task_dag_v1",
+                "maximum_parallel_cpus": 1,
+                "maximum_parallel_memory_gib": 1,
+                "maximum_campaign_wall_hours": 1,
+                "autorecovery": True,
+                "maximum_task_attempts": 2,
+                "phases": [{"phase_id": "first", "tasks": [{
+                    "task_id": "missing-report",
+                    "depends_on_task_ids": [], "wait_for_task_ids": [],
+                    "script": "missing-report.slurm", "array_task_id": None,
+                    "cpu_slots": 1, "requested_memory_gib": 1,
+                    "requested_wall_minutes": 1,
+                    "completion_reports": ["report.json"],
+                }]}],
+            }
+            (root / "local-execution-plan.json").write_text(
+                json.dumps(plan), encoding="utf-8"
+            )
+            report = run_local_workflow(root)
+            task = report["phase_reports"][0]["tasks"][0]
+        self.assertEqual(task["status"], "recovered_complete")
+        self.assertEqual([row["exit_code"] for row in task["attempts"]], [66, 0])
+        self.assertEqual(
+            [row["completion_reports_valid"] for row in task["attempts"]],
+            [False, True],
+        )
+
     def test_local_runner_respects_explicit_autorecovery_opt_out(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1699,6 +1739,37 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertEqual(
             [row["event"] for row in statuses],
             ["started", "failed", "started", "complete"],
+        )
+
+    def test_slurm_recovery_wrapper_requires_declared_complete_report(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            worker = root / "worker.slurm"
+            launcher_root = root / "launcher-copy"
+            launcher_root.mkdir()
+            runner = launcher_root / "run-task-with-recovery.sh"
+            worker.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ ! -f once ]]; then touch once; exit 0; fi\n"
+                "printf '{\"technical_status\":\"complete\"}\\n' > report.json\n",
+                encoding="utf-8",
+            )
+            runner.write_text(_render_task_recovery_runner(
+                autorecovery=True, maximum_task_attempts=2
+            ), encoding="utf-8")
+            result = subprocess.run(
+                ["bash", str(runner), str(worker), "report.json"],
+                cwd=root, check=False,
+            )
+            statuses = [
+                json.loads(line)
+                for line in (root / "autorecovery-status" / "local.jsonl")
+                .read_text().splitlines()
+            ]
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(
+            [row["event"] for row in statuses],
+            ["started", "output_contract_failed", "started", "complete"],
         )
 
     def test_task_dag_local_runner_continues_unrelated_work_after_failure(self):

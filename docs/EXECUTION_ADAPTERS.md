@@ -155,6 +155,12 @@ under `local-execution-status/`. A task that succeeds after a failure is labeled
 `recovered_complete`, and its accepted report can release scientific
 dependents.
 
+Exit code zero is necessary but insufficient when a task declares completion
+reports. The local and Slurm recovery wrappers require every declared JSON file
+to exist, parse, and carry `technical_status: complete`. Missing, invalid, or
+failed reports produce recovery exit code 66 and cannot release a
+success-dependent task.
+
 The Slurm launcher writes the same attempt events under
 `autorecovery-status/`. Ordinary nonzero exits are retried inside the existing
 allocation. When Slurm sends the generated pre-timeout signal, the wrapper
