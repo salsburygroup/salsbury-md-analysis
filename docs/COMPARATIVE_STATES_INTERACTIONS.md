@@ -94,31 +94,50 @@ D--H--A >= 150°. It also records a prespecified 3.0/3.2/3.5 Å by
 120/135/150° sensitivity grid. A `custom_v1` policy permits a different primary
 rule and sensitivity grid, with a 24-combination resource gate. Geometry is
 always labeled as donor--acceptor distance; it is never silently mixed with a
-hydrogen--acceptor cutoff. The complete candidate dictionary is frozen before
-frame evaluation and retained even for zero-occupancy candidates. This avoids
-hidden outcome-dependent feature selection.
+hydrogen--acceptor cutoff. In the default
+`sparse_spatial_observed_union_v3` path, the complete topology-eligible universe
+is defined by compact donor--hydrogen groups and acceptor endpoints. Its
+Cartesian product remains implicit: it is neither stored nor scanned on every
+frame. An exact periodic cell list finds only endpoints within the largest
+declared distance cutoff, and angle evaluation is limited to those nearby
+pairs. A stable candidate identity is materialized only if it satisfies at
+least one prespecified cutoff in at least one selected frame. Candidates absent
+from a frame are exact zeros; topology-eligible identities absent from the
+pooled observed dictionary are exact global zeros. Reports retain exact
+conceptual and observed counts, interaction-stratum counts, and geometry-work
+avoidance. This avoids hidden outcome-dependent feature selection without a
+million-entry Python dictionary.
 
-For large direct-bond dictionaries, `sparse_implicit_zero_v1` evaluates fixed
-candidate chunks and stores only present candidate indices and geometry. An
-absent index is explicitly an evaluated zero, not missing data. The legacy
-`dense_v1` representation remains the default for compatibility. Sparse output
-reduces report and intermediate count storage; it does not change the complete
-chemistry-defined candidate universe or eliminate the cost of evaluating it.
+Endpoint matching uses chain, residue number, insertion code, atom name, and
+alternate location, so atom-index shifts do not corrupt comparisons. The
+actual residue name and element are retained separately for every system. An
+unchanged endpoint keeps its chemical residue label; a position occupied by
+different homologous residues is labeled `POSITION_HARMONIZED` and retains a
+per-system residue-name map. Element disagreement at a matched position, or
+residue-name disagreement among replicas of one system, fails closed. These
+rules are system-agnostic and require no package-coded residue substitutions.
+
+The older `sparse_implicit_zero_v1` and `sparse_packed_v2` modes retain explicit
+candidate dictionaries for compatibility. `dense_v1` is legacy-only for small
+publication-locked dictionaries. Direct water contacts are excluded from this
+contract; the separate water-mediated module evaluates one-water bridge paths.
 
 `explicit_atoms_connectivity_v1` remains available for a publication lock or a
 question about named donor--hydrogen--acceptor triples.
 
 ## Comparing direct hydrogen bonds across conditions
 
-Run automatic discovery separately for each condition when topologies differ.
-Each report must use the same interaction scope and cutoff definition, but its
-candidate universe is allowed to reflect that condition's chemistry. Use more
-than one scope when the scientific system requires it. For example, separate
-`protein_nucleic_acid` and `protein_protein` reports prevent an interface-focused
-search from silently omitting intraprotein active-site interactions.
+For homologous systems, prefer one multi-system discovery report and select the
+two conditions by `system_id`. This guarantees that a bond observed in either
+condition has the same stable candidate identity in both, while a missing
+per-frame event remains an exact zero. Each comparison must use the same
+interaction scope and cutoff definition. The `all_solute` scope includes and
+labels protein--protein, protein--nucleic-acid, nucleic-acid--protein, and
+nucleic-acid--nucleic-acid strata; it does not include water or ions.
 
-`compare-hydrogen-bonds` consumes exactly two technically complete
-`sparse_implicit_zero_v1` discovery reports. It collapses all explicit
+`compare-hydrogen-bonds` consumes two condition selections from technically
+complete sparse discovery reports, including
+`sparse_spatial_observed_union_v3`. It collapses all explicit
 hydrogens bonded to the same donor heavy atom before calculating occupancy.
 Thus interchangeable amide or amine hydrogens can satisfy one chemical
 donor--acceptor interaction in a frame, but never count it twice. Condition

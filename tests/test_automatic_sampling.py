@@ -63,20 +63,47 @@ def _write_system(root: Path, frames_per_replica: int = 12_000) -> Path:
 
 
 class AutomaticSamplingTests(unittest.TestCase):
-    def test_hydrogen_bond_runtime_uses_candidate_dimension(self):
+    def test_hydrogen_bond_runtime_uses_spatial_endpoint_dimension(self):
         dimensions = self._reference_dimensions(frames_per_replica=100)
         dimensions["hydrogen_bond_candidate_planning"] = {
             "status": "complete",
             "common_candidate_count": 129_280,
             "mean_candidate_count_per_replica": 129_280.0,
+            "maximum_donor_hydrogen_group_count_per_system": 2_328,
+            "maximum_acceptor_count_per_system": 2_368,
         }
         multiplier, basis = _runtime_workload_multiplier(
             sampling_profile("hydrogen_bond_discovery"), dimensions
         )
-        self.assertEqual(multiplier, 2.0)
+        self.assertAlmostEqual(multiplier, 2.0)
+        self.assertEqual(basis["spatial_endpoint_count"], 4_696)
+        self.assertEqual(basis["reference_spatial_endpoint_count"], 2_348)
+        self.assertNotIn("observed_candidate_count", basis)
+        self.assertNotIn("implicit_candidate_count", basis)
         self.assertEqual(
             basis["dimension"],
-            "mean full per-replica donor-hydrogen-acceptor candidates",
+            "spatial donor-H and acceptor endpoint work proxy",
+        )
+
+    def test_hydrogen_bond_runtime_uses_catalog_spatial_reference(self):
+        dimensions = self._reference_dimensions(frames_per_replica=100)
+        dimensions["hydrogen_bond_candidate_planning"] = {
+            "status": "complete",
+            "common_candidate_count": 1_000_000,
+            "maximum_donor_hydrogen_group_count_per_system": 750,
+            "maximum_acceptor_count_per_system": 750,
+        }
+        measured = {
+            "maximum_measured_spatial_endpoint_count_per_system": 1_000,
+            "conservative_spatial_neighbor_pairs_per_selected_frame": 800.0,
+        }
+        multiplier, basis = _runtime_workload_multiplier(
+            sampling_profile("hydrogen_bond_discovery"), dimensions, measured
+        )
+        self.assertEqual(multiplier, 1.5)
+        self.assertEqual(basis["reference_spatial_endpoint_count"], 1_000)
+        self.assertEqual(
+            basis["reference_spatial_neighbor_pairs_per_selected_frame"], 800.0
         )
 
     def test_feature_aware_pca_basis_plan_separates_basis_and_projection(self):

@@ -72,6 +72,9 @@ def _entry_from_sidecar(path: Path) -> Dict[str, object]:
             "basis_selected_physical_frames", "basis_member_observations",
             "model_fit_observations", "model_fit_equivalent_physical_frames",
             "full_assignment_observations", "silhouette_evaluation_observations",
+            "conceptual_candidate_frame_count", "spatial_neighbor_pair_count",
+            "explicit_geometry_evaluation_count", "present_event_count",
+            "maximum_spatial_endpoint_count_per_system",
         )
         if evidence.get(key) is not None
     }
@@ -310,6 +313,11 @@ def build_resource_calibration_catalog(
                 "maximum technically completed selected physical frames only; "
                 "timeout target coverage is retained but never counted complete"
             ),
+            "spatial_hydrogen_bond_work": (
+                "completed spatial neighbor-pair and exact geometry counts are "
+                "retained as the runtime work unit; the implicit Cartesian "
+                "candidate-frame count remains a correctness gate only"
+            ),
         },
         "scientific_status": "runtime evidence only",
     }
@@ -400,6 +408,20 @@ def load_resource_calibration_catalog(
             raise ResourceCalibrationError("resource calibration module/frame fields are invalid")
         if isinstance(observations, bool) or not isinstance(observations, int) or observations <= 0:
             raise ResourceCalibrationError("resource calibration observation coverage is invalid")
+        for field in (
+            "conceptual_candidate_frame_count", "spatial_neighbor_pair_count",
+            "explicit_geometry_evaluation_count", "present_event_count",
+            "maximum_spatial_endpoint_count_per_system",
+        ):
+            value = row.get(field)
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+            ):
+                raise ResourceCalibrationError(
+                    f"resource calibration {field} must be a nonnegative integer"
+                )
         memory = row.get("maximum_resident_memory_mib")
         if memory is not None:
             _positive_number(memory, "maximum_resident_memory_mib")
@@ -497,6 +519,31 @@ def load_resource_calibration_catalog(
             int(row["symmetry_expanded_observations"])
             for row in complete_rows
         ]
+        spatial_rows = [
+            row for row in complete_rows
+            if int(row.get("spatial_neighbor_pair_count", 0)) > 0
+        ]
+        spatial_cpu_rates = [
+            float(row["total_cpu_seconds"])
+            / int(row["spatial_neighbor_pair_count"])
+            for row in spatial_rows
+        ]
+        spatial_pairs_per_frame = [
+            int(row["spatial_neighbor_pair_count"])
+            / int(row["selected_source_physical_frames"])
+            for row in spatial_rows
+        ]
+        geometry_evaluations_per_frame = [
+            int(row["explicit_geometry_evaluation_count"])
+            / int(row["selected_source_physical_frames"])
+            for row in complete_rows
+            if int(row.get("explicit_geometry_evaluation_count", 0)) > 0
+        ]
+        spatial_endpoint_counts = [
+            int(row["maximum_spatial_endpoint_count_per_system"])
+            for row in complete_rows
+            if int(row.get("maximum_spatial_endpoint_count_per_system", 0)) > 0
+        ]
         memory_replacement_qualified = (
             len(completed_memories)
             >= MEMORY_REPLACEMENT_MIN_COMPLETE_MEASUREMENTS
@@ -524,6 +571,36 @@ def load_resource_calibration_catalog(
         result[module_id] = {
             "module_id": module_id,
             "conservative_cpu_seconds_per_frame": max(planning_rates),
+            "conservative_cpu_seconds_per_spatial_neighbor_pair": (
+                max(spatial_cpu_rates) if spatial_cpu_rates else None
+            ),
+            "conservative_spatial_neighbor_pairs_per_selected_frame": (
+                max(spatial_pairs_per_frame) if spatial_pairs_per_frame else None
+            ),
+            "conservative_explicit_geometry_evaluations_per_selected_frame": (
+                max(geometry_evaluations_per_frame)
+                if geometry_evaluations_per_frame else None
+            ),
+            "maximum_measured_spatial_neighbor_pair_count": max(
+                (int(row["spatial_neighbor_pair_count"]) for row in spatial_rows),
+                default=0,
+            ),
+            "maximum_measured_explicit_geometry_evaluation_count": max(
+                (
+                    int(row["explicit_geometry_evaluation_count"])
+                    for row in complete_rows
+                    if int(row.get("explicit_geometry_evaluation_count", 0)) > 0
+                ),
+                default=0,
+            ),
+            "maximum_measured_spatial_endpoint_count_per_system": (
+                max(spatial_endpoint_counts) if spatial_endpoint_counts else 0
+            ),
+            "spatial_work_measurement_count": len(spatial_rows),
+            "runtime_work_unit": (
+                "spatial_neighbor_pairs_v1" if spatial_rows else
+                "selected_physical_frames_v1"
+            ),
             "conservative_fixed_cpu_seconds": affine_fixed,
             "conservative_affine_cpu_seconds_per_frame": affine_rate,
             "maximum_completed_cpu_seconds_per_frame": (

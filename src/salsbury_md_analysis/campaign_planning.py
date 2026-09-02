@@ -8,7 +8,10 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Dict, List, Mapping, MutableMapping, Optional, Sequence
 
-from .automatic_sampling import _apply_campaign_direct_allocations
+from .automatic_sampling import (
+    _apply_campaign_direct_allocations,
+    _measured_reference_seconds_per_frame,
+)
 from .ensemble_parallelism import annotate_task_parallelism
 from .execution_adapters import load_slurm_profile
 from .frame_sampling import (
@@ -185,11 +188,15 @@ def _apply_measured_resource_calibrations(
                 raise CampaignPlanningError(
                     f"task {task.get('task_id')} {label} must be finite and positive"
                 )
-        measured_rate = (
-            float(calibration.get(
-                "conservative_affine_cpu_seconds_per_frame",
-                calibration["conservative_cpu_seconds_per_frame"],
+        reference_rate, measured_work_unit = (
+            _measured_reference_seconds_per_frame(module_id, calibration)
+        )
+        if measured_work_unit == "selected_physical_frames_v1":
+            reference_rate = float(calibration.get(
+                "conservative_affine_cpu_seconds_per_frame", reference_rate,
             ))
+        measured_rate = (
+            reference_rate
             * time_safety_factor
             * float(rate_multiplier)
         )
@@ -318,6 +325,13 @@ def _apply_measured_resource_calibrations(
             "maximum_measured_observation_count": calibration[
                 "maximum_measured_observation_count"
             ],
+            "runtime_work_unit": measured_work_unit,
+            "maximum_measured_spatial_neighbor_pair_count": calibration.get(
+                "maximum_measured_spatial_neighbor_pair_count", 0
+            ),
+            "maximum_measured_spatial_endpoint_count_per_system": calibration.get(
+                "maximum_measured_spatial_endpoint_count_per_system", 0
+            ),
             "maximum_measured_resident_memory_mib": calibration[
                 "maximum_resident_memory_mib"
             ],
@@ -2129,6 +2143,69 @@ def _apply_direct_project_sampling(
                 definition["projection_frame_selection"] = deepcopy(selection)
             if module_id == "secondary_structure":
                 definition["maximum_frames"] = int(row["selected_frame_count"])
+            if module_id == "hydrogen_bond_discovery":
+                dimensions = sampling_plan.get("dimensions")
+                candidate_plan = (
+                    dimensions.get("hydrogen_bond_candidate_planning")
+                    if isinstance(dimensions, Mapping) else None
+                )
+                candidate_count = (
+                    candidate_plan.get("common_candidate_count")
+                    if isinstance(candidate_plan, Mapping)
+                    and candidate_plan.get("status") == "complete" else None
+                )
+                selected_frame_count = row.get("selected_frame_count")
+                replica_rows = (
+                    candidate_plan.get("replica_dictionaries")
+                    if isinstance(candidate_plan, Mapping) else None
+                )
+                selected_by_replica = row.get(
+                    "planned_selected_frames_per_replica"
+                )
+                exact_per_system_work = None
+                if (
+                    isinstance(replica_rows, list)
+                    and isinstance(selected_by_replica, list)
+                    and len(replica_rows) == len(selected_by_replica)
+                    and replica_rows
+                ):
+                    values = []
+                    for candidate_row, selected in zip(
+                        replica_rows, selected_by_replica
+                    ):
+                        count = (
+                            candidate_row.get("raw_candidate_count")
+                            if isinstance(candidate_row, Mapping) else None
+                        )
+                        if (
+                            isinstance(count, bool)
+                            or not isinstance(count, int)
+                            or count <= 0
+                            or isinstance(selected, bool)
+                            or not isinstance(selected, int)
+                            or selected <= 0
+                        ):
+                            values = []
+                            break
+                        values.append(count * selected)
+                    if values:
+                        exact_per_system_work = sum(values)
+                if (
+                    isinstance(candidate_count, int)
+                    and not isinstance(candidate_count, bool)
+                    and candidate_count > 0
+                    and isinstance(selected_frame_count, int)
+                    and not isinstance(selected_frame_count, bool)
+                    and selected_frame_count > 0
+                ):
+                    # Keep the execution gate aligned with the final global
+                    # frame allocation, which may differ from the initial
+                    # per-module proposal.
+                    definition["maximum_feature_observations"] = (
+                        exact_per_system_work
+                        if exact_per_system_work is not None
+                        else candidate_count * selected_frame_count
+                    )
     dccm_row = rows.get("dccm")
     allosteric = definitions.get("allosteric_pathways")
     if isinstance(dccm_row, dict) and isinstance(allosteric, dict):

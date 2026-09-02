@@ -767,40 +767,45 @@ def _hydrogen_bond_feature_observation_gate(
         and isinstance(candidate_plan, dict)
         and candidate_plan.get("status") == "complete"
     ):
-        selected_frames = row.get("selected_frame_count")
-        candidate_rows = candidate_plan.get("replica_dictionaries")
+        replica_rows = candidate_plan.get("replica_dictionaries")
         selected_by_replica = row.get("planned_selected_frames_per_replica")
         if (
-            isinstance(candidate_rows, list)
+            isinstance(replica_rows, list)
             and isinstance(selected_by_replica, list)
-            and len(candidate_rows) == len(selected_by_replica)
-            and all(
-                isinstance(candidate, dict)
-                and isinstance(candidate.get("raw_candidate_count"), int)
-                and not isinstance(candidate.get("raw_candidate_count"), bool)
-                for candidate in candidate_rows
-            )
-            and all(
-                isinstance(value, int) and not isinstance(value, bool) and value > 0
-                for value in selected_by_replica
-            )
+            and len(replica_rows) == len(selected_by_replica)
+            and replica_rows
         ):
-            return sum(
-                int(candidate["raw_candidate_count"]) * int(frame_count)
-                for candidate, frame_count in zip(candidate_rows, selected_by_replica)
-            )
-        candidate_count = candidate_plan.get(
-            "mean_candidate_count_per_replica",
-            candidate_plan.get("common_candidate_count"),
-        )
+            total = 0
+            valid = True
+            for candidate_row, selected in zip(replica_rows, selected_by_replica):
+                candidate_count = (
+                    candidate_row.get("raw_candidate_count")
+                    if isinstance(candidate_row, dict) else None
+                )
+                if (
+                    isinstance(candidate_count, bool)
+                    or not isinstance(candidate_count, int)
+                    or candidate_count <= 0
+                    or isinstance(selected, bool)
+                    or not isinstance(selected, int)
+                    or selected <= 0
+                ):
+                    valid = False
+                    break
+                total += candidate_count * selected
+            if valid:
+                return total
+        selected_frames = row.get("selected_frame_count")
+        candidate_count = candidate_plan.get("common_candidate_count")
         if (
             isinstance(selected_frames, int)
             and not isinstance(selected_frames, bool)
             and selected_frames > 0
-            and isinstance(candidate_count, (int, float))
-            and not isinstance(candidate_count, bool) and candidate_count > 0
+            and isinstance(candidate_count, int)
+            and not isinstance(candidate_count, bool)
+            and candidate_count > 0
         ):
-            return math.ceil(selected_frames * float(candidate_count))
+            return selected_frames * candidate_count
     # Backward-compatible fail-safe for explicit manifests or older planning
     # records without a topology-derived candidate universe.
     return 2_000_000_000
@@ -1360,7 +1365,7 @@ def _generic_definitions(
             "maximum_feature_observations": (
                 _hydrogen_bond_feature_observation_gate(sampling_plan)
             ),
-            "output_mode": "sparse_packed_v2",
+            "output_mode": "sparse_spatial_observed_union_v3",
             "candidate_chunk_size": 4096,
             "candidate_harmonization": (
                 "per_system_full_with_chemical_identity_comparison_v2"

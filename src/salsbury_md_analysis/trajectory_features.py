@@ -17,6 +17,7 @@ from .columnar_artifacts import (
 )
 from .context import compile_project_context_file
 from .coordinates import CellVectors, CoordinateReadError, iter_coordinate_frames
+from .frame_sampling import frame_selected, plan_frame_selection, reader_frame_indices
 from .manifests import ManifestValidationError, load_json, resolve_manifest_path
 from .observables import minimum_group_distance
 from .periodic import (
@@ -307,6 +308,17 @@ def trajectory_features_project(
     system_path = Path(context["system_manifest_path"])
     system = load_json(system_path)
     coordinate_unit = str(project["coordinate_unit"])
+    selection_plan, _ = plan_frame_selection(
+        system,
+        system_path,
+        coordinate_unit,
+        {
+            "mode": "integer_stride_per_replica_v1",
+            "stride": int(settings["frame_stride"]),
+        },
+        frame_stride=1,
+        error_type=TrajectoryFeatureError,
+    )
     output_time_unit = project.get("time_unit")
     artifact_root_text = os.environ.get(
         "SALSBURY_MD_ANALYSIS_COLUMNAR_ARTIFACT_ROOT"
@@ -352,6 +364,7 @@ def trajectory_features_project(
             for segment in replica["segments"]:
                 segment_id = str(segment["segment_id"])
                 trajectory_path = resolve_manifest_path(str(segment["trajectory"]), system_path)
+                selected_indices = selection_plan[(system_id, replica_id, segment_id)]
                 axis = normalize_segment_axis(
                     segment, str(output_time_unit) if output_time_unit else None
                 )
@@ -366,13 +379,17 @@ def trajectory_features_project(
                     }
                     for _ in settings["features"]
                 ]
-                for raw_frame in iter_coordinate_frames(trajectory_path, coordinate_unit):
+                for raw_frame in iter_coordinate_frames(
+                    trajectory_path,
+                    coordinate_unit,
+                    reader_frame_indices(selected_indices, str(project["periodic_coordinate_policy"])),
+                ):
                     frame = processor.process(
                         raw_frame,
                         f"{system_id}/{replica_id}/{segment_id}/frame-{raw_frame.frame_index}",
                         reconstruction_atom_indices,
                     )
-                    if frame.frame_index % settings["frame_stride"]:
+                    if not frame_selected(frame.frame_index, selected_indices, 1):
                         continue
                     frame_indices.append(frame.frame_index)
                     coordinates = frame.coordinates_angstrom
