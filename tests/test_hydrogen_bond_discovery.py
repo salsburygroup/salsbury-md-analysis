@@ -12,6 +12,9 @@ from salsbury_md_analysis.hydrogen_bond_discovery import (
     discover_candidate_bonds,
     hydrogen_bond_discovery_project,
 )
+from salsbury_md_analysis.hydrogen_bond_comparison import (
+    compare_hydrogen_bond_reports_file,
+)
 from salsbury_md_analysis.hydrogen_bond_chemistry import infer_atom_chemical_roles
 from salsbury_md_analysis.hydrogen_bond_sparse import (
     CompiledSparseHydrogenBondEvaluator,
@@ -630,6 +633,32 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
             [row["candidate_count"] for row in report["frame_bond_matrix"]], [1, 1]
         )
         self.assertEqual(report["error_count"], 0)
+        with tempfile.TemporaryDirectory() as comparison_temporary:
+            comparison_root = Path(comparison_temporary)
+            (comparison_root / "report.json").write_text(
+                json.dumps(report), encoding="utf-8"
+            )
+            (comparison_root / "request.json").write_text(json.dumps({
+                "comparison_id": "generic-homologous-position-test",
+                "conditions": [
+                    {
+                        "condition_id": "control",
+                        "system_id": "control",
+                        "report": "report.json",
+                    },
+                    {
+                        "condition_id": "variant",
+                        "system_id": "variant",
+                        "report": "report.json",
+                    },
+                ],
+                "expected_interaction_scope": "protein_nucleic_acid",
+            }), encoding="utf-8")
+            comparison = compare_hydrogen_bond_reports_file(
+                comparison_root / "request.json"
+            )
+        self.assertEqual(comparison["technical_status"], "complete")
+        self.assertEqual(comparison["error_count"], 0)
 
     def test_automatic_project_has_default_cutoffs_and_sensitivity_grid(self):
         with tempfile.TemporaryDirectory() as temporary:
