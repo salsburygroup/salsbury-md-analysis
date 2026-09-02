@@ -540,6 +540,18 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
         self.assertEqual(report["evaluated_frame_count"], 2)
         self.assertEqual(report["conceptual_candidate_frame_count"], 2)
         self.assertEqual(
+            report["geometry_contract"]["coordinate_reconstruction"],
+            "none_selected_frames_evaluated_raw_wrapped",
+        )
+        self.assertEqual(
+            report["geometry_contract"]["project_periodic_coordinate_policy"],
+            "reject",
+        )
+        self.assertEqual(
+            report["geometry_contract"]["hydrogen_bond_coordinate_path"],
+            "raw_wrapped_frame_with_exact_minimum_image_vectors_v1",
+        )
+        self.assertEqual(
             [row["candidate_count"] for row in report["frame_bond_matrix"]], [1, 1]
         )
         self.assertEqual(report["error_count"], 0)

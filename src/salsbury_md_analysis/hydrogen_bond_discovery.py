@@ -1182,7 +1182,10 @@ def _hydrogen_bond_discovery_project_lazy_partial(
             "distance": "donor-acceptor minimum-image distance",
             "angle": "donor-hydrogen-acceptor angle at hydrogen",
             "distance_definition": "donor_acceptor_v1",
-            "coordinate_reconstruction": project["periodic_coordinate_policy"],
+            "coordinate_reconstruction": "none_selected_frames_evaluated_raw_wrapped",
+            "project_periodic_coordinate_policy": project[
+                "periodic_coordinate_policy"
+            ],
             "hydrogen_bond_coordinate_path": (
                 "raw_wrapped_frame_with_exact_minimum_image_vectors_v1"
             ),
