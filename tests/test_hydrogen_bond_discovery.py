@@ -6,6 +6,7 @@ from pathlib import Path
 from salsbury_md_analysis.atom_mapping import AtomRecord
 from salsbury_md_analysis.hydrogen_bond_discovery import (
     HydrogenBondDiscoveryError,
+    _chemical_position_key,
     discover_automatic_candidate_bonds,
     discover_candidate_bonds,
     hydrogen_bond_discovery_project,
@@ -33,6 +34,21 @@ def _atom(index, name, element, residue):
 
 
 class HydrogenBondDiscoveryTests(unittest.TestCase):
+    def test_comparison_identity_ignores_atom_indices_and_residue_names(self):
+        control = (
+            _atom(0, "N", "N", 1).as_dict(),
+            _atom(1, "H", "H", 1).as_dict(),
+            _atom(2, "O6", "O", 2).as_dict(),
+        )
+        variant = [dict(row) for row in control]
+        for index, row in enumerate(variant):
+            row["atom_index"] = 100 + index
+            row["serial"] = 900 + index
+        variant[2]["residue_name"] = "8OG"
+        self.assertEqual(
+            _chemical_position_key(control), _chemical_position_key(variant)
+        )
+
     def test_packed_sparse_frame_round_trip_preserves_cutoffs_and_geometry(self):
         cutoffs = [
             {"cutoff_id": "primary"},
@@ -374,7 +390,7 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
             packed_cutoff_rows["present_frame_count"].tolist(), [1]
         )
 
-    def test_automatic_multi_system_dictionary_can_be_harmonized_before_coordinates(self):
+    def test_automatic_multi_system_keeps_full_system_dictionaries_and_shared_view(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             common = [
@@ -451,17 +467,27 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
         self.assertEqual(report["candidate_count"], 1)
         self.assertEqual(report["candidate_harmonization"]["union_candidate_count"], 2)
         self.assertEqual(
-            report["candidate_harmonization"]["excluded_from_common_union_count"], 1
+            report["candidate_harmonization"]["system_candidate_counts"],
+            {"control": 2, "variant": 1},
         )
         self.assertEqual(report["evaluated_frame_count"], 2)
-        self.assertEqual(report["planned_feature_observation_count"], 2)
+        self.assertEqual(report["planned_feature_observation_count"], 3)
+        self.assertEqual(
+            [row["candidate_count"] for row in report["system_feature_spaces"]],
+            [2, 1],
+        )
         self.assertEqual(
             [row["candidate_count"] for row in report["frame_bond_matrix"]], [1, 1]
         )
         self.assertTrue(any(
-            issue["code"] == "HBOND_CANDIDATE_DICTIONARY_HARMONIZED"
+            issue["code"] == "HBOND_FULL_PER_SYSTEM_CANDIDATES_RETAINED"
             for issue in report["issues"]
         ))
+        absent = next(
+            row for row in report["candidate_harmonization"]["feature_statuses"]
+            if not row["comparable_across_all_systems"]
+        )
+        self.assertEqual(absent["status_by_system"]["variant"], "chemically_absent")
 
     def test_automatic_project_has_default_cutoffs_and_sensitivity_grid(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -68,6 +68,7 @@ class AutomaticSamplingTests(unittest.TestCase):
         dimensions["hydrogen_bond_candidate_planning"] = {
             "status": "complete",
             "common_candidate_count": 129_280,
+            "mean_candidate_count_per_replica": 129_280.0,
         }
         multiplier, basis = _runtime_workload_multiplier(
             sampling_profile("hydrogen_bond_discovery"), dimensions
@@ -75,7 +76,7 @@ class AutomaticSamplingTests(unittest.TestCase):
         self.assertEqual(multiplier, 2.0)
         self.assertEqual(
             basis["dimension"],
-            "common automatic donor-hydrogen-acceptor candidates",
+            "mean full per-replica donor-hydrogen-acceptor candidates",
         )
 
     def test_feature_aware_pca_basis_plan_separates_basis_and_projection(self):

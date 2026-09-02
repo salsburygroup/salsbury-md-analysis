@@ -760,6 +760,24 @@ def _dccm_candidates(
 def _hydrogen_bond_candidates(
     report: Mapping[str, object], path: Path
 ) -> List[Dict[str, object]]:
+    system_views = report.get("system_feature_spaces")
+    if isinstance(system_views, list):
+        findings: List[Dict[str, object]] = []
+        for view in system_views:
+            if not isinstance(view, dict):
+                continue
+            scoped = dict(report)
+            scoped.pop("system_feature_spaces", None)
+            scoped.update(view)
+            findings.extend(_hydrogen_bond_candidates(scoped, path))
+        comparative = dict(report)
+        comparative.pop("system_feature_spaces", None)
+        findings.extend(
+            candidate for candidate in _hydrogen_bond_candidates(comparative, path)
+            if candidate.get("family")
+            == "hydrogen_bond_discovery:pairwise_occupancy_difference"
+        )
+        return findings
     frame_rows = report.get("frame_bond_matrix")
     occupancy_rows = report.get("occupancies")
     candidates = report.get("candidate_dictionary")
@@ -812,8 +830,12 @@ def _hydrogen_bond_candidates(
 
     def label(bond_id: str) -> str:
         candidate = candidate_by_id.get(bond_id, {})
-        donor = atom_by_index.get(int(candidate.get("donor_atom_index", -1)), {})
-        acceptor = atom_by_index.get(int(candidate.get("acceptor_atom_index", -1)), {})
+        donor = candidate.get("donor_identity")
+        acceptor = candidate.get("acceptor_identity")
+        if not isinstance(donor, dict):
+            donor = atom_by_index.get(int(candidate.get("donor_atom_index", -1)), {})
+        if not isinstance(acceptor, dict):
+            acceptor = atom_by_index.get(int(candidate.get("acceptor_atom_index", -1)), {})
         if isinstance(donor, dict) and isinstance(acceptor, dict) and donor and acceptor:
             return f"{_atom_label(donor)} to {_atom_label(acceptor)}"
         return bond_id
@@ -892,6 +914,18 @@ def _hydrogen_bond_chemical_summary(
     set[tuple[str, str, int, str, str]],
     Dict[tuple[tuple[str, str, int, str, str], tuple[str, str, int, str, str]], float],
 ]:
+    views = report.get("system_feature_spaces")
+    if isinstance(views, list):
+        selected = [
+            row for row in views
+            if isinstance(row, dict) and row.get("system_id") == system_id
+        ]
+        if len(selected) != 1:
+            return set(), {}
+        scoped = dict(report)
+        scoped.pop("system_feature_spaces", None)
+        scoped.update(selected[0])
+        report = scoped
     atoms = report.get("atom_dictionary")
     candidates = report.get("candidate_dictionary")
     occupancies = report.get("occupancies")
