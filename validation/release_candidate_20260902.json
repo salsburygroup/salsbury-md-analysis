@@ -1,0 +1,74 @@
+{
+  "validation_schema": "salsbury-release-candidate-acceptance-v1",
+  "recorded_at": "2026-09-02",
+  "candidate_version": "0.1.1",
+  "candidate_source_head": "9515d4d1e738e984ef92998776d871423d03f07e",
+  "installation": {
+    "kind": "wheel installed in an empty Python 3.12 virtual environment",
+    "python": "3.12.13",
+    "numpy": "2.5.2",
+    "scipy": "1.18.1",
+    "scikit_learn": "1.9.0",
+    "installed_package_path": "site-packages/salsbury_md_analysis",
+    "wheel_sha256": "b03014a3edf969fa479eb9dfb0adbc5f83178b1e118411ad17cb9edfadb26e35",
+    "cli_help_passed": true
+  },
+  "fixture": {
+    "name": "NEMO zinc-finger tutorial",
+    "source_physical_frames": 1000,
+    "pdb_sha256": "fca08ab6ff7f2b43fe3e02d3da8fe94aaff3db5cab52fcfbbc02bb5e7cdc8ac4",
+    "psf_sha256": "85a5bf380f42f1c607d85e40ac91c6cbfcf60614e418ad667ea63a1e137a3aa0",
+    "trajectory_sha256": "bf7ad649bbb0d7a4bc37d3c2ce5a64140cf7de7b863cc9c6cebb789b80725524",
+    "configuration_sha256": "d0c91b31ed520acdb135ec1c7b59e6e71e6c2deddb0c148a48b9bc647d9fdba3"
+  },
+  "local_execution": {
+    "maximum_parallel_cpus": 2,
+    "maximum_parallel_memory_gib": 32.0,
+    "dependency_phase_count": 7,
+    "task_count": 31,
+    "completed_task_count": 31,
+    "recovered_task_count": 0,
+    "terminal_failure_count": 0,
+    "module_report_count": 28,
+    "valid_report_and_sidecar_count": 28,
+    "report_or_sidecar_hash_failure_count": 0,
+    "nonempty_stderr_count": 0,
+    "temporary_report_count": 0,
+    "summed_task_wall_seconds": 439.51371733425185,
+    "total_measured_cpu_hours": 0.11387891305555556,
+    "maximum_measured_resident_memory_mib": 410.40625,
+    "technical_status": "complete",
+    "scientific_status": "not evaluated"
+  },
+  "slurm_preview": {
+    "profile": "DEAC Apollo, 44 CPUs and 185 GiB per node",
+    "execution_started": false,
+    "jobs_submitted": false,
+    "planned_node_count": 1,
+    "configured_campaign_wall_hours": 1.0,
+    "planner_estimated_critical_path_hours": 3.0506978795632027,
+    "scheduler_time_limit_hours": 9.0,
+    "generated_schedule_feasibility_status": "infeasible",
+    "expected_refusal_code": "GENERATED_SCHEDULE_EXCEEDS_CAMPAIGN_WALL_LIMIT",
+    "interpretation": "The preview correctly refused a short workstation wall limit under the cluster minimum-reservation policy. No job was submitted."
+  },
+  "evidence_hashes": {
+    "local_execution_status_sha256": "5d97767b7a39e9758747822cc9badfc1b33d94a61ebd9e3f491a7d261323d0ec",
+    "planning_report_sha256": "e6b189bb6331d65fea444c56e384eb7f94e32d8ccb5e6c8afbf9b02436eaa385",
+    "campaign_resource_plan_sha256": "eb7c04a9e47952271dc10d8d73d2f2a695e79f10420b243bfeff9d3f6d31cd70",
+    "resource_and_frame_table_sha256": "e7b69a2936a27de7c73a1cdb6c29937fffcb9dd267ce39accef361b419ea0e1d",
+    "final_findings_summary_sha256": "4df0fc11d83d5b7d4afe1c835bc4469ab06bc670892ce7a0e5f77aef706421a4",
+    "prioritized_findings_sha256": "360b032d51cee583f0451d6217502df0952f225da9fc7c82250a17f75fe5a825",
+    "slurm_campaign_resource_plan_sha256": "296db5582ac76d244bfb9bcd60ca2b123c6b0299b568d3c480724f6df8ca6f04",
+    "slurm_execution_adapter_sha256": "20ff927938eaaef61279b8a8420ab712bccbb8360b8d7c47a825e0b6a2d5a146",
+    "slurm_submission_preview_sha256": "c27519a7be6d67fddf238ced12ea82f2ca252f8bec3968ba0d74e9f0131dbd9d"
+  },
+  "focused_tests": {
+    "quickstart_tests": 22,
+    "failures": 0,
+    "errors": 0
+  },
+  "interpretation": "This record verifies wheel installation, terminal entry points, local execution, output contracts, report hashes, resource accounting, and a no-submission Slurm preview. It does not establish sampling adequacy, convergence, kinetics, mechanism, or biological importance.",
+  "technical_status": "complete",
+  "scientific_status": "not evaluated"
+}
