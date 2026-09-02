@@ -681,6 +681,29 @@ class QuickstartTests(unittest.TestCase):
             125_001 * 18_528,
         )
 
+    def test_hydrogen_bond_gate_sums_full_per_replica_candidate_work(self):
+        sampling_plan = {
+            "dimensions": {
+                "hydrogen_bond_candidate_planning": {
+                    "status": "complete",
+                    "mean_candidate_count_per_replica": 150.0,
+                    "replica_dictionaries": [
+                        {"system_id": "A", "replica_id": "r1", "raw_candidate_count": 100},
+                        {"system_id": "B", "replica_id": "r1", "raw_candidate_count": 200},
+                    ],
+                },
+            },
+            "method_plans": [{
+                "module_id": "hydrogen_bond_discovery",
+                "selected_frame_count": 30,
+                "planned_selected_frames_per_replica": [10, 20],
+            }],
+        }
+        self.assertEqual(
+            _hydrogen_bond_feature_observation_gate(sampling_plan),
+            100 * 10 + 200 * 20,
+        )
+
     def test_composition_distinguishes_dna_from_protein_and_detects_mixed_complex(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
