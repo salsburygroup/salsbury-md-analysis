@@ -518,9 +518,24 @@ class PeriodicFrameProcessor:
         replica: Mapping[str, object],
         system_manifest_path: Path,
         atom_count: int,
+        *,
+        independent_frames: bool = False,
     ) -> "PeriodicFrameProcessor":
-        policy = str(project.get("periodic_coordinate_policy"))
-        settings = reconstruction_settings(project, policy)
+        declared_policy = str(project.get("periodic_coordinate_policy"))
+        settings = reconstruction_settings(project, declared_policy)
+        policy = (
+            "make_whole"
+            if independent_frames and declared_policy == "unwrap_continuous"
+            else declared_policy
+        )
+        if policy == "make_whole" and declared_policy == "unwrap_continuous":
+            settings = {
+                key: settings[key]
+                for key in (
+                    "maximum_bond_length_angstrom",
+                    "cycle_closure_tolerance_angstrom",
+                )
+            }
         if policy == _PREPROCESSED_POLICY:
             declared = project.get("preprocessed_coordinate_source")
             if not isinstance(declared, dict):
