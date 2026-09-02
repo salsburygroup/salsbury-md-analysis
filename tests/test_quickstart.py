@@ -691,6 +691,20 @@ class QuickstartTests(unittest.TestCase):
                 workers[1],
             )
             self.assertIn(
+                "except (OSError, TypeError, ValueError):",
+                workers[1],
+            )
+            self.assertIn(
+                "printf 'Validated cache unavailable for common_pca; "
+                "recomputing from project inputs.\\n'\n",
+                workers[1],
+            )
+            self.assertNotIn(
+                "Validated cache unavailable for common_pca; "
+                "recomputing from project inputs.\\n' >&2",
+                workers[1],
+            )
+            self.assertIn(
                 "unset SALSBURY_MD_ANALYSIS_COMMON_PCA_REPORT", workers[1]
             )
             view_workers = [
