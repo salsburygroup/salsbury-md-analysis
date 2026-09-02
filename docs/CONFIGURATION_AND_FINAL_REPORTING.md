@@ -153,6 +153,12 @@ CPUs for 24 wall hours, or 768 raw CPU-hours before the configured utilization
 and pilot/finalization reserves. It does **not** mean 24 hours for every method.
 `time_safety_factor`, the two named memory-calibration factors, and
 `censored_timeout_safety_factor` are independently configurable.
+`autorecovery` defaults to `true`, and `maximum_task_attempts` defaults to `2`.
+Set `autorecovery` to `false` for single-attempt execution. The attempt limit is
+bounded from 1 through 5 and never expands the campaign wall deadline or a
+task's requested resources. Attempt logs and final recovery status are part of
+the local and Slurm execution reports; the analysis result schema does not
+change when a compatible retry succeeds.
 `well_calibrated_memory_uncertainty_factor` defaults to `1.0` for models backed
 by repeated completed evidence. `poorly_calibrated_memory_uncertainty_factor`
 defaults to `1.25` for weak, single-run, censored-only, or unmeasured models.
