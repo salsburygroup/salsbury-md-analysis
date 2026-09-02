@@ -119,6 +119,17 @@ memory. That bounded run establishes that the installed local adapter and its
 dependency order work without Slurm; it is not a runtime promise for larger
 systems and carries `scientific_status: not evaluated`.
 
+The fitted CPU model also passed two independent, multi-system TOP1
+hydrogen-bond runs that were not used for fitting. The D comparison used 15,996
+selected frames and consumed 70.5% of its planning upper bound. The T comparison
+used 4,134 selected frames and consumed 80.5%. The check used topology sizes,
+source lengths, selected-frame counts, and pre-coordinate endpoint counts. It
+did not read coordinates or materialize the Cartesian candidate set. The
+versioned calculation is in
+`validation/planner_final_holdout_acceptance_20260902.json`. Because both runs
+remained below the existing upper bounds, this check did not change the fitted
+coefficients.
+
 ### Automatic task recovery
 
 New campaigns retry a failed or timed-out task once by default:
