@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from salsbury_md_analysis.campaign_planning import (
+    _apply_direct_project_sampling,
     _apply_measured_resource_calibrations,
     _automatic_context_tasks,
     _campaign_infeasibility_detail,
@@ -13,6 +14,79 @@ from salsbury_md_analysis.campaign_planning import (
 
 
 class CampaignPlanningTests(unittest.TestCase):
+    def test_measured_hbond_overlay_uses_spatial_work_rate(self):
+        calibration = {
+            "hydrogen_bond_discovery": {
+                "conservative_cpu_seconds_per_frame": 999.0,
+                "conservative_cpu_seconds_per_spatial_neighbor_pair": 0.01,
+                "conservative_spatial_neighbor_pairs_per_selected_frame": 2_000.0,
+                "maximum_resident_memory_mib": 1024.0,
+                "catalog_sha256": "e" * 64,
+                "measurement_count": 1,
+                "complete_measurement_count": 1,
+                "censored_timeout_count": 0,
+                "calibration_evidence_status": "completed_execution",
+                "censored_timeout_safety_factor": 1.5,
+                "maximum_measured_selected_frame_count": 12,
+                "maximum_measured_observation_count": 12,
+                "maximum_measured_spatial_neighbor_pair_count": 24_000,
+                "maximum_measured_spatial_endpoint_count_per_system": 2_000,
+            }
+        }
+        task = {
+            "task_id": "direct:hydrogen_bond_discovery",
+            "module_id": "hydrogen_bond_discovery",
+            "cpu_seconds_per_physical_frame": 1.0,
+            "estimated_peak_memory_gib": 1.0,
+            "measured_cpu_rate_multiplier": 2.0,
+        }
+        _apply_measured_resource_calibrations(
+            [task], calibration, time_safety_factor=1.5,
+        )
+        self.assertEqual(task["cpu_seconds_per_physical_frame"], 60.0)
+        self.assertEqual(
+            task["measured_resource_calibration"]["runtime_work_unit"],
+            "spatial_neighbor_pairs_v1",
+        )
+
+    def test_direct_hbond_gate_tracks_postallocation_selected_frames(self):
+        project = {
+            "definitions": {
+                "hydrogen_bond_discovery": {
+                    "frame_selection": {"mode": "fixed_stride_v1"},
+                    "maximum_feature_observations": 125_001 * 2_028,
+                }
+            }
+        }
+        sampling_plan = {
+            "dimensions": {
+                "hydrogen_bond_candidate_planning": {
+                    "status": "complete",
+                    "common_candidate_count": 125_001,
+                }
+            },
+            "method_plans": [{
+                "module_id": "hydrogen_bond_discovery",
+                "selected_frame_count": 4_134,
+                "frame_selection": {
+                    "mode": "integer_stride_per_replica_v1",
+                    "stride": 29,
+                },
+            }],
+        }
+
+        _apply_direct_project_sampling(project, sampling_plan)
+
+        definition = project["definitions"]["hydrogen_bond_discovery"]
+        self.assertEqual(
+            definition["maximum_feature_observations"],
+            125_001 * 4_134,
+        )
+        self.assertEqual(
+            definition["frame_selection"],
+            {"mode": "integer_stride_per_replica_v1", "stride": 29},
+        )
+
     def test_small_system_memory_scaling_retains_floor_and_headroom(self):
         tasks = [{
             "task_id": "small:sasa",

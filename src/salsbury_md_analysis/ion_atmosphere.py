@@ -13,18 +13,14 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, Mapping, Sequence
 
+import numpy as np
+
 from .atom_mapping import AtomMappingError, read_topology_atoms
 from .context import compile_project_context_file
 from .coordinates import CoordinateReadError, iter_coordinate_frames
-from .frame_sampling import (
-    frame_selected, normalize_frame_selection, plan_frame_selection,
-    reader_frame_indices,
-)
+from .frame_sampling import frame_selected, normalize_frame_selection, plan_frame_selection
 from .manifests import ManifestValidationError, load_json, resolve_manifest_path
-from .periodic import (
-    PeriodicFrameProcessor, PeriodicReconstructionError,
-    minimum_image_displacement,
-)
+from .periodic import PeriodicReconstructionError, minimum_image_displacement
 from .replica_execution import ReplicaPartial
 from .replica_module_execution import (
     execute_replica_final_module,
@@ -115,6 +111,92 @@ def _distance(
     return math.sqrt(sum(value * value for value in image))
 
 
+def _nearest_distances(
+    ion_coordinates: Sequence[Sequence[float]],
+    target_coordinates: Sequence[Sequence[float]],
+    cell: object,
+    *,
+    maximum_pairs_per_chunk: int = 250_000,
+) -> tuple[float, ...]:
+    """Return exact nearest-target distances for every ion.
+
+    Orthogonal cells have a unique component-wise nearest lattice image in
+    their (possibly rotated) lattice basis, so NumPy can evaluate the complete
+    ion-by-target matrix without changing the geometry.  Skewed triclinic
+    cells retain the exact finite lattice enumeration in
+    :func:`minimum_image_displacement`; fractional-coordinate rounding alone
+    is not exact for that general case.
+    """
+
+    if (
+        isinstance(maximum_pairs_per_chunk, bool)
+        or not isinstance(maximum_pairs_per_chunk, int)
+        or maximum_pairs_per_chunk <= 0
+    ):
+        raise IonAtmosphereError("maximum_pairs_per_chunk must be a positive integer")
+    if cell is None:
+        raise IonAtmosphereError("ion-atmosphere analysis requires a periodic cell")
+    ions = np.asarray(ion_coordinates, dtype=np.float64)
+    targets = np.asarray(target_coordinates, dtype=np.float64)
+    cell_matrix = np.asarray(cell, dtype=np.float64)
+    if (
+        ions.ndim != 2 or ions.shape[1:] != (3,) or not ions.shape[0]
+        or targets.ndim != 2 or targets.shape[1:] != (3,) or not targets.shape[0]
+        or cell_matrix.shape != (3, 3)
+        or not np.all(np.isfinite(ions))
+        or not np.all(np.isfinite(targets))
+        or not np.all(np.isfinite(cell_matrix))
+    ):
+        raise IonAtmosphereError(
+            "ion and target coordinates and periodic cell must be finite three-dimensional arrays"
+        )
+
+    gram = cell_matrix @ cell_matrix.T
+    diagonal = np.diag(gram)
+    scale = float(np.max(diagonal))
+    if scale > 0.0 and np.all(np.abs(gram - np.diag(diagonal)) <= 1.0e-12 * scale):
+        try:
+            inverse_cell = np.linalg.inv(cell_matrix)
+        except np.linalg.LinAlgError as exc:  # pragma: no cover - guarded by cell validation
+            raise IonAtmosphereError("periodic cell is singular") from exc
+        ion_chunk_size = min(
+            len(ions), max(1, int(math.sqrt(maximum_pairs_per_chunk))),
+        )
+        nearest_squared = np.full(len(ions), np.inf, dtype=np.float64)
+        for ion_start in range(0, len(ions), ion_chunk_size):
+            ion_stop = min(len(ions), ion_start + ion_chunk_size)
+            ion_chunk = ions[ion_start:ion_stop]
+            target_chunk_size = max(
+                1, maximum_pairs_per_chunk // len(ion_chunk),
+            )
+            chunk_nearest = nearest_squared[ion_start:ion_stop]
+            for target_start in range(0, len(targets), target_chunk_size):
+                target_chunk = targets[
+                    target_start:target_start + target_chunk_size
+                ]
+                displacements = (
+                    target_chunk[np.newaxis, :, :]
+                    - ion_chunk[:, np.newaxis, :]
+                )
+                fractional = displacements @ inverse_cell
+                fractional -= np.floor(fractional + 0.5)
+                images = fractional @ cell_matrix
+                squared = (
+                    images[:, :, 0] * images[:, :, 0]
+                    + images[:, :, 1] * images[:, :, 1]
+                    + images[:, :, 2] * images[:, :, 2]
+                )
+                np.minimum(
+                    chunk_nearest, np.min(squared, axis=1), out=chunk_nearest,
+                )
+        return tuple(math.sqrt(float(value)) for value in nearest_squared)
+
+    return tuple(
+        min(_distance(ion, target, cell) for target in target_coordinates)
+        for ion in ion_coordinates
+    )
+
+
 def _summary(values: Sequence[float]) -> Dict[str, object]:
     if not values:
         return {"count": 0, "mean": None, "minimum": None, "maximum": None}
@@ -184,28 +266,19 @@ def _ion_atmosphere_project_serial(project_path: Path, hash_content: bool = Fals
                     raise IonAtmosphereError(
                         f"declared species {species} does not match topology elements {sorted(observed)}"
                     )
-            processor = PeriodicFrameProcessor.from_replica(project, replica, system_path, len(atoms))
             for segment in replica["segments"]:
                 assert isinstance(segment, dict)
                 segment_id = str(segment["segment_id"])
                 selected_indices = frame_plan[(system_id, replica_id, segment_id)]
                 trajectory_path = resolve_manifest_path(str(segment["trajectory"]), system_path)
-                processor.begin_segment(bool(segment.get("continuous_with_previous", False)))
                 evaluated = 0
                 for raw_frame in iter_coordinate_frames(
-                    trajectory_path, coordinate_unit,
-                    reader_frame_indices(selected_indices, processor.policy),
+                    trajectory_path, coordinate_unit, selected_indices,
                 ):
                     selected = frame_selected(raw_frame.frame_index, selected_indices, int(settings["frame_stride"]))
-                    if not selected and processor.policy != "unwrap_continuous":
-                        continue
-                    frame = processor.process(
-                        raw_frame,
-                        f"{system_id}/{replica_id}/{segment_id}/frame-{raw_frame.frame_index}",
-                        all_indices,
-                    )
                     if not selected:
                         continue
+                    frame = raw_frame
                     evaluated += 1
                     record: Dict[str, object] = {
                         "system_id": system_id, "replica_id": replica_id,
@@ -214,25 +287,28 @@ def _ion_atmosphere_project_serial(project_path: Path, hash_content: bool = Fals
                     }
                     species_record = record["species"]
                     assert isinstance(species_record, dict)
+                    coordinate_array = np.asarray(
+                        frame.coordinates_angstrom, dtype=np.float64,
+                    )
                     for species, ion_indices in sorted(ion_groups.items()):
                         target_record: Dict[str, object] = {}
                         species_record[species] = {
                             "charge_class": charge_classes[species],
                             "targets": target_record,
                         }
+                        nearest_by_target_atoms: Dict[tuple[int, ...], tuple[float, ...]] = {}
                         for target_id, target_indices in sorted(target_groups.items()):
                             counts = {cutoff: 0 for cutoff in cutoffs}
-                            nearest_values: list[float] = []
-                            for ion_index in ion_indices:
-                                nearest = min(
-                                    _distance(
-                                        frame.coordinates_angstrom[ion_index],
-                                        frame.coordinates_angstrom[target_index],
-                                        frame.cell_vectors_angstrom,
-                                    )
-                                    for target_index in target_indices
+                            target_key = tuple(sorted(target_indices))
+                            nearest_values = nearest_by_target_atoms.get(target_key)
+                            if nearest_values is None:
+                                nearest_values = _nearest_distances(
+                                    coordinate_array[ion_indices],
+                                    coordinate_array[target_indices],
+                                    frame.cell_vectors_angstrom,
                                 )
-                                nearest_values.append(nearest)
+                                nearest_by_target_atoms[target_key] = nearest_values
+                            for ion_index, nearest in zip(ion_indices, nearest_values):
                                 identity = (system_id, replica_id, species, ion_index)
                                 if target_id == "all_solute":
                                     per_ion_frames[identity] += 1
@@ -303,7 +379,7 @@ def _ion_atmosphere_project_serial(project_path: Path, hash_content: bool = Fals
             "Shell counts and persistence classes are geometric descriptions, not proof of biological binding, affinity, oxidation state, or mechanism.",
             "The innermost declared shell defines the descriptive persistence classification and requires chemical sensitivity analysis.",
             "Equivalent-member and cross-system pooling require an explicit independent-unit model; this report preserves system and replica identities.",
-            "Exact triclinic minimum-image distances are used; local atmosphere distances do not require whole-solvent reconstruction.",
+            "Exact triclinic minimum-image distances are used; pair distances are invariant to independent integer-lattice translations, so local atmosphere distances read selected frames directly and do not require whole-solvent or whole-solute reconstruction.",
         ],
     }
 

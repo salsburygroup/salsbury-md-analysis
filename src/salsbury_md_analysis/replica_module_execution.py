@@ -64,17 +64,52 @@ def _module_worker(shard: ReplicaShard) -> Dict[str, object]:
     if runner_id == "hydrogen_bond_discovery":
         from .hydrogen_bond_discovery import _hydrogen_bond_discovery_project_serial
         raw_keys = payload.get("harmonized_candidate_keys")
-        keys = (
-            {tuple(int(value) for value in row) for row in raw_keys}
-            if isinstance(raw_keys, list) else None
-        )
         report = payload.get("candidate_harmonization_report")
+        policy = report.get("policy") if isinstance(report, Mapping) else None
+        if isinstance(raw_keys, list) and policy == "intersection_by_atom_identity_v2":
+            keys = {
+                tuple(tuple(atom) for atom in row)
+                for row in raw_keys
+            }
+        elif isinstance(raw_keys, list):
+            keys = {tuple(int(value) for value in row) for row in raw_keys}
+        else:
+            keys = None
+        raw_donor_maps = payload.get("donor_endpoints_by_system")
+        raw_donors = (
+            raw_donor_maps.get(shard.system_id)
+            if isinstance(raw_donor_maps, Mapping) else None
+        )
+        donor_endpoints = (
+            {
+                (tuple(row[0]), tuple(row[1]), str(row[2]))
+                for row in raw_donors
+            }
+            if isinstance(raw_donors, list) else None
+        )
+        raw_acceptor_maps = payload.get("acceptor_endpoints_by_system")
+        raw_acceptors = (
+            raw_acceptor_maps.get(shard.system_id)
+            if isinstance(raw_acceptor_maps, Mapping) else None
+        )
+        acceptor_endpoints = (
+            {(tuple(row[0]), str(row[1])) for row in raw_acceptors}
+            if isinstance(raw_acceptors, list) else None
+        )
         return _hydrogen_bond_discovery_project_serial(
             project_path,
             hash_content=hash_content,
             harmonized_candidate_keys_override=keys,
             candidate_harmonization_report_override=(
                 dict(report) if isinstance(report, Mapping) else None
+            ),
+            donor_endpoints_by_system_override=(
+                {shard.system_id: donor_endpoints}
+                if donor_endpoints is not None else None
+            ),
+            acceptor_endpoints_by_system_override=(
+                {shard.system_id: acceptor_endpoints}
+                if acceptor_endpoints is not None else None
             ),
         )
     if runner_id == "water_networks":

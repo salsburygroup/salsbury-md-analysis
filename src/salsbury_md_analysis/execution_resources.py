@@ -581,6 +581,17 @@ def _analysis_workload_counts(
             if isinstance(count, int) and not isinstance(count, bool):
                 silhouette_counts.append(count)
     multiplier = _symmetry_multiplier(report)
+    spatial_work = {
+        key: accounting.get(key)
+        for key in (
+            "conceptual_candidate_frame_count",
+            "spatial_neighbor_pair_count",
+            "explicit_geometry_evaluation_count",
+            "present_event_count",
+            "maximum_spatial_endpoint_count_per_system",
+        )
+        if isinstance(accounting, dict)
+    }
     return {
         "basis_selected_physical_frames": (
             basis_physical if isinstance(basis_physical, int) else None
@@ -601,6 +612,12 @@ def _analysis_workload_counts(
         "silhouette_evaluation_observations": (
             max(silhouette_counts) if silhouette_counts else None
         ),
+        **{
+            key: value
+            if isinstance(value, int) and not isinstance(value, bool)
+            else None
+            for key, value in spatial_work.items()
+        },
     }
 
 
