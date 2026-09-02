@@ -11,6 +11,55 @@ from salsbury_md_analysis.resource_calibrations import (
 
 
 class ResourceCalibrationTests(unittest.TestCase):
+    def test_spatial_hbond_work_is_aggregated_separately_from_dense_universe(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report = root / "report.json"
+            report.write_text('{"technical_status":"complete"}\n', encoding="utf-8")
+            digest = hashlib.sha256(report.read_bytes()).hexdigest()
+            sidecar = root / "report.json.summary.json"
+            sidecar.write_text(json.dumps({
+                "technical_status": "complete",
+                "module_id": "hydrogen_bond_discovery",
+                "report_path": str(report),
+                "report_sha256": digest,
+                "resource_evidence": {
+                    "selected_source_physical_frames": 12,
+                    "symmetry_expanded_observations": 12,
+                    "conceptual_candidate_frame_count": 16_512_252,
+                    "spatial_neighbor_pair_count": 25_164,
+                    "explicit_geometry_evaluation_count": 21_095,
+                    "present_event_count": 7_322,
+                    "maximum_spatial_endpoint_count_per_system": 2_348,
+                    "execution_resources": {
+                        "total_cpu_seconds": 301.46992,
+                        "wall_seconds": 213.152388,
+                        "maximum_resident_memory_mib": 190.86328125,
+                    },
+                },
+            }), encoding="utf-8")
+            catalog = build_resource_calibration_catalog([sidecar])
+            catalog_path = root / "catalog.json"
+            catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+            resolved = load_resource_calibration_catalog(catalog_path)[
+                "hydrogen_bond_discovery"
+            ]
+        self.assertEqual(resolved["runtime_work_unit"], "spatial_neighbor_pairs_v1")
+        self.assertEqual(
+            resolved["maximum_measured_spatial_neighbor_pair_count"], 25_164
+        )
+        self.assertEqual(
+            resolved["maximum_measured_spatial_endpoint_count_per_system"], 2_348
+        )
+        self.assertAlmostEqual(
+            resolved["conservative_spatial_neighbor_pairs_per_selected_frame"],
+            25_164 / 12,
+        )
+        self.assertAlmostEqual(
+            resolved["conservative_cpu_seconds_per_spatial_neighbor_pair"],
+            301.46992 / 25_164,
+        )
+
     def test_hash_bound_cpu_memory_and_coverage_are_aggregated(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

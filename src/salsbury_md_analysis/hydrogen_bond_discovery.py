@@ -2828,6 +2828,19 @@ def _reduce_lazy_hbond_reports(
         conceptual_counts_by_system[system_id] * frame_count
         for system_id, frame_count in evaluated_by_system.items()
     )
+    donor_counts_by_system = {
+        system_id: len(endpoints)
+        for system_id, endpoints in sorted(donors_by_system.items())
+    }
+    acceptor_counts_by_system = {
+        system_id: len(endpoints)
+        for system_id, endpoints in sorted(acceptors_by_system.items())
+    }
+    spatial_endpoint_counts_by_system = {
+        system_id: donor_counts_by_system[system_id]
+        + acceptor_counts_by_system[system_id]
+        for system_id in donor_counts_by_system
+    }
     if conceptual_observations > int(first["settings"]["maximum_feature_observations"]):
         raise HydrogenBondDiscoveryError(
             "parallel per-system hydrogen-bond feature count exceeds "
@@ -2909,6 +2922,12 @@ def _reduce_lazy_hbond_reports(
                 system_id: conceptual_counts_by_system[system_id] * frame_count
                 for system_id, frame_count in evaluated_by_system.items()
             },
+            "donor_hydrogen_group_count_by_system": donor_counts_by_system,
+            "acceptor_count_by_system": acceptor_counts_by_system,
+            "spatial_endpoint_count_by_system": spatial_endpoint_counts_by_system,
+            "maximum_spatial_endpoint_count_per_system": max(
+                spatial_endpoint_counts_by_system.values()
+            ),
             "conceptual_candidate_frame_count": conceptual_observations,
             "spatial_neighbor_pair_count": spatial_pairs,
             "explicit_geometry_evaluation_count": explicit_geometry,

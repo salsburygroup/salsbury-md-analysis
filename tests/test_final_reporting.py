@@ -806,6 +806,45 @@ class FinalReportingTests(unittest.TestCase):
                 scalar_evidence["symmetry_expanded_observations"], 100
             )
 
+    def test_hbond_sidecar_retains_measured_spatial_work(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            report_path = Path(temporary) / "report.json"
+            payload = {
+                "module_id": "hydrogen_bond_discovery",
+                "technical_status": "complete",
+                "frame_selection": {
+                    "source_frame_count": 120_000,
+                    "selected_frame_count": 12,
+                },
+                "observation_accounting": {
+                    "source_physical_frame_count": 120_000,
+                    "selected_physical_frame_count": 12,
+                    "conceptual_candidate_frame_count": 16_512_252,
+                    "spatial_neighbor_pair_count": 25_164,
+                    "explicit_geometry_evaluation_count": 21_095,
+                    "present_event_count": 7_322,
+                    "maximum_spatial_endpoint_count_per_system": 2_348,
+                },
+                "execution_resources": {
+                    "wall_seconds": 213.152388,
+                    "total_cpu_seconds": 301.46992,
+                    "maximum_resident_memory_mib": 190.86328125,
+                },
+            }
+            raw = json.dumps(payload).encode("utf-8")
+            report_path.write_bytes(raw)
+            sidecar = analysis_report_sidecar(
+                payload, report_path,
+                report_sha256=hashlib.sha256(raw).hexdigest(),
+                report_size_bytes=len(raw),
+            )
+        evidence = sidecar["resource_evidence"]
+        self.assertEqual(evidence["spatial_neighbor_pair_count"], 25_164)
+        self.assertEqual(evidence["explicit_geometry_evaluation_count"], 21_095)
+        self.assertEqual(
+            evidence["maximum_spatial_endpoint_count_per_system"], 2_348
+        )
+
     def test_cross_report_hydrogen_bonds_and_ions_use_chemical_identity(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

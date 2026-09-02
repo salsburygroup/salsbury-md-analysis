@@ -8,7 +8,10 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Dict, List, Mapping, MutableMapping, Optional, Sequence
 
-from .automatic_sampling import _apply_campaign_direct_allocations
+from .automatic_sampling import (
+    _apply_campaign_direct_allocations,
+    _measured_reference_seconds_per_frame,
+)
 from .ensemble_parallelism import annotate_task_parallelism
 from .execution_adapters import load_slurm_profile
 from .frame_sampling import (
@@ -185,11 +188,15 @@ def _apply_measured_resource_calibrations(
                 raise CampaignPlanningError(
                     f"task {task.get('task_id')} {label} must be finite and positive"
                 )
-        measured_rate = (
-            float(calibration.get(
-                "conservative_affine_cpu_seconds_per_frame",
-                calibration["conservative_cpu_seconds_per_frame"],
+        reference_rate, measured_work_unit = (
+            _measured_reference_seconds_per_frame(module_id, calibration)
+        )
+        if measured_work_unit == "selected_physical_frames_v1":
+            reference_rate = float(calibration.get(
+                "conservative_affine_cpu_seconds_per_frame", reference_rate,
             ))
+        measured_rate = (
+            reference_rate
             * time_safety_factor
             * float(rate_multiplier)
         )
@@ -318,6 +325,13 @@ def _apply_measured_resource_calibrations(
             "maximum_measured_observation_count": calibration[
                 "maximum_measured_observation_count"
             ],
+            "runtime_work_unit": measured_work_unit,
+            "maximum_measured_spatial_neighbor_pair_count": calibration.get(
+                "maximum_measured_spatial_neighbor_pair_count", 0
+            ),
+            "maximum_measured_spatial_endpoint_count_per_system": calibration.get(
+                "maximum_measured_spatial_endpoint_count_per_system", 0
+            ),
             "maximum_measured_resident_memory_mib": calibration[
                 "maximum_resident_memory_mib"
             ],
