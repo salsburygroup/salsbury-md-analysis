@@ -182,6 +182,8 @@ class AnalysisConfigTests(unittest.TestCase):
         self.assertEqual(
             config["execution"]["censored_timeout_safety_factor"], 1.5
         )
+        self.assertTrue(config["execution"]["autorecovery"])
+        self.assertEqual(config["execution"]["maximum_task_attempts"], 2)
 
         self.assertEqual(len(config["clustering"]["methods"]), 11)
         self.assertFalse(config["clustering"]["methods"]["hdbscan"]["enabled"])
@@ -204,6 +206,30 @@ class AnalysisConfigTests(unittest.TestCase):
             "pca_fes_basins",
             config["modules"]["common_pca"]["turning_off_also_disables"],
         )
+
+    def test_autorecovery_can_be_disabled_and_attempts_are_bounded(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "analysis-config.json"
+            path.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "execution": {
+                    "autorecovery": False,
+                    "maximum_task_attempts": 1,
+                },
+            }), encoding="utf-8")
+            config = load_analysis_config(path, ["common_pca"], ["global"])
+        self.assertFalse(config["execution"]["autorecovery"])
+        self.assertEqual(config["execution"]["maximum_task_attempts"], 1)
+
+    def test_autorecovery_rejects_unbounded_attempt_count(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "analysis-config.json"
+            path.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "execution": {"maximum_task_attempts": 6},
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(AnalysisConfigError, "1 through 5"):
+                load_analysis_config(path, ["common_pca"], ["global"])
 
     def test_legacy_analysis_memory_factor_maps_to_named_uncertainty(self):
         with tempfile.TemporaryDirectory() as temporary:

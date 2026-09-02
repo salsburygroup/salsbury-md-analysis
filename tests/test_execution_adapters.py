@@ -11,6 +11,7 @@ from salsbury_md_analysis.execution_adapters import (
     _append_afterany_dependencies,
     _fit_walltime_requests_to_campaign,
     _render_resource_bounded_submit,
+    _render_task_recovery_runner,
     apply_slurm_profile,
     build_local_execution_plan,
     load_slurm_profile,
@@ -154,6 +155,7 @@ class ExecutionAdapterTests(unittest.TestCase):
                     }],
                 }],
                 True,
+                True,
             )
         self.assertIn("--nodes=2", script)
         self.assertIn("--ntasks=63", script)
@@ -161,6 +163,9 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertIn("--cpus-per-task=1", script)
         self.assertIn("--mem=181G", script)
         self.assertIn("SMA_DISTRIBUTED_REPLICA_WORKERS=1", script)
+        self.assertIn("--requeue", script)
+        self.assertIn("--signal=B:USR1@60", script)
+        self.assertIn('"$RECOVERY_RUNNER" "$ROOT"/run_qc.slurm', script)
 
     def test_resource_barrier_does_not_turn_an_input_gate_into_a_success_chain(self):
         self.assertEqual(
@@ -1577,6 +1582,124 @@ class ExecutionAdapterTests(unittest.TestCase):
             "reused_complete",
         )
         self.assertEqual(len(retained), 2)
+
+    def test_local_runner_recovers_only_the_failed_task(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "logs").mkdir()
+            flaky = root / "flaky.slurm"
+            dependent = root / "dependent.slurm"
+            flaky.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ ! -f first-attempt ]]; then touch first-attempt; exit 7; fi\n"
+                "printf recovered > recovered-marker\n",
+                encoding="utf-8",
+            )
+            dependent.write_text(
+                "#!/usr/bin/env bash\nprintf downstream > downstream-marker\n",
+                encoding="utf-8",
+            )
+            plan = {
+                "local_execution_plan_schema": "salsbury-local-execution-plan-v6",
+                "dependency_model": "task_dag_v1",
+                "maximum_parallel_cpus": 1,
+                "maximum_parallel_memory_gib": 2,
+                "maximum_campaign_wall_hours": 1,
+                "autorecovery": True,
+                "maximum_task_attempts": 2,
+                "phases": [
+                    {"phase_id": "first", "tasks": [{
+                        "task_id": "flaky", "depends_on_task_ids": [],
+                        "wait_for_task_ids": [], "script": "flaky.slurm",
+                        "array_task_id": None, "cpu_slots": 1,
+                        "requested_memory_gib": 1, "requested_wall_minutes": 1,
+                    }]},
+                    {"phase_id": "second", "tasks": [{
+                        "task_id": "dependent", "depends_on_task_ids": ["flaky"],
+                        "wait_for_task_ids": [], "script": "dependent.slurm",
+                        "array_task_id": None, "cpu_slots": 1,
+                        "requested_memory_gib": 1, "requested_wall_minutes": 1,
+                    }]},
+                ],
+            }
+            (root / "local-execution-plan.json").write_text(
+                json.dumps(plan), encoding="utf-8"
+            )
+            report = run_local_workflow(root)
+            first = report["phase_reports"][0]["tasks"][0]
+            downstream_exists = (root / "downstream-marker").exists()
+        self.assertEqual(report["technical_status"], "complete")
+        self.assertEqual(first["status"], "recovered_complete")
+        self.assertEqual(first["attempt_count"], 2)
+        self.assertEqual([row["exit_code"] for row in first["attempts"]], [7, 0])
+        self.assertEqual(report["autorecovery"]["recovered_task_count"], 1)
+        self.assertTrue(downstream_exists)
+
+    def test_local_runner_respects_explicit_autorecovery_opt_out(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "logs").mkdir()
+            flaky = root / "flaky.slurm"
+            flaky.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ ! -f first-attempt ]]; then touch first-attempt; exit 7; fi\n"
+                "printf rerun > should-not-exist\n",
+                encoding="utf-8",
+            )
+            plan = {
+                "local_execution_plan_schema": "salsbury-local-execution-plan-v6",
+                "dependency_model": "task_dag_v1",
+                "maximum_parallel_cpus": 1,
+                "maximum_parallel_memory_gib": 2,
+                "maximum_campaign_wall_hours": 1,
+                "autorecovery": False,
+                "maximum_task_attempts": 2,
+                "phases": [{"phase_id": "first", "tasks": [{
+                    "task_id": "flaky", "depends_on_task_ids": [],
+                    "wait_for_task_ids": [], "script": "flaky.slurm",
+                    "array_task_id": None, "cpu_slots": 1,
+                    "requested_memory_gib": 1, "requested_wall_minutes": 1,
+                }]}],
+            }
+            (root / "local-execution-plan.json").write_text(
+                json.dumps(plan), encoding="utf-8"
+            )
+            report = run_local_workflow(root)
+            first = report["phase_reports"][0]["tasks"][0]
+            reran = (root / "should-not-exist").exists()
+        self.assertEqual(report["technical_status"], "failed")
+        self.assertEqual(first["attempt_count"], 1)
+        self.assertFalse(reran)
+
+    def test_slurm_recovery_wrapper_retries_and_records_attempts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            worker = root / "worker.slurm"
+            launcher_root = root / "launcher-copy"
+            launcher_root.mkdir()
+            runner = launcher_root / "run-task-with-recovery.sh"
+            worker.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ ! -f once ]]; then touch once; exit 9; fi\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            runner.write_text(_render_task_recovery_runner(
+                autorecovery=True, maximum_task_attempts=2
+            ), encoding="utf-8")
+            result = subprocess.run(
+                ["bash", str(runner), str(worker)], cwd=root, check=False
+            )
+            statuses = [
+                json.loads(line)
+                for line in (root / "autorecovery-status" / "local.jsonl")
+                .read_text().splitlines()
+            ]
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(
+            [row["event"] for row in statuses],
+            ["started", "failed", "started", "complete"],
+        )
 
     def test_task_dag_local_runner_continues_unrelated_work_after_failure(self):
         with tempfile.TemporaryDirectory() as temporary:

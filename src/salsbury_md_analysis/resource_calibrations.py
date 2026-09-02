@@ -10,6 +10,11 @@ from pathlib import Path
 from typing import Dict, Mapping, Sequence
 
 from .manifests import load_json
+from .planner_calibration_models import (
+    MODEL_SCHEMA as SIZE_LENGTH_MODEL_SCHEMA,
+    PlannerCalibrationModelError,
+    validate_size_length_models,
+)
 
 
 class ResourceCalibrationError(ValueError):
@@ -17,7 +22,8 @@ class ResourceCalibrationError(ValueError):
 
 
 LEGACY_SCHEMA = "salsbury-measured-resource-calibration-catalog-v1"
-SCHEMA = "salsbury-measured-resource-calibration-catalog-v2"
+PREVIOUS_SCHEMA = "salsbury-measured-resource-calibration-catalog-v2"
+SCHEMA = "salsbury-measured-resource-calibration-catalog-v3"
 TIMEOUT_SCHEMA = "salsbury-censored-timeout-resource-evidence-v1"
 MEMORY_REPLACEMENT_MIN_COMPLETE_MEASUREMENTS = 2
 
@@ -209,6 +215,7 @@ def build_resource_calibration_catalog(
     *,
     timeout_records: Sequence[Path] = (),
     base_catalogs: Sequence[Path] = (),
+    work_model_paths: Sequence[Path] = (),
 ) -> Dict[str, object]:
     """Build a lossless catalog from completed and censored execution evidence."""
 
@@ -219,17 +226,24 @@ def build_resource_calibration_catalog(
     base_paths = sorted({
         Path(path).expanduser().resolve(strict=True) for path in base_catalogs
     })
-    if not paths and not timeout_paths and not base_paths:
+    model_paths = sorted({
+        Path(path).expanduser().resolve(strict=True) for path in work_model_paths
+    })
+    if not paths and not timeout_paths and not base_paths and not model_paths:
         raise ResourceCalibrationError(
             "at least one complete sidecar, censored timeout record, or base "
             "catalog is required"
         )
     entries = []
     base_provenance = []
+    size_length_models: Dict[str, object] = {}
+    model_provenance = []
     for base_path in base_paths:
         base = load_json(base_path)
         if (
-            base.get("catalog_schema") not in {LEGACY_SCHEMA, SCHEMA}
+            base.get("catalog_schema") not in {
+                LEGACY_SCHEMA, PREVIOUS_SCHEMA, SCHEMA,
+            }
             or base.get("technical_status") != "complete"
             or not isinstance(base.get("entries"), list)
         ):
@@ -237,10 +251,52 @@ def build_resource_calibration_catalog(
                 f"invalid base resource calibration catalog: {base_path}"
             )
         entries.extend(base["entries"])
+        base_models = base.get("size_length_cpu_models", {})
+        if not isinstance(base_models, dict):
+            raise ResourceCalibrationError(
+                f"invalid size-length models in base catalog: {base_path}"
+            )
+        for module_id, model in base_models.items():
+            existing = size_length_models.get(str(module_id))
+            if existing is not None and existing != model:
+                raise ResourceCalibrationError(
+                    f"conflicting size-length model for {module_id}"
+                )
+            size_length_models[str(module_id)] = model
+        base_model_sources = base.get("size_length_cpu_model_sources", [])
+        if not isinstance(base_model_sources, list):
+            raise ResourceCalibrationError(
+                f"invalid size-length model provenance in base catalog: {base_path}"
+            )
+        for model_source in base_model_sources:
+            if not isinstance(model_source, dict):
+                raise ResourceCalibrationError(
+                    f"invalid size-length model provenance in base catalog: {base_path}"
+                )
+            model_provenance.append(dict(model_source))
         base_provenance.append({
             "path": str(base_path),
             "sha256": _sha256(base_path),
             "entry_count": len(base["entries"]),
+        })
+    for model_path in model_paths:
+        try:
+            artifact = validate_size_length_models(load_json(model_path))
+        except PlannerCalibrationModelError as exc:
+            raise ResourceCalibrationError(str(exc)) from exc
+        for module_id, model in artifact["models"].items():
+            existing = size_length_models.get(str(module_id))
+            if existing is not None and existing != model:
+                raise ResourceCalibrationError(
+                    f"conflicting size-length model for {module_id}"
+                )
+            size_length_models[str(module_id)] = model
+        model_provenance.append({
+            "path": str(model_path),
+            "sha256": _sha256(model_path),
+            "model_schema": SIZE_LENGTH_MODEL_SCHEMA,
+            "source_evidence_sha256": artifact["source_evidence_sha256"],
+            "module_ids": sorted(artifact["models"]),
         })
     entries.extend(_entry_from_sidecar(path) for path in paths)
     entries.extend(_entry_from_timeout(path) for path in timeout_paths)
@@ -295,6 +351,8 @@ def build_resource_calibration_catalog(
         "censored_timeout_count": timeout_count,
         "duplicate_evidence_entry_count": duplicate_count,
         "base_catalogs": base_provenance,
+        "size_length_cpu_models": size_length_models,
+        "size_length_cpu_model_sources": model_provenance,
         "entries": entries,
         "planner_policy": {
             "cpu_rate": (
@@ -318,6 +376,10 @@ def build_resource_calibration_catalog(
                 "retained as the runtime work unit; the implicit Cartesian "
                 "candidate-frame count remains a correctness gate only"
             ),
+            "size_and_length_cpu_models": (
+                "validated models separate source inspection from selected-work "
+                "cost and must pass a middle-system held-out gate"
+            ),
         },
         "scientific_status": "runtime evidence only",
     }
@@ -340,7 +402,7 @@ def redact_resource_calibration_catalog(
         or not isinstance(catalog.get("entries"), list)
     ):
         raise ResourceCalibrationError(
-            "only a complete v2 resource calibration catalog can be redacted"
+            "only a complete v3 resource calibration catalog can be redacted"
         )
     redacted = deepcopy(dict(catalog))
     base_catalogs = redacted.get("base_catalogs")
@@ -349,6 +411,12 @@ def redact_resource_calibration_catalog(
             if isinstance(base, dict):
                 base.pop("path", None)
                 base["source_location_redacted"] = True
+    model_sources = redacted.get("size_length_cpu_model_sources")
+    if isinstance(model_sources, list):
+        for model_source in model_sources:
+            if isinstance(model_source, dict):
+                model_source.pop("path", None)
+                model_source["source_location_redacted"] = True
     private_fields = {
         "computer_hostname",
         "scheduler_array_task_id",
@@ -384,7 +452,9 @@ def load_resource_calibration_catalog(
     source = Path(path).expanduser().resolve(strict=True)
     catalog = load_json(source)
     if (
-        catalog.get("catalog_schema") not in {LEGACY_SCHEMA, SCHEMA}
+        catalog.get("catalog_schema") not in {
+            LEGACY_SCHEMA, PREVIOUS_SCHEMA, SCHEMA,
+        }
         or catalog.get("technical_status") != "complete"
     ):
         raise ResourceCalibrationError(f"invalid resource calibration catalog: {source}")
@@ -449,6 +519,25 @@ def load_resource_calibration_catalog(
                     "censored resource calibration CPU lower-bound rate is inconsistent"
                 )
         grouped.setdefault(module_id, []).append(row)
+    raw_size_length_models = catalog.get("size_length_cpu_models", {})
+    if not isinstance(raw_size_length_models, dict):
+        raise ResourceCalibrationError("size_length_cpu_models must be an object")
+    if raw_size_length_models:
+        synthetic_artifact = {
+            "model_schema": SIZE_LENGTH_MODEL_SCHEMA,
+            "technical_status": "complete",
+            "scientific_status": "runtime evidence only",
+            "source_evidence_sha256": "0" * 64,
+            "models": raw_size_length_models,
+        }
+        try:
+            validated_models = validate_size_length_models(
+                synthetic_artifact
+            )["models"]
+        except PlannerCalibrationModelError as exc:
+            raise ResourceCalibrationError(str(exc)) from exc
+    else:
+        validated_models = {}
     result: Dict[str, Dict[str, object]] = {}
     for module_id, rows in grouped.items():
         complete_rows = [
@@ -692,5 +781,6 @@ def load_resource_calibration_catalog(
             ),
             "catalog_path": str(source),
             "catalog_sha256": _sha256(source),
+            "size_length_cpu_model": validated_models.get(module_id),
         }
     return result

@@ -8,9 +8,91 @@ from salsbury_md_analysis.resource_calibrations import (
     SCHEMA, TIMEOUT_SCHEMA, build_resource_calibration_catalog,
     load_resource_calibration_catalog, redact_resource_calibration_catalog,
 )
+from salsbury_md_analysis.planner_calibration_models import (
+    MODEL_SCHEMA, validate_size_length_models,
+)
 
 
 class ResourceCalibrationTests(unittest.TestCase):
+    def test_distributed_v5_catalog_and_model_are_valid_and_path_redacted(self):
+        root = Path(__file__).resolve().parents[1]
+        model_path = root / "profiles" / "apollo_planner_size_length_cpu_models_v1.json"
+        catalog_path = root / "profiles" / "apollo_measured_resource_calibrations_v5.json"
+        model = validate_size_length_models(json.loads(model_path.read_text()))
+        resolved = load_resource_calibration_catalog(catalog_path)
+        self.assertEqual(set(model["models"]), {
+            "structural_integrity_qc",
+            "hydrogen_bond_discovery",
+            "ion_atmosphere",
+        })
+        self.assertTrue(all(
+            resolved[module_id]["size_length_cpu_model"][
+                "heldout_validation_passed"
+            ]
+            for module_id in model["models"]
+        ))
+        rendered = model_path.read_text() + catalog_path.read_text()
+        self.assertNotIn("/deac/", rendered)
+        self.assertNotIn("/private/tmp/", rendered)
+        self.assertNotIn("/Users/", rendered)
+
+    def test_catalog_carries_validated_size_length_model(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report = root / "report.json"
+            report.write_text('{"technical_status":"complete"}\n', encoding="utf-8")
+            digest = hashlib.sha256(report.read_bytes()).hexdigest()
+            sidecar = root / "report.json.summary.json"
+            sidecar.write_text(json.dumps({
+                "technical_status": "complete",
+                "module_id": "structural_integrity_qc",
+                "report_path": str(report),
+                "report_sha256": digest,
+                "resource_evidence": {
+                    "selected_source_physical_frames": 10,
+                    "symmetry_expanded_observations": 10,
+                    "execution_resources": {
+                        "total_cpu_seconds": 1.0,
+                        "wall_seconds": 1.0,
+                        "maximum_resident_memory_mib": 10.0,
+                    },
+                },
+            }), encoding="utf-8")
+            model = root / "model.json"
+            model.write_text(json.dumps({
+                "model_schema": MODEL_SCHEMA,
+                "technical_status": "complete",
+                "scientific_status": "runtime evidence only",
+                "source_evidence_sha256": "a" * 64,
+                "models": {"structural_integrity_qc": {
+                    "module_id": "structural_integrity_qc",
+                    "intercept_cpu_seconds": 1.0,
+                    "cpu_seconds_per_topology_atom_source_frame": 0.001,
+                    "cpu_seconds_per_selected_work_unit": 0.01,
+                    "selected_work_unit": "topology_atom_selected_frames_v1",
+                    "planning_proxy": "topology_atoms_per_selected_frame_v1",
+                    "selected_work_units_per_proxy_unit": 1.0,
+                    "residual_safety_factor": 1.5,
+                    "heldout_validation_passed": True,
+                    "training_point_count": 6,
+                    "heldout_point_count": 3,
+                    "measured_ranges": {},
+                    "extrapolation_policy": "pilot outside measured range",
+                }},
+            }), encoding="utf-8")
+            catalog = build_resource_calibration_catalog(
+                [sidecar], work_model_paths=[model]
+            )
+            catalog_path = root / "catalog.json"
+            catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+            resolved = load_resource_calibration_catalog(catalog_path)[
+                "structural_integrity_qc"
+            ]
+        self.assertEqual(
+            resolved["size_length_cpu_model"]["planning_proxy"],
+            "topology_atoms_per_selected_frame_v1",
+        )
+
     def test_spatial_hbond_work_is_aggregated_separately_from_dense_universe(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
