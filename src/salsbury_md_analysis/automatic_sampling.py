@@ -548,6 +548,9 @@ def _campaign_direct_resource_plan(
         workload_multiplier, workload_basis = _runtime_workload_multiplier(
             profile, dimensions, measured
         )
+        size_length_terms = _size_length_cpu_terms(
+            profile, dimensions, measured
+        )
         reference_memory_gib = {
             "streaming": 4.0,
             "validated_30k": 12.0,
@@ -577,6 +580,7 @@ def _campaign_direct_resource_plan(
             memory_replacement_qualified = False
         memory_gib = max(1.0, reference_memory_gib * memory_atom_scale)
         seconds_per_frame = calibration.seconds_per_frame
+        fixed_overhead_seconds = calibration.fixed_overhead_seconds
         calibration_source_policy = "built_in_completed_calibration"
         if measured is not None:
             measured_rate, measured_work_unit = (
@@ -600,6 +604,16 @@ def _campaign_direct_resource_plan(
                 calibration_source_policy = (
                     "completed_builtin_over_censored_catalog_lower_bound"
                 )
+        if size_length_terms is not None:
+            (
+                fixed_overhead_seconds,
+                seconds_per_frame,
+                workload_basis,
+            ) = size_length_terms
+            workload_multiplier = 1.0
+            calibration_source_policy = (
+                "heldout_validated_size_length_selected_work_model"
+            )
         calibration_id = (
             "measured-catalog:" + str(measured["catalog_sha256"]) + f":{module_id}"
             if measured is not None else calibration.calibration_id
@@ -608,6 +622,8 @@ def _campaign_direct_resource_plan(
             str(measured["calibration_evidence_status"])
             if measured is not None else calibration.evidence_level
         )
+        if size_length_terms is not None:
+            calibration_status = "heldout_validated_size_length_work_model"
         if calibration_source_policy == (
             "completed_builtin_over_censored_catalog_lower_bound"
         ):
@@ -689,7 +705,7 @@ def _campaign_direct_resource_plan(
                 * time_safety_factor
             ),
             "fixed_cpu_hours": (
-                calibration.fixed_overhead_seconds
+                fixed_overhead_seconds
                 * time_safety_factor / 3600.0
             ),
             "censored_wall_lower_bound_points": (
@@ -1299,6 +1315,80 @@ def _runtime_workload_multiplier(
     }
 
 
+def _size_length_cpu_terms(
+    profile: SamplingProfile,
+    dimensions: Mapping[str, object],
+    measured_calibration: Optional[Mapping[str, object]],
+) -> Optional[Tuple[float, float, Dict[str, object]]]:
+    """Resolve fixed/source and per-selected-frame CPU terms from a fitted model."""
+
+    if measured_calibration is None:
+        return None
+    model = measured_calibration.get("size_length_cpu_model")
+    if not isinstance(model, Mapping):
+        return None
+    source_atom_frames = sum(
+        int(row["atom_count"]) * int(row["source_frame_count"])
+        for row in dimensions["replicas"]  # type: ignore[union-attr]
+    )
+    atom_count = int(dimensions["maximum_atom_count"])
+    module_id = profile.module_id
+    if module_id == "hydrogen_bond_discovery":
+        candidate_plan = dimensions.get("hydrogen_bond_candidate_planning")
+        if not isinstance(candidate_plan, Mapping) or candidate_plan.get("status") != "complete":
+            return None
+        donor_count = candidate_plan.get(
+            "maximum_donor_hydrogen_group_count_per_system"
+        )
+        acceptor_count = candidate_plan.get("maximum_acceptor_count_per_system")
+        if not (
+            isinstance(donor_count, int) and not isinstance(donor_count, bool)
+            and donor_count > 0
+            and isinstance(acceptor_count, int) and not isinstance(acceptor_count, bool)
+            and acceptor_count > 0
+        ):
+            return None
+        proxy_count = donor_count + acceptor_count
+        proxy_dimension = "maximum donor-H plus acceptor endpoints"
+    else:
+        proxy_count = atom_count
+        proxy_dimension = "maximum topology atom count"
+    proxy_rate = float(model["selected_work_units_per_proxy_unit"])
+    work_units_per_selected_frame = proxy_rate * proxy_count
+    residual_safety = float(model["residual_safety_factor"])
+    fixed_seconds = residual_safety * (
+        float(model["intercept_cpu_seconds"])
+        + float(model["cpu_seconds_per_topology_atom_source_frame"])
+        * source_atom_frames
+    )
+    seconds_per_selected_frame = residual_safety * (
+        float(model["cpu_seconds_per_selected_work_unit"])
+        * work_units_per_selected_frame
+    )
+    return fixed_seconds, seconds_per_selected_frame, {
+        "dimension": (
+            "measured source topology-atom frames plus selected-work proxy"
+        ),
+        "source_topology_atom_frame_count": source_atom_frames,
+        "selected_work_unit": model["selected_work_unit"],
+        "selected_work_planning_proxy": model["planning_proxy"],
+        "selected_work_proxy_dimension": proxy_dimension,
+        "selected_work_proxy_count_per_frame": proxy_count,
+        "selected_work_units_per_proxy_unit": proxy_rate,
+        "estimated_selected_work_units_per_frame": (
+            work_units_per_selected_frame
+        ),
+        "model_residual_safety_factor": residual_safety,
+        "independent_heldout_validation_passed": model[
+            "heldout_validation_passed"
+        ],
+        "measured_ranges": model["measured_ranges"],
+        "coordinate_data_used": False,
+        "full_cartesian_candidate_dictionary_materialized": False,
+        "limitation": model["extrapolation_policy"],
+    }
+
+
 def _effective_ceiling(profile: SamplingProfile, atom_count: int) -> Tuple[int, float]:
     size_ratio = REFERENCE_ATOM_COUNT / atom_count
     size_factor = min(1.0, size_ratio ** profile.atom_scaling_exponent)
@@ -1377,13 +1467,37 @@ def _runtime_budget(
     workload_multiplier, workload_basis = _runtime_workload_multiplier(
         profile, dimensions, measured_calibration
     )
-    estimated_seconds_per_frame = (
-        seconds_per_frame * workload_multiplier
+    size_length_terms = _size_length_cpu_terms(
+        profile, dimensions, measured_calibration
     )
-    # Fixed startup/setup work is not a per-atom term.  Scaling it by the
-    # trajectory atom count made small/no-water systems look implausibly cheap
-    # and distorted the intercept retained by multi-point pilots.
-    estimated_fixed_overhead = fixed_overhead_seconds
+    if size_length_terms is not None:
+        (
+            estimated_fixed_overhead,
+            estimated_seconds_per_frame,
+            workload_basis,
+        ) = size_length_terms
+        atom_multiplier = 1.0
+        workload_multiplier = 1.0
+        fixed_overhead_seconds = estimated_fixed_overhead
+        seconds_per_frame = estimated_seconds_per_frame
+        calibration_id = (
+            "measured-size-length-catalog:"
+            + str(measured_calibration["catalog_sha256"])
+            + f":{profile.module_id}"
+        )
+        evidence_level = "heldout_validated_size_length_work_model"
+        rationale = (
+            "held-out-validated source-length and selected-work CPU model; "
+            "runtime evidence only"
+        )
+    else:
+        estimated_seconds_per_frame = (
+            seconds_per_frame * workload_multiplier
+        )
+        # Fixed startup/setup work is not a per-atom term.  Scaling it by the
+        # trajectory atom count made small/no-water systems look implausibly cheap
+        # and distorted the intercept retained by multi-point pilots.
+        estimated_fixed_overhead = fixed_overhead_seconds
     estimated_full_wall = (
         estimated_fixed_overhead
         + estimated_seconds_per_frame * source_frame_count

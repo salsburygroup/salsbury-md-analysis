@@ -647,13 +647,15 @@ def _plan_automatic_sampling_command(
 
 def _build_resource_calibration_catalog_command(
     sidecars: Sequence[Path], timeout_records: Sequence[Path],
-    base_catalogs: Sequence[Path], output: Path, redact_source_paths: bool,
+    base_catalogs: Sequence[Path], work_models: Sequence[Path], output: Path,
+    redact_source_paths: bool,
 ) -> int:
     try:
         report = build_resource_calibration_catalog(
             sidecars,
             timeout_records=timeout_records,
             base_catalogs=base_catalogs,
+            work_model_paths=work_models,
         )
         if redact_source_paths:
             report = redact_resource_calibration_catalog(report)
@@ -2082,6 +2084,13 @@ def build_parser() -> argparse.ArgumentParser:
             "discarding its hash-bound evidence; repeat as needed."
         ),
     )
+    calibration_catalog_parser.add_argument(
+        "--work-model", type=Path, action="append", default=[],
+        help=(
+            "Validated size-, source-length-, and selected-work CPU model; "
+            "repeat to combine nonconflicting module models."
+        ),
+    )
     calibration_catalog_parser.add_argument("--output", type=Path, required=True)
     calibration_catalog_parser.add_argument(
         "--redact-source-paths", action="store_true",
@@ -2510,8 +2519,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _summarize_execution_resources_command(args.root)
     if args.command == "build-resource-calibration-catalog":
         return _build_resource_calibration_catalog_command(
-            args.sidecar, args.timeout_record, args.base_catalog, args.output,
-            args.redact_source_paths,
+            args.sidecar, args.timeout_record, args.base_catalog,
+            args.work_model, args.output, args.redact_source_paths,
         )
     if args.command == "prioritize-findings":
         return _prioritize_findings_command(

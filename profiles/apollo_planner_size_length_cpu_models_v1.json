@@ -1,0 +1,244 @@
+{
+  "fit_policy": {
+    "coordinate_data_used_by_planner": false,
+    "estimator": "nonnegative_least_squares_v1",
+    "independent_holdout_size": "middle",
+    "residual_safety_factor": 1.5,
+    "training_sizes": "smallest_and_largest"
+  },
+  "model_schema": "salsbury-planner-size-length-cpu-models-v1",
+  "models": {
+    "hydrogen_bond_discovery": {
+      "cpu_seconds_per_selected_work_unit": 8.36285282012915e-05,
+      "cpu_seconds_per_topology_atom_source_frame": 3.046649582085914e-08,
+      "extrapolation_policy": "planning estimate only; a project-local pilot is required outside the measured size, source-length, or selected-work ranges",
+      "fit_residual_norm_cpu_seconds": 26.09506479906287,
+      "heldout_point_count": 3,
+      "heldout_size_policy": "middle_topology_atom_count",
+      "heldout_topology_atom_count": 21478,
+      "heldout_validation": [
+        {
+          "estimated_selected_work_units": 7569.574468085107,
+          "observed_cpu_seconds": 11.113112000000001,
+          "observed_selected_work_units": 3362,
+          "observed_to_planning_upper_ratio": 0.5224848754006259,
+          "passed": true,
+          "planning_upper_cpu_seconds": 21.269729561987408,
+          "point_id": "medium-21478-hydrogen_bond_discovery-20-frames",
+          "raw_predicted_cpu_seconds": 14.179819707991605
+        },
+        {
+          "estimated_selected_work_units": 18923.936170212768,
+          "observed_cpu_seconds": 13.233112,
+          "observed_selected_work_units": 8379,
+          "observed_to_planning_upper_ratio": 0.5831092555665862,
+          "passed": true,
+          "planning_upper_cpu_seconds": 22.694052398708475,
+          "point_id": "medium-21478-hydrogen_bond_discovery-50-frames",
+          "raw_predicted_cpu_seconds": 15.12936826580565
+        },
+        {
+          "estimated_selected_work_units": 37847.872340425536,
+          "observed_cpu_seconds": 13.098796,
+          "observed_selected_work_units": 16754,
+          "observed_to_planning_upper_ratio": 0.5225321453837529,
+          "passed": true,
+          "planning_upper_cpu_seconds": 25.067923793243594,
+          "point_id": "medium-21478-hydrogen_bond_discovery-100-frames",
+          "raw_predicted_cpu_seconds": 16.71194919549573
+        }
+      ],
+      "heldout_validation_passed": true,
+      "intercept_cpu_seconds": 0.4595993913073217,
+      "maximum_heldout_observed_to_planning_upper_ratio": 0.5831092555665862,
+      "maximum_training_observed_to_planning_upper_ratio": 0.8545131841157021,
+      "measured_ranges": {
+        "selected_source_physical_frames": [
+          20,
+          100
+        ],
+        "selected_work_units": [
+          1770,
+          210308
+        ],
+        "source_frame_count": [
+          1000,
+          20000
+        ],
+        "topology_atom_count": [
+          423,
+          104300
+        ]
+      },
+      "model_form": "residual_safety_factor * (intercept + source_rate * topology_atom_source_frames + selected_rate * selected_work_units)",
+      "module_id": "hydrogen_bond_discovery",
+      "planning_proxy": "spatial_pairs_per_endpoint_selected_frame_v1",
+      "planning_proxy_basis": "maximum donor-H plus acceptor endpoints",
+      "residual_safety_factor": 1.5,
+      "selected_work_unit": "spatial_neighbor_pairs_v1",
+      "selected_work_units_per_proxy_unit": 0.9414893617021277,
+      "training_point_count": 6,
+      "training_size_policy": "smallest_and_largest_topology_atom_counts",
+      "training_topology_atom_counts": [
+        423,
+        104300
+      ]
+    },
+    "ion_atmosphere": {
+      "cpu_seconds_per_selected_work_unit": 5.7725342265831e-08,
+      "cpu_seconds_per_topology_atom_source_frame": 1.7425943889422187e-08,
+      "extrapolation_policy": "planning estimate only; a project-local pilot is required outside the measured size, source-length, or selected-work ranges",
+      "fit_residual_norm_cpu_seconds": 0.08468881141854205,
+      "heldout_point_count": 3,
+      "heldout_size_policy": "middle_topology_atom_count",
+      "heldout_topology_atom_count": 21478,
+      "heldout_validation": [
+        {
+          "estimated_selected_work_units": 410046.235255811,
+          "observed_cpu_seconds": 7.3065169999999995,
+          "observed_selected_work_units": 734400,
+          "observed_to_planning_upper_ratio": 0.6174605831328345,
+          "passed": true,
+          "planning_upper_cpu_seconds": 11.833171540972918,
+          "point_id": "medium-21478-ion_atmosphere-20-frames",
+          "raw_predicted_cpu_seconds": 7.888781027315279
+        },
+        {
+          "estimated_selected_work_units": 1025115.5881395276,
+          "observed_cpu_seconds": 7.450017,
+          "observed_selected_work_units": 1836000,
+          "observed_to_planning_upper_ratio": 0.6267666168475429,
+          "passed": true,
+          "planning_upper_cpu_seconds": 11.886429174341572,
+          "point_id": "medium-21478-ion_atmosphere-50-frames",
+          "raw_predicted_cpu_seconds": 7.924286116227714
+        },
+        {
+          "estimated_selected_work_units": 2050231.1762790552,
+          "observed_cpu_seconds": 7.632171,
+          "observed_selected_work_units": 3672000,
+          "observed_to_planning_upper_ratio": 0.6373318328328822,
+          "passed": true,
+          "planning_upper_cpu_seconds": 11.975191896622661,
+          "point_id": "medium-21478-ion_atmosphere-100-frames",
+          "raw_predicted_cpu_seconds": 7.983461264415107
+        }
+      ],
+      "heldout_validation_passed": true,
+      "intercept_cpu_seconds": 0.379622510900127,
+      "maximum_heldout_observed_to_planning_upper_ratio": 0.6373318328328822,
+      "maximum_training_observed_to_planning_upper_ratio": 0.7788172405952442,
+      "measured_ranges": {
+        "selected_source_physical_frames": [
+          20,
+          100
+        ],
+        "selected_work_units": [
+          1720,
+          9088200
+        ],
+        "source_frame_count": [
+          1000,
+          20000
+        ],
+        "topology_atom_count": [
+          423,
+          95207
+        ]
+      },
+      "model_form": "residual_safety_factor * (intercept + source_rate * topology_atom_source_frames + selected_rate * selected_work_units)",
+      "module_id": "ion_atmosphere",
+      "planning_proxy": "ion_pairs_per_topology_atom_selected_frame_v1",
+      "planning_proxy_basis": "maximum topology atom count",
+      "residual_safety_factor": 1.5,
+      "selected_work_unit": "ion_target_minimum_image_pairs_v1",
+      "selected_work_units_per_proxy_unit": 0.9545726679760942,
+      "training_point_count": 6,
+      "training_size_policy": "smallest_and_largest_topology_atom_counts",
+      "training_topology_atom_counts": [
+        423,
+        95207
+      ]
+    },
+    "structural_integrity_qc": {
+      "cpu_seconds_per_selected_work_unit": 3.5492204601003625e-05,
+      "cpu_seconds_per_topology_atom_source_frame": 1.8917897165862334e-08,
+      "extrapolation_policy": "planning estimate only; a project-local pilot is required outside the measured size, source-length, or selected-work ranges",
+      "fit_residual_norm_cpu_seconds": 0.39498750468324056,
+      "heldout_point_count": 3,
+      "heldout_size_policy": "middle_topology_atom_count",
+      "heldout_topology_atom_count": 21478,
+      "heldout_validation": [
+        {
+          "estimated_selected_work_units": 429560.0,
+          "observed_cpu_seconds": 19.279248,
+          "observed_selected_work_units": 429560,
+          "observed_to_planning_upper_ratio": 0.5347629465406999,
+          "passed": true,
+          "planning_upper_cpu_seconds": 36.05195185028155,
+          "point_id": "medium-21478-structural_integrity_qc-20-frames",
+          "raw_predicted_cpu_seconds": 24.034634566854365
+        },
+        {
+          "estimated_selected_work_units": 1073900.0,
+          "observed_cpu_seconds": 41.233048,
+          "observed_selected_work_units": 1073900,
+          "observed_to_planning_upper_ratio": 0.5860669713418579,
+          "passed": true,
+          "planning_upper_cpu_seconds": 70.35552251919756,
+          "point_id": "medium-21478-structural_integrity_qc-50-frames",
+          "raw_predicted_cpu_seconds": 46.903681679465045
+        },
+        {
+          "estimated_selected_work_units": 2147800.0,
+          "observed_cpu_seconds": 77.52374499999999,
+          "observed_selected_work_units": 2147800,
+          "observed_to_planning_upper_ratio": 0.6078952050676123,
+          "passed": true,
+          "planning_upper_cpu_seconds": 127.52814030072425,
+          "point_id": "medium-21478-structural_integrity_qc-100-frames",
+          "raw_predicted_cpu_seconds": 85.01876020048283
+        }
+      ],
+      "heldout_validation_passed": true,
+      "intercept_cpu_seconds": 0.6622312518794268,
+      "maximum_heldout_observed_to_planning_upper_ratio": 0.6078952050676123,
+      "maximum_training_observed_to_planning_upper_ratio": 0.7409821869055256,
+      "measured_ranges": {
+        "selected_source_physical_frames": [
+          20,
+          100
+        ],
+        "selected_work_units": [
+          8460,
+          10430000
+        ],
+        "source_frame_count": [
+          1000,
+          20000
+        ],
+        "topology_atom_count": [
+          423,
+          104300
+        ]
+      },
+      "model_form": "residual_safety_factor * (intercept + source_rate * topology_atom_source_frames + selected_rate * selected_work_units)",
+      "module_id": "structural_integrity_qc",
+      "planning_proxy": "topology_atoms_per_selected_frame_v1",
+      "planning_proxy_basis": "maximum topology atom count",
+      "residual_safety_factor": 1.5,
+      "selected_work_unit": "topology_atom_selected_frames_v1",
+      "selected_work_units_per_proxy_unit": 1.0,
+      "training_point_count": 6,
+      "training_size_policy": "smallest_and_largest_topology_atom_counts",
+      "training_topology_atom_counts": [
+        423,
+        104300
+      ]
+    }
+  },
+  "scientific_status": "runtime evidence only",
+  "source_evidence_path_redacted": true,
+  "source_evidence_sha256": "2765618a19bc6bf88c3d0d4e3151ac51c251c6144c4369700b914964b378d2dd",
+  "technical_status": "complete"
+}
