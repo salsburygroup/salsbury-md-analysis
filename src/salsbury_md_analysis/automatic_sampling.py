@@ -1138,6 +1138,9 @@ def _hydrogen_bond_candidate_dimensions(
         "exclude_same_residue": True,
         "candidate_harmonization": "intersection_by_endpoint_identity_lazy_v3",
         "common_candidate_count": int(report["common_candidate_count"]),
+        "common_candidate_stratum_counts": report[
+            "common_candidate_stratum_counts"
+        ],
         "common_donor_hydrogen_group_count": len(donors),
         "common_acceptor_count": len(acceptors),
         "materialized_precoordinate_candidate_count": 0,
@@ -1179,7 +1182,7 @@ def _runtime_workload_multiplier(
                 "lazy spatial donor/acceptor endpoint proxy from the square root "
                 "of the implicit common candidate universe"
             ),
-            "observed_candidate_count": candidate_count,
+            "implicit_candidate_count": candidate_count,
             "reference_candidate_count": REFERENCE_HYDROGEN_BOND_CANDIDATE_COUNT,
             "minimum_multiplier": MINIMUM_HYDROGEN_BOND_WORKLOAD_MULTIPLIER,
             "resolved_multiplier": candidate_multiplier,
