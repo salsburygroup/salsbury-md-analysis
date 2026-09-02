@@ -994,7 +994,7 @@ class QuickstartTests(unittest.TestCase):
             )
             self.assertEqual(
                 local_plan["local_execution_plan_schema"],
-                "salsbury-local-execution-plan-v5",
+                "salsbury-local-execution-plan-v6",
             )
             self.assertEqual(local_plan["dependency_model"], "task_dag_v1")
             walltime_allocation = local_plan["walltime_allocation"]
