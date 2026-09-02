@@ -20,6 +20,7 @@ from salsbury_md_analysis.cache_routing import (
 from salsbury_md_analysis.coordinates import iter_coordinate_frames
 from salsbury_md_analysis.manifests import load_json, validate_system
 from salsbury_md_analysis.preflight import probe_trajectory
+from salsbury_md_analysis.rmsd_rg import replica_rmsd_rg_project
 from salsbury_md_analysis.structural_qc import structural_qc_project
 
 
@@ -194,6 +195,7 @@ class CoordinateCacheTests(unittest.TestCase):
                 "coordinate_unit": "angstrom",
                 "time_unit": "ps",
                 "periodic_coordinate_policy": "unwrap_continuous",
+                "common_atom_policy": "strict",
                 "periodic_reconstruction": {
                     "maximum_bond_length_angstrom": 3.0,
                     "cycle_closure_tolerance_angstrom": 0.25,
@@ -205,7 +207,13 @@ class CoordinateCacheTests(unittest.TestCase):
                     "alignment": {"preset": "heavy"},
                     "analysis": {"preset": "heavy"},
                 },
-                "definitions": {"replica_rmsd_rg": {}},
+                "definitions": {"replica_rmsd_rg": {
+                    "alignment_selection": "alignment",
+                    "rmsd_selection": "analysis",
+                    "rg_selection": "analysis",
+                    "minimum_reference_coverage": 1.0,
+                    "frame_stride": 1,
+                }},
                 "requested_modules": ["replica_rmsd_rg"],
                 "protected_locations": [],
             }), encoding="utf-8")
@@ -222,6 +230,11 @@ class CoordinateCacheTests(unittest.TestCase):
             self.assertEqual(cached_project["requested_modules"], [
                 "replica_rmsd_rg"
             ])
+            cached_rmsd = replica_rmsd_rg_project(cache_project, hash_content=True)
+            self.assertEqual(cached_rmsd["technical_status"], "complete", cached_rmsd)
+            self.assertEqual(
+                cached_rmsd["replica_execution"]["shard_count"], 1
+            )
 
             second_replica = json.loads(json.dumps(
                 system["systems"][0]["replicas"][0]
