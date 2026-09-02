@@ -148,6 +148,11 @@ class PlannerCalibrationMatrixTests(unittest.TestCase):
             self.assertEqual(evidence["technical_status"], "complete")
             self.assertEqual(evidence["point_count"], 2)
             self.assertEqual(evidence["unexpected_error_count"], 0)
+            self.assertEqual(evidence["points"][1]["source_frame_count"], 20)
+            self.assertEqual(
+                evidence["points"][1]["topology_atom_source_frame_count"], 40
+            )
+            self.assertEqual(evidence["points"][1]["resolved_integer_stride"], 2)
             self.assertEqual(evidence["points"][1]["topology_atom_frame_count"], 20)
             combined = collect.collect_matrices([matrix_root / "matrix.json"])
             self.assertEqual(combined["matrix_count"], 1)
