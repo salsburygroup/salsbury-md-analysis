@@ -131,6 +131,46 @@ def _add_feature(
 def _hydrogen_bond_features(
     report: Mapping[str, object], dictionary: MutableMapping[str, Dict[str, object]]
 ) -> Dict[FrameKey, set[str]]:
+    system_views = report.get("system_feature_spaces")
+    if isinstance(system_views, list):
+        combined: Dict[FrameKey, set[str]] = {}
+        for view in system_views:
+            if not isinstance(view, dict) or not isinstance(view.get("system_id"), str):
+                raise InteractionFingerprintError(
+                    "hydrogen-bond per-system feature space is malformed"
+                )
+            system_id = str(view["system_id"])
+            candidates = view.get("candidate_dictionary")
+            frames = view.get("frame_bond_matrix")
+            if not isinstance(candidates, list) or not isinstance(frames, list):
+                raise InteractionFingerprintError(
+                    f"hydrogen-bond feature space for {system_id} is incomplete"
+                )
+            ids = []
+            for index, candidate in enumerate(candidates):
+                if not isinstance(candidate, dict):
+                    raise InteractionFingerprintError(
+                        "hydrogen-bond candidate is not an object"
+                    )
+                source_identity = str(candidate.get("bond_id", f"candidate-{index}"))
+                ids.append(_add_feature(
+                    dictionary, source="hydrogen_bond_discovery",
+                    interaction_type="direct_hydrogen_bond",
+                    identity=f"{system_id}|{source_identity}",
+                    definition={**candidate, "system_id": system_id},
+                ))
+            scoped = _hydrogen_bond_frame_features(frames, ids)
+            for key, values in scoped.items():
+                if key[0] != system_id:
+                    raise InteractionFingerprintError(
+                        "hydrogen-bond frame system differs from its feature space"
+                    )
+                if key in combined:
+                    raise InteractionFingerprintError(
+                        "hydrogen-bond per-system views contain duplicate frame identities"
+                    )
+                combined[key] = values
+        return combined
     candidates = report.get("candidate_dictionary")
     frames = report.get("frame_bond_matrix")
     if not isinstance(candidates, list) or not isinstance(frames, list):
@@ -145,6 +185,12 @@ def _hydrogen_bond_features(
             interaction_type="direct_hydrogen_bond", identity=identity,
             definition=candidate,
         ))
+    return _hydrogen_bond_frame_features(frames, ids)
+
+
+def _hydrogen_bond_frame_features(
+    frames: Sequence[object], ids: Sequence[str],
+) -> Dict[FrameKey, set[str]]:
     result: Dict[FrameKey, set[str]] = {}
     for frame in frames:
         if not isinstance(frame, dict):
@@ -436,14 +482,25 @@ def build_interaction_fingerprints(
     occupancies = []
     for feature_id, feature in sorted(dictionary.items()):
         source = str(feature["source_module"])
-        denominator = len(source_frames[source])
-        present = len(feature_frames.get(feature_id, set()))
+        definition = feature.get("definition")
+        scoped_system_id = (
+            str(definition["system_id"])
+            if isinstance(definition, dict)
+            and isinstance(definition.get("system_id"), str) else None
+        )
+        eligible_frames = {
+            key for key in source_frames[source]
+            if scoped_system_id is None or key[0] == scoped_system_id
+        }
+        denominator = len(eligible_frames)
+        present = len(feature_frames.get(feature_id, set()).intersection(eligible_frames))
         occupancy = present / denominator if denominator else 0.0
         if occupancy >= float(settings["minimum_feature_occupancy"]):
             retained.add(feature_id)
             occupancies.append({
                 "feature_id": feature_id,
                 "source_module": source,
+                "system_id": scoped_system_id,
                 "evaluated_frame_count": denominator,
                 "present_frame_count": present,
                 "occupancy_fraction": occupancy,
@@ -483,6 +540,22 @@ def build_interaction_fingerprints(
         left_source = str(dictionary[left]["source_module"])
         right_source = str(dictionary[right]["source_module"])
         common = source_key_sets[left_source].intersection(source_key_sets[right_source])
+        scoped_systems = []
+        for feature_id in (left, right):
+            definition = dictionary[feature_id].get("definition")
+            scoped_systems.append(
+                str(definition["system_id"])
+                if isinstance(definition, dict)
+                and isinstance(definition.get("system_id"), str) else None
+            )
+        if all(value is not None for value in scoped_systems):
+            if scoped_systems[0] != scoped_systems[1]:
+                continue
+            common = {key for key in common if key[0] == scoped_systems[0]}
+        elif scoped_systems[0] is not None:
+            common = {key for key in common if key[0] == scoped_systems[0]}
+        elif scoped_systems[1] is not None:
+            common = {key for key in common if key[0] == scoped_systems[1]}
         if len(common) < int(settings["minimum_pair_observations"]):
             continue
         left_set = feature_frames.get(left, set()).intersection(common)
