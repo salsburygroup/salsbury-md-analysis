@@ -1037,25 +1037,7 @@ def _hydrogen_bond_discovery_project_lazy_partial(
                 bool(settings["exclude_same_residue"]),
                 int(settings["maximum_candidate_bonds"]),
             )
-            reconstruction_atom_indices = tuple(sorted({
-                *(
-                    int(row["donor_atom_index"]) for row in donor_rows
-                ),
-                *(
-                    int(row["hydrogen_atom_index"]) for row in donor_rows
-                ),
-                *(
-                    int(row["acceptor_atom_index"]) for row in acceptor_rows
-                ),
-            }))
-            processor = PeriodicFrameProcessor.from_replica(
-                project, replica, system_path, len(atoms)
-            )
-            reference = processor.process(
-                next(iter_coordinate_frames(topology_path, coordinate_unit)),
-                str(topology_path),
-                reconstruction_atom_indices,
-            )
+            reference = next(iter_coordinate_frames(topology_path, coordinate_unit))
             for row in donor_rows:
                 donor = int(row["donor_atom_index"])
                 hydrogen = int(row["hydrogen_atom_index"])
@@ -1078,26 +1060,19 @@ def _hydrogen_bond_discovery_project_lazy_partial(
                 axis = normalize_segment_axis(
                     segment, str(output_time_unit) if output_time_unit else None
                 )
-                processor.begin_segment(bool(segment.get("continuous_with_previous", False)))
                 for raw_frame in iter_coordinate_frames(
                     trajectory_path,
                     coordinate_unit,
-                    reader_frame_indices(selected_indices, processor.policy),
+                    selected_indices,
                 ):
                     selected = frame_selected(
                         raw_frame.frame_index,
                         selected_indices,
                         int(settings["frame_stride"]),
                     )
-                    if not selected and processor.policy != "unwrap_continuous":
-                        continue
-                    frame = processor.process(
-                        raw_frame,
-                        f"{system_id}/{replica_id}/{segment_id}/frame-{raw_frame.frame_index}",
-                        reconstruction_atom_indices,
-                    )
                     if not selected:
                         continue
+                    frame = raw_frame
                     evaluated = evaluator.evaluate(
                         frame.coordinates_angstrom,
                         cell=frame.cell_vectors_angstrom,
@@ -1190,6 +1165,9 @@ def _hydrogen_bond_discovery_project_lazy_partial(
             "angle": "donor-hydrogen-acceptor angle at hydrogen",
             "distance_definition": "donor_acceptor_v1",
             "coordinate_reconstruction": project["periodic_coordinate_policy"],
+            "hydrogen_bond_coordinate_path": (
+                "raw_wrapped_frame_with_exact_minimum_image_vectors_v1"
+            ),
             "water_policy": "exclude",
             "sparse_geometry_engine": "spatial_cell_list_exact_periodic_v1",
         },
