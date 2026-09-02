@@ -665,6 +665,78 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertEqual(task["distributed_worker_count"], 6)
         self.assertFalse(task["distributed_replica_execution"])
 
+    def test_replica_parallel_structural_qc_requires_runtime_worker_contract(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            common = (
+                "#!/usr/bin/env bash\n#SBATCH --time=01:00:00\n"
+                "#SBATCH --cpus-per-task=20\n#SBATCH --mem=65G\n"
+                "set -euo pipefail\n"
+            )
+            (root / "run_preflight.slurm").write_text(
+                common, encoding="utf-8"
+            )
+            (root / "run_finalize_reporting.slurm").write_text(
+                common, encoding="utf-8"
+            )
+            (root / "analysis-config.json").write_text(
+                json.dumps({
+                    "modules": {"structural_integrity_qc": {"depends_on": []}}
+                }),
+                encoding="utf-8",
+            )
+            (root / "project.json").write_text(
+                json.dumps({"definitions": {"structural_qc": {}}}),
+                encoding="utf-8",
+            )
+            (root / "run_stage_0_array.slurm").write_text(
+                common
+                + f"PROJECTS=(\n  '{root / 'project.json'}'\n)\n"
+                + "COMMANDS=(\n  'structural-qc'\n)\n",
+                encoding="utf-8",
+            )
+            (root / "campaign-resource-plan.json").write_text(json.dumps({
+                "tasks": [{
+                    "task_id": "direct:structural_integrity_qc",
+                    "module_id": "structural_integrity_qc",
+                    "parallel_execution_model": "replica_worker_reduce",
+                    "parallel_worker_count": 20,
+                    "effective_cpu_cap": 20,
+                    "estimated_wall_hours_at_effective_cpu_cap": 1.0,
+                    "estimated_peak_memory_gib_at_selected_observations": 40.0,
+                    "estimated_scheduler_memory_gib_at_selected_observations": 61.0,
+                    "estimated_scheduler_memory_gib_per_node_at_selected_observations": 61.0,
+                    "parallel_node_layout_at_selected_observations": {
+                        "active_worker_count": 20,
+                        "execution_cpu_slots": 20,
+                        "node_count": 1,
+                        "workers_per_node": 20,
+                        "distributed_replica_execution": False,
+                    },
+                }],
+            }), encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                ExecutionAdapterError,
+                "does not enable parallel_execution",
+            ):
+                build_local_execution_plan(
+                    root,
+                    {
+                        "maximum_parallel_cpus": 20,
+                        "maximum_hours_per_cpu": 8,
+                        "maximum_memory_gib": 128,
+                    },
+                    {
+                        "resource_table_enabled": False,
+                        "finding_picker_enabled": False,
+                    },
+                    node_policy={
+                        "cpus_per_node": 44,
+                        "memory_gib_per_node": 185.0,
+                    },
+                )
+
     def test_generated_plan_uses_only_true_task_dependencies(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
