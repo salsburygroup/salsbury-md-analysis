@@ -911,12 +911,19 @@ def _lazy_local_endpoint_rows(
 ) -> Tuple[List[Dict[str, object]], List[Dict[str, object]], Dict[int, AtomChemicalRole]]:
     """Resolve common endpoint identities to one replica's local atom indices."""
 
+    needed_identities = {
+        identity
+        for donor, hydrogen, _ in common_donors
+        for identity in (donor, hydrogen)
+    } | {identity for identity, _ in common_acceptors}
     identity_to_index: Dict[AtomIdentityKey, int] = {}
     for atom in atoms:
         key = _atom_identity_key(atom)
+        if key not in needed_identities:
+            continue
         if key in identity_to_index:
             raise HydrogenBondDiscoveryError(
-                "topology contains duplicate atom identities for lazy harmonization"
+                "topology contains duplicate identities among retained solute endpoints"
             )
         identity_to_index[key] = atom.atom_index
     _, _, roles = _automatic_endpoint_identity_sets(atoms, bonds)
