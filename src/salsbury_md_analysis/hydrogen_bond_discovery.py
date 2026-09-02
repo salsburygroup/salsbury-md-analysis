@@ -976,7 +976,12 @@ def _lazy_local_endpoint_rows(
     bonds: Sequence[Tuple[int, int]],
     common_donors: set[DonorHydrogenIdentityKey],
     common_acceptors: set[AcceptorIdentityKey],
-) -> Tuple[List[Dict[str, object]], List[Dict[str, object]], Dict[int, AtomChemicalRole]]:
+) -> Tuple[
+    List[Dict[str, object]],
+    List[Dict[str, object]],
+    Dict[int, AtomChemicalRole],
+    List[Dict[str, object]],
+]:
     """Resolve common endpoint identities to one replica's local atom indices."""
 
     needed_identities = {
@@ -1029,7 +1034,12 @@ def _lazy_local_endpoint_rows(
             "entity_class": entity_class,
             "residue_key": acceptor_key[:3],
         })
-    return donor_rows, acceptor_rows, roles
+    endpoint_metadata = [{
+        "identity": _identity_record(identity),
+        "residue_name": atoms[atom_index].residue_name,
+        "element": atoms[atom_index].element,
+    } for identity, atom_index in sorted(identity_to_index.items())]
+    return donor_rows, acceptor_rows, roles, endpoint_metadata
 
 
 def _hydrogen_bond_discovery_project_lazy_partial(
@@ -1065,6 +1075,7 @@ def _hydrogen_bond_discovery_project_lazy_partial(
     candidate_dictionary: List[Dict[str, object]] = []
     frame_records: List[Dict[str, object]] = []
     chemistry_reports: List[Dict[str, object]] = []
+    endpoint_metadata_records: List[Dict[str, object]] = []
     spatial_pairs = 0
     explicit_geometry = 0
     present_events = 0
@@ -1087,9 +1098,16 @@ def _hydrogen_bond_discovery_project_lazy_partial(
             bonds, connectivity_provenance = load_connectivity(
                 connectivity_path, len(atoms)
             )
-            donor_rows, acceptor_rows, roles = _lazy_local_endpoint_rows(
-                atoms, bonds, common_donors, common_acceptors
+            donor_rows, acceptor_rows, roles, endpoint_metadata = (
+                _lazy_local_endpoint_rows(
+                    atoms, bonds, common_donors, common_acceptors
+                )
             )
+            endpoint_metadata_records.extend({
+                **row,
+                "system_id": system_id,
+                "replica_id": replica_id,
+            } for row in endpoint_metadata)
             chemistry_reports.append({
                 "system_id": system_id,
                 "replica_id": replica_id,
@@ -1245,6 +1263,7 @@ def _hydrogen_bond_discovery_project_lazy_partial(
         "cutoff_definitions": cutoff_definitions,
         "candidate_harmonization": endpoint_report,
         "chemistry_reports": chemistry_reports,
+        "common_endpoint_identity_metadata": endpoint_metadata_records,
         "frame_matrix_representation": "sparse_spatial_partial_v3",
         "candidate_dictionary": candidate_dictionary,
         "conceptual_candidate_count": conceptual_count,
@@ -2104,19 +2123,78 @@ def _reduce_lazy_hbond_reports(
     global_index = {key: index for index, key in enumerate(global_keys)}
     atom_keys = sorted({atom for key in global_keys for atom in key})
     atom_index = {key: index for index, key in enumerate(atom_keys)}
+
+    # Stable cross-system matching deliberately ignores residue_name so that
+    # chemically substituted homologous positions can be compared. Preserve
+    # the actual chemistry separately, however: consumers need an element and
+    # an honest residue label, and incompatible element assignments must never
+    # be silently harmonized.
+    endpoint_elements: Dict[AtomIdentityKey, set[str]] = {}
+    endpoint_residue_names: Dict[AtomIdentityKey, Dict[str, set[str]]] = {}
+    for report in reports:
+        for row in report.get("common_endpoint_identity_metadata", []):
+            if not isinstance(row, Mapping):
+                raise HydrogenBondDiscoveryError(
+                    "common endpoint identity metadata is malformed"
+                )
+            key = _identity_from_record(row.get("identity"))
+            system_id = str(row.get("system_id", "")).strip()
+            replica_id = str(row.get("replica_id", "")).strip()
+            residue_name = str(row.get("residue_name", "")).strip()
+            element = str(row.get("element", "")).strip().upper()
+            if not system_id or not replica_id or not residue_name or not element:
+                raise HydrogenBondDiscoveryError(
+                    "common endpoint identity metadata is incomplete"
+                )
+            endpoint_elements.setdefault(key, set()).add(element)
+            endpoint_residue_names.setdefault(key, {}).setdefault(
+                system_id, set()
+            ).add(residue_name)
+
+    def canonical_identity(key: AtomIdentityKey) -> Dict[str, object]:
+        elements = endpoint_elements.get(key, set())
+        names_by_system = endpoint_residue_names.get(key, {})
+        if len(elements) != 1 or not names_by_system:
+            raise HydrogenBondDiscoveryError(
+                "common endpoint chemistry is missing or element-inconsistent"
+            )
+        for system_id, names in names_by_system.items():
+            if len(names) != 1:
+                raise HydrogenBondDiscoveryError(
+                    "common endpoint residue name differs across replicas of "
+                    f"system {system_id}"
+                )
+        residue_names = {
+            next(iter(names)) for names in names_by_system.values()
+        }
+        identity = _identity_record(key)
+        identity["residue_name"] = (
+            next(iter(residue_names))
+            if len(residue_names) == 1 else
+            "POSITION_HARMONIZED"
+        )
+        identity["element"] = next(iter(elements))
+        return identity
+
     candidate_dictionary = [{
         "bond_id": _identity_bond_id(key),
         "donor_atom_index": atom_index[key[0]],
         "hydrogen_atom_index": atom_index[key[1]],
         "acceptor_atom_index": atom_index[key[2]],
-        "donor_identity": _identity_record(key[0]),
-        "hydrogen_identity": _identity_record(key[1]),
-        "acceptor_identity": _identity_record(key[2]),
+        "donor_identity": canonical_identity(key[0]),
+        "hydrogen_identity": canonical_identity(key[1]),
+        "acceptor_identity": canonical_identity(key[2]),
         "interaction_stratum": stratum_by_key[key],
     } for key in global_keys]
     atom_dictionary = [{
         "atom_index": atom_index[key],
-        "identity": _identity_record(key),
+        "identity": canonical_identity(key),
+        "residue_names_by_system": {
+            system_id: next(iter(names))
+            for system_id, names in sorted(
+                endpoint_residue_names[key].items()
+            )
+        },
     } for key in atom_keys]
 
     cutoff_definitions = first["cutoff_definitions"]
@@ -2272,6 +2350,7 @@ def _reduce_lazy_hbond_reports(
         "error_count": sum(issue.get("severity") == "error" for issue in issues),
         "warning_count": sum(issue.get("severity") == "warning" for issue in issues),
     })
+    first.pop("common_endpoint_identity_metadata", None)
     restore_source_provenance(first, source_context)
     return first
 
