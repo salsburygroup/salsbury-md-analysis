@@ -15,6 +15,25 @@
   and method-aware finding highlights.
 - Keep the interactive results browser in its separate companion repository;
   the core package produces the complete machine-readable evidence it consumes.
+- Vectorize exact ion-atmosphere nearest-target distances for orthogonal
+  periodic cells, retain exact finite-lattice enumeration for skewed triclinic
+  cells, and reuse geometry for target labels that declare the same atom set.
+- Read only planner-selected ion-atmosphere frames even when another module
+  requires continuous molecular unwrapping. Exact pairwise minimum-image
+  distances are invariant to independent integer-lattice translations, so
+  local ion shells no longer pay for unnecessary whole-system reconstruction.
+- Replace convergence and population-validity pass/fail fields with quantitative
+  RMSD/Rg diagnostics. Reports now retain each ESS value, a configurable ESS
+  reference, above/equal/below-reference counts, split-mean statistics, and
+  per-system and per-metric summaries while reserving scientific interpretation
+  for human review.
+- Couple convergence block sizing to the planner-selected RMSD/Rg observations
+  per replica. Impossible explicit block contracts now fail technically instead
+  of being mislabeled as scientific nonconvergence.
+- Reuse validated full-project DCCM and RMSD/Rg reports before entering the
+  replica-worker path. Downstream correlation-network and convergence modules
+  can now consume campaign caches without comparing them to temporary
+  per-replica project contracts.
 - Replace the shared alternative-clustering resource estimate with accepted
   performance-only, per-algorithm runtime and memory models. PAM and weighted
   PAM now account for both fit observations and projected feature count;
