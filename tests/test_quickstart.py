@@ -501,6 +501,18 @@ class QuickstartTests(unittest.TestCase):
             self.assertEqual(report["technical_status"], "complete")
             self.assertEqual(report["reference_connectivity_check"]["bond_count"], 3)
             project = json.loads((output / "project.json").read_text())
+            qc_runtime_project = json.loads(
+                (output / "project-structural-qc-parallel.json").read_text()
+            )
+            qc_parallel = qc_runtime_project["definitions"]["structural_qc"][
+                "parallel_execution"
+            ]
+            self.assertTrue(qc_parallel["enabled"])
+            self.assertEqual(qc_parallel["maximum_workers"], 3)
+            self.assertIn(
+                str(output / "project-structural-qc-parallel.json"),
+                (output / "run_stage_0_array.slurm").read_text(),
+            )
             sampling = json.loads((output / "sampling-plan.json").read_text())
             rmsd_plan = next(
                 row for row in sampling["method_plans"]
@@ -533,6 +545,7 @@ class QuickstartTests(unittest.TestCase):
                 sampling["campaign_resource_plan"]["raw_capacity_cpu_hours"],
                 384.0,
             )
+
             safety = sampling["campaign_resource_plan"][
                 "resource_safety_margins"
             ]
@@ -727,6 +740,82 @@ class QuickstartTests(unittest.TestCase):
                 (output / "run_view_global_common_heavy_stage_2.slurm").read_text(),
             )
             self.assertEqual(len(list(output.glob("*.dcd"))), 0)
+
+    @patch(
+        "salsbury_md_analysis.quickstart._discover_dssp_executable",
+        return_value=None,
+    )
+    def test_twenty_replica_structural_qc_plans_twenty_runtime_workers(
+        self, _discover_dssp,
+    ):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "inputs"
+            source.mkdir()
+            pdb, psf, trajectories = _write_inputs(source)
+            for index in range(3, 20):
+                trajectory = source / f"replica-{index + 1}.dcd"
+                _write_dcd(trajectory, atom_count=4, frames=20)
+                trajectories.append(trajectory)
+            config_path = root / "twenty-workers.json"
+            config_path.write_text(json.dumps({
+                "config_schema": "salsbury-analysis-config-v1",
+                "execution": {
+                    "maximum_parallel_cpus": 20,
+                    "maximum_memory_gib": 256.0,
+                    "maximum_hours_per_cpu": 72,
+                    "maximum_total_cpu_hours": 1440.0,
+                },
+            }), encoding="utf-8")
+            output = root / "analysis"
+            prepare_standard_analysis(
+                pdb_path=pdb,
+                psf_path=psf,
+                trajectories=trajectories,
+                output_directory=output,
+                project_id="twenty-replica-qc",
+                frame_interval_ps=10.0,
+                config_path=config_path,
+            )
+
+            campaign = json.loads(
+                (output / "campaign-resource-plan.json").read_text()
+            )
+            qc_plan = next(
+                row for row in campaign["tasks"]
+                if row.get("module_id") == "structural_integrity_qc"
+            )
+            self.assertEqual(qc_plan["parallel_worker_count"], 20)
+            self.assertEqual(qc_plan["effective_cpu_cap"], 20)
+            self.assertEqual(
+                qc_plan["active_parallel_workers_at_selected_observations"],
+                20,
+            )
+            execution = json.loads(
+                (output / "local-execution-plan.json").read_text()
+            )
+            qc_task = next(
+                task
+                for phase in execution["phases"]
+                for task in phase["tasks"]
+                if task.get("module_id") == "structural_integrity_qc"
+            )
+            self.assertEqual(qc_task["cpu_slots"], 20)
+            self.assertEqual(
+                qc_task["structural_qc_replica_runtime_contract"],
+                {
+                    "execution_model": "one_replica_shard_per_worker_v1",
+                    "runtime_project": str(
+                        (
+                            output / "project-structural-qc-parallel.json"
+                        ).resolve()
+                    ),
+                    "replica_shard_count": 20,
+                    "configured_maximum_workers": 20,
+                    "planned_active_worker_count": 20,
+                    "worker_wave_count": 1,
+                },
+            )
 
     def test_single_system_preparation_accepts_portable_bond_json(self):
         with tempfile.TemporaryDirectory() as temporary:
