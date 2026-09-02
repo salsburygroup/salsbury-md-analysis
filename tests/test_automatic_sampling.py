@@ -10,6 +10,7 @@ from salsbury_md_analysis.automatic_sampling import (
     _campaign_direct_resource_plan,
     _module_plan,
     _runtime_workload_multiplier,
+    _size_length_cpu_terms,
     automatic_sampling_plan,
     plan_cartesian_pca_basis,
     sampling_profile,
@@ -63,6 +64,73 @@ def _write_system(root: Path, frames_per_replica: int = 12_000) -> Path:
 
 
 class AutomaticSamplingTests(unittest.TestCase):
+    @staticmethod
+    def _size_length_calibration(module_id: str):
+        definitions = {
+            "structural_integrity_qc": (
+                "topology_atom_selected_frames_v1",
+                "topology_atoms_per_selected_frame_v1",
+                1.0,
+            ),
+            "hydrogen_bond_discovery": (
+                "spatial_neighbor_pairs_v1",
+                "spatial_pairs_per_endpoint_selected_frame_v1",
+                2.0,
+            ),
+        }
+        work_unit, proxy, proxy_rate = definitions[module_id]
+        return {"size_length_cpu_model": {
+            "module_id": module_id,
+            "intercept_cpu_seconds": 1.0,
+            "cpu_seconds_per_topology_atom_source_frame": 0.001,
+            "cpu_seconds_per_selected_work_unit": 0.01,
+            "selected_work_unit": work_unit,
+            "planning_proxy": proxy,
+            "selected_work_units_per_proxy_unit": proxy_rate,
+            "residual_safety_factor": 1.5,
+            "heldout_validation_passed": True,
+            "measured_ranges": {},
+            "extrapolation_policy": "pilot outside measured range",
+        }}
+
+    def test_size_length_model_charges_source_length_separately(self):
+        short = self._reference_dimensions(frames_per_replica=100)
+        long = self._reference_dimensions(frames_per_replica=200)
+        measured = self._size_length_calibration("structural_integrity_qc")
+        short_terms = _size_length_cpu_terms(
+            sampling_profile("structural_integrity_qc"), short, measured
+        )
+        long_terms = _size_length_cpu_terms(
+            sampling_profile("structural_integrity_qc"), long, measured
+        )
+        self.assertIsNotNone(short_terms)
+        self.assertIsNotNone(long_terms)
+        self.assertGreater(long_terms[0], short_terms[0])
+        self.assertEqual(long_terms[1], short_terms[1])
+
+    def test_size_length_hbond_model_ignores_dense_candidate_universe(self):
+        dimensions = self._reference_dimensions(frames_per_replica=100)
+        dimensions["hydrogen_bond_candidate_planning"] = {
+            "status": "complete",
+            "common_candidate_count": 10,
+            "maximum_donor_hydrogen_group_count_per_system": 100,
+            "maximum_acceptor_count_per_system": 200,
+        }
+        measured = self._size_length_calibration("hydrogen_bond_discovery")
+        first = _size_length_cpu_terms(
+            sampling_profile("hydrogen_bond_discovery"), dimensions, measured
+        )
+        dimensions["hydrogen_bond_candidate_planning"][
+            "common_candidate_count"
+        ] = 10_000_000
+        second = _size_length_cpu_terms(
+            sampling_profile("hydrogen_bond_discovery"), dimensions, measured
+        )
+        self.assertEqual(first, second)
+        self.assertFalse(
+            first[2]["full_cartesian_candidate_dictionary_materialized"]
+        )
+
     def test_hydrogen_bond_runtime_uses_spatial_endpoint_dimension(self):
         dimensions = self._reference_dimensions(frames_per_replica=100)
         dimensions["hydrogen_bond_candidate_planning"] = {

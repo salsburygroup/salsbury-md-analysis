@@ -15,6 +15,6 @@
     "poorly_calibrated_memory_uncertainty_factor": 1.25,
     "censored_timeout_safety_factor": 1.5,
     "coordinate_cache": "auto",
-    "resource_calibration_catalog": "../apollo_measured_resource_calibrations_v4.json"
+    "resource_calibration_catalog": "../apollo_measured_resource_calibrations_v5.json"
   }
 }
