@@ -135,7 +135,12 @@ scheduler requests without submitting:
 ./submit.sh --preview
 ```
 
-Only after the preview matches local policy should you run `./submit.sh`.
+The preview can refuse submission even when the local tutorial completed. A
+cluster's minimum job reservation and scheduler overhead can make a short
+workstation wall limit impossible. In that case, prepare a new plan with at
+least the reported campaign-wall requirement and inspect it again; do not
+bypass the refusal. Only after the preview matches local policy should you run
+`./submit.sh`.
 Submission uses the planned dependencies and task-specific CPU, memory, and
 wall requests. A terminal Slurm failure is handled under the same bounded
 recovery policy; a dependency is not accepted because its predecessor merely
