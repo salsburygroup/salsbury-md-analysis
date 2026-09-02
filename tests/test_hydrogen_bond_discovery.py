@@ -14,6 +14,7 @@ from salsbury_md_analysis.hydrogen_bond_discovery import (
 from salsbury_md_analysis.hydrogen_bond_chemistry import infer_atom_chemical_roles
 from salsbury_md_analysis.hydrogen_bond_sparse import (
     CompiledSparseHydrogenBondEvaluator,
+    LazySpatialHydrogenBondEvaluator,
     SparseHydrogenBondError,
     dense_primary_values,
     evaluate_sparse_frame,
@@ -165,6 +166,52 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
                 scalar_row["donor_hydrogen_acceptor_angle_degrees"],
                 places=12,
             )
+
+    def test_lazy_spatial_evaluator_never_materializes_far_cartesian_pairs(self):
+        donor_rows = [{
+            "donor_atom_index": 0,
+            "hydrogen_atom_index": 1,
+            "donor_identity_key": ("A", 1, "", "N", ""),
+            "hydrogen_identity_key": ("A", 1, "", "H", ""),
+            "entity_class": "protein",
+            "residue_key": ("A", 1, ""),
+        }]
+        acceptors = [
+            {
+                "acceptor_atom_index": 2,
+                "acceptor_identity_key": ("A", 2, "", "O", ""),
+                "entity_class": "protein",
+                "residue_key": ("A", 2, ""),
+            },
+            {
+                "acceptor_atom_index": 3,
+                "acceptor_identity_key": ("A", 3, "", "O", ""),
+                "entity_class": "protein",
+                "residue_key": ("A", 3, ""),
+            },
+        ]
+        report = LazySpatialHydrogenBondEvaluator(
+            donor_rows,
+            acceptors,
+            [{
+                "cutoff_id": "primary",
+                "maximum_donor_acceptor_distance_angstrom": 3.5,
+                "minimum_donor_hydrogen_acceptor_angle_degrees": 150.0,
+            }],
+            "all_solute",
+            True,
+            10,
+        ).evaluate(
+            [(9.5, 0, 0), (0.5, 0, 0), (2.3, 0, 0), (5, 5, 5)],
+            cell=((10.0, 0.0, 0.0), (0.0, 10.0, 0.0), (0.0, 0.0, 10.0)),
+        )
+        self.assertEqual(report["spatial_neighbor_pair_count"], 1)
+        self.assertEqual(report["explicit_geometry_evaluation_count"], 1)
+        self.assertEqual(len(report["present_events"]), 1)
+        self.assertEqual(
+            report["present_events"][0]["interaction_stratum"],
+            "protein_to_protein",
+        )
 
     def test_standard_templates_and_generic_ligands_are_auditable(self):
         atoms = [
@@ -468,7 +515,7 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
                     "maximum_reference_donor_hydrogen_bond_angstrom": 1.2,
                     "maximum_candidate_bonds": 10,
                     "maximum_feature_observations": 100,
-                    "output_mode": "sparse_implicit_zero_v1",
+                    "output_mode": "sparse_spatial_observed_union_v3",
                     "candidate_chunk_size": 2,
                 }},
                 "requested_modules": ["hydrogen_bond_discovery"],
@@ -480,32 +527,22 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
         self.assertEqual(report["candidate_count"], 1)
         self.assertEqual(
             report["candidate_harmonization"]["policy"],
-            "intersection_by_atom_identity_v2",
+            "intersection_by_endpoint_identity_lazy_v3",
         )
         self.assertIn(":O6:", report["candidate_dictionary"][0]["bond_id"])
-        self.assertEqual(report["candidate_harmonization"]["union_candidate_count"], 2)
         self.assertEqual(
-            report["candidate_harmonization"]["system_candidate_counts"],
-            {"control": 2, "variant": 1},
+            report["candidate_harmonization"]
+            ["materialized_precoordinate_candidate_count"],
+            0,
         )
+        self.assertEqual(report["conceptual_candidate_count"], 1)
+        self.assertEqual(report["materialized_observed_candidate_count"], 1)
         self.assertEqual(report["evaluated_frame_count"], 2)
-        self.assertEqual(report["planned_feature_observation_count"], 3)
-        self.assertEqual(
-            [row["candidate_count"] for row in report["system_feature_spaces"]],
-            [2, 1],
-        )
+        self.assertEqual(report["conceptual_candidate_frame_count"], 2)
         self.assertEqual(
             [row["candidate_count"] for row in report["frame_bond_matrix"]], [1, 1]
         )
-        self.assertTrue(any(
-            issue["code"] == "HBOND_FULL_PER_SYSTEM_CANDIDATES_RETAINED"
-            for issue in report["issues"]
-        ))
-        absent = next(
-            row for row in report["candidate_harmonization"]["feature_statuses"]
-            if not row["comparable_across_all_systems"]
-        )
-        self.assertEqual(absent["status_by_system"]["variant"], "chemically_absent")
+        self.assertEqual(report["error_count"], 0)
 
     def test_automatic_project_has_default_cutoffs_and_sensitivity_grid(self):
         with tempfile.TemporaryDirectory() as temporary:

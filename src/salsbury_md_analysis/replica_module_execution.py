@@ -75,6 +75,19 @@ def _module_worker(shard: ReplicaShard) -> Dict[str, object]:
             keys = {tuple(int(value) for value in row) for row in raw_keys}
         else:
             keys = None
+        raw_donors = payload.get("common_donor_endpoints")
+        donor_endpoints = (
+            {
+                (tuple(row[0]), tuple(row[1]), str(row[2]))
+                for row in raw_donors
+            }
+            if isinstance(raw_donors, list) else None
+        )
+        raw_acceptors = payload.get("common_acceptor_endpoints")
+        acceptor_endpoints = (
+            {(tuple(row[0]), str(row[1])) for row in raw_acceptors}
+            if isinstance(raw_acceptors, list) else None
+        )
         return _hydrogen_bond_discovery_project_serial(
             project_path,
             hash_content=hash_content,
@@ -82,6 +95,8 @@ def _module_worker(shard: ReplicaShard) -> Dict[str, object]:
             candidate_harmonization_report_override=(
                 dict(report) if isinstance(report, Mapping) else None
             ),
+            common_donor_endpoints_override=donor_endpoints,
+            common_acceptor_endpoints_override=acceptor_endpoints,
         )
     if runner_id == "water_networks":
         from .water_mediated_hydrogen_bonds import (
