@@ -123,6 +123,38 @@ class IonAtmosphereTests(unittest.TestCase):
                     targets["all_solute"], targets["same_atoms_different_label"]
                 )
 
+    def test_local_periodic_distances_do_not_require_continuous_unwrapping(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            project_path = _write_project(Path(temporary))
+            root = project_path.parent
+            (root / "bonds.json").write_text(json.dumps({
+                "format": "salsbury-bonds-v1", "atom_count": 3,
+                "index_base": 0, "bonds": [[0, 1], [0, 2]],
+            }), encoding="utf-8")
+            system_path = root / "system.json"
+            system = json.loads(system_path.read_text(encoding="utf-8"))
+            system["systems"][0]["replicas"][0]["connectivity"] = "bonds.json"
+            system_path.write_text(json.dumps(system), encoding="utf-8")
+            project = json.loads(project_path.read_text(encoding="utf-8"))
+            project["periodic_coordinate_policy"] = "unwrap_continuous"
+            project["periodic_reconstruction"] = {
+                "maximum_bond_length_angstrom": 20.0,
+                "cycle_closure_tolerance_angstrom": 1.0e-6,
+                "maximum_anchor_displacement_angstrom": 20.0,
+            }
+            project_path.write_text(json.dumps(project), encoding="utf-8")
+            with patch(
+                "salsbury_md_analysis.periodic.PeriodicFrameProcessor.from_replica"
+            ) as reconstruct:
+                report = ion_atmosphere_project(project_path)
+            reconstruct.assert_not_called()
+        self.assertEqual(report["technical_status"], "complete")
+        self.assertAlmostEqual(
+            report["frame_records"][0]["species"]["CL"]["targets"]
+            ["all_solute"]["nearest_distance_angstrom"],
+            2.5,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
