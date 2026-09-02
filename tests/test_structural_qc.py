@@ -4,6 +4,7 @@ import json
 import math
 import random
 import shutil
+import struct
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -87,6 +88,27 @@ def _write_project(
     project_path = root / "project.json"
     project_path.write_text(json.dumps(project), encoding="utf-8")
     return project_path
+
+
+def _record(payload: bytes) -> bytes:
+    marker = struct.pack("<i", len(payload))
+    return marker + payload + marker
+
+
+def _write_periodic_dcd(path: Path) -> None:
+    header = bytearray(84)
+    header[:4] = b"CORD"
+    struct.pack_into("<3i", header, 4, 4, 0, 1)
+    struct.pack_into("<i", header, 44, 1)
+    struct.pack_into("<i", header, 80, 24)
+    title = struct.pack("<i", 1) + b"structural selected-frame test".ljust(80)
+    payload = _record(bytes(header)) + _record(title) + _record(struct.pack("<i", 2))
+    for left, right in ((9.5, 0.5), (0.0, 1.0), (0.5, 1.5), (1.0, 2.0)):
+        payload += _record(struct.pack("<6d", 10.0, 0.0, 10.0, 0.0, 0.0, 10.0))
+        payload += _record(struct.pack("<2f", left, right))
+        payload += _record(struct.pack("<2f", 0.0, 0.0))
+        payload += _record(struct.pack("<2f", 0.0, 0.0))
+    path.write_bytes(payload)
 
 
 class StructuralQCTests(unittest.TestCase):
@@ -245,6 +267,75 @@ class StructuralQCTests(unittest.TestCase):
         self.assertEqual(segment["decoded_frame_count"], 1)
         self.assertEqual(segment["evaluated_frame_count"], 1)
         self.assertIn("FRAME_SUBSAMPLING", {issue["code"] for issue in report["issues"]})
+
+    def test_continuous_policy_uses_exact_selected_frame_make_whole_reference(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project_path = _write_project(
+                root, "2\nplaceholder\nC 0 0 0\nC 1 0 0\n", atom_count=2
+            )
+            trajectory = root / "trajectory.dcd"
+            _write_periodic_dcd(trajectory)
+            (root / "bonds.json").write_text(json.dumps({
+                "format": "salsbury-bonds-v1",
+                "atom_count": 2,
+                "index_base": 0,
+                "bonds": [[0, 1]],
+            }), encoding="utf-8")
+            system_path = root / "system.json"
+            system = json.loads(system_path.read_text(encoding="utf-8"))
+            replica = system["systems"][0]["replicas"][0]
+            replica["connectivity"] = "bonds.json"
+            replica["segments"][0]["trajectory"] = "trajectory.dcd"
+            system_path.write_text(json.dumps(system), encoding="utf-8")
+            project = json.loads(project_path.read_text(encoding="utf-8"))
+            project["periodic_coordinate_policy"] = "unwrap_continuous"
+            project["periodic_reconstruction"] = {
+                "maximum_bond_length_angstrom": 2.0,
+                "cycle_closure_tolerance_angstrom": 1.0e-6,
+                "maximum_anchor_displacement_angstrom": 2.0,
+            }
+            project["definitions"]["structural_qc"]["frame_stride"] = 2
+            project_path.write_text(json.dumps(project), encoding="utf-8")
+
+            selected = structural_qc_project(project_path)
+            selected_replica = selected["systems"][0]["replicas"][0]
+            selected_segment = selected_replica["segments"][0]
+            self.assertEqual(selected_segment["observed_frame_count"], 4)
+            self.assertEqual(selected_segment["decoded_frame_count"], 2)
+            self.assertEqual(selected_segment["evaluated_frame_count"], 2)
+            self.assertEqual(
+                selected_replica["structural_qc_coordinate_reconstruction"],
+                {
+                    "declared_periodic_coordinate_policy": "unwrap_continuous",
+                    "effective_periodic_coordinate_policy": "make_whole",
+                    "frame_dependency": "independent_selected_frames",
+                },
+            )
+
+            project["periodic_coordinate_policy"] = "make_whole"
+            project["periodic_reconstruction"].pop(
+                "maximum_anchor_displacement_angstrom"
+            )
+            project_path.write_text(json.dumps(project), encoding="utf-8")
+            exact_reference = structural_qc_project(project_path)
+            reference_segment = exact_reference["systems"][0]["replicas"][0][
+                "segments"
+            ][0]
+            comparison_fields = (
+                "decoded_frame_count",
+                "evaluated_frame_count",
+                "maximum_absolute_coordinate_angstrom",
+                "maximum_frame_atom_displacement_angstrom",
+                "total_near_coincident_pair_observations",
+                "maximum_near_coincident_pairs_in_one_frame",
+                "minimum_near_coincident_distance_angstrom",
+                "chemical_integrity_totals",
+            )
+            self.assertEqual(
+                {field: selected_segment[field] for field in comparison_fields},
+                {field: reference_segment[field] for field in comparison_fields},
+            )
 
     def test_segment_completion_checkpoint_is_reused_without_decoding(self):
         with tempfile.TemporaryDirectory() as temporary:
