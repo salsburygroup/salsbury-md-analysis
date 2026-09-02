@@ -74,6 +74,8 @@ class AutomaticSamplingTests(unittest.TestCase):
             sampling_profile("hydrogen_bond_discovery"), dimensions
         )
         self.assertAlmostEqual(multiplier, 2.0 ** 0.5)
+        self.assertEqual(basis["implicit_candidate_count"], 129_280)
+        self.assertNotIn("observed_candidate_count", basis)
         self.assertEqual(
             basis["dimension"],
             "lazy spatial donor/acceptor endpoint proxy from the square root "
