@@ -11,7 +11,7 @@ from __future__ import annotations
 import base64
 import math
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Mapping, Sequence
+from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
 
 import numpy as np
 
@@ -382,7 +382,13 @@ def _minimum_image_vectors(
 
 @dataclass(frozen=True)
 class CompiledSparseHydrogenBondEvaluator:
-    """Frozen candidate arrays for vectorized, cutoff-screened frame evaluation."""
+    """Frozen candidate arrays for exact spatially screened frame evaluation.
+
+    The complete topology-defined candidate universe remains explicit, but a
+    periodic cell list identifies donor/acceptor endpoints inside the largest
+    requested distance cutoff before hydrogen angles are evaluated. Candidates
+    absent from that neighbor list are exact implicit zeros.
+    """
 
     candidates: Sequence[Mapping[str, object]]
     cutoff_definitions: Sequence[Mapping[str, object]]
@@ -391,6 +397,9 @@ class CompiledSparseHydrogenBondEvaluator:
     acceptor_indices: np.ndarray
     maximum_cutoff_distance: float
     chunk_size: int
+    unique_donor_indices: Tuple[int, ...]
+    unique_acceptor_indices: Tuple[int, ...]
+    candidate_indices_by_endpoint_pair: Mapping[Tuple[int, int], Tuple[int, ...]]
 
     @classmethod
     def compile(
@@ -407,6 +416,13 @@ class CompiledSparseHydrogenBondEvaluator:
             float(cutoff["maximum_donor_acceptor_distance_angstrom"])
             for cutoff in cutoff_definitions
         )
+        endpoint_pairs: Dict[Tuple[int, int], List[int]] = {}
+        for candidate_index, candidate in enumerate(candidates):
+            key = (
+                int(candidate["donor_atom_index"]),
+                int(candidate["acceptor_atom_index"]),
+            )
+            endpoint_pairs.setdefault(key, []).append(candidate_index)
         return cls(
             candidates=candidates,
             cutoff_definitions=cutoff_definitions,
@@ -427,6 +443,11 @@ class CompiledSparseHydrogenBondEvaluator:
             ),
             maximum_cutoff_distance=maximum,
             chunk_size=chunk_size,
+            unique_donor_indices=tuple(sorted({key[0] for key in endpoint_pairs})),
+            unique_acceptor_indices=tuple(sorted({key[1] for key in endpoint_pairs})),
+            candidate_indices_by_endpoint_pair={
+                key: tuple(values) for key, values in endpoint_pairs.items()
+            },
         )
 
     def evaluate(
@@ -454,71 +475,70 @@ class CompiledSparseHydrogenBondEvaluator:
         ):
             raise SparseHydrogenBondError("candidate atom index is outside the coordinate array")
 
-        lengths = _orthorhombic_lengths(cell)
+        # Reuse the exact periodic spatial-bin implementation already validated
+        # for one-water networks. The import is intentionally local because the
+        # water module imports this module's packed sparse codecs.
+        from .water_mediated_hydrogen_bonds import (
+            WaterMediatedHydrogenBondError,
+            neighbor_pairs_within,
+        )
+
         present_by_cutoff: List[List[int]] = [
             [] for _ in self.cutoff_definitions
         ]
         present_geometry: List[Dict[str, object]] = []
-        for start in range(0, len(self.candidates), self.chunk_size):
-            stop = min(start + self.chunk_size, len(self.candidates))
-            donors = coordinate_array[self.donor_indices[start:stop]]
-            acceptors = coordinate_array[self.acceptor_indices[start:stop]]
-            donor_acceptor = _minimum_image_vectors(
-                acceptors - donors, cell, lengths
+        try:
+            nearby = neighbor_pairs_within(
+                coordinate_array,
+                self.unique_donor_indices,
+                self.unique_acceptor_indices,
+                self.maximum_cutoff_distance,
+                cell,
+                maximum_pairs=max(1, len(self.candidates)),
             )
-            distances = np.linalg.norm(donor_acceptor, axis=1)
-            near = np.flatnonzero(distances <= self.maximum_cutoff_distance)
-            if not near.size:
-                continue
-
-            global_indices = start + near
-            hydrogens = coordinate_array[self.hydrogen_indices[global_indices]]
-            near_donors = coordinate_array[self.donor_indices[global_indices]]
-            near_acceptors = coordinate_array[self.acceptor_indices[global_indices]]
-            left = _minimum_image_vectors(near_donors - hydrogens, cell, lengths)
-            right = _minimum_image_vectors(near_acceptors - hydrogens, cell, lengths)
-            left_norms = np.linalg.norm(left, axis=1)
-            right_norms = np.linalg.norm(right, axis=1)
-            if np.any(np.minimum(left_norms, right_norms) <= 1.0e-15):
-                raise SparseHydrogenBondError(
-                    "hydrogen-bond angle contains a zero-length vector"
+        except WaterMediatedHydrogenBondError as exc:
+            raise SparseHydrogenBondError(str(exc)) from exc
+        evaluated_nearby_candidates = 0
+        for donor, acceptor, distance in nearby:
+            candidate_indices = self.candidate_indices_by_endpoint_pair.get(
+                (donor, acceptor), ()
+            )
+            for candidate_index in candidate_indices:
+                evaluated_nearby_candidates += 1
+                candidate = self.candidates[candidate_index]
+                angle = angle_degrees(
+                    coordinate_array[donor],
+                    coordinate_array[int(candidate["hydrogen_atom_index"])],
+                    coordinate_array[acceptor],
+                    cell,
                 )
-            cosines = np.einsum("ij,ij->i", left, right) / (left_norms * right_norms)
-            angles = np.degrees(np.arccos(np.clip(cosines, -1.0, 1.0)))
-            near_distances = distances[near]
-            matched_ids: List[List[str]] = [[] for _ in range(len(near))]
-            for cutoff_index, cutoff in enumerate(self.cutoff_definitions):
-                matched = np.flatnonzero(
-                    (near_distances <= float(cutoff["maximum_donor_acceptor_distance_angstrom"]))
-                    & (angles >= float(cutoff["minimum_donor_hydrogen_acceptor_angle_degrees"]))
-                )
-                cutoff_id = str(cutoff["cutoff_id"])
-                for local in matched.tolist():
-                    candidate_index = int(global_indices[local])
-                    present_by_cutoff[cutoff_index].append(candidate_index)
-                    matched_ids[local].append(cutoff_id)
-            for local, cutoff_ids in enumerate(matched_ids):
-                if not cutoff_ids:
-                    continue
-                candidate_index = int(global_indices[local])
-                present_geometry.append({
-                    "candidate_index": candidate_index,
-                    "bond_id": str(self.candidates[candidate_index]["bond_id"]),
-                    "donor_acceptor_distance_angstrom": float(near_distances[local]),
-                    "donor_hydrogen_acceptor_angle_degrees": float(angles[local]),
-                    "present_cutoff_ids": cutoff_ids,
-                })
+                cutoff_ids = []
+                for cutoff_index, cutoff in enumerate(self.cutoff_definitions):
+                    if (
+                        distance <= float(cutoff["maximum_donor_acceptor_distance_angstrom"])
+                        and angle >= float(cutoff["minimum_donor_hydrogen_acceptor_angle_degrees"])
+                    ):
+                        present_by_cutoff[cutoff_index].append(candidate_index)
+                        cutoff_ids.append(str(cutoff["cutoff_id"]))
+                if cutoff_ids:
+                    present_geometry.append({
+                        "candidate_index": candidate_index,
+                        "bond_id": str(candidate["bond_id"]),
+                        "donor_acceptor_distance_angstrom": float(distance),
+                        "donor_hydrogen_acceptor_angle_degrees": float(angle),
+                        "present_cutoff_ids": cutoff_ids,
+                    })
+        for indices in present_by_cutoff:
+            indices.sort()
         present_geometry.sort(key=lambda row: int(row["candidate_index"]))
         return {
             "representation": "sparse_implicit_zero_v1",
             "evaluated_candidate_count": len(self.candidates),
+            "spatial_neighbor_pair_count": len(nearby),
+            "explicit_geometry_evaluation_count": evaluated_nearby_candidates,
             "present_candidate_indices_by_cutoff": present_by_cutoff,
             "present_geometry": present_geometry,
-            "geometry_engine": (
-                "vectorized_orthorhombic_cutoff_screen_v1"
-                if cell is None or lengths is not None
-                else "vectorized_candidates_exact_triclinic_images_v1"
-            ),
+            "geometry_engine": "spatial_cell_list_exact_periodic_v1",
         }
 
 

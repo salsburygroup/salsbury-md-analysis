@@ -64,11 +64,17 @@ def _module_worker(shard: ReplicaShard) -> Dict[str, object]:
     if runner_id == "hydrogen_bond_discovery":
         from .hydrogen_bond_discovery import _hydrogen_bond_discovery_project_serial
         raw_keys = payload.get("harmonized_candidate_keys")
-        keys = (
-            {tuple(int(value) for value in row) for row in raw_keys}
-            if isinstance(raw_keys, list) else None
-        )
         report = payload.get("candidate_harmonization_report")
+        policy = report.get("policy") if isinstance(report, Mapping) else None
+        if isinstance(raw_keys, list) and policy == "intersection_by_atom_identity_v2":
+            keys = {
+                tuple(tuple(atom) for atom in row)
+                for row in raw_keys
+            }
+        elif isinstance(raw_keys, list):
+            keys = {tuple(int(value) for value in row) for row in raw_keys}
+        else:
+            keys = None
         return _hydrogen_bond_discovery_project_serial(
             project_path,
             hash_content=hash_content,
