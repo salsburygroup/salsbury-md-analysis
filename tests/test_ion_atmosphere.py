@@ -69,7 +69,9 @@ class IonAtmosphereTests(unittest.TestCase):
             (-12.0, 12.0, 0.0),
             (0.0, 0.0, 18.0),
         )
-        observed = _nearest_distances(ions, targets, cell)
+        observed = _nearest_distances(
+            ions, targets, cell, maximum_pairs_per_chunk=11,
+        )
         expected = tuple(
             min(_distance(ion, target, cell) for target in targets)
             for ion in ions
