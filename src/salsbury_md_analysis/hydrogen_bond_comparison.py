@@ -62,7 +62,10 @@ def _identity(value: object, label: str) -> Dict[str, object]:
 
 
 def _identity_key(identity: Mapping[str, object]) -> Tuple[object, ...]:
-    return tuple(identity[field] for field in _IDENTITY_FIELDS)
+    return tuple(identity[field] for field in (
+        "chain_id", "residue_number", "insertion_code", "atom_name", "altloc",
+        "element",
+    ))
 
 
 def _normalize_mappings(
@@ -221,11 +224,43 @@ def _present_indices(frame: Mapping[str, object], cutoff_id: str) -> Sequence[in
     return raw
 
 
+def _resolved_system_report(
+    report: Mapping[str, object], system_id: str | None,
+) -> tuple[Mapping[str, object], str | None]:
+    """Select a full per-system feature space from a v2 discovery report."""
+
+    raw_views = report.get("system_feature_spaces")
+    if not isinstance(raw_views, list):
+        return report, system_id
+    views = {
+        str(row.get("system_id")): row
+        for row in raw_views
+        if isinstance(row, dict) and isinstance(row.get("system_id"), str)
+    }
+    if system_id is None:
+        if len(views) != 1:
+            raise HydrogenBondComparisonError(
+                "source report contains multiple per-system feature spaces; "
+                "each condition must declare system_id"
+            )
+        system_id = next(iter(views))
+    if system_id not in views:
+        available = ", ".join(sorted(views)) or "none"
+        raise HydrogenBondComparisonError(
+            f"requested system_id {system_id!r} is absent from source report; available: {available}"
+        )
+    selected = dict(report)
+    selected.update(views[system_id])
+    selected.pop("system_feature_spaces", None)
+    return selected, system_id
+
+
 def _condition_summary(
     condition_id: str, report: Mapping[str, object], cutoff_id: str,
     mappings: Sequence[Mapping[str, object]], matched_mapping_indices: set[int],
     *, system_id: str | None = None,
 ) -> Dict[str, object]:
+    report, system_id = _resolved_system_report(report, system_id)
     if report.get("module_id") != "hydrogen_bond_discovery":
         raise HydrogenBondComparisonError("source report module_id must be hydrogen_bond_discovery")
     if report.get("technical_status") != "complete" or int(report.get("error_count", 0)) != 0:
@@ -452,7 +487,7 @@ def compare_hydrogen_bond_reports(
     assert isinstance(first_candidates, set) and isinstance(second_candidates, set)
     assert isinstance(first_candidate_identities, dict) and isinstance(second_candidate_identities, dict)
     assert isinstance(first_replica_frames, dict) and isinstance(second_replica_frames, dict)
-    keys = set(first_groups) | set(second_groups)
+    keys = set(first_candidates) | set(second_candidates)
     comparisons = []
     for key in keys:
         first = first_groups.get(key)
@@ -523,6 +558,18 @@ def compare_hydrogen_bond_reports(
                 ) if eligible
             ],
             "chemically_comparable_between_conditions": first_eligible and second_eligible,
+            "condition_feature_status": {
+                condition_ids[0]: (
+                    "observed" if first is not None else
+                    "chemically_present_never_observed" if first_eligible else
+                    "chemically_absent"
+                ),
+                condition_ids[1]: (
+                    "observed" if second is not None else
+                    "chemically_present_never_observed" if second_eligible else
+                    "chemically_absent"
+                ),
+            },
             "observed_in_conditions": [
                 condition_id for condition_id, row in zip(condition_ids, (first, second))
                 if row is not None
@@ -543,13 +590,19 @@ def compare_hydrogen_bond_reports(
     ]
     return {
         "module_id": "hydrogen_bond_comparison",
-        "comparison_schema": "salsbury-grouped-hydrogen-bond-comparison-v1",
+        "comparison_schema": "salsbury-grouped-hydrogen-bond-comparison-v2",
         "technical_status": "complete",
         "scientific_status": "descriptive comparison; convergence and mechanism not established",
         "comparison_id": request.get("comparison_id"),
         "grouping_contract": (
             "Each donor-heavy-atom/acceptor-heavy-atom pair is counted at most once per frame; "
             "connectivity-declared equivalent donor hydrogens are grouped before occupancy."
+        ),
+        "identity_mapping_contract": (
+            "Donor and acceptor heavy atoms map by chain, residue number, insertion "
+            "code, atom name, alternate location, and element. Residue names are "
+            "reported but do not prevent homologous-position comparison; explicit "
+            "project mappings are required when numbering or chain identity differs."
         ),
         "missing_value_contract": (
             "A group present in a condition's candidate universe but absent from its observed sparse union "
@@ -562,19 +615,27 @@ def compare_hydrogen_bond_reports(
         "condition_summaries": summaries,
         "source_reports": source_records,
         "homolog_mappings": mappings,
-        "observed_group_union_count": len(comparisons),
+        "candidate_group_union_count": len(comparisons),
+        "observed_group_union_count": sum(
+            bool(row["observed_in_conditions"]) for row in comparisons
+        ),
         "observed_group_shared_count": sum(
             len(row["observed_in_conditions"]) == 2 for row in comparisons
         ),
         "chemically_comparable_observed_union_count": len(ranked),
-        "topology_specific_observed_group_count": len(comparisons) - len(ranked),
+        "topology_specific_candidate_group_count": len(comparisons) - len(ranked),
+        "topology_specific_observed_group_count": sum(
+            not row["chemically_comparable_between_conditions"]
+            and bool(row["observed_in_conditions"])
+            for row in comparisons
+        ),
         "group_comparisons": comparisons,
         "top_absolute_differences": ranked[:top_n],
         "error_count": 0,
         "warning_count": 0,
         "issues": [],
         "limitations": [
-            "Only the observed union of donor-heavy-atom/acceptor-heavy-atom groups is tabulated; each source candidate dictionary retains its complete chemistry-defined universe.",
+            "The full chemistry-defined candidate union is tabulated, including groups that were eligible but never observed.",
             "Topology-specific atoms are reported with null occupancy in the ineligible condition rather than converted to evaluated zeros.",
             "Homolog mappings are explicit project assertions and require chemical review; they are not inferred by this module.",
             "Equal-replica means prevent a longer replica from silently dominating, but do not establish independent sampling or convergence.",

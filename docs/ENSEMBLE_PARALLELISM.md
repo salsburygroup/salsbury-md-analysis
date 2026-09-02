@@ -19,6 +19,15 @@ reducer is method-specific: some concatenate identity-preserving observations,
 while RMSF and DCCM merge exact streaming moments with the between-replica mean
 correction.
 
+Direct hydrogen-bond workers evaluate the complete topology-defined candidate
+dictionary for their system. Replicas of the same system are reduced into one
+full feature space. A separate pooled comparison view maps unique donor,
+hydrogen, and acceptor identities by chemical role and topology position, so
+atom-index differences between systems cannot create or remove a match.
+System-specific candidates stay in the report and are labeled as chemically
+absent, present but never observed, observed, or nonunique and unmappable in
+each system.
+
 ## Global coordinate estimators
 
 Common PCA, pooled RMSF, and DCCM use a common atom map and one declared

@@ -225,6 +225,53 @@ class HydrogenBondComparisonTests(unittest.TestCase):
         self.assertEqual(result["technical_status"], "failed")
         self.assertIn("must declare system_id", result["issues"][0]["message"])
 
+    def test_selects_full_per_system_feature_spaces_from_one_v2_report(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            control = report("DG", [("r1", [0]), ("r1", [])])
+            lesion = report("8OG", [("r1", []), ("r1", [])])
+            wrapper = dict(control)
+            wrapper["system_feature_spaces"] = [
+                {
+                    "system_id": "D0",
+                    **{
+                        key: control[key] for key in (
+                            "candidate_dictionary", "atom_dictionary",
+                            "frame_bond_matrix",
+                        )
+                    },
+                },
+                {
+                    "system_id": "D1",
+                    **{
+                        key: lesion[key] for key in (
+                            "candidate_dictionary", "atom_dictionary",
+                            "frame_bond_matrix",
+                        )
+                    },
+                },
+            ]
+            for view in wrapper["system_feature_spaces"]:
+                for frame in view["frame_bond_matrix"]:
+                    frame["system_id"] = view["system_id"]
+            (root / "multi-v2.json").write_text(json.dumps(wrapper), encoding="utf-8")
+            request = {
+                "conditions": [
+                    {"condition_id": "control", "system_id": "D0", "report": "multi-v2.json"},
+                    {"condition_id": "lesion", "system_id": "D1", "report": "multi-v2.json"},
+                ],
+            }
+            path = root / "request.json"
+            path.write_text(json.dumps(request), encoding="utf-8")
+            result = compare_hydrogen_bond_reports_file(path)
+        self.assertEqual(result["technical_status"], "complete")
+        self.assertEqual(result["condition_summaries"][0]["candidate_count"], 2)
+        row = result["group_comparisons"][0]
+        self.assertEqual(
+            row["condition_feature_status"],
+            {"control": "observed", "lesion": "chemically_present_never_observed"},
+        )
+
     def test_rejects_absent_requested_system_id(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -683,7 +683,7 @@ Scientific limits:
 - Category: `md`
 - Status: **experimental**
 
-Automatically enumerate a frozen direct donor-hydrogen-acceptor dictionary from standard protein/nucleic-acid chemistry templates and explicit connectivity, with auditable provisional fallback for untemplated ligands; retain an explicit atom-index mode for publication locks, outcome-independent common-candidate harmonization for homologous systems, and optional chunked or fixed-width packed sparse output for large candidate universes.
+Automatically enumerate and evaluate every direct donor-hydrogen-acceptor candidate within each system from standard protein/nucleic-acid chemistry templates and explicit connectivity, with auditable provisional fallback for untemplated ligands; derive a separate outcome-independent chemical-position feature map for comparisons while preserving system-specific chemistry.
 
 Required inputs:
 
@@ -694,17 +694,16 @@ Required inputs:
 
 Declared outputs:
 
-- candidate bond dictionary
+- full per-system candidate dictionaries
 - dense, sparse-list, or packed sparse frame-by-bond observations
-- observed geometry
-- directly readable primary occupancies
-- exact packed sensitivity occupancies
-- chemistry and harmonization provenance
+- shared chemical-position comparison features
+- chemically absent, present-unobserved, observed, and unmappable statuses
+- chemistry and mapping provenance
 
 Scientific limits:
 
 - Automatic chemistry cannot repair missing or incorrect protonation, tautomer, formal charge, or ligand bond order.
-- Common-candidate harmonization excludes system-specific chemical candidates from a comparative matrix before coordinates are evaluated; retain separate per-system discovery for those features.
+- Chemical-position mapping assumes declared chain and residue numbering identify homologous positions; explicit mappings are needed when numbering differs.
 - Packed sparse frames use single-precision geometry and preserve exact cutoff membership; they do not imply greater physical precision than the source coordinates.
 - Packed sensitivity occupancies are exact nonzero count tables; absent candidate-cutoff records are evaluated zeros under the report's explicit-zero contract.
 - This direct-bond module excludes water-mediated paths, which have a separate contract.

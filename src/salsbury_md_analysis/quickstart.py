@@ -453,16 +453,39 @@ def _hydrogen_bond_feature_observation_gate(
         and candidate_plan.get("status") == "complete"
     ):
         selected_frames = row.get("selected_frame_count")
-        candidate_count = candidate_plan.get("common_candidate_count")
+        candidate_rows = candidate_plan.get("replica_dictionaries")
+        selected_by_replica = row.get("planned_selected_frames_per_replica")
+        if (
+            isinstance(candidate_rows, list)
+            and isinstance(selected_by_replica, list)
+            and len(candidate_rows) == len(selected_by_replica)
+            and all(
+                isinstance(candidate, dict)
+                and isinstance(candidate.get("raw_candidate_count"), int)
+                and not isinstance(candidate.get("raw_candidate_count"), bool)
+                for candidate in candidate_rows
+            )
+            and all(
+                isinstance(value, int) and not isinstance(value, bool) and value > 0
+                for value in selected_by_replica
+            )
+        ):
+            return sum(
+                int(candidate["raw_candidate_count"]) * int(frame_count)
+                for candidate, frame_count in zip(candidate_rows, selected_by_replica)
+            )
+        candidate_count = candidate_plan.get(
+            "mean_candidate_count_per_replica",
+            candidate_plan.get("common_candidate_count"),
+        )
         if (
             isinstance(selected_frames, int)
             and not isinstance(selected_frames, bool)
             and selected_frames > 0
-            and isinstance(candidate_count, int)
-            and not isinstance(candidate_count, bool)
-            and candidate_count > 0
+            and isinstance(candidate_count, (int, float))
+            and not isinstance(candidate_count, bool) and candidate_count > 0
         ):
-            return selected_frames * candidate_count
+            return math.ceil(selected_frames * float(candidate_count))
     # Backward-compatible fail-safe for explicit manifests or older planning
     # records without a topology-derived candidate universe.
     return 2_000_000_000
@@ -773,7 +796,9 @@ def _generic_definitions(
             ),
             "output_mode": "sparse_packed_v2",
             "candidate_chunk_size": 4096,
-            "candidate_harmonization": "intersection_by_atom_index_v1",
+            "candidate_harmonization": (
+                "per_system_full_with_chemical_identity_comparison_v2"
+            ),
         },
         "solvent_accessible_surface_area": {
             "surface_selection": "solute_heavy",
