@@ -73,10 +73,11 @@ class AutomaticSamplingTests(unittest.TestCase):
         multiplier, basis = _runtime_workload_multiplier(
             sampling_profile("hydrogen_bond_discovery"), dimensions
         )
-        self.assertEqual(multiplier, 2.0)
+        self.assertAlmostEqual(multiplier, 2.0 ** 0.5)
         self.assertEqual(
             basis["dimension"],
-            "mean full per-replica donor-hydrogen-acceptor candidates",
+            "lazy spatial donor/acceptor endpoint proxy from the square root "
+            "of the implicit common candidate universe",
         )
 
     def test_feature_aware_pca_basis_plan_separates_basis_and_projection(self):

@@ -1337,7 +1337,7 @@ def _generic_definitions(
             "maximum_feature_observations": (
                 _hydrogen_bond_feature_observation_gate(sampling_plan)
             ),
-            "output_mode": "sparse_packed_v2",
+            "output_mode": "sparse_spatial_observed_union_v3",
             "candidate_chunk_size": 4096,
             "candidate_harmonization": "intersection_by_atom_identity_v2",
         },

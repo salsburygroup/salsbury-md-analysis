@@ -22,10 +22,12 @@ from .hydrogen_bond_chemistry import (
 from .hydrogen_bonds import hydrogen_bond_present, distance_angstrom
 from .hydrogen_bond_sparse import (
     CompiledSparseHydrogenBondEvaluator,
+    LazySpatialHydrogenBondEvaluator,
     PACKED_CUTOFF_COUNT_CODEC,
     PACKED_EVENT_CODEC,
     pack_sparse_cutoff_counts,
     pack_sparse_present_geometry,
+    unpack_sparse_present_events,
 )
 from .manifests import ManifestValidationError, load_json, resolve_manifest_path
 from .periodic import (
@@ -52,6 +54,8 @@ AtomIdentityKey = Tuple[str, int, str, str, str]
 CandidateIdentityKey = Tuple[AtomIdentityKey, AtomIdentityKey, AtomIdentityKey]
 CandidateIndexKey = Tuple[int, int, int]
 HarmonizedCandidateKey = Union[CandidateIdentityKey, CandidateIndexKey]
+DonorHydrogenIdentityKey = Tuple[AtomIdentityKey, AtomIdentityKey, str]
+AcceptorIdentityKey = Tuple[AtomIdentityKey, str]
 
 
 def _atom_identity_key(atom: AtomRecord) -> AtomIdentityKey:
@@ -196,6 +200,146 @@ def _automatic_candidate_triples(
             "check explicit hydrogens, connectivity, and declared interaction_scope"
         )
     return triples, roles
+
+
+def _automatic_endpoint_identity_sets(
+    atoms: Sequence[AtomRecord],
+    bonds: Sequence[Tuple[int, int]],
+) -> Tuple[
+    set[DonorHydrogenIdentityKey],
+    set[AcceptorIdentityKey],
+    Dict[int, AtomChemicalRole],
+]:
+    """Return compact donor-H and acceptor identities without a Cartesian product."""
+
+    roles = infer_atom_chemical_roles(atoms, bonds)
+    adjacency: Dict[int, List[int]] = {index: [] for index in range(len(atoms))}
+    for left, right in bonds:
+        adjacency[left].append(right)
+        adjacency[right].append(left)
+    donors: set[DonorHydrogenIdentityKey] = set()
+    acceptors: set[AcceptorIdentityKey] = set()
+    for atom_index, role in sorted(roles.items()):
+        if role.donor:
+            for hydrogen in sorted(adjacency[atom_index]):
+                if atoms[hydrogen].element.upper() == "H":
+                    donors.add((
+                        _atom_identity_key(atoms[atom_index]),
+                        _atom_identity_key(atoms[hydrogen]),
+                        role.entity_class,
+                    ))
+        if role.acceptor:
+            acceptors.add((_atom_identity_key(atoms[atom_index]), role.entity_class))
+    if not donors or not acceptors:
+        raise HydrogenBondDiscoveryError(
+            "automatic chemistry produced no donor-H groups or acceptors"
+        )
+    return donors, acceptors, roles
+
+
+def _conceptual_endpoint_candidate_count(
+    donors: Sequence[DonorHydrogenIdentityKey],
+    acceptors: Sequence[AcceptorIdentityKey],
+    *,
+    interaction_scope: str,
+    exclude_same_residue: bool,
+) -> int:
+    """Count the implicit candidate universe without materializing its pairs."""
+
+    count = 0
+    for donor, hydrogen, donor_class in donors:
+        for acceptor, acceptor_class in acceptors:
+            if donor == acceptor or hydrogen == acceptor:
+                continue
+            if not scope_allows(donor_class, acceptor_class, interaction_scope):
+                continue
+            if (
+                exclude_same_residue
+                and donor[:3] == acceptor[:3]
+            ):
+                continue
+            count += 1
+    return count
+
+
+def _automatic_endpoint_identity_intersection(
+    system: Mapping[str, object],
+    system_path: Path,
+    settings: Mapping[str, object],
+) -> Tuple[
+    set[DonorHydrogenIdentityKey],
+    set[AcceptorIdentityKey],
+    Dict[str, object],
+]:
+    """Intersect compact eligible endpoints across homologous replicas."""
+
+    common_donors: set[DonorHydrogenIdentityKey] | None = None
+    common_acceptors: set[AcceptorIdentityKey] | None = None
+    reports: List[Dict[str, object]] = []
+    for raw_system in system["systems"]:  # type: ignore[index]
+        system_id = str(raw_system["system_id"])
+        for replica in raw_system["replicas"]:
+            replica_id = str(replica["replica_id"])
+            topology_path = resolve_manifest_path(str(replica["topology"]), system_path)
+            _, atoms = read_topology_atoms(topology_path)
+            connectivity_value = replica.get("connectivity")
+            if not isinstance(connectivity_value, str) or not connectivity_value.strip():
+                raise HydrogenBondDiscoveryError(
+                    f"{system_id}/{replica_id} requires explicit connectivity"
+                )
+            connectivity_path = resolve_manifest_path(connectivity_value, system_path)
+            bonds, _ = load_connectivity(connectivity_path, len(atoms))
+            donors, acceptors, _ = _automatic_endpoint_identity_sets(atoms, bonds)
+            raw_count = _conceptual_endpoint_candidate_count(
+                sorted(donors), sorted(acceptors),
+                interaction_scope=str(settings["interaction_scope"]),
+                exclude_same_residue=bool(settings["exclude_same_residue"]),
+            )
+            reports.append({
+                "system_id": system_id,
+                "replica_id": replica_id,
+                "raw_donor_hydrogen_group_count": len(donors),
+                "raw_acceptor_count": len(acceptors),
+                "raw_conceptual_candidate_count": raw_count,
+            })
+            if common_donors is None:
+                common_donors = donors
+                common_acceptors = acceptors
+            else:
+                common_donors.intersection_update(donors)
+                assert common_acceptors is not None
+                common_acceptors.intersection_update(acceptors)
+    if not common_donors or not common_acceptors:
+        raise HydrogenBondDiscoveryError(
+            "automatic endpoint dictionaries have no common identity intersection"
+        )
+    conceptual_count = _conceptual_endpoint_candidate_count(
+        sorted(common_donors), sorted(common_acceptors),
+        interaction_scope=str(settings["interaction_scope"]),
+        exclude_same_residue=bool(settings["exclude_same_residue"]),
+    )
+    if not conceptual_count:
+        raise HydrogenBondDiscoveryError("common endpoint universe has no candidates")
+    for report in reports:
+        report["common_donor_hydrogen_group_count"] = len(common_donors)
+        report["common_acceptor_count"] = len(common_acceptors)
+        report["common_conceptual_candidate_count"] = conceptual_count
+    return common_donors, common_acceptors, {
+        "policy": "intersection_by_endpoint_identity_lazy_v3",
+        "identity_fields": [
+            "chain_id", "residue_number", "insertion_code", "atom_name", "altloc",
+        ],
+        "residue_name_policy": "ignored_for_homologous_position_mapping",
+        "common_donor_hydrogen_group_count": len(common_donors),
+        "common_acceptor_count": len(common_acceptors),
+        "common_candidate_count": conceptual_count,
+        "materialized_precoordinate_candidate_count": 0,
+        "replica_endpoint_dictionaries": reports,
+        "selection_basis": (
+            "common topology-backed donor-H and acceptor endpoint identities; "
+            "their Cartesian product remains implicit and coordinates are not read"
+        ),
+    }
 
 
 def discover_automatic_candidate_bonds(
@@ -426,9 +570,11 @@ def _settings(project: Mapping[str, object]) -> Dict[str, object]:
     output_mode = raw.get("output_mode", "dense_v1")
     if output_mode not in {
         "dense_v1", "sparse_implicit_zero_v1", "sparse_packed_v2",
+        "sparse_spatial_observed_union_v3",
     }:
         raise HydrogenBondDiscoveryError(
-            "output_mode must be dense_v1, sparse_implicit_zero_v1, or sparse_packed_v2"
+            "output_mode must be dense_v1, sparse_implicit_zero_v1, "
+            "sparse_packed_v2, or sparse_spatial_observed_union_v3"
         )
     result.update({
         "exclude_same_residue": raw["exclude_same_residue"], "water_policy": "exclude",
@@ -747,12 +893,332 @@ def _identity_harmonized_candidate_dictionaries(
     return local_candidates, canonical_candidates, canonical_atoms
 
 
+def _identity_record(key: AtomIdentityKey) -> Dict[str, object]:
+    return {
+        "chain_id": key[0],
+        "residue_number": key[1],
+        "insertion_code": key[2],
+        "atom_name": key[3],
+        "altloc": key[4],
+    }
+
+
+def _lazy_local_endpoint_rows(
+    atoms: Sequence[AtomRecord],
+    bonds: Sequence[Tuple[int, int]],
+    common_donors: set[DonorHydrogenIdentityKey],
+    common_acceptors: set[AcceptorIdentityKey],
+) -> Tuple[List[Dict[str, object]], List[Dict[str, object]], Dict[int, AtomChemicalRole]]:
+    """Resolve common endpoint identities to one replica's local atom indices."""
+
+    identity_to_index: Dict[AtomIdentityKey, int] = {}
+    for atom in atoms:
+        key = _atom_identity_key(atom)
+        if key in identity_to_index:
+            raise HydrogenBondDiscoveryError(
+                "topology contains duplicate atom identities for lazy harmonization"
+            )
+        identity_to_index[key] = atom.atom_index
+    _, _, roles = _automatic_endpoint_identity_sets(atoms, bonds)
+    bond_set = {tuple(sorted((left, right))) for left, right in bonds}
+    donor_rows = []
+    for donor_key, hydrogen_key, entity_class in sorted(common_donors):
+        donor = identity_to_index.get(donor_key)
+        hydrogen = identity_to_index.get(hydrogen_key)
+        if donor is None or hydrogen is None:
+            raise HydrogenBondDiscoveryError("replica lacks a common donor-H endpoint")
+        if tuple(sorted((donor, hydrogen))) not in bond_set:
+            raise HydrogenBondDiscoveryError("common donor-H endpoint lacks connectivity")
+        role = roles.get(donor)
+        if role is None or not role.donor or role.entity_class != entity_class:
+            raise HydrogenBondDiscoveryError("common donor endpoint chemistry differs")
+        donor_rows.append({
+            "donor_atom_index": donor,
+            "hydrogen_atom_index": hydrogen,
+            "donor_identity_key": donor_key,
+            "hydrogen_identity_key": hydrogen_key,
+            "entity_class": entity_class,
+            "residue_key": donor_key[:3],
+        })
+    acceptor_rows = []
+    for acceptor_key, entity_class in sorted(common_acceptors):
+        acceptor = identity_to_index.get(acceptor_key)
+        if acceptor is None:
+            raise HydrogenBondDiscoveryError("replica lacks a common acceptor endpoint")
+        role = roles.get(acceptor)
+        if role is None or not role.acceptor or role.entity_class != entity_class:
+            raise HydrogenBondDiscoveryError("common acceptor endpoint chemistry differs")
+        acceptor_rows.append({
+            "acceptor_atom_index": acceptor,
+            "acceptor_identity_key": acceptor_key,
+            "entity_class": entity_class,
+            "residue_key": acceptor_key[:3],
+        })
+    return donor_rows, acceptor_rows, roles
+
+
+def _hydrogen_bond_discovery_project_lazy_partial(
+    source: Path,
+    project: Mapping[str, object],
+    settings: Mapping[str, object],
+    context: Mapping[str, object],
+    system: Mapping[str, object],
+    system_path: Path,
+    frame_selection_plan: Mapping[Tuple[str, str, str], set[int]],
+    frame_selection_report: Mapping[str, object],
+    issues: List[Dict[str, object]],
+    common_donors: set[DonorHydrogenIdentityKey],
+    common_acceptors: set[AcceptorIdentityKey],
+    endpoint_report: Mapping[str, object],
+    *,
+    hash_content: bool,
+) -> Dict[str, object]:
+    """Evaluate a lazy endpoint universe and return one reducible sparse partial."""
+
+    conceptual_count = int(endpoint_report["common_candidate_count"])
+    selected_count = int(frame_selection_report["selected_frame_count"])
+    conceptual_observations = conceptual_count * selected_count
+    if conceptual_count > int(settings["maximum_candidate_bonds"]):
+        raise HydrogenBondDiscoveryError("maximum_candidate_bonds gate exceeded")
+    if conceptual_observations > int(settings["maximum_feature_observations"]):
+        raise HydrogenBondDiscoveryError(
+            "maximum_feature_observations conceptual-universe gate exceeded"
+        )
+
+    cutoff_definitions = settings["cutoff_definitions"]
+    candidate_index_by_key: Dict[CandidateIdentityKey, int] = {}
+    candidate_dictionary: List[Dict[str, object]] = []
+    frame_records: List[Dict[str, object]] = []
+    chemistry_reports: List[Dict[str, object]] = []
+    spatial_pairs = 0
+    explicit_geometry = 0
+    present_events = 0
+    evaluated_frames = 0
+    output_time_unit = project.get("time_unit")
+    coordinate_unit = str(project["coordinate_unit"])
+
+    for raw_system in system["systems"]:  # type: ignore[index]
+        system_id = str(raw_system["system_id"])
+        for replica in raw_system["replicas"]:
+            replica_id = str(replica["replica_id"])
+            topology_path = resolve_manifest_path(str(replica["topology"]), system_path)
+            _, atoms = read_topology_atoms(topology_path)
+            connectivity_value = replica.get("connectivity")
+            if not isinstance(connectivity_value, str) or not connectivity_value.strip():
+                raise HydrogenBondDiscoveryError(
+                    f"{system_id}/{replica_id} requires explicit connectivity"
+                )
+            connectivity_path = resolve_manifest_path(connectivity_value, system_path)
+            bonds, connectivity_provenance = load_connectivity(
+                connectivity_path, len(atoms)
+            )
+            donor_rows, acceptor_rows, roles = _lazy_local_endpoint_rows(
+                atoms, bonds, common_donors, common_acceptors
+            )
+            chemistry_reports.append({
+                "system_id": system_id,
+                "replica_id": replica_id,
+                **chemistry_summary(roles),
+                "common_donor_hydrogen_group_count": len(donor_rows),
+                "common_acceptor_count": len(acceptor_rows),
+            })
+            evaluator = LazySpatialHydrogenBondEvaluator(
+                donor_rows,
+                acceptor_rows,
+                cutoff_definitions,  # type: ignore[arg-type]
+                str(settings["interaction_scope"]),
+                bool(settings["exclude_same_residue"]),
+                int(settings["maximum_candidate_bonds"]),
+            )
+            reconstruction_atom_indices = tuple(sorted({
+                *(
+                    int(row["donor_atom_index"]) for row in donor_rows
+                ),
+                *(
+                    int(row["hydrogen_atom_index"]) for row in donor_rows
+                ),
+                *(
+                    int(row["acceptor_atom_index"]) for row in acceptor_rows
+                ),
+            }))
+            processor = PeriodicFrameProcessor.from_replica(
+                project, replica, system_path, len(atoms)
+            )
+            reference = processor.process(
+                next(iter_coordinate_frames(topology_path, coordinate_unit)),
+                str(topology_path),
+                reconstruction_atom_indices,
+            )
+            for row in donor_rows:
+                donor = int(row["donor_atom_index"])
+                hydrogen = int(row["hydrogen_atom_index"])
+                if distance_angstrom(
+                    reference.coordinates_angstrom[donor],
+                    reference.coordinates_angstrom[hydrogen],
+                    reference.cell_vectors_angstrom,
+                ) > float(settings["maximum_reference_donor_hydrogen_bond_angstrom"]):
+                    raise HydrogenBondDiscoveryError(
+                        "reference donor-H distance exceeds gate"
+                    )
+            for segment in replica["segments"]:
+                segment_id = str(segment["segment_id"])
+                trajectory_path = resolve_manifest_path(
+                    str(segment["trajectory"]), system_path
+                )
+                selected_indices = frame_selection_plan[(
+                    system_id, replica_id, segment_id,
+                )]
+                axis = normalize_segment_axis(
+                    segment, str(output_time_unit) if output_time_unit else None
+                )
+                processor.begin_segment(bool(segment.get("continuous_with_previous", False)))
+                for raw_frame in iter_coordinate_frames(
+                    trajectory_path,
+                    coordinate_unit,
+                    reader_frame_indices(selected_indices, processor.policy),
+                ):
+                    selected = frame_selected(
+                        raw_frame.frame_index,
+                        selected_indices,
+                        int(settings["frame_stride"]),
+                    )
+                    if not selected and processor.policy != "unwrap_continuous":
+                        continue
+                    frame = processor.process(
+                        raw_frame,
+                        f"{system_id}/{replica_id}/{segment_id}/frame-{raw_frame.frame_index}",
+                        reconstruction_atom_indices,
+                    )
+                    if not selected:
+                        continue
+                    evaluated = evaluator.evaluate(
+                        frame.coordinates_angstrom,
+                        cell=frame.cell_vectors_angstrom,
+                    )
+                    spatial_pairs += int(evaluated["spatial_neighbor_pair_count"])
+                    explicit_geometry += int(
+                        evaluated["explicit_geometry_evaluation_count"]
+                    )
+                    geometry_rows = []
+                    for event in evaluated["present_events"]:
+                        key: CandidateIdentityKey = (
+                            tuple(event["donor_identity_key"]),  # type: ignore[arg-type]
+                            tuple(event["hydrogen_identity_key"]),  # type: ignore[arg-type]
+                            tuple(event["acceptor_identity_key"]),  # type: ignore[arg-type]
+                        )
+                        candidate_index = candidate_index_by_key.get(key)
+                        if candidate_index is None:
+                            candidate_index = len(candidate_dictionary)
+                            candidate_index_by_key[key] = candidate_index
+                            candidate_dictionary.append({
+                                "bond_id": _identity_bond_id(key),
+                                "donor_identity": _identity_record(key[0]),
+                                "hydrogen_identity": _identity_record(key[1]),
+                                "acceptor_identity": _identity_record(key[2]),
+                                "interaction_stratum": event["interaction_stratum"],
+                            })
+                        geometry_rows.append({
+                            "candidate_index": candidate_index,
+                            "donor_acceptor_distance_angstrom": event[
+                                "donor_acceptor_distance_angstrom"
+                            ],
+                            "donor_hydrogen_acceptor_angle_degrees": event[
+                                "donor_hydrogen_acceptor_angle_degrees"
+                            ],
+                            "present_cutoff_ids": event["present_cutoff_ids"],
+                        })
+                    geometry_rows.sort(key=lambda row: int(row["candidate_index"]))
+                    present_events += len(geometry_rows)
+                    frame_records.append({
+                        "system_id": system_id,
+                        "replica_id": replica_id,
+                        "segment_id": segment_id,
+                        "source_frame_index": frame.frame_index,
+                        "axis_kind": axis["kind"],
+                        "axis_value": frame_axis_value(axis, frame.frame_index),
+                        "candidate_count": len(candidate_dictionary),
+                        **pack_sparse_present_geometry(
+                            geometry_rows,
+                            cutoff_definitions,  # type: ignore[arg-type]
+                            max(1, len(candidate_dictionary)),
+                        ),
+                    })
+                    evaluated_frames += 1
+            provisional = int(
+                chemistry_summary(roles)["chemistry_confidence_atom_counts"].get(
+                    "provisional", 0
+                )
+            )
+            issues.append({
+                "severity": "warning" if provisional else "info",
+                "code": (
+                    "HBOND_AUTO_CHEMISTRY_PROVISIONAL"
+                    if provisional else "HBOND_AUTO_CHEMISTRY_TEMPLATED"
+                ),
+                "location": f"{system_id}/{replica_id}",
+                "message": (
+                    f"Automatic chemistry has {provisional} provisional atoms."
+                    if provisional else
+                    "Automatic topology-template chemistry used standard templates."
+                ),
+                "connectivity": connectivity_provenance,
+            })
+    if evaluated_frames != selected_count:
+        raise HydrogenBondDiscoveryError("selected/evaluated frame accounting mismatch")
+    return {
+        "module_id": "hydrogen_bond_discovery",
+        "technical_status": "complete",
+        "scientific_status": "not evaluated",
+        "project_manifest_path": str(source),
+        "project_manifest_sha256": context["project_manifest_sha256"],
+        "system_manifest_path": str(system_path),
+        "system_manifest_sha256": context["system_manifest_sha256"],
+        "contract_signature_sha256": context["contract_signature_sha256"],
+        "input_content_signature_sha256": context["input_content_signature_sha256"],
+        "content_hashes_included": hash_content,
+        "settings": settings,
+        "frame_selection": frame_selection_report,
+        "geometry_contract": {
+            "distance": "donor-acceptor minimum-image distance",
+            "angle": "donor-hydrogen-acceptor angle at hydrogen",
+            "distance_definition": "donor_acceptor_v1",
+            "coordinate_reconstruction": project["periodic_coordinate_policy"],
+            "water_policy": "exclude",
+            "sparse_geometry_engine": "spatial_cell_list_exact_periodic_v1",
+        },
+        "cutoff_definitions": cutoff_definitions,
+        "candidate_harmonization": endpoint_report,
+        "chemistry_reports": chemistry_reports,
+        "frame_matrix_representation": "sparse_spatial_partial_v3",
+        "candidate_dictionary": candidate_dictionary,
+        "conceptual_candidate_count": conceptual_count,
+        "materialized_observed_candidate_count": len(candidate_dictionary),
+        "unobserved_zero_candidate_count": conceptual_count - len(candidate_dictionary),
+        "evaluated_frame_count": evaluated_frames,
+        "conceptual_candidate_frame_count": conceptual_observations,
+        "spatial_neighbor_pair_count": spatial_pairs,
+        "explicit_geometry_evaluation_count": explicit_geometry,
+        "present_event_count": present_events,
+        "frame_bond_matrix": frame_records,
+        "error_count": 0,
+        "warning_count": sum(issue.get("severity") == "warning" for issue in issues),
+        "issues": issues,
+        "limitations": [
+            "The implicit topology-defined candidate universe is not materialized; candidates never satisfying any declared cutoff are summarized as exact global zeros.",
+            "Direct water contacts and water-mediated paths require their separate contracts.",
+            "Occupancy does not establish energetic or mechanistic importance.",
+        ],
+    }
+
+
 def _hydrogen_bond_discovery_project_serial(
     project_path: Path,
     hash_content: bool = False,
     *,
     harmonized_candidate_keys_override: set[HarmonizedCandidateKey] | None = None,
     candidate_harmonization_report_override: Mapping[str, object] | None = None,
+    common_donor_endpoints_override: set[DonorHydrogenIdentityKey] | None = None,
+    common_acceptor_endpoints_override: set[AcceptorIdentityKey] | None = None,
 ) -> Dict[str, object]:
     source = Path(project_path).expanduser().resolve(strict=False)
     project = load_json(source)
@@ -769,6 +1235,36 @@ def _hydrogen_bond_discovery_project_serial(
         error_type=HydrogenBondDiscoveryError,
     )
     issues = [issue for issue in context.get("warnings", []) if isinstance(issue, dict)]
+    if settings["output_mode"] == "sparse_spatial_observed_union_v3":
+        if (
+            common_donor_endpoints_override is None
+            or common_acceptor_endpoints_override is None
+            or candidate_harmonization_report_override is None
+        ):
+            (
+                common_donor_endpoints_override,
+                common_acceptor_endpoints_override,
+                endpoint_report,
+            ) = _automatic_endpoint_identity_intersection(
+                system, system_path, settings
+            )
+        else:
+            endpoint_report = dict(candidate_harmonization_report_override)
+        return _hydrogen_bond_discovery_project_lazy_partial(
+            source,
+            project,
+            settings,
+            context,
+            system,
+            system_path,
+            frame_selection_plan,
+            frame_selection_report,
+            issues,
+            common_donor_endpoints_override,
+            common_acceptor_endpoints_override,
+            endpoint_report,
+            hash_content=hash_content,
+        )
     harmonized_candidate_keys = None
     candidate_harmonization_report: Dict[str, object] = {
         "policy": str(settings["candidate_harmonization"]),
@@ -1483,6 +1979,244 @@ def _reduce_hbond_discovery_reports(
     return first
 
 
+def _identity_from_record(value: object) -> AtomIdentityKey:
+    if not isinstance(value, Mapping):
+        raise HydrogenBondDiscoveryError("candidate identity record is malformed")
+    try:
+        return (
+            str(value["chain_id"]),
+            int(value["residue_number"]),
+            str(value["insertion_code"]),
+            str(value["atom_name"]),
+            str(value["altloc"]),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HydrogenBondDiscoveryError(
+            "candidate identity record is incomplete"
+        ) from exc
+
+
+def _reduce_lazy_hbond_reports(
+    partials: Sequence[ReplicaPartial[Dict[str, object]]],
+    source_context: Dict[str, object],
+) -> Dict[str, object]:
+    """Merge replica-local observed dictionaries into one pooled sparse union."""
+
+    reports = [partial.value for partial in partials]
+    first = dict(reports[0])
+    for report in reports:
+        for key in (
+            "module_id", "settings", "geometry_contract", "cutoff_definitions",
+            "candidate_harmonization", "conceptual_candidate_count",
+        ):
+            if report.get(key) != first.get(key):
+                raise HydrogenBondDiscoveryError(
+                    f"lazy replica hydrogen-bond reports disagree on {key}"
+                )
+
+    stratum_by_key: Dict[CandidateIdentityKey, str] = {}
+    local_keys_by_report: List[List[CandidateIdentityKey]] = []
+    for report in reports:
+        local_keys = []
+        for row in report.get("candidate_dictionary", []):
+            key = (
+                _identity_from_record(row.get("donor_identity")),
+                _identity_from_record(row.get("hydrogen_identity")),
+                _identity_from_record(row.get("acceptor_identity")),
+            )
+            stratum = str(row.get("interaction_stratum"))
+            prior = stratum_by_key.setdefault(key, stratum)
+            if prior != stratum:
+                raise HydrogenBondDiscoveryError(
+                    "observed candidate interaction stratum differs across replicas"
+                )
+            local_keys.append(key)
+        if len(set(local_keys)) != len(local_keys):
+            raise HydrogenBondDiscoveryError(
+                "replica observed candidate dictionary contains duplicates"
+            )
+        local_keys_by_report.append(local_keys)
+
+    global_keys = sorted(stratum_by_key)
+    if not global_keys:
+        raise HydrogenBondDiscoveryError(
+            "no hydrogen bond satisfied any declared cutoff in selected frames"
+        )
+    global_index = {key: index for index, key in enumerate(global_keys)}
+    atom_keys = sorted({atom for key in global_keys for atom in key})
+    atom_index = {key: index for index, key in enumerate(atom_keys)}
+    candidate_dictionary = [{
+        "bond_id": _identity_bond_id(key),
+        "donor_atom_index": atom_index[key[0]],
+        "hydrogen_atom_index": atom_index[key[1]],
+        "acceptor_atom_index": atom_index[key[2]],
+        "donor_identity": _identity_record(key[0]),
+        "hydrogen_identity": _identity_record(key[1]),
+        "acceptor_identity": _identity_record(key[2]),
+        "interaction_stratum": stratum_by_key[key],
+    } for key in global_keys]
+    atom_dictionary = [{
+        "atom_index": atom_index[key],
+        "identity": _identity_record(key),
+    } for key in atom_keys]
+
+    cutoff_definitions = first["cutoff_definitions"]
+    frame_records = []
+    frame_counts: Dict[Tuple[str, str, str], int] = {}
+    cutoff_counts: Dict[Tuple[str, str, str], List[Dict[int, int]]] = {}
+    for report, local_keys in zip(reports, local_keys_by_report):
+        local_to_global = {
+            local_index: global_index[key]
+            for local_index, key in enumerate(local_keys)
+        }
+        for frame in report.get("frame_bond_matrix", []):
+            events = unpack_sparse_present_events(frame)
+            geometry_rows = []
+            key = (
+                str(frame["system_id"]),
+                str(frame["replica_id"]),
+                str(frame["segment_id"]),
+            )
+            frame_counts[key] = frame_counts.get(key, 0) + 1
+            per_cutoff = cutoff_counts.setdefault(
+                key, [dict() for _ in cutoff_definitions]
+            )
+            for event in events:
+                local_index = int(event["candidate_index"])
+                if local_index not in local_to_global:
+                    raise HydrogenBondDiscoveryError(
+                        "packed event references an unknown local candidate"
+                    )
+                candidate_index = local_to_global[local_index]
+                mask = int(event["cutoff_mask"])
+                matched = []
+                for cutoff_index, cutoff in enumerate(cutoff_definitions):
+                    if mask & (1 << cutoff_index):
+                        matched.append(str(cutoff["cutoff_id"]))
+                        counts = per_cutoff[cutoff_index]
+                        counts[candidate_index] = counts.get(candidate_index, 0) + 1
+                geometry_rows.append({
+                    "candidate_index": candidate_index,
+                    "donor_acceptor_distance_angstrom": float(
+                        event["donor_acceptor_distance_angstrom"]
+                    ),
+                    "donor_hydrogen_acceptor_angle_degrees": float(
+                        event["donor_hydrogen_acceptor_angle_degrees"]
+                    ),
+                    "present_cutoff_ids": matched,
+                })
+            geometry_rows.sort(key=lambda row: int(row["candidate_index"]))
+            frame_records.append({
+                key_name: frame[key_name]
+                for key_name in (
+                    "system_id", "replica_id", "segment_id", "source_frame_index",
+                    "axis_kind", "axis_value",
+                )
+            } | {
+                "candidate_count": len(candidate_dictionary),
+                **pack_sparse_present_geometry(
+                    geometry_rows,
+                    cutoff_definitions,  # type: ignore[arg-type]
+                    len(candidate_dictionary),
+                ),
+            })
+
+    occupancies = []
+    packed_cutoff_segments = []
+    for segment_key, per_cutoff in sorted(cutoff_counts.items()):
+        frame_count = frame_counts[segment_key]
+        for candidate_index, count in sorted(per_cutoff[0].items()):
+            occupancies.append({
+                "system_id": segment_key[0],
+                "replica_id": segment_key[1],
+                "segment_id": segment_key[2],
+                "bond_id": candidate_dictionary[candidate_index]["bond_id"],
+                "evaluated_frame_count": frame_count,
+                "present_frame_count": count,
+                "occupancy_fraction": count / frame_count,
+            })
+        packed_cutoff_segments.append({
+            "system_id": segment_key[0],
+            "replica_id": segment_key[1],
+            "segment_id": segment_key[2],
+            **pack_sparse_cutoff_counts(
+                per_cutoff,
+                cutoff_definitions,  # type: ignore[arg-type]
+                len(candidate_dictionary),
+                frame_count,
+            ),
+        })
+
+    evaluated = sum(int(report["evaluated_frame_count"]) for report in reports)
+    conceptual_count = int(first["conceptual_candidate_count"])
+    conceptual_observations = conceptual_count * evaluated
+    spatial_pairs = sum(int(report["spatial_neighbor_pair_count"]) for report in reports)
+    explicit_geometry = sum(
+        int(report["explicit_geometry_evaluation_count"]) for report in reports
+    )
+    present_event_count = sum(int(report["present_event_count"]) for report in reports)
+    frame_selection = merge_frame_selection_reports([
+        report["frame_selection"] for report in reports
+        if isinstance(report.get("frame_selection"), dict)
+    ])
+    candidate_stratum_counts: Dict[str, int] = {}
+    for row in candidate_dictionary:
+        stratum = str(row["interaction_stratum"])
+        candidate_stratum_counts[stratum] = candidate_stratum_counts.get(stratum, 0) + 1
+    issues = unique_issues(reports)
+    first.update({
+        "frame_selection": frame_selection,
+        "chemistry_reports": [
+            row for report in reports for row in report.get("chemistry_reports", [])
+        ],
+        "frame_matrix_representation": "sparse_spatial_observed_union_v3",
+        "sparse_zero_contract": (
+            "Candidates absent from a frame's packed event payload are exact zeros. "
+            "Topology-eligible candidates absent from the pooled observed dictionary "
+            "are exact global zeros under every declared cutoff."
+        ),
+        "packed_event_codec": PACKED_EVENT_CODEC,
+        "cutoff_occupancy_representation": "sparse_packed_cutoff_counts_v1",
+        "packed_cutoff_count_codec": PACKED_CUTOFF_COUNT_CODEC,
+        "candidate_dictionary": candidate_dictionary,
+        "atom_dictionary": atom_dictionary,
+        "candidate_count": len(candidate_dictionary),
+        "candidate_stratum_counts": candidate_stratum_counts,
+        "conceptual_candidate_count": conceptual_count,
+        "materialized_observed_candidate_count": len(candidate_dictionary),
+        "unobserved_zero_candidate_count": conceptual_count - len(candidate_dictionary),
+        "evaluated_frame_count": evaluated,
+        "conceptual_candidate_frame_count": conceptual_observations,
+        "spatial_neighbor_pair_count": spatial_pairs,
+        "explicit_geometry_evaluation_count": explicit_geometry,
+        "present_event_count": present_event_count,
+        "observation_accounting": {
+            "source_physical_frame_count": int(frame_selection["source_frame_count"]),
+            "selected_physical_frame_count": evaluated,
+            "conceptual_candidate_frame_count": conceptual_observations,
+            "spatial_neighbor_pair_count": spatial_pairs,
+            "explicit_geometry_evaluation_count": explicit_geometry,
+            "present_event_count": present_event_count,
+            "geometry_evaluation_avoidance_fraction": (
+                1.0 - explicit_geometry / conceptual_observations
+                if conceptual_observations else None
+            ),
+            "subsampling_triggered": (
+                evaluated < int(frame_selection["source_frame_count"])
+            ),
+        },
+        "frame_bond_matrix": frame_records,
+        "occupancies": occupancies,
+        "cutoff_occupancies": None,
+        "packed_cutoff_occupancy_segments": packed_cutoff_segments,
+        "issues": issues,
+        "error_count": sum(issue.get("severity") == "error" for issue in issues),
+        "warning_count": sum(issue.get("severity") == "warning" for issue in issues),
+    })
+    restore_source_provenance(first, source_context)
+    return first
+
+
 def hydrogen_bond_discovery_project(
     project_path: Path, hash_content: bool = False
 ) -> Dict[str, object]:
@@ -1492,13 +2226,27 @@ def hydrogen_bond_discovery_project(
     project = load_json(source)
     settings = _settings(project)
     selection = settings.get("frame_selection")
-    if isinstance(selection, dict) and selection.get("mode") == "auto_resource_budget_v1":
+    if (
+        settings["output_mode"] != "sparse_spatial_observed_union_v3"
+        and isinstance(selection, dict)
+        and selection.get("mode") == "auto_resource_budget_v1"
+    ):
         return _hydrogen_bond_discovery_project_serial(
             project_path, hash_content=hash_content
         )
     keys = None
+    common_donors = None
+    common_acceptors = None
     harmonization = None
-    if (
+    if settings["output_mode"] == "sparse_spatial_observed_union_v3":
+        context = compile_project_context_file(source, hash_content=hash_content)
+        system_path = Path(context["system_manifest_path"])
+        common_donors, common_acceptors, harmonization = (
+            _automatic_endpoint_identity_intersection(
+                load_json(system_path), system_path, settings
+            )
+        )
+    elif (
         settings["mode"] == "automatic"
         and str(settings["candidate_harmonization"]).startswith("intersection_by_atom_")
     ):
@@ -1511,7 +2259,11 @@ def hydrogen_bond_discovery_project(
         project_path,
         runner_id="hydrogen_bond_discovery",
         hash_content=hash_content,
-        reducer=_reduce_hbond_discovery_reports,
+        reducer=(
+            _reduce_lazy_hbond_reports
+            if settings["output_mode"] == "sparse_spatial_observed_union_v3"
+            else _reduce_hbond_discovery_reports
+        ),
         worker_payload={
             "harmonized_candidate_keys": (
                 [
@@ -1524,6 +2276,20 @@ def hydrogen_bond_discovery_project(
                 if keys is not None else None
             ),
             "candidate_harmonization_report": harmonization,
+            "common_donor_endpoints": (
+                [
+                    [list(donor), list(hydrogen), entity_class]
+                    for donor, hydrogen, entity_class in sorted(common_donors)
+                ]
+                if common_donors is not None else None
+            ),
+            "common_acceptor_endpoints": (
+                [
+                    [list(acceptor), entity_class]
+                    for acceptor, entity_class in sorted(common_acceptors)
+                ]
+                if common_acceptors is not None else None
+            ),
         },
     )
 

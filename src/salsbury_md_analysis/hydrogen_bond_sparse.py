@@ -542,6 +542,145 @@ class CompiledSparseHydrogenBondEvaluator:
         }
 
 
+@dataclass(frozen=True)
+class LazySpatialHydrogenBondEvaluator:
+    """Evaluate a compact donor/acceptor universe without its Cartesian product."""
+
+    donor_hydrogen_pairs: Sequence[Mapping[str, object]]
+    acceptors: Sequence[Mapping[str, object]]
+    cutoff_definitions: Sequence[Mapping[str, object]]
+    interaction_scope: str
+    exclude_same_residue: bool
+    maximum_neighbor_pairs: int
+
+    def evaluate(
+        self,
+        coordinates: Sequence[Sequence[float]],
+        *,
+        cell: CellVectors | None,
+    ) -> Dict[str, object]:
+        coordinate_array = np.asarray(coordinates, dtype=np.float64)
+        if coordinate_array.ndim != 2 or coordinate_array.shape[1] != 3:
+            raise SparseHydrogenBondError("coordinates must be an N by 3 array")
+        if not np.isfinite(coordinate_array).all():
+            raise SparseHydrogenBondError("coordinates must be finite")
+        if not self.donor_hydrogen_pairs or not self.acceptors:
+            raise SparseHydrogenBondError(
+                "lazy spatial evaluation requires donors and acceptors"
+            )
+        if not self.cutoff_definitions:
+            raise SparseHydrogenBondError("at least one cutoff definition is required")
+        if self.maximum_neighbor_pairs < 1:
+            raise SparseHydrogenBondError("maximum_neighbor_pairs must be positive")
+
+        donor_groups: Dict[int, List[Mapping[str, object]]] = {}
+        for row in self.donor_hydrogen_pairs:
+            donor = int(row["donor_atom_index"])
+            hydrogen = int(row["hydrogen_atom_index"])
+            if min(donor, hydrogen) < 0 or max(donor, hydrogen) >= len(coordinate_array):
+                raise SparseHydrogenBondError(
+                    "donor or hydrogen atom index is outside the coordinate array"
+                )
+            donor_groups.setdefault(donor, []).append(row)
+        acceptor_rows: Dict[int, Mapping[str, object]] = {}
+        for row in self.acceptors:
+            acceptor = int(row["acceptor_atom_index"])
+            if acceptor < 0 or acceptor >= len(coordinate_array):
+                raise SparseHydrogenBondError(
+                    "acceptor atom index is outside the coordinate array"
+                )
+            if acceptor in acceptor_rows:
+                raise SparseHydrogenBondError("acceptor atom index is duplicated")
+            acceptor_rows[acceptor] = row
+
+        from .water_mediated_hydrogen_bonds import (
+            WaterMediatedHydrogenBondError,
+            neighbor_pairs_within,
+        )
+
+        maximum_distance = max(
+            float(row["maximum_donor_acceptor_distance_angstrom"])
+            for row in self.cutoff_definitions
+        )
+        try:
+            nearby = neighbor_pairs_within(
+                coordinate_array,
+                sorted(donor_groups),
+                sorted(acceptor_rows),
+                maximum_distance,
+                cell,
+                maximum_pairs=self.maximum_neighbor_pairs,
+            )
+        except WaterMediatedHydrogenBondError as exc:
+            raise SparseHydrogenBondError(str(exc)) from exc
+
+        events: List[Dict[str, object]] = []
+        angle_evaluations = 0
+        from .hydrogen_bond_chemistry import scope_allows
+        for donor, acceptor, distance in nearby:
+            acceptor_row = acceptor_rows[acceptor]
+            for donor_row in donor_groups[donor]:
+                if not scope_allows(
+                    str(donor_row["entity_class"]),
+                    str(acceptor_row["entity_class"]),
+                    self.interaction_scope,
+                ):
+                    continue
+                if (
+                    self.exclude_same_residue
+                    and donor_row["residue_key"] == acceptor_row["residue_key"]
+                ):
+                    continue
+                angle_evaluations += 1
+                hydrogen = int(donor_row["hydrogen_atom_index"])
+                angle = angle_degrees(
+                    coordinate_array[donor],
+                    coordinate_array[hydrogen],
+                    coordinate_array[acceptor],
+                    cell,
+                )
+                matched = [
+                    str(cutoff["cutoff_id"])
+                    for cutoff in self.cutoff_definitions
+                    if (
+                        distance <= float(
+                            cutoff["maximum_donor_acceptor_distance_angstrom"]
+                        )
+                        and angle >= float(
+                            cutoff["minimum_donor_hydrogen_acceptor_angle_degrees"]
+                        )
+                    )
+                ]
+                if matched:
+                    events.append({
+                        "donor_atom_index": donor,
+                        "hydrogen_atom_index": hydrogen,
+                        "acceptor_atom_index": acceptor,
+                        "donor_identity_key": donor_row["donor_identity_key"],
+                        "hydrogen_identity_key": donor_row["hydrogen_identity_key"],
+                        "acceptor_identity_key": acceptor_row["acceptor_identity_key"],
+                        "interaction_stratum": (
+                            f"{donor_row['entity_class']}_to_"
+                            f"{acceptor_row['entity_class']}"
+                        ),
+                        "donor_acceptor_distance_angstrom": float(distance),
+                        "donor_hydrogen_acceptor_angle_degrees": float(angle),
+                        "present_cutoff_ids": matched,
+                    })
+        events.sort(key=lambda row: (
+            row["donor_identity_key"],
+            row["hydrogen_identity_key"],
+            row["acceptor_identity_key"],
+        ))
+        return {
+            "representation": "lazy_spatial_events_v1",
+            "spatial_neighbor_pair_count": len(nearby),
+            "explicit_geometry_evaluation_count": angle_evaluations,
+            "present_events": events,
+            "geometry_engine": "spatial_cell_list_exact_periodic_v1",
+        }
+
+
 def dense_primary_values(
     frame: Mapping[str, object], candidate_count: int
 ) -> List[int]:

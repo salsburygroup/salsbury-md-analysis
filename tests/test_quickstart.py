@@ -965,7 +965,7 @@ class QuickstartTests(unittest.TestCase):
             self.assertEqual(project["reference_connectivity"], str(psf.resolve()))
             self.assertEqual(
                 project["definitions"]["hydrogen_bond_discovery"]["output_mode"],
-                "sparse_packed_v2",
+                "sparse_spatial_observed_union_v3",
             )
             self.assertEqual(
                 sampling["default_resource_envelope"]["target_wall_hours_per_method"],

@@ -20,7 +20,7 @@ from .frame_sampling import (
 )
 from .hydrogen_bond_discovery import (
     HydrogenBondDiscoveryError,
-    _automatic_candidate_identity_intersection,
+    _automatic_endpoint_identity_intersection,
 )
 from .manifests import load_json, resolve_manifest_path, validate_system
 from .memory_policy import (
@@ -1114,7 +1114,7 @@ def _hydrogen_bond_candidate_dimensions(
     """
 
     try:
-        common, report = _automatic_candidate_identity_intersection(
+        donors, acceptors, report = _automatic_endpoint_identity_intersection(
             system_manifest,
             Path(system_path).expanduser().resolve(strict=False),
             {
@@ -1136,13 +1136,12 @@ def _hydrogen_bond_candidate_dimensions(
         "chemistry_policy": "automatic_topology_templates_v1",
         "interaction_scope": "all_solute",
         "exclude_same_residue": True,
-        "candidate_harmonization": "intersection_by_atom_identity_v2",
-        "common_candidate_count": len(common),
-        "union_candidate_count": int(report["union_candidate_count"]),
-        "excluded_from_common_union_count": int(
-            report["excluded_from_common_union_count"]
-        ),
-        "replica_dictionaries": report["replica_dictionaries"],
+        "candidate_harmonization": "intersection_by_endpoint_identity_lazy_v3",
+        "common_candidate_count": int(report["common_candidate_count"]),
+        "common_donor_hydrogen_group_count": len(donors),
+        "common_acceptor_count": len(acceptors),
+        "materialized_precoordinate_candidate_count": 0,
+        "replica_dictionaries": report["replica_endpoint_dictionaries"],
         "selection_basis": report["selection_basis"],
         "coordinate_data_used": False,
     }
@@ -1165,17 +1164,31 @@ def _runtime_workload_multiplier(
         and candidate_plan.get("status") == "complete"
     ):
         candidate_count = int(candidate_plan["common_candidate_count"])
+        # The lazy spatial engine never materializes or evaluates the full
+        # donor-H x acceptor Cartesian product. Until a campaign-specific
+        # pilot supplies the measured nearby-pair rate, its endpoint work is
+        # conservatively approximated by the square root of that product.
         candidate_multiplier = max(
             MINIMUM_HYDROGEN_BOND_WORKLOAD_MULTIPLIER,
-            candidate_count / REFERENCE_HYDROGEN_BOND_CANDIDATE_COUNT,
+            math.sqrt(
+                candidate_count / REFERENCE_HYDROGEN_BOND_CANDIDATE_COUNT
+            ),
         )
         return candidate_multiplier, {
-            "dimension": "common automatic donor-hydrogen-acceptor candidates",
+            "dimension": (
+                "lazy spatial donor/acceptor endpoint proxy from the square root "
+                "of the implicit common candidate universe"
+            ),
             "observed_candidate_count": candidate_count,
             "reference_candidate_count": REFERENCE_HYDROGEN_BOND_CANDIDATE_COUNT,
             "minimum_multiplier": MINIMUM_HYDROGEN_BOND_WORKLOAD_MULTIPLIER,
             "resolved_multiplier": candidate_multiplier,
             "coordinate_data_used": False,
+            "full_cartesian_candidate_dictionary_materialized": False,
+            "limitation": (
+                "replace this topology-only proxy with a measured nearby-pair "
+                "pilot calibration before a full campaign"
+            ),
         }
     return atom_multiplier, {
         "dimension": "maximum topology atom count proxy",
