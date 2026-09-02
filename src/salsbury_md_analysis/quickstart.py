@@ -1638,8 +1638,8 @@ def _configure_structural_qc_parallel_execution(
     campaign_resource_plan: Mapping[str, object],
     *,
     coordinate_cache_directory: Path,
-) -> None:
-    """Point structural QC at one validated strided cache and replica workers."""
+) -> Optional[Path]:
+    """Write the explicit cache-backed replica-worker project for structural QC."""
 
     project_path = root / "project.json"
     project = load_json(project_path)
@@ -1647,7 +1647,7 @@ def _configure_structural_qc_parallel_execution(
         raise QuickstartError("base project is unavailable for structural-QC setup")
     requested = project.get("requested_modules")
     if not isinstance(requested, list) or "structural_integrity_qc" not in requested:
-        return
+        return None
     definitions = project.get("definitions")
     structural = definitions.get("structural_qc") if isinstance(definitions, dict) else None
     if not isinstance(structural, dict):
@@ -1662,9 +1662,33 @@ def _configure_structural_qc_parallel_execution(
         raise QuickstartError(
             "campaign plan lacks exactly one structural-QC resource task"
         )
-    # This is the complete replica-worker count.  The execution adapter splits
-    # it into per-node groups when the planner selects a distributed layout.
-    workers = int(task_rows[0]["effective_cpu_cap"])
+    system_manifest = Path(str(project["system_manifest"]))
+    if not system_manifest.is_absolute():
+        system_manifest = project_path.parent / system_manifest
+    manifest = load_json(system_manifest)
+    systems = manifest.get("systems") if isinstance(manifest, dict) else None
+    if not isinstance(systems, list):
+        raise QuickstartError("structural-QC system manifest has no systems")
+    replica_count = sum(
+        len(system.get("replicas", []))
+        for system in systems
+        if isinstance(system, dict) and isinstance(system.get("replicas"), list)
+    )
+    if replica_count <= 0:
+        raise QuickstartError("structural-QC system manifest has no replicas")
+    task = task_rows[0]
+    declared_shards = int(task.get("parallel_worker_count", 0))
+    if declared_shards != replica_count:
+        raise QuickstartError(
+            "structural-QC planner/runtime replica mismatch: planner declared "
+            f"{declared_shards} shards for {replica_count} replicas"
+        )
+    # Every replica remains one stable shard.  This limit is the maximum number
+    # of shards that may run concurrently; the execution adapter may use fewer
+    # simultaneous workers when CPU, memory, or node capacity requires waves.
+    workers = min(replica_count, int(task["effective_cpu_cap"]))
+    if workers <= 0:
+        raise QuickstartError("structural-QC planner selected no replica workers")
     cache_root = coordinate_cache_directory.expanduser().resolve(strict=False)
     structural["parallel_execution"] = {
         "enabled": True,
@@ -1672,8 +1696,12 @@ def _configure_structural_qc_parallel_execution(
         "coordinate_cache_system_manifest": str(cache_root / "system-cache.json"),
         "coordinate_cache_report": str(cache_root / "coordinate-cache-report.json"),
     }
-    _json_write(project_path, project)
-    validate_project(project, source_path=project_path, check_paths=False)
+    # Keep a dedicated runtime project so later base-project cache routing or a
+    # resumed preparation cannot silently remove the replica-worker contract.
+    runtime_project = root / "project-structural-qc-parallel.json"
+    _json_write(runtime_project, project)
+    validate_project(project, source_path=runtime_project, check_paths=False)
+    return runtime_project
 
 
 def _conformational_view_projects(
@@ -2689,9 +2717,14 @@ rm "$TMP" "$SUMMARY_TMP"
         )
         project_lines = "\n".join(
             "  " + json.dumps(str(
-                root / "project-cache-base.json"
-                if COMMAND_MODULES[command] in cache_project_modules
-                else root / "project.json"
+                root / "project-structural-qc-parallel.json"
+                if command == "structural-qc"
+                and (root / "project-structural-qc-parallel.json").is_file()
+                else (
+                    root / "project-cache-base.json"
+                    if COMMAND_MODULES[command] in cache_project_modules
+                    else root / "project.json"
+                )
             ))
             for command in stage_commands
         )
@@ -3752,8 +3785,9 @@ def prepare_standard_analysis(
     coordinate_cache_workers = min(
         effective_parallel_cpu_cap, len(trajectory_paths)
     )
+    structural_qc_runtime_project: Optional[Path] = None
     if coordinate_cache_enabled:
-        _configure_structural_qc_parallel_execution(
+        structural_qc_runtime_project = _configure_structural_qc_parallel_execution(
             root,
             campaign_resource_plan,
             coordinate_cache_directory=(
@@ -3797,6 +3831,8 @@ def prepare_standard_analysis(
                 if coordinate_cache_input is not None else []
             ),
         ])
+        if structural_qc_runtime_project is not None:
+            coordinate_cache_files.append(structural_qc_runtime_project.name)
     deferred = {
         **exclusions,
         **config_disabled,

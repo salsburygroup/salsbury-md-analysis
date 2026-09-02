@@ -514,6 +514,103 @@ def _task_planner_rows(
     ]
 
 
+def _structural_qc_replica_runtime_contract(
+    root: Path,
+    task: Mapping[str, object],
+    rows: Sequence[Mapping[str, object]],
+    *,
+    active_worker_count: int,
+) -> Optional[Dict[str, object]]:
+    """Validate that a planned replica-parallel QC task cannot run serially."""
+
+    qc_rows = [
+        row for row in rows
+        if row.get("module_id") == "structural_integrity_qc"
+        and row.get("parallel_execution_model") is not None
+    ]
+    if not qc_rows:
+        return None
+    # Hand-built adapter fixtures and legacy launchers may not have a generated
+    # analysis configuration.  Current generic workflows always do.
+    if not (root / "analysis-config.json").is_file():
+        return None
+    array_id = task.get("array_task_id")
+    if array_id is None:
+        raise ExecutionAdapterError(
+            "replica-parallel structural QC must be an explicit worker task"
+        )
+    script = root / str(task["script"])
+    projects = _bash_array_values(script, "PROJECTS")
+    index = int(array_id)
+    if index < 0 or index >= len(projects):
+        raise ExecutionAdapterError(
+            f"structural-QC project index {index} is outside {script.name}"
+        )
+    project_path = Path(projects[index]).expanduser()
+    if not project_path.is_absolute():
+        project_path = root / project_path
+    if not project_path.is_file():
+        raise ExecutionAdapterError(
+            f"replica-parallel structural-QC project is missing: {project_path}"
+        )
+    project = load_json(project_path)
+    definitions = project.get("definitions") if isinstance(project, dict) else None
+    structural = (
+        definitions.get("structural_qc")
+        if isinstance(definitions, dict) else None
+    )
+    parallel = (
+        structural.get("parallel_execution")
+        if isinstance(structural, dict) else None
+    )
+    if not isinstance(parallel, dict) or parallel.get("enabled") is not True:
+        raise ExecutionAdapterError(
+            "planner selected replica-parallel structural QC, but its runtime "
+            "project does not enable parallel_execution"
+        )
+    configured_workers = parallel.get("maximum_workers")
+    if (
+        isinstance(configured_workers, bool)
+        or not isinstance(configured_workers, int)
+        or configured_workers <= 0
+    ):
+        raise ExecutionAdapterError(
+            "structural-QC runtime maximum_workers must be a positive integer"
+        )
+    declared_shards = max(int(row["parallel_worker_count"]) for row in qc_rows)
+    planned_worker_cap = max(int(row["effective_cpu_cap"]) for row in qc_rows)
+    if configured_workers != planned_worker_cap:
+        raise ExecutionAdapterError(
+            "structural-QC planner/runtime worker mismatch: planner cap "
+            f"{planned_worker_cap}, runtime cap {configured_workers}"
+        )
+    if declared_shards < configured_workers:
+        raise ExecutionAdapterError(
+            "structural-QC runtime worker cap exceeds its replica shard count"
+        )
+    if active_worker_count > configured_workers:
+        raise ExecutionAdapterError(
+            "structural-QC scheduler worker count exceeds its runtime cap"
+        )
+    for field in (
+        "coordinate_cache_system_manifest", "coordinate_cache_report",
+    ):
+        if not isinstance(parallel.get(field), str) or not parallel[field]:
+            raise ExecutionAdapterError(
+                f"structural-QC runtime contract lacks {field}"
+            )
+    return {
+        "execution_model": "one_replica_shard_per_worker_v1",
+        "runtime_project": str(project_path.resolve(strict=False)),
+        "replica_shard_count": declared_shards,
+        "configured_maximum_workers": configured_workers,
+        "planned_active_worker_count": active_worker_count,
+        "worker_wave_count": math.ceil(
+            declared_shards / active_worker_count
+        ),
+    }
+
+
 def _enrich_task_resources(
     root: Path,
     task: Mapping[str, object],
@@ -523,6 +620,7 @@ def _enrich_task_resources(
     node_policy: Optional[Mapping[str, object]] = None,
 ) -> Dict[str, object]:
     enriched = dict(task)
+    structural_qc_runtime_contract: Optional[Dict[str, object]] = None
     matched = _task_planner_rows(root, task, rows)
     path = root / str(task["script"])
     maximum_hours = float(execution["maximum_hours_per_cpu"])
@@ -651,6 +749,12 @@ def _enrich_task_resources(
             )
         planner_task_ids = [str(row["task_id"]) for row in matched]
         cpu_slots = planned_execution_cpu_slots
+        structural_qc_runtime_contract = _structural_qc_replica_runtime_contract(
+            root,
+            task,
+            matched,
+            active_worker_count=cpu_slots,
+        )
         source = "campaign_planner_final_memory_reservation_passthrough"
     else:
         wall_hours = _existing_wall_minutes(path) / 60.0
@@ -706,6 +810,9 @@ def _enrich_task_resources(
             )
         ),
         "memory_request_limited_by_campaign_cap": False,
+        "structural_qc_replica_runtime_contract": (
+            structural_qc_runtime_contract
+        ),
     })
     return enriched
 

@@ -44,7 +44,11 @@ lossless coordinate cache is enabled. The planner caps it at the number of
 replicas, the campaign CPU ceiling, and the number of workers that fit inside
 the aggregate memory ceiling. The execution adapter requests those CPU slots
 and the workers reuse the already-written cache; the task does not unwrap or
-decode the original solvated trajectories a second time. Structural QC depends
+decode the original solvated trajectories a second time. Generated workflows
+retain a dedicated structural-QC runtime project with one stable shard per
+replica. Before launch, the execution adapter verifies that its worker cap
+matches the planner and scheduler; a missing or inconsistent declaration fails
+closed rather than falling back to serial execution. Structural QC depends
 on cache completion, but unrelated modules do not depend on structural QC or
 the cache unless their declared inputs require them.
 

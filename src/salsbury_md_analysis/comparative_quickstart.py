@@ -61,6 +61,7 @@ from .quickstart import (
     _apply_experimental_input_gates,
     _applicable_sampling_modules,
     _configure_coordinate_cache_views,
+    _configure_structural_qc_parallel_execution,
     _conformational_view_projects,
     _conformational_view_slurm_files,
     _coordinate_cache_enabled,
@@ -1386,6 +1387,19 @@ def prepare_comparative_analysis(
         effective_parallel_cpu_cap,
         len(frame_counts),
     )
+    structural_qc_runtime_project: Optional[Path] = None
+    if coordinate_cache_enabled:
+        structural_qc_runtime_project = _configure_structural_qc_parallel_execution(
+            root,
+            campaign_resource_plan,
+            coordinate_cache_directory=(
+                Path(str(coordinate_cache_input))
+                if coordinate_cache_input is not None
+                else root / "coordinate-cache"
+            ),
+        )
+        if structural_qc_runtime_project is not None:
+            coordinate_cache_files.append(structural_qc_runtime_project.name)
     deferred = _deferred_modules(exclusions, disabled)
     external_ids = set(extension_reuse["externally_reused_module_ids"])
     automatic_ids = set(requested) | external_ids | {
