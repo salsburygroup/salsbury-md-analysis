@@ -119,6 +119,45 @@ memory. That bounded run establishes that the installed local adapter and its
 dependency order work without Slurm; it is not a runtime promise for larger
 systems and carries `scientific_status: not evaluated`.
 
+### Automatic task recovery
+
+New campaigns retry a failed or timed-out task once by default:
+
+```json
+{
+  "execution": {
+    "autorecovery": true,
+    "maximum_task_attempts": 2
+  }
+}
+```
+
+Set `execution.autorecovery` to `false` to allow only the first attempt.
+`execution.maximum_task_attempts` must be from 1 through 5. Plans created before
+the recovery fields existed keep their original one-attempt behavior.
+
+Recovery is task-local. A successful report is hash-checked and reused; it is
+not rerun because another task failed. A failed task is retried only within the
+original campaign deadline and resource request. Local execution records one
+stdout file, stderr file, exit code, timing record, and byte count per attempt
+under `local-execution-status/`. A task that succeeds after a failure is labeled
+`recovered_complete`, and its accepted report can release scientific
+dependents.
+
+The Slurm launcher writes the same attempt events under
+`autorecovery-status/`. Ordinary nonzero exits are retried inside the existing
+allocation. When Slurm sends the generated pre-timeout signal, the wrapper
+records the event and requests a scheduler requeue if another attempt remains.
+Module checkpoints stay in the prepared campaign directory, so a compatible
+checkpoint can resume after requeue. If the attempt cap is reached, the task
+fails and success-dependent jobs remain blocked or are cancelled by Slurm.
+Completion-only and unrelated jobs keep their declared graph behavior.
+
+Automatic recovery addresses transient execution failures. It does not change
+inputs, frame selection, chemistry, estimator settings, wall limits, or
+scientific acceptance. Read the retained stderr, resource use, partial files,
+and dependency outcome before making a versioned repair for a terminal failure.
+
 ## External launcher
 
 Set `execution.submission_adapter` to `custom` when a site launcher, workflow
@@ -380,6 +419,25 @@ or censored evidence cannot lower it. Replica-parallel jobs declare the full
 worker population independently from active concurrency. CPU, aggregate memory,
 per-node memory, and node-count limits determine the active workers, and any
 remaining workers run in explicit waves without changing selected frames.
+
+The current catalog adds held-out size-and-length CPU models for structural QC,
+direct hydrogen-bond discovery, and ion-atmosphere analysis. Each model fits a
+fixed term, an exact topology-atom by source-frame term, and a selected-work
+term. Structural QC uses selected topology-atom frames. Hydrogen-bond planning
+uses a spatial endpoint-pair proxy and never prices the full donor-acceptor
+Cartesian universe. Ion-atmosphere planning uses ion-target minimum-image pairs
+and a conservative topology-atom proxy before execution. The middle-size
+system was excluded from fitting and had to fall below the planning upper bound
+at 20, 50, and 100 selected frames. A project outside the measured atom-count,
+source-length, or selected-work range still requires a local pilot.
+
+Structural QC uses one worker per replica, bounded by campaign CPU and memory.
+Each worker reads only the complete-interval frame indices chosen by the same
+generator used by the planner. Its frame-local `make_whole` reconstruction does
+not trigger a separate full-trajectory unwrapping pass. Other analyses retain
+continuous unwrapping when their own coordinate contract requires it. Routine
+structural QC therefore does not require every saved frame unless the resolved
+sampling plan explicitly selects every frame.
 
 The Unix group and path fields are retained provenance and operator configuration;
 the launcher does not run `chgrp`, move data, or change input permissions. Update the
