@@ -2418,7 +2418,8 @@ TASK="${{1:?worker script is required}}"
 AUTORECOVERY_ENABLED={enabled}
 MAXIMUM_TASK_ATTEMPTS={maximum_task_attempts}
 RESTART_COUNT="${{SLURM_RESTART_COUNT:-0}}"
-ROOT=$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)
+ROOT=$(cd "$(dirname "$TASK")" && pwd)
+TASK="$ROOT/${{TASK##*/}}"
 STATUS_DIR="$ROOT/autorecovery-status"
 mkdir -p "$STATUS_DIR"
 JOB_TOKEN="${{SLURM_JOB_ID:-local}}"
@@ -2427,17 +2428,23 @@ if [[ -n "${{SLURM_ARRAY_TASK_ID:-}}" ]]; then
 fi
 STATUS_FILE="$STATUS_DIR/$JOB_TOKEN.jsonl"
 CURRENT_ATTEMPT=0
+ATTEMPT_STDOUT=""
+ATTEMPT_STDERR=""
+CHILD_PID=""
 record_status() {{
   local event="$1"
   local exit_code="$2"
   local attempt="$3"
-  printf '{{"event":"%s","task":"%s","attempt":%s,"restart_count":%s,"exit_code":%s}}\n' \
-    "$event" "${{TASK##*/}}" "$attempt" "$RESTART_COUNT" "$exit_code" >> "$STATUS_FILE"
+  printf '{{"event":"%s","task":"%s","attempt":%s,"restart_count":%s,"exit_code":%s,"stdout":"%s","stderr":"%s"}}\n' \
+    "$event" "${{TASK##*/}}" "$attempt" "$RESTART_COUNT" "$exit_code" \
+    "${{ATTEMPT_STDOUT##*/}}" "${{ATTEMPT_STDERR##*/}}" >> "$STATUS_FILE"
 }}
 handle_timeout_signal() {{
   trap - USR1 TERM
   local attempts_used=$((RESTART_COUNT + CURRENT_ATTEMPT))
   record_status timeout_signal 124 "$attempts_used"
+  [[ ! -f "$ATTEMPT_STDOUT" ]] || cat "$ATTEMPT_STDOUT"
+  [[ ! -f "$ATTEMPT_STDERR" ]] || cat "$ATTEMPT_STDERR" >&2
   if [[ "$AUTORECOVERY_ENABLED" -eq 1 && "$attempts_used" -lt "$MAXIMUM_TASK_ATTEMPTS" ]]; then
     if command -v scontrol >/dev/null 2>&1 && [[ -n "${{SLURM_JOB_ID:-}}" ]]; then
       record_status requeue_requested 124 "$attempts_used"
@@ -2458,9 +2465,16 @@ fi
 for ((attempt=1; attempt<=remaining; attempt++)); do
   CURRENT_ATTEMPT="$attempt"
   global_attempt=$((RESTART_COUNT + attempt))
+  ATTEMPT_STDOUT="$STATUS_DIR/$JOB_TOKEN-attempt-$global_attempt.out"
+  ATTEMPT_STDERR="$STATUS_DIR/$JOB_TOKEN-attempt-$global_attempt.err"
   record_status started 0 "$global_attempt"
-  bash "$TASK"
+  bash "$TASK" > "$ATTEMPT_STDOUT" 2> "$ATTEMPT_STDERR" &
+  CHILD_PID=$!
+  wait "$CHILD_PID"
   exit_code=$?
+  CHILD_PID=""
+  cat "$ATTEMPT_STDOUT"
+  cat "$ATTEMPT_STDERR" >&2
   if [[ "$exit_code" -eq 0 ]]; then
     record_status complete 0 "$global_attempt"
     exit 0
