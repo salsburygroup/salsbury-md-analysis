@@ -1675,7 +1675,9 @@ class ExecutionAdapterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             worker = root / "worker.slurm"
-            runner = root / "run-task-with-recovery.sh"
+            launcher_root = root / "launcher-copy"
+            launcher_root.mkdir()
+            runner = launcher_root / "run-task-with-recovery.sh"
             worker.write_text(
                 "#!/usr/bin/env bash\n"
                 "if [[ ! -f once ]]; then touch once; exit 9; fi\n"
