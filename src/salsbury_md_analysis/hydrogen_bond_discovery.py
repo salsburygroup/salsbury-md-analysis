@@ -743,9 +743,9 @@ def _automatic_candidate_identity_intersection(
     """Build a common universe using stable chain/residue/atom identities.
 
     Residue name is deliberately omitted, matching the suite's ``position``
-    common-atom policy, so chemically corresponding atoms in variants such as
-    THY and EdU can be compared. Atom name, chain, residue number, insertion
-    code, and altloc must still match exactly and uniquely.
+    common-atom policy, so chemically corresponding atoms in homologous or
+    substituted systems can be compared. Atom name, chain, residue number,
+    insertion code, and altloc must still match exactly and uniquely.
     """
 
     reports = []
