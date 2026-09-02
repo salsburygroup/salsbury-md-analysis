@@ -656,7 +656,11 @@ def _structural_qc_project_serial(
             if topology_atom_count >= 0:
                 try:
                     processor = PeriodicFrameProcessor.from_replica(
-                        project, replica, system_path, topology_atom_count
+                        project,
+                        replica,
+                        system_path,
+                        topology_atom_count,
+                        independent_frames=True,
                     )
                 except PeriodicReconstructionError as exc:
                     issues.append(issue_record(
@@ -906,7 +910,7 @@ def _structural_qc_project_serial(
                         )
                     reader_indices = reader_frame_indices(
                         selected_indices,
-                        str(contract["periodic_coordinate_policy"]),
+                        processor.policy,
                     )
                     if last_decoded_frame_index >= 0:
                         remaining = set(
@@ -1001,7 +1005,7 @@ def _structural_qc_project_serial(
                                         "warning",
                                         "FRAME_DISPLACEMENT_EXCEEDED",
                                         f"{location}/frame-{frame.frame_index}",
-                                        f"maximum rigid-body-aligned atom displacement from the preceding decoded frame is "
+                                        f"maximum rigid-body-aligned atom displacement from the preceding evaluated frame is "
                                         f"{displacement:.6g} angstrom; gate is {gate:.6g}",
                                     ))
                         previous_displacement_coordinates = displacement_coordinates
@@ -1138,7 +1142,7 @@ def _structural_qc_project_serial(
                     ),
                     "frame_displacement_definition": (
                         "maximum finite-atom residual after proper least-squares "
-                        "rigid-body superposition of consecutive decoded frames "
+                        "rigid-body superposition of consecutive evaluated frames "
                         "on the declared frame-displacement selection"
                     ),
                     "total_near_coincident_pair_observations": total_near_pairs,
@@ -1156,6 +1160,21 @@ def _structural_qc_project_serial(
                 "replica_id": replica_id,
                 "topology_path": str(topology_path),
                 "topology": topology,
+                "structural_qc_coordinate_reconstruction": {
+                    "declared_periodic_coordinate_policy": contract[
+                        "periodic_coordinate_policy"
+                    ],
+                    "effective_periodic_coordinate_policy": (
+                        processor.policy if processor is not None else None
+                    ),
+                    "frame_dependency": (
+                        "independent_selected_frames"
+                        if processor is not None
+                        and contract["periodic_coordinate_policy"]
+                        == "unwrap_continuous"
+                        else "declared_policy"
+                    ),
+                },
                 "periodic_reconstruction": processor.report() if processor is not None else None,
                 "segments": segment_reports,
             })
@@ -1218,6 +1237,7 @@ def _structural_qc_project_serial(
             "Near-coincident checks do not apply periodic minimum-image distances; their short default-style gates are intended to detect duplicate or corrupted coordinates, not all steric clashes.",
             "Frame displacement removes one proper rigid-body transform after the declared periodic reconstruction and uses the declared selection; bulk solvent and mobile ions should be excluded because their physical diffusion and box-image changes are not macromolecular structural corruption.",
             "When frame subsampling is active, coordinate-level QC conclusions apply to the reported exact integer-stride sample; preflight still validates every DCD record envelope but cannot detect coordinate anomalies inside unselected payloads.",
+            "For structural QC, a declared unwrap_continuous policy is evaluated as frame-local make_whole on selected frames. Coordinate and chemical gates do not require a full sequential unwrapping pass; analyses that require continuous coordinates retain their declared reconstruction policy.",
             "Threshold exceedances are review findings, not execution failures, and do not block other technically executable analyses.",
             "A machine-generated report never declares scientific failure; scientific usability, equilibration, convergence, and adequate sampling require human review.",
         ],
