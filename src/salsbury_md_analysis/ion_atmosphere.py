@@ -18,15 +18,9 @@ import numpy as np
 from .atom_mapping import AtomMappingError, read_topology_atoms
 from .context import compile_project_context_file
 from .coordinates import CoordinateReadError, iter_coordinate_frames
-from .frame_sampling import (
-    frame_selected, normalize_frame_selection, plan_frame_selection,
-    reader_frame_indices,
-)
+from .frame_sampling import frame_selected, normalize_frame_selection, plan_frame_selection
 from .manifests import ManifestValidationError, load_json, resolve_manifest_path
-from .periodic import (
-    PeriodicFrameProcessor, PeriodicReconstructionError,
-    minimum_image_displacement,
-)
+from .periodic import PeriodicReconstructionError, minimum_image_displacement
 from .replica_execution import ReplicaPartial
 from .replica_module_execution import (
     execute_replica_final_module,
@@ -244,28 +238,19 @@ def _ion_atmosphere_project_serial(project_path: Path, hash_content: bool = Fals
                     raise IonAtmosphereError(
                         f"declared species {species} does not match topology elements {sorted(observed)}"
                     )
-            processor = PeriodicFrameProcessor.from_replica(project, replica, system_path, len(atoms))
             for segment in replica["segments"]:
                 assert isinstance(segment, dict)
                 segment_id = str(segment["segment_id"])
                 selected_indices = frame_plan[(system_id, replica_id, segment_id)]
                 trajectory_path = resolve_manifest_path(str(segment["trajectory"]), system_path)
-                processor.begin_segment(bool(segment.get("continuous_with_previous", False)))
                 evaluated = 0
                 for raw_frame in iter_coordinate_frames(
-                    trajectory_path, coordinate_unit,
-                    reader_frame_indices(selected_indices, processor.policy),
+                    trajectory_path, coordinate_unit, selected_indices,
                 ):
                     selected = frame_selected(raw_frame.frame_index, selected_indices, int(settings["frame_stride"]))
-                    if not selected and processor.policy != "unwrap_continuous":
-                        continue
-                    frame = processor.process(
-                        raw_frame,
-                        f"{system_id}/{replica_id}/{segment_id}/frame-{raw_frame.frame_index}",
-                        all_indices,
-                    )
                     if not selected:
                         continue
+                    frame = raw_frame
                     evaluated += 1
                     record: Dict[str, object] = {
                         "system_id": system_id, "replica_id": replica_id,
@@ -366,7 +351,7 @@ def _ion_atmosphere_project_serial(project_path: Path, hash_content: bool = Fals
             "Shell counts and persistence classes are geometric descriptions, not proof of biological binding, affinity, oxidation state, or mechanism.",
             "The innermost declared shell defines the descriptive persistence classification and requires chemical sensitivity analysis.",
             "Equivalent-member and cross-system pooling require an explicit independent-unit model; this report preserves system and replica identities.",
-            "Exact triclinic minimum-image distances are used; local atmosphere distances do not require whole-solvent reconstruction.",
+            "Exact triclinic minimum-image distances are used; pair distances are invariant to independent integer-lattice translations, so local atmosphere distances read selected frames directly and do not require whole-solvent or whole-solute reconstruction.",
         ],
     }
 
