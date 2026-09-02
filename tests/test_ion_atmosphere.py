@@ -2,8 +2,13 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from salsbury_md_analysis.ion_atmosphere import ion_atmosphere_project
+import numpy as np
+
+from salsbury_md_analysis.ion_atmosphere import (
+    _distance, _nearest_distances, ion_atmosphere_project,
+)
 
 
 def _atom(record, serial, name, residue, chain, number, x, element):
@@ -55,6 +60,33 @@ def _write_project(root: Path) -> Path:
 
 
 class IonAtmosphereTests(unittest.TestCase):
+    def test_vectorized_orthogonal_distances_match_exact_scalar_geometry(self):
+        generator = np.random.default_rng(90210)
+        ions = generator.uniform(-20.0, 20.0, size=(7, 3))
+        targets = generator.uniform(-20.0, 20.0, size=(13, 3))
+        cell = (
+            (10.0, 10.0, 0.0),
+            (-12.0, 12.0, 0.0),
+            (0.0, 0.0, 18.0),
+        )
+        observed = _nearest_distances(ions, targets, cell)
+        expected = tuple(
+            min(_distance(ion, target, cell) for target in targets)
+            for ion in ions
+        )
+        np.testing.assert_allclose(observed, expected, rtol=1.0e-13, atol=1.0e-13)
+
+    def test_skewed_triclinic_distances_retain_exact_scalar_enumeration(self):
+        ions = ((9.0, 7.2, 0.0), (1.0, 2.0, 3.0))
+        targets = ((0.0, 0.0, 0.0), (8.0, 1.0, 4.0))
+        cell = ((10.0, 0.0, 0.0), (4.0, 8.0, 0.0), (1.0, 2.0, 9.0))
+        observed = _nearest_distances(ions, targets, cell)
+        expected = tuple(
+            min(_distance(ion, target, cell) for target in targets)
+            for ion in ions
+        )
+        self.assertEqual(observed, expected)
+
     def test_species_resolved_cation_and_anion_use_minimum_images(self):
         with tempfile.TemporaryDirectory() as temporary:
             report = ion_atmosphere_project(_write_project(Path(temporary)))
@@ -69,6 +101,27 @@ class IonAtmosphereTests(unittest.TestCase):
         self.assertEqual(
             first["K"]["targets"]["all_solute"]["ion_count_within_shell"]["3.5"], 1
         )
+
+    def test_identical_target_groups_reuse_exact_nearest_distances(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            project_path = _write_project(Path(temporary))
+            project = json.loads(project_path.read_text(encoding="utf-8"))
+            project["definitions"]["ion_atmosphere"]["target_groups"].append({
+                "target_id": "same_atoms_different_label", "atom_indices": [0],
+            })
+            project_path.write_text(json.dumps(project), encoding="utf-8")
+            with patch(
+                "salsbury_md_analysis.ion_atmosphere._nearest_distances",
+                wraps=_nearest_distances,
+            ) as nearest:
+                report = ion_atmosphere_project(project_path)
+        self.assertEqual(nearest.call_count, 4)
+        for frame in report["frame_records"]:
+            for species in ("CL", "K"):
+                targets = frame["species"][species]["targets"]
+                self.assertEqual(
+                    targets["all_solute"], targets["same_atoms_different_label"]
+                )
 
 
 if __name__ == "__main__":
