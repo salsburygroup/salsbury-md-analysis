@@ -7,6 +7,7 @@ from salsbury_md_analysis.atom_mapping import AtomRecord
 from salsbury_md_analysis.hydrogen_bond_discovery import (
     HydrogenBondDiscoveryError,
     _chemical_position_key,
+    _conceptual_endpoint_candidate_stratum_counts,
     discover_automatic_candidate_bonds,
     discover_candidate_bonds,
     hydrogen_bond_discovery_project,
@@ -48,6 +49,34 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
         variant[2]["residue_name"] = "8OG"
         self.assertEqual(
             _chemical_position_key(control), _chemical_position_key(variant)
+        )
+
+    def test_conceptual_strata_are_counted_without_cartesian_materialization(self):
+        atom = lambda chain, residue, name: (chain, residue, "", name, "")
+        donors = [
+            (atom("A", 1, "N"), atom("A", 1, "H"), "protein"),
+            (atom("A", 2, "N"), atom("A", 2, "H"), "protein"),
+            (atom("B", 1, "N"), atom("B", 1, "H"), "nucleic_acid"),
+        ]
+        acceptors = [
+            (atom("A", 1, "O"), "protein"),
+            (atom("A", 3, "O"), "protein"),
+            (atom("B", 1, "O"), "nucleic_acid"),
+            (atom("B", 2, "O"), "nucleic_acid"),
+        ]
+        self.assertEqual(
+            _conceptual_endpoint_candidate_stratum_counts(
+                donors,
+                acceptors,
+                interaction_scope="all_solute",
+                exclude_same_residue=True,
+            ),
+            {
+                "nucleic_acid_to_nucleic_acid": 1,
+                "nucleic_acid_to_protein": 2,
+                "protein_to_nucleic_acid": 4,
+                "protein_to_protein": 3,
+            },
         )
 
     def test_packed_sparse_frame_round_trip_preserves_cutoffs_and_geometry(self):
@@ -536,6 +565,16 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
             0,
         )
         self.assertEqual(report["conceptual_candidate_count"], 1)
+        self.assertEqual(
+            report["conceptual_candidate_stratum_counts"],
+            {"protein_to_nucleic_acid": 1},
+        )
+        self.assertEqual(
+            report["candidate_harmonization"][
+                "common_candidate_stratum_counts"
+            ],
+            {"protein_to_nucleic_acid": 1},
+        )
         self.assertEqual(report["materialized_observed_candidate_count"], 1)
         self.assertEqual(report["evaluated_frame_count"], 2)
         self.assertEqual(report["conceptual_candidate_frame_count"], 2)

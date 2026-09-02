@@ -246,20 +246,64 @@ def _conceptual_endpoint_candidate_count(
 ) -> int:
     """Count the implicit candidate universe without materializing its pairs."""
 
-    count = 0
+    return sum(_conceptual_endpoint_candidate_stratum_counts(
+        donors,
+        acceptors,
+        interaction_scope=interaction_scope,
+        exclude_same_residue=exclude_same_residue,
+    ).values())
+
+
+def _conceptual_endpoint_candidate_stratum_counts(
+    donors: Sequence[DonorHydrogenIdentityKey],
+    acceptors: Sequence[AcceptorIdentityKey],
+    *,
+    interaction_scope: str,
+    exclude_same_residue: bool,
+) -> Dict[str, int]:
+    """Count every implicit interaction stratum in linear endpoint time.
+
+    The count is exact but never loops over or stores the donor--acceptor
+    Cartesian product.  That keeps the scientific universe explicit and
+    auditable without recreating the million-entry candidate dictionary the
+    lazy spatial evaluator is designed to avoid.
+    """
+
+    acceptor_count_by_class: Dict[str, int] = {}
+    acceptor_count_by_class_residue: Dict[Tuple[str, Tuple[str, int, str]], int] = {}
+    acceptor_classes_by_identity: Dict[AtomIdentityKey, set[str]] = {}
+    for acceptor, acceptor_class in acceptors:
+        acceptor_count_by_class[acceptor_class] = (
+            acceptor_count_by_class.get(acceptor_class, 0) + 1
+        )
+        class_residue = (acceptor_class, acceptor[:3])
+        acceptor_count_by_class_residue[class_residue] = (
+            acceptor_count_by_class_residue.get(class_residue, 0) + 1
+        )
+        acceptor_classes_by_identity.setdefault(acceptor, set()).add(acceptor_class)
+
+    counts: Dict[str, int] = {}
     for donor, hydrogen, donor_class in donors:
-        for acceptor, acceptor_class in acceptors:
-            if donor == acceptor or hydrogen == acceptor:
-                continue
+        for acceptor_class, total in acceptor_count_by_class.items():
             if not scope_allows(donor_class, acceptor_class, interaction_scope):
                 continue
-            if (
-                exclude_same_residue
-                and donor[:3] == acceptor[:3]
-            ):
-                continue
-            count += 1
-    return count
+            eligible = total
+            if exclude_same_residue:
+                eligible -= acceptor_count_by_class_residue.get(
+                    (acceptor_class, donor[:3]), 0
+                )
+            else:
+                for identity in {donor, hydrogen}:
+                    if acceptor_class in acceptor_classes_by_identity.get(identity, set()):
+                        eligible -= 1
+            if eligible < 0:
+                raise HydrogenBondDiscoveryError(
+                    "implicit hydrogen-bond stratum count became negative"
+                )
+            if eligible:
+                stratum = f"{donor_class}_to_{acceptor_class}"
+                counts[stratum] = counts.get(stratum, 0) + eligible
+    return dict(sorted(counts.items()))
 
 
 def _automatic_endpoint_identity_intersection(
@@ -336,6 +380,11 @@ def _automatic_endpoint_identity_intersection(
         interaction_scope=str(settings["interaction_scope"]),
         exclude_same_residue=bool(settings["exclude_same_residue"]),
     )
+    conceptual_stratum_counts = _conceptual_endpoint_candidate_stratum_counts(
+        sorted(common_donors), sorted(common_acceptors),
+        interaction_scope=str(settings["interaction_scope"]),
+        exclude_same_residue=bool(settings["exclude_same_residue"]),
+    )
     if not conceptual_count:
         raise HydrogenBondDiscoveryError("common endpoint universe has no candidates")
     for report in reports:
@@ -351,6 +400,7 @@ def _automatic_endpoint_identity_intersection(
         "common_donor_hydrogen_group_count": len(common_donors),
         "common_acceptor_count": len(common_acceptors),
         "common_candidate_count": conceptual_count,
+        "common_candidate_stratum_counts": conceptual_stratum_counts,
         "materialized_precoordinate_candidate_count": 0,
         "replica_endpoint_dictionaries": reports,
         "selection_basis": (
@@ -1198,6 +1248,9 @@ def _hydrogen_bond_discovery_project_lazy_partial(
         "frame_matrix_representation": "sparse_spatial_partial_v3",
         "candidate_dictionary": candidate_dictionary,
         "conceptual_candidate_count": conceptual_count,
+        "conceptual_candidate_stratum_counts": endpoint_report[
+            "common_candidate_stratum_counts"
+        ],
         "materialized_observed_candidate_count": len(candidate_dictionary),
         "unobserved_zero_candidate_count": conceptual_count - len(candidate_dictionary),
         "evaluated_frame_count": evaluated_frames,
