@@ -480,6 +480,8 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
             (root / "variant.pdb").write_text("".join(common + [
                 "END\n",
             ]).replace(
+                "ALA A   1", "GLY A   1",
+            ).replace(
                 common[2],
                 "ATOM      3  C8   DG B   2       3.200   0.000   0.000  1.00  0.00           C\n"
                 "ATOM      4  O6   DG B   2       2.800   0.000   0.000  1.00  0.00           O\n",
@@ -553,6 +555,16 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
             project_path = root / "project.json"
             project_path.write_text(json.dumps(project), encoding="utf-8")
             report = hydrogen_bond_discovery_project(project_path)
+            variant_text = (root / "variant.pdb").read_text(encoding="ascii")
+            (root / "variant.pdb").write_text(
+                variant_text.replace("           N\n", "           O\n", 1),
+                encoding="ascii",
+            )
+            with self.assertRaisesRegex(
+                HydrogenBondDiscoveryError,
+                "common endpoint chemistry is missing or element-inconsistent",
+            ):
+                hydrogen_bond_discovery_project(project_path)
         self.assertEqual(report["candidate_count"], 1)
         self.assertEqual(
             report["candidate_harmonization"]["policy"],
@@ -576,6 +588,30 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
             {"protein_to_nucleic_acid": 1},
         )
         self.assertEqual(report["materialized_observed_candidate_count"], 1)
+        candidate = report["candidate_dictionary"][0]
+        self.assertEqual(
+            candidate["donor_identity"]["residue_name"],
+            "POSITION_HARMONIZED",
+        )
+        self.assertEqual(candidate["donor_identity"]["element"], "N")
+        self.assertEqual(candidate["hydrogen_identity"]["element"], "H")
+        self.assertEqual(candidate["acceptor_identity"]["residue_name"], "DG")
+        self.assertEqual(candidate["acceptor_identity"]["element"], "O")
+        self.assertNotIn("common_endpoint_identity_metadata", report)
+        self.assertEqual(
+            next(
+                row for row in report["atom_dictionary"]
+                if row["identity"]["atom_name"] == "O6"
+            )["residue_names_by_system"],
+            {"control": "DG", "variant": "DG"},
+        )
+        self.assertEqual(
+            next(
+                row for row in report["atom_dictionary"]
+                if row["identity"]["atom_name"] == "N"
+            )["residue_names_by_system"],
+            {"control": "ALA", "variant": "GLY"},
+        )
         self.assertEqual(report["evaluated_frame_count"], 2)
         self.assertEqual(report["conceptual_candidate_frame_count"], 2)
         self.assertEqual(
