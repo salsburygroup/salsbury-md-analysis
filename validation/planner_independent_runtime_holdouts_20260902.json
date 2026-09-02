@@ -1,0 +1,43 @@
+{
+  "holdout_schema": "salsbury-planner-runtime-holdouts-v1",
+  "technical_status": "complete",
+  "scientific_status": "runtime evidence only; scientific validity not evaluated",
+  "collection_policy": "Independent completed multi-system TOP1 comparison runs not used to fit the model. Source paths are omitted; immutable report and input hashes identify the observations.",
+  "unexpected_error_count": 0,
+  "points": [
+    {
+      "point_id": "top1-d-comparison-attempt02",
+      "module_id": "hydrogen_bond_discovery",
+      "slurm_job_id": "8298284",
+      "report_sha256": "df8b6cb5c3a7bfb65faac821e27a98edea9c9a56203dea018523cf20f98bf017",
+      "project_manifest_sha256": "926d43941da07661b5eade01b74738f037e0a6ae0ea3fd0afda34a4147398054",
+      "input_content_signature_sha256": "cb2c9756341f2e0e5cdc5a487f308202fac9bfffba9604a13bd5ec70097b63c0",
+      "contract_signature_sha256": "76ecae86c6376e1a4177ad42ce08af1fb315375afadf249139299375a0d89eaf",
+      "source_topology_atom_frame_count": 14002080000,
+      "selected_source_physical_frames": 15996,
+      "selected_work_proxy_count_per_frame": 402,
+      "observed_selected_work_units": 2663098,
+      "observed_total_cpu_seconds": 986.642056,
+      "observed_wall_seconds": 465.428759095259,
+      "instrumented_maximum_resident_memory_mib": 224.34375,
+      "stderr_nonempty": false
+    },
+    {
+      "point_id": "top1-t-comparison-attempt02",
+      "module_id": "hydrogen_bond_discovery",
+      "slurm_job_id": "8298283",
+      "report_sha256": "9c4cd89af09d1c751479a3557382eecffc1dd8be588a3096a7d9ac4e107c4fad",
+      "project_manifest_sha256": "f97d9829588646cedb7b64033104b2f699270ed97bc299b5ba0aaf1d9419d7ff",
+      "input_content_signature_sha256": "88c145d7cb65d954e1587c5b994e47252823f32005d2936ce8d9fea6f83c8b86",
+      "contract_signature_sha256": "63a900bac919f68f88621ecb0843e7d4509ee426e517aa2457a191d59bc8d94b",
+      "source_topology_atom_frame_count": 12515940000,
+      "selected_source_physical_frames": 4134,
+      "selected_work_proxy_count_per_frame": 2348,
+      "observed_selected_work_units": 8678030,
+      "observed_total_cpu_seconds": 1384.532917,
+      "observed_wall_seconds": 470.3854544380156,
+      "instrumented_maximum_resident_memory_mib": 433.91015625,
+      "stderr_nonempty": false
+    }
+  ]
+}

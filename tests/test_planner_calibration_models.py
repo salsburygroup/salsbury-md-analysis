@@ -6,6 +6,7 @@ from pathlib import Path
 from salsbury_md_analysis.planner_calibration_models import (
     PlannerCalibrationModelError,
     fit_size_length_models,
+    validate_runtime_holdouts,
     validate_size_length_models,
 )
 
@@ -78,6 +79,79 @@ class PlannerCalibrationModelTests(unittest.TestCase):
         result["models"]["ion_atmosphere"]["heldout_validation_passed"] = False
         with self.assertRaises(PlannerCalibrationModelError):
             validate_size_length_models(result)
+
+    def test_independent_runtime_holdout_uses_precoordinate_proxy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "evidence.json"
+            source.write_text(json.dumps({
+                "evidence_schema": "salsbury-planner-calibration-evidence-matrix-v1",
+                "technical_status": "complete",
+                "unexpected_error_count": 0,
+                "points": _evidence_points(),
+            }), encoding="utf-8")
+            model = fit_size_length_models(source)
+        holdout = {
+            "holdout_schema": "salsbury-planner-runtime-holdouts-v1",
+            "technical_status": "complete",
+            "unexpected_error_count": 0,
+            "content_sha256": "a" * 64,
+            "points": [{
+                "point_id": "external-hbond",
+                "module_id": "hydrogen_bond_discovery",
+                "source_topology_atom_frame_count": 4_000,
+                "selected_source_physical_frames": 20,
+                "selected_work_proxy_count_per_frame": 40,
+                "observed_selected_work_units": 1,
+                "observed_total_cpu_seconds": 10.0,
+                "stderr_nonempty": False,
+                "report_sha256": "b" * 64,
+                "project_manifest_sha256": "c" * 64,
+                "input_content_signature_sha256": "d" * 64,
+                "contract_signature_sha256": "e" * 64,
+            }],
+        }
+        accepted = validate_runtime_holdouts(model, holdout)
+        self.assertTrue(accepted["all_holdouts_passed"])
+        self.assertFalse(accepted["prediction_coordinate_data_used"])
+        self.assertFalse(
+            accepted["prediction_dense_candidate_universe_materialized"]
+        )
+        self.assertEqual(
+            accepted["points"][0]["estimated_selected_work_units"], 1600.0
+        )
+
+    def test_independent_runtime_holdout_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "evidence.json"
+            source.write_text(json.dumps({
+                "evidence_schema": "salsbury-planner-calibration-evidence-matrix-v1",
+                "technical_status": "complete",
+                "unexpected_error_count": 0,
+                "points": _evidence_points(),
+            }), encoding="utf-8")
+            model = fit_size_length_models(source)
+        holdout = {
+            "holdout_schema": "salsbury-planner-runtime-holdouts-v1",
+            "technical_status": "complete",
+            "unexpected_error_count": 0,
+            "points": [{
+                "point_id": "too-slow",
+                "module_id": "hydrogen_bond_discovery",
+                "source_topology_atom_frame_count": 4_000,
+                "selected_source_physical_frames": 20,
+                "selected_work_proxy_count_per_frame": 40,
+                "observed_total_cpu_seconds": 1_000_000.0,
+                "stderr_nonempty": False,
+                "report_sha256": "b" * 64,
+                "project_manifest_sha256": "c" * 64,
+                "input_content_signature_sha256": "d" * 64,
+                "contract_signature_sha256": "e" * 64,
+            }],
+        }
+        with self.assertRaisesRegex(
+            PlannerCalibrationModelError, "exceeded planning upper bound"
+        ):
+            validate_runtime_holdouts(model, holdout)
 
 
 if __name__ == "__main__":
