@@ -2140,6 +2140,18 @@ def _slurm_submission_preview(
             "feasible" if generated_schedule_feasible else "infeasible"
         ),
         "submission_permitted": generated_schedule_feasible,
+        "autorecovery": {
+            "enabled": bool(execution_plan.get("autorecovery", True)),
+            "maximum_task_attempts": int(
+                execution_plan.get("maximum_task_attempts", 2)
+            ),
+            "failed_task_policy": "bounded retry inside the same allocation",
+            "timeout_policy": (
+                "pre-timeout signal and bounded Slurm requeue; checkpoint-aware "
+                "modules resume compatible work"
+            ),
+            "completed_task_policy": "reuse; never resubmit",
+        },
         "dependency_waves": epoch_summaries,
         "resource_epochs": epoch_summaries,
         "resource_lanes": lane_summaries,
@@ -2177,6 +2189,7 @@ def _render_resource_bounded_submit(
     profile_path: Path,
     resource_epochs: Sequence[Mapping[str, object]],
     submission_permitted: bool,
+    autorecovery: bool = False,
 ) -> str:
     """Render one launcher with scientific dependencies and resource epochs."""
 
@@ -2187,6 +2200,7 @@ def _render_resource_bounded_submit(
         'ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)',
         _profile_preamble(profile, profile_path),
         f"SUBMIT_COMMAND={submit_command}",
+        'RECOVERY_RUNNER="$ROOT/run-task-with-recovery.sh"',
         'PREVIEW="$ROOT/slurm-submission-preview.json"',
         'case "${1:-}" in',
         '  --preview)',
@@ -2282,6 +2296,8 @@ def _render_resource_bounded_submit(
             "--parsable",
             f"--nodes={int(item.get('node_count', 1))}",
         ]
+        if autorecovery:
+            options.extend(["--requeue", "--signal=B:USR1@60"])
         if item.get("distributed_replica_execution"):
             options.extend([
                 f"--ntasks={int(item['distributed_worker_count'])}",
@@ -2366,7 +2382,7 @@ def _render_resource_bounded_submit(
         script = shlex.quote(str(item["script"]))
         lines.extend([
             f'{variable}=$("$SUBMIT_COMMAND" {command_options} '
-            f'"$ROOT"/{script})',
+            f'"$RECOVERY_RUNNER" "$ROOT"/{script})',
             f'{variable}="${{{variable}%%;*}}"',
         ])
         if lane_index >= 0:
@@ -2388,6 +2404,71 @@ def _render_resource_bounded_submit(
     else:
         lines.append('printf "No jobs were generated.\\n"')
     return "\n".join(lines) + "\n"
+
+
+def _render_task_recovery_runner(
+    *, autorecovery: bool, maximum_task_attempts: int,
+) -> str:
+    """Render a bounded task wrapper shared by all generated Slurm jobs."""
+
+    enabled = 1 if autorecovery else 0
+    return f'''#!/usr/bin/env bash
+set -uo pipefail
+TASK="${{1:?worker script is required}}"
+AUTORECOVERY_ENABLED={enabled}
+MAXIMUM_TASK_ATTEMPTS={maximum_task_attempts}
+RESTART_COUNT="${{SLURM_RESTART_COUNT:-0}}"
+ROOT=$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)
+STATUS_DIR="$ROOT/autorecovery-status"
+mkdir -p "$STATUS_DIR"
+JOB_TOKEN="${{SLURM_JOB_ID:-local}}"
+if [[ -n "${{SLURM_ARRAY_TASK_ID:-}}" ]]; then
+  JOB_TOKEN="$JOB_TOKEN-array-${{SLURM_ARRAY_TASK_ID}}"
+fi
+STATUS_FILE="$STATUS_DIR/$JOB_TOKEN.jsonl"
+CURRENT_ATTEMPT=0
+record_status() {{
+  local event="$1"
+  local exit_code="$2"
+  local attempt="$3"
+  printf '{{"event":"%s","task":"%s","attempt":%s,"restart_count":%s,"exit_code":%s}}\n' \
+    "$event" "${{TASK##*/}}" "$attempt" "$RESTART_COUNT" "$exit_code" >> "$STATUS_FILE"
+}}
+handle_timeout_signal() {{
+  trap - USR1 TERM
+  local attempts_used=$((RESTART_COUNT + CURRENT_ATTEMPT))
+  record_status timeout_signal 124 "$attempts_used"
+  if [[ "$AUTORECOVERY_ENABLED" -eq 1 && "$attempts_used" -lt "$MAXIMUM_TASK_ATTEMPTS" ]]; then
+    if command -v scontrol >/dev/null 2>&1 && [[ -n "${{SLURM_JOB_ID:-}}" ]]; then
+      record_status requeue_requested 124 "$attempts_used"
+      scontrol requeue "$SLURM_JOB_ID"
+      exit 0
+    fi
+  fi
+  exit 124
+}}
+trap handle_timeout_signal USR1 TERM
+remaining=$((MAXIMUM_TASK_ATTEMPTS - RESTART_COUNT))
+if [[ "$AUTORECOVERY_ENABLED" -ne 1 ]]; then
+  remaining=1
+fi
+if [[ "$remaining" -lt 1 ]]; then
+  remaining=1
+fi
+for ((attempt=1; attempt<=remaining; attempt++)); do
+  CURRENT_ATTEMPT="$attempt"
+  global_attempt=$((RESTART_COUNT + attempt))
+  record_status started 0 "$global_attempt"
+  bash "$TASK"
+  exit_code=$?
+  if [[ "$exit_code" -eq 0 ]]; then
+    record_status complete 0 "$global_attempt"
+    exit 0
+  fi
+  record_status failed "$exit_code" "$global_attempt"
+done
+exit "$exit_code"
+'''
 
 
 def apply_slurm_profile(
@@ -2532,6 +2613,7 @@ def apply_slurm_profile(
                 profile_path,
                 resource_epochs,
                 bool(submission_preview["submission_permitted"]),
+                bool(execution_plan.get("autorecovery", True)),
             ),
             encoding="utf-8",
         )
@@ -2578,6 +2660,13 @@ def apply_slurm_profile(
         "canonical_submit_script": (
             "submit.sh" if canonical_submit.is_file() else None
         ),
+        "autorecovery": {
+            "enabled": bool(execution_plan.get("autorecovery", True)),
+            "maximum_task_attempts": int(
+                execution_plan.get("maximum_task_attempts", 2)
+            ),
+            "task_runner": "run-task-with-recovery.sh",
+        },
         "aggregate_resource_contract": (
             "the complete task DAG is guarded by global and per-node CPU and "
             "padded-memory tokens; tasks "
@@ -3061,11 +3150,13 @@ def build_local_execution_plan(
             for task in phase["tasks"]
         ]
     plan: Dict[str, object] = {
-        "local_execution_plan_schema": "salsbury-local-execution-plan-v5",
+        "local_execution_plan_schema": "salsbury-local-execution-plan-v6",
         "dependency_model": "task_dag_v1",
         "maximum_parallel_cpus": maximum_cpus,
         "maximum_campaign_wall_hours": float(execution["maximum_hours_per_cpu"]),
         "maximum_parallel_memory_gib": float(execution["maximum_memory_gib"]),
+        "autorecovery": bool(execution.get("autorecovery", True)),
+        "maximum_task_attempts": int(execution.get("maximum_task_attempts", 2)),
         "resource_policy": policy,
         "node_policy": dict(node_policy or {}),
         "phases": phases,
@@ -3075,6 +3166,14 @@ def build_local_execution_plan(
             "completion-only report collation, and other failure-tolerant ordering; "
             "resource waves may serialize otherwise independent tasks without "
             "creating scientific dependencies"
+        ),
+        "autorecovery_policy": (
+            "Retry only a failed or timed-out task; keep completed outputs, "
+            "checkpoint identities, scientific dependencies, and unrelated "
+            "tasks unchanged. A later attempt receives twice the prior local "
+            "wall allowance but remains inside the campaign deadline."
+            if bool(execution.get("autorecovery", True)) else
+            "Disabled explicitly; each task receives one attempt."
         ),
     }
     _fit_walltime_requests_to_campaign(plan)
@@ -3172,6 +3271,15 @@ def prepare_execution_artifacts(
             "a task succeeds only with exit code zero; skip only tasks whose own "
             "depends_on_task_ids failed or timed out, and continue unrelated tasks"
         ),
+        "autorecovery": {
+            "enabled": bool(execution.get("autorecovery", True)),
+            "maximum_task_attempts": int(
+                execution.get("maximum_task_attempts", 2)
+            ),
+            "retry_scope": "failed_or_timed_out_task_only",
+            "completed_tasks_are_never_rerun": True,
+            "scientific_dependencies_remain_success_required": True,
+        },
         "environment_contract": {
             "compatibility_note": (
                 "Worker scripts use Slurm-compatible environment names even when "
@@ -3228,10 +3336,19 @@ exec "$LAUNCHER" "$CONTRACT"
     (root / "run-custom.sh").write_text(custom_launcher, encoding="utf-8")
     os.chmod(root / "run-custom.sh", 0o755)
 
+    recovery_runner = _render_task_recovery_runner(
+        autorecovery=bool(execution.get("autorecovery", True)),
+        maximum_task_attempts=int(execution.get("maximum_task_attempts", 2)),
+    )
+    (root / "run-task-with-recovery.sh").write_text(
+        recovery_runner, encoding="utf-8"
+    )
+    os.chmod(root / "run-task-with-recovery.sh", 0o755)
+
     profile_id = None
     generated = [
         "local-execution-plan.json", "launcher-contract.json",
-        "run-local.sh", "run-custom.sh",
+        "run-local.sh", "run-custom.sh", "run-task-with-recovery.sh",
     ]
     if adapter == "slurm":
         assert profile is not None
@@ -3259,6 +3376,20 @@ exec "$LAUNCHER" "$CONTRACT"
         "custom_launcher": "run-custom.sh",
         "shared_resource_plan": "local-execution-plan.json",
         "external_launcher_contract": "launcher-contract.json",
+        "autorecovery": {
+            "enabled": bool(execution.get("autorecovery", True)),
+            "maximum_task_attempts": int(
+                execution.get("maximum_task_attempts", 2)
+            ),
+            "local_policy": (
+                "failed or timed-out tasks only; later attempts receive a "
+                "larger wall allowance within the unchanged campaign deadline"
+            ),
+            "slurm_policy": (
+                "failed tasks retry inside their allocation; a pre-timeout "
+                "signal requeues checkpoint-capable work within the attempt cap"
+            ),
+        },
         "scheduler_resource_requests": (
             "scheduler-resource-requests.json" if adapter == "slurm" else None
         ),
@@ -3337,6 +3468,8 @@ def _run_local_task(
     attempt_id: str,
     deadline: float,
     slots: _ResourcePool,
+    autorecovery: bool,
+    maximum_task_attempts: int,
 ) -> Dict[str, object]:
     cpu_slots = int(task["cpu_slots"])
     memory_gib = float(task.get("requested_memory_gib", 1.0))
@@ -3365,8 +3498,6 @@ def _run_local_task(
             raise ExecutionAdapterError(f"local worker is missing or outside root: {script}")
         suffix = "single" if task.get("array_task_id") is None else str(task["array_task_id"])
         stem = f"{attempt_id}-{phase_id}-{task_index}-{suffix}"
-        stdout_path = root / "logs" / f"{stem}.out"
-        stderr_path = root / "logs" / f"{stem}.err"
         env = os.environ.copy()
         env.update({
             "SLURM_JOB_ID": stem,
@@ -3378,44 +3509,83 @@ def _run_local_task(
         })
         if task.get("array_task_id") is not None:
             env["SLURM_ARRAY_TASK_ID"] = str(task["array_task_id"])
-        start = time.monotonic()
-        timeout_seconds = min(deadline - start, wall_minutes * 60.0)
-        if timeout_seconds <= 0.0:
-            return {
-                **identity,
-                "script": task["script"], "array_task_id": task.get("array_task_id"),
-                "cpu_slots": cpu_slots, "requested_memory_gib": memory_gib,
-                "requested_wall_minutes": wall_minutes,
-                "status": "timed_out", "exit_code": None,
-                "wall_seconds": 0.0,
-            }
+        task_start = time.monotonic()
+        attempts = []
+        exit_code = None
         timed_out = False
-        with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
-            process = subprocess.Popen(
-                ["bash", str(script)], cwd=root, env=env,
-                stdout=stdout, stderr=stderr, start_new_session=True,
+        attempt_limit = maximum_task_attempts if autorecovery else 1
+        for attempt_number in range(1, attempt_limit + 1):
+            attempt_start = time.monotonic()
+            attempt_wall_minutes = wall_minutes * (2 ** (attempt_number - 1))
+            timeout_seconds = min(
+                deadline - attempt_start, attempt_wall_minutes * 60.0
             )
-            try:
-                exit_code = process.wait(timeout=timeout_seconds)
-            except subprocess.TimeoutExpired:
+            stdout_path = root / "logs" / f"{stem}-attempt-{attempt_number:02d}.out"
+            stderr_path = root / "logs" / f"{stem}-attempt-{attempt_number:02d}.err"
+            if timeout_seconds <= 0.0:
                 timed_out = True
-                os.killpg(process.pid, signal.SIGTERM)
+                attempts.append({
+                    "attempt_number": attempt_number,
+                    "status": "timed_out",
+                    "exit_code": None,
+                    "wall_seconds": 0.0,
+                    "allowed_wall_minutes": 0.0,
+                    "stdout": str(stdout_path.relative_to(root)),
+                    "stderr": str(stderr_path.relative_to(root)),
+                })
+                break
+            timed_out = False
+            with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
+                process = subprocess.Popen(
+                    ["bash", str(script)], cwd=root, env=env,
+                    stdout=stdout, stderr=stderr, start_new_session=True,
+                )
                 try:
-                    exit_code = process.wait(timeout=10.0)
+                    exit_code = process.wait(timeout=timeout_seconds)
                 except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    exit_code = process.wait()
+                    timed_out = True
+                    os.killpg(process.pid, signal.SIGTERM)
+                    try:
+                        exit_code = process.wait(timeout=10.0)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        exit_code = process.wait()
+            attempt_status = (
+                "timed_out" if timed_out else
+                "complete" if exit_code == 0 else "failed"
+            )
+            attempts.append({
+                "attempt_number": attempt_number,
+                "status": attempt_status,
+                "exit_code": exit_code,
+                "wall_seconds": time.monotonic() - attempt_start,
+                "allowed_wall_minutes": timeout_seconds / 60.0,
+                "stdout": str(stdout_path.relative_to(root)),
+                "stderr": str(stderr_path.relative_to(root)),
+                "stdout_size_bytes": stdout_path.stat().st_size,
+                "stderr_size_bytes": stderr_path.stat().st_size,
+            })
+            if exit_code == 0 and not timed_out:
+                break
+        recovered = len(attempts) > 1 and attempts[-1]["status"] == "complete"
+        final_status = (
+            "recovered_complete" if recovered else str(attempts[-1]["status"])
+        )
         return {
             **identity,
             "script": task["script"], "array_task_id": task.get("array_task_id"),
             "cpu_slots": cpu_slots, "requested_memory_gib": memory_gib,
             "requested_wall_minutes": wall_minutes,
             "planner_task_ids": task.get("planner_task_ids", []),
-            "status": "timed_out" if timed_out else ("complete" if exit_code == 0 else "failed"),
+            "status": final_status,
             "exit_code": exit_code,
-            "wall_seconds": time.monotonic() - start,
-            "stdout": str(stdout_path.relative_to(root)),
-            "stderr": str(stderr_path.relative_to(root)),
+            "wall_seconds": time.monotonic() - task_start,
+            "autorecovery_enabled": autorecovery,
+            "maximum_task_attempts": maximum_task_attempts,
+            "attempt_count": len(attempts),
+            "attempts": attempts,
+            "stdout": attempts[-1]["stdout"],
+            "stderr": attempts[-1]["stderr"],
         }
     finally:
         slots.release(cpu_slots, memory_gib)
@@ -3433,12 +3603,15 @@ def run_local_workflow(root: Path) -> Dict[str, object]:
         "salsbury-local-execution-plan-v3",
         "salsbury-local-execution-plan-v4",
         "salsbury-local-execution-plan-v5",
+        "salsbury-local-execution-plan-v6",
     }
     if not isinstance(plan, dict) or plan.get("local_execution_plan_schema") not in accepted_schemas:
         raise ExecutionAdapterError("local execution plan is invalid")
     maximum_cpus = int(plan["maximum_parallel_cpus"])
     maximum_memory_gib = float(plan.get("maximum_parallel_memory_gib", 1.0e12))
     campaign_seconds = float(plan["maximum_campaign_wall_hours"]) * 3600.0
+    autorecovery = bool(plan.get("autorecovery", False))
+    maximum_task_attempts = int(plan.get("maximum_task_attempts", 1))
     if maximum_cpus <= 0 or maximum_memory_gib <= 0.0 or campaign_seconds <= 0.0:
         raise ExecutionAdapterError("local execution limits must be positive")
     (resolved / "logs").mkdir(exist_ok=True)
@@ -3485,7 +3658,7 @@ def run_local_workflow(root: Path) -> Dict[str, object]:
             failed_requirements = [
                 str(required) for required in task.get("depends_on_task_ids", [])
                 if task_statuses.get(str(required)) not in {
-                    "complete", "reused_complete"
+                    "complete", "recovered_complete", "reused_complete"
                 }
             ] if dependency_dag else []
             if failed_requirements:
@@ -3509,7 +3682,8 @@ def run_local_workflow(root: Path) -> Dict[str, object]:
             futures = {
                 executor.submit(
                     _run_local_task, resolved, task, phase_id, index,
-                    attempt_id, deadline, slots,
+                    attempt_id, deadline, slots, autorecovery,
+                    maximum_task_attempts,
                 ): index
                 for index, task in runnable
             }
@@ -3541,7 +3715,9 @@ def run_local_workflow(root: Path) -> Dict[str, object]:
                     })
         results.sort(key=lambda row: (str(row["script"]), str(row.get("array_task_id"))))
         phase_status = (
-            "complete" if all(row["status"] in {"complete", "reused_complete"} for row in results)
+            "complete" if all(row["status"] in {
+                "complete", "recovered_complete", "reused_complete",
+            } for row in results)
             else "failed"
         )
         phase_reports.append({
@@ -3557,7 +3733,7 @@ def run_local_workflow(root: Path) -> Dict[str, object]:
             if not dependency_dag:
                 break
     report = {
-        "local_execution_status_schema": "salsbury-local-execution-status-v1",
+        "local_execution_status_schema": "salsbury-local-execution-status-v2",
         "technical_status": technical_status,
         "scientific_status": "not evaluated",
         "dependency_model": plan.get("dependency_model", "legacy_phase_chain"),
@@ -3565,6 +3741,20 @@ def run_local_workflow(root: Path) -> Dict[str, object]:
         "analysis_root": str(resolved),
         "maximum_parallel_cpus": maximum_cpus,
         "maximum_parallel_memory_gib": maximum_memory_gib,
+        "autorecovery": {
+            "enabled": autorecovery,
+            "maximum_task_attempts": maximum_task_attempts,
+            "recovered_task_count": sum(
+                row.get("status") == "recovered_complete"
+                for phase in phase_reports for row in phase["tasks"]
+            ),
+            "terminal_failure_count": sum(
+                row.get("status") in {
+                    "failed", "timed_out", "skipped_dependency",
+                }
+                for phase in phase_reports for row in phase["tasks"]
+            ),
+        },
         "phase_reports": phase_reports,
         "remaining_phases_not_run": [
             str(phase["phase_id"])

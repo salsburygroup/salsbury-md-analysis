@@ -375,6 +375,8 @@ def default_analysis_config(
             "coordinate_cache_full_scan_fraction": 1.0,
             "overall_stride_candidates": [1, 2, 3, 4, 5, 10, 20, 100],
             "resource_calibration_catalog": None,
+            "autorecovery": True,
+            "maximum_task_attempts": 2,
         },
     }
 
@@ -818,6 +820,7 @@ def load_analysis_config(
         "coordinate_cache_materialization",
         "coordinate_cache_full_scan_fraction", "overall_stride_candidates",
         "resource_calibration_catalog", "maximum_total_cpu_hours",
+        "autorecovery", "maximum_task_attempts",
     }
     if not isinstance(raw_execution, dict) or set(raw_execution).difference(allowed_execution):
         raise AnalysisConfigError("execution configuration is invalid")
@@ -884,6 +887,17 @@ def load_analysis_config(
     if not isinstance(execution["fail_if_minimum_coverage_unaffordable"], bool):
         raise AnalysisConfigError(
             "execution.fail_if_minimum_coverage_unaffordable must be boolean"
+        )
+    if not isinstance(execution["autorecovery"], bool):
+        raise AnalysisConfigError("execution.autorecovery must be boolean")
+    maximum_task_attempts = execution["maximum_task_attempts"]
+    if (
+        isinstance(maximum_task_attempts, bool)
+        or not isinstance(maximum_task_attempts, int)
+        or not 1 <= maximum_task_attempts <= 5
+    ):
+        raise AnalysisConfigError(
+            "execution.maximum_task_attempts must be an integer from 1 through 5"
         )
     if execution["submission_adapter"] not in {
         "unspecified", "local", "slurm", "custom"
