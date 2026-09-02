@@ -2129,6 +2129,32 @@ def _apply_direct_project_sampling(
                 definition["projection_frame_selection"] = deepcopy(selection)
             if module_id == "secondary_structure":
                 definition["maximum_frames"] = int(row["selected_frame_count"])
+            if module_id == "hydrogen_bond_discovery":
+                dimensions = sampling_plan.get("dimensions")
+                candidate_plan = (
+                    dimensions.get("hydrogen_bond_candidate_planning")
+                    if isinstance(dimensions, Mapping) else None
+                )
+                candidate_count = (
+                    candidate_plan.get("common_candidate_count")
+                    if isinstance(candidate_plan, Mapping)
+                    and candidate_plan.get("status") == "complete" else None
+                )
+                selected_frame_count = row.get("selected_frame_count")
+                if (
+                    isinstance(candidate_count, int)
+                    and not isinstance(candidate_count, bool)
+                    and candidate_count > 0
+                    and isinstance(selected_frame_count, int)
+                    and not isinstance(selected_frame_count, bool)
+                    and selected_frame_count > 0
+                ):
+                    # Keep the execution gate aligned with the final global
+                    # frame allocation, which may differ from the initial
+                    # per-module proposal.
+                    definition["maximum_feature_observations"] = (
+                        candidate_count * selected_frame_count
+                    )
     dccm_row = rows.get("dccm")
     allosteric = definitions.get("allosteric_pathways")
     if isinstance(dccm_row, dict) and isinstance(allosteric, dict):
