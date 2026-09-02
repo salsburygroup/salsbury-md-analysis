@@ -72,7 +72,16 @@ def collect_matrix(matrix_path: Path) -> dict[str, object]:
             "label": point["label"],
             "module_id": report["module_id"],
             "topology_atom_count": point["topology_atom_count"],
+            "source_frame_count": point["source_frame_count"],
+            "requested_maximum_frames_per_replica": point[
+                "requested_maximum_frames_per_replica"
+            ],
+            "resolved_integer_stride": point["resolved_integer_stride"],
             "selected_source_physical_frames": frames,
+            "topology_atom_source_frame_count": (
+                int(point["topology_atom_count"])
+                * int(point["source_frame_count"])
+            ),
             "topology_atom_frame_count": int(point["topology_atom_count"]) * frames,
             "total_cpu_seconds": resources["total_cpu_seconds"],
             "wall_seconds": resources["wall_seconds"],
