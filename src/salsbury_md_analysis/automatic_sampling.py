@@ -20,7 +20,7 @@ from .frame_sampling import (
 )
 from .hydrogen_bond_discovery import (
     HydrogenBondDiscoveryError,
-    _automatic_endpoint_identity_intersection,
+    _automatic_endpoint_identity_inventory,
 )
 from .manifests import load_json, resolve_manifest_path, validate_system
 from .memory_policy import (
@@ -1066,20 +1066,22 @@ def inspect_sampling_dimensions(
 def _hydrogen_bond_candidate_dimensions(
     system_manifest: Mapping[str, object], system_path: Path,
 ) -> Dict[str, object]:
-    """Enumerate the default automatic common candidate universe once.
+    """Count complete per-system endpoint universes without materializing pairs.
 
     This is an outcome-independent topology/connectivity calculation. It does
     not read trajectory coordinates or use hydrogen-bond occupancies.
     """
 
     try:
-        donors, acceptors, report = _automatic_endpoint_identity_intersection(
+        donors_by_system, acceptors_by_system, report = (
+            _automatic_endpoint_identity_inventory(
             system_manifest,
             Path(system_path).expanduser().resolve(strict=False),
             {
                 "interaction_scope": "all_solute",
                 "exclude_same_residue": True,
             },
+            )
         )
     except (HydrogenBondDiscoveryError, OSError, ValueError) as exc:
         return {
@@ -1095,13 +1097,34 @@ def _hydrogen_bond_candidate_dimensions(
         "chemistry_policy": "automatic_topology_templates_v1",
         "interaction_scope": "all_solute",
         "exclude_same_residue": True,
-        "candidate_harmonization": "intersection_by_endpoint_identity_lazy_v3",
-        "common_candidate_count": int(report["common_candidate_count"]),
+        "candidate_harmonization": "per_system_endpoint_union_lazy_v3",
+        "common_candidate_count": int(report["union_candidate_count"]),
         "common_candidate_stratum_counts": report[
-            "common_candidate_stratum_counts"
+            "union_candidate_stratum_counts"
         ],
-        "common_donor_hydrogen_group_count": len(donors),
-        "common_acceptor_count": len(acceptors),
+        "union_candidate_count": int(report["union_candidate_count"]),
+        "union_candidate_stratum_counts": report[
+            "union_candidate_stratum_counts"
+        ],
+        "system_candidate_counts": report["system_candidate_counts"],
+        "system_candidate_stratum_counts": report[
+            "system_candidate_stratum_counts"
+        ],
+        "total_candidate_count_across_replicas": int(
+            report["total_candidate_count_across_replicas"]
+        ),
+        "maximum_candidate_count_per_replica": int(
+            report["maximum_candidate_count_per_replica"]
+        ),
+        "mean_candidate_count_per_replica": float(
+            report["mean_candidate_count_per_replica"]
+        ),
+        "maximum_donor_hydrogen_group_count_per_system": max(
+            len(value) for value in donors_by_system.values()
+        ),
+        "maximum_acceptor_count_per_system": max(
+            len(value) for value in acceptors_by_system.values()
+        ),
         "materialized_precoordinate_candidate_count": 0,
         "replica_dictionaries": report["replica_endpoint_dictionaries"],
         "selection_basis": report["selection_basis"],

@@ -7,6 +7,7 @@ from salsbury_md_analysis.atom_mapping import AtomRecord
 from salsbury_md_analysis.hydrogen_bond_discovery import (
     HydrogenBondDiscoveryError,
     _chemical_position_key,
+    _conceptual_endpoint_candidate_count,
     _conceptual_endpoint_candidate_stratum_counts,
     discover_automatic_candidate_bonds,
     discover_candidate_bonds,
@@ -15,7 +16,11 @@ from salsbury_md_analysis.hydrogen_bond_discovery import (
 from salsbury_md_analysis.hydrogen_bond_comparison import (
     compare_hydrogen_bond_reports_file,
 )
-from salsbury_md_analysis.hydrogen_bond_chemistry import infer_atom_chemical_roles
+from salsbury_md_analysis.hydrogen_bond_chemistry import (
+    infer_atom_chemical_roles,
+    scope_allows,
+)
+from salsbury_md_analysis.hydrogen_bonds import hydrogen_bond_present
 from salsbury_md_analysis.hydrogen_bond_sparse import (
     CompiledSparseHydrogenBondEvaluator,
     LazySpatialHydrogenBondEvaluator,
@@ -244,6 +249,169 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
             report["present_events"][0]["interaction_stratum"],
             "protein_to_protein",
         )
+
+    def test_lazy_spatial_matches_exact_scalar_mixed_chemistry_reference(self):
+        def identity(chain, residue, atom_name):
+            return (chain, residue, "", atom_name, "")
+
+        donor_rows = [
+            {
+                "donor_atom_index": 0, "hydrogen_atom_index": 1,
+                "donor_identity_key": identity("P", 1, "N"),
+                "hydrogen_identity_key": identity("P", 1, "H"),
+                "entity_class": "protein", "residue_key": ("P", 1, ""),
+            },
+            {
+                "donor_atom_index": 2, "hydrogen_atom_index": 3,
+                "donor_identity_key": identity("D", 2, "N6"),
+                "hydrogen_identity_key": identity("D", 2, "H61"),
+                "entity_class": "nucleic_acid", "residue_key": ("D", 2, ""),
+            },
+            {
+                "donor_atom_index": 4, "hydrogen_atom_index": 5,
+                "donor_identity_key": identity("L", 3, "N1"),
+                "hydrogen_identity_key": identity("L", 3, "H1"),
+                "entity_class": "ligand", "residue_key": ("L", 3, ""),
+            },
+        ]
+        acceptors = [
+            {
+                "acceptor_atom_index": 6,
+                "acceptor_identity_key": identity("P", 4, "O"),
+                "entity_class": "protein", "residue_key": ("P", 4, ""),
+            },
+            {
+                "acceptor_atom_index": 7,
+                "acceptor_identity_key": identity("D", 5, "O6"),
+                "entity_class": "nucleic_acid", "residue_key": ("D", 5, ""),
+            },
+            {
+                "acceptor_atom_index": 8,
+                "acceptor_identity_key": identity("D", 6, "N7"),
+                "entity_class": "nucleic_acid", "residue_key": ("D", 6, ""),
+            },
+            {
+                "acceptor_atom_index": 9,
+                "acceptor_identity_key": identity("P", 7, "OD1"),
+                "entity_class": "protein", "residue_key": ("P", 7, ""),
+            },
+            {
+                "acceptor_atom_index": 10,
+                "acceptor_identity_key": identity("L", 8, "O1"),
+                "entity_class": "ligand", "residue_key": ("L", 8, ""),
+            },
+            {
+                "acceptor_atom_index": 11,
+                "acceptor_identity_key": identity("P", 1, "O"),
+                "entity_class": "protein", "residue_key": ("P", 1, ""),
+            },
+        ]
+        coordinates = [
+            (9.5, 0.0, 0.0), (0.5, 0.0, 0.0),
+            (9.5, 4.0, 0.0), (0.5, 4.0, 0.0),
+            (9.5, 8.0, 0.0), (0.5, 8.0, 0.0),
+            (2.4, 0.0, 0.0), (2.4, 4.0, 0.0),
+            (2.4, 0.0, 0.0), (2.9, 8.0, 0.0),
+            (5.0, 5.0, 5.0), (2.4, 0.0, 0.0),
+        ]
+        cell = ((10.0, 0.0, 0.0), (0.0, 10.0, 0.0), (0.0, 0.0, 10.0))
+        cutoffs = [
+            {
+                "cutoff_id": "primary",
+                "maximum_donor_acceptor_distance_angstrom": 3.0,
+                "minimum_donor_hydrogen_acceptor_angle_degrees": 150.0,
+            },
+            {
+                "cutoff_id": "sensitivity",
+                "maximum_donor_acceptor_distance_angstrom": 3.5,
+                "minimum_donor_hydrogen_acceptor_angle_degrees": 120.0,
+            },
+        ]
+        optimized = LazySpatialHydrogenBondEvaluator(
+            donor_rows, acceptors, cutoffs, "all_solute", True, 100,
+        ).evaluate(coordinates, cell=cell)
+
+        scalar = []
+        for donor in donor_rows:
+            for acceptor in acceptors:
+                if not scope_allows(
+                    donor["entity_class"], acceptor["entity_class"], "all_solute"
+                ):
+                    continue
+                if donor["residue_key"] == acceptor["residue_key"]:
+                    continue
+                matched = []
+                distance = angle = None
+                for cutoff in cutoffs:
+                    present, distance, angle = hydrogen_bond_present(
+                        coordinates[donor["donor_atom_index"]],
+                        coordinates[donor["hydrogen_atom_index"]],
+                        coordinates[acceptor["acceptor_atom_index"]],
+                        cutoff["maximum_donor_acceptor_distance_angstrom"],
+                        cutoff["minimum_donor_hydrogen_acceptor_angle_degrees"],
+                        cell,
+                    )
+                    if present:
+                        matched.append(cutoff["cutoff_id"])
+                if matched:
+                    scalar.append({
+                        "donor_identity_key": donor["donor_identity_key"],
+                        "hydrogen_identity_key": donor["hydrogen_identity_key"],
+                        "acceptor_identity_key": acceptor["acceptor_identity_key"],
+                        "interaction_stratum": (
+                            f"{donor['entity_class']}_to_{acceptor['entity_class']}"
+                        ),
+                        "donor_acceptor_distance_angstrom": distance,
+                        "donor_hydrogen_acceptor_angle_degrees": angle,
+                        "present_cutoff_ids": matched,
+                    })
+        scalar.sort(key=lambda row: (
+            row["donor_identity_key"],
+            row["hydrogen_identity_key"],
+            row["acceptor_identity_key"],
+        ))
+        self.assertEqual(len(optimized["present_events"]), len(scalar))
+        for actual, expected in zip(optimized["present_events"], scalar):
+            for key in (
+                "donor_identity_key", "hydrogen_identity_key",
+                "acceptor_identity_key", "interaction_stratum",
+                "present_cutoff_ids",
+            ):
+                self.assertEqual(actual[key], expected[key])
+            self.assertAlmostEqual(
+                actual["donor_acceptor_distance_angstrom"],
+                expected["donor_acceptor_distance_angstrom"],
+                places=12,
+            )
+            self.assertAlmostEqual(
+                actual["donor_hydrogen_acceptor_angle_degrees"],
+                expected["donor_hydrogen_acceptor_angle_degrees"],
+                places=12,
+            )
+        strata = {row["interaction_stratum"] for row in scalar}
+        self.assertTrue({
+            "protein_to_protein",
+            "protein_to_nucleic_acid",
+            "nucleic_acid_to_nucleic_acid",
+            "ligand_to_protein",
+        }.issubset(strata))
+        conceptual = _conceptual_endpoint_candidate_count(
+            [
+                (
+                    donor["donor_identity_key"],
+                    donor["hydrogen_identity_key"],
+                    donor["entity_class"],
+                )
+                for donor in donor_rows
+            ],
+            [
+                (acceptor["acceptor_identity_key"], acceptor["entity_class"])
+                for acceptor in acceptors
+            ],
+            interaction_scope="all_solute",
+            exclude_same_residue=True,
+        )
+        self.assertGreater(conceptual, len(scalar))
 
     def test_standard_templates_and_generic_ligands_are_auditable(self):
         atoms = [
@@ -568,30 +736,49 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
                 "common endpoint chemistry is missing or element-inconsistent",
             ):
                 hydrogen_bond_discovery_project(project_path)
-        self.assertEqual(report["candidate_count"], 1)
+        self.assertEqual(report["candidate_count"], 2)
         self.assertEqual(
             report["candidate_harmonization"]["policy"],
-            "intersection_by_endpoint_identity_lazy_v3",
+            "per_system_endpoint_union_lazy_v3",
         )
-        self.assertIn(":O6:", report["candidate_dictionary"][0]["bond_id"])
+        o6_candidate = next(
+            row for row in report["candidate_dictionary"]
+            if row["acceptor_identity"]["atom_name"] == "O6"
+        )
+        self.assertEqual(
+            o6_candidate["chemically_present_in_systems"],
+            ["control", "variant"],
+        )
         self.assertEqual(
             report["candidate_harmonization"]
             ["materialized_precoordinate_candidate_count"],
             0,
         )
-        self.assertEqual(report["conceptual_candidate_count"], 1)
+        self.assertEqual(report["conceptual_candidate_count"], 2)
+        self.assertEqual(
+            report["candidate_harmonization"]["system_candidate_counts"],
+            {"control": 2, "variant": 1},
+        )
         self.assertEqual(
             report["conceptual_candidate_stratum_counts"],
-            {"protein_to_nucleic_acid": 1},
+            {"protein_to_nucleic_acid": 2},
         )
         self.assertEqual(
             report["candidate_harmonization"][
-                "common_candidate_stratum_counts"
+                "union_candidate_stratum_counts"
             ],
-            {"protein_to_nucleic_acid": 1},
+            {"protein_to_nucleic_acid": 2},
         )
-        self.assertEqual(report["materialized_observed_candidate_count"], 1)
-        candidate = report["candidate_dictionary"][0]
+        self.assertEqual(report["materialized_observed_candidate_count"], 2)
+        self.assertEqual(
+            [row["conceptual_candidate_count"] for row in report["system_feature_spaces"]],
+            [2, 1],
+        )
+        self.assertEqual(
+            [row["candidate_count"] for row in report["system_feature_spaces"]],
+            [2, 1],
+        )
+        candidate = o6_candidate
         self.assertEqual(
             candidate["donor_identity"]["residue_name"],
             "POSITION_HARMONIZED",
@@ -616,7 +803,7 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
             {"control": "ALA", "variant": "GLY"},
         )
         self.assertEqual(report["evaluated_frame_count"], 2)
-        self.assertEqual(report["conceptual_candidate_frame_count"], 2)
+        self.assertEqual(report["conceptual_candidate_frame_count"], 3)
         self.assertEqual(
             report["geometry_contract"]["coordinate_reconstruction"],
             "none_selected_frames_evaluated_raw_wrapped",
@@ -630,7 +817,7 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
             "raw_wrapped_frame_with_exact_minimum_image_vectors_v1",
         )
         self.assertEqual(
-            [row["candidate_count"] for row in report["frame_bond_matrix"]], [1, 1]
+            [row["candidate_count"] for row in report["frame_bond_matrix"]], [2, 2]
         )
         self.assertEqual(report["error_count"], 0)
         with tempfile.TemporaryDirectory() as comparison_temporary:
@@ -659,6 +846,17 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
             )
         self.assertEqual(comparison["technical_status"], "complete")
         self.assertEqual(comparison["error_count"], 0)
+        n7 = next(
+            row for row in comparison["group_comparisons"]
+            if row["acceptor_identity"]["atom_name"] == "N7"
+        )
+        self.assertEqual(
+            n7["condition_feature_status"],
+            {
+                "control": "chemically_present_never_observed",
+                "variant": "chemically_absent",
+            },
+        )
 
     def test_automatic_project_has_default_cutoffs_and_sensitivity_grid(self):
         with tempfile.TemporaryDirectory() as temporary:

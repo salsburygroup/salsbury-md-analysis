@@ -1661,6 +1661,41 @@ def _apply_direct_project_sampling(
                     and candidate_plan.get("status") == "complete" else None
                 )
                 selected_frame_count = row.get("selected_frame_count")
+                replica_rows = (
+                    candidate_plan.get("replica_dictionaries")
+                    if isinstance(candidate_plan, Mapping) else None
+                )
+                selected_by_replica = row.get(
+                    "planned_selected_frames_per_replica"
+                )
+                exact_per_system_work = None
+                if (
+                    isinstance(replica_rows, list)
+                    and isinstance(selected_by_replica, list)
+                    and len(replica_rows) == len(selected_by_replica)
+                    and replica_rows
+                ):
+                    values = []
+                    for candidate_row, selected in zip(
+                        replica_rows, selected_by_replica
+                    ):
+                        count = (
+                            candidate_row.get("raw_candidate_count")
+                            if isinstance(candidate_row, Mapping) else None
+                        )
+                        if (
+                            isinstance(count, bool)
+                            or not isinstance(count, int)
+                            or count <= 0
+                            or isinstance(selected, bool)
+                            or not isinstance(selected, int)
+                            or selected <= 0
+                        ):
+                            values = []
+                            break
+                        values.append(count * selected)
+                    if values:
+                        exact_per_system_work = sum(values)
                 if (
                     isinstance(candidate_count, int)
                     and not isinstance(candidate_count, bool)
@@ -1676,7 +1711,9 @@ def _apply_direct_project_sampling(
                     # reducer sees the same candidate-by-frame workload that
                     # the planner authorized.
                     definition["maximum_feature_observations"] = (
-                        candidate_count * selected_frame_count
+                        exact_per_system_work
+                        if exact_per_system_work is not None
+                        else candidate_count * selected_frame_count
                     )
 
 

@@ -70,6 +70,21 @@ def _atom_identity_key(atom: AtomRecord) -> AtomIdentityKey:
     )
 
 
+def _chemical_position_key(
+    identities: Sequence[Mapping[str, object]],
+) -> Tuple[object, ...]:
+    """Return the stable comparison identity while preserving element safety."""
+
+    return tuple((
+        str(identity["chain_id"]),
+        int(identity["residue_number"]),
+        str(identity["insertion_code"]),
+        str(identity["atom_name"]),
+        str(identity["altloc"]),
+        str(identity["element"]).upper(),
+    ) for identity in identities)
+
+
 def _candidate_identity_key(
     atoms: Sequence[AtomRecord], triple: Tuple[int, int, int]
 ) -> CandidateIdentityKey:
@@ -410,6 +425,261 @@ def _automatic_endpoint_identity_intersection(
     }
 
 
+def _conceptual_endpoint_union_stratum_counts(
+    donors_by_system: Mapping[str, set[DonorHydrogenIdentityKey]],
+    acceptors_by_system: Mapping[str, set[AcceptorIdentityKey]],
+    *,
+    interaction_scope: str,
+    exclude_same_residue: bool,
+) -> Dict[str, int]:
+    """Count the exact cross-system candidate union without forming its product."""
+
+    system_ids = sorted(donors_by_system)
+    bit_by_system = {system_id: 1 << index for index, system_id in enumerate(system_ids)}
+    donor_membership: Dict[DonorHydrogenIdentityKey, int] = {}
+    acceptor_membership: Dict[AcceptorIdentityKey, int] = {}
+    for system_id in system_ids:
+        bit = bit_by_system[system_id]
+        for donor in donors_by_system[system_id]:
+            donor_membership[donor] = donor_membership.get(donor, 0) | bit
+        for acceptor in acceptors_by_system[system_id]:
+            acceptor_membership[acceptor] = acceptor_membership.get(acceptor, 0) | bit
+
+    acceptor_count_by_class_mask: Dict[Tuple[str, int], int] = {}
+    acceptor_count_by_class_mask_residue: Dict[
+        Tuple[str, int, Tuple[str, int, str]], int
+    ] = {}
+    for (identity, entity_class), mask in acceptor_membership.items():
+        class_mask = (entity_class, mask)
+        acceptor_count_by_class_mask[class_mask] = (
+            acceptor_count_by_class_mask.get(class_mask, 0) + 1
+        )
+        class_mask_residue = (entity_class, mask, identity[:3])
+        acceptor_count_by_class_mask_residue[class_mask_residue] = (
+            acceptor_count_by_class_mask_residue.get(class_mask_residue, 0) + 1
+        )
+
+    counts: Dict[str, int] = {}
+    for (donor, hydrogen, donor_class), donor_mask in donor_membership.items():
+        for (acceptor_class, acceptor_mask), total in (
+            acceptor_count_by_class_mask.items()
+        ):
+            if not donor_mask & acceptor_mask:
+                continue
+            if not scope_allows(donor_class, acceptor_class, interaction_scope):
+                continue
+            eligible = total
+            if exclude_same_residue:
+                eligible -= acceptor_count_by_class_mask_residue.get(
+                    (acceptor_class, acceptor_mask, donor[:3]), 0
+                )
+            else:
+                for identity in {donor, hydrogen}:
+                    if acceptor_membership.get((identity, acceptor_class)) == acceptor_mask:
+                        eligible -= 1
+            if eligible < 0:
+                raise HydrogenBondDiscoveryError(
+                    "implicit cross-system hydrogen-bond count became negative"
+                )
+            if eligible:
+                stratum = f"{donor_class}_to_{acceptor_class}"
+                counts[stratum] = counts.get(stratum, 0) + eligible
+    return dict(sorted(counts.items()))
+
+
+def _automatic_endpoint_identity_inventory(
+    system: Mapping[str, object],
+    system_path: Path,
+    settings: Mapping[str, object],
+) -> Tuple[
+    Dict[str, set[DonorHydrogenIdentityKey]],
+    Dict[str, set[AcceptorIdentityKey]],
+    Dict[str, object],
+]:
+    """Retain complete per-system endpoints while keeping candidate pairs implicit."""
+
+    donors_by_system: Dict[str, set[DonorHydrogenIdentityKey]] = {}
+    acceptors_by_system: Dict[str, set[AcceptorIdentityKey]] = {}
+    replica_rows: List[Dict[str, object]] = []
+    system_rows: List[Dict[str, object]] = []
+    endpoint_elements: Dict[AtomIdentityKey, set[str]] = {}
+    endpoint_classes: Dict[AtomIdentityKey, set[str]] = {}
+    topology_cache: Dict[
+        Tuple[str, str],
+        Tuple[
+            frozenset[DonorHydrogenIdentityKey],
+            frozenset[AcceptorIdentityKey],
+            Dict[AtomIdentityKey, Tuple[str, str]],
+        ],
+    ] = {}
+    for raw_system in system["systems"]:  # type: ignore[index]
+        system_id = str(raw_system["system_id"])
+        if system_id in donors_by_system:
+            raise HydrogenBondDiscoveryError(f"duplicate system_id {system_id!r}")
+        expected_donors: set[DonorHydrogenIdentityKey] | None = None
+        expected_acceptors: set[AcceptorIdentityKey] | None = None
+        system_replica_rows: List[Dict[str, object]] = []
+        for replica in raw_system["replicas"]:
+            replica_id = str(replica["replica_id"])
+            topology_path = resolve_manifest_path(str(replica["topology"]), system_path)
+            connectivity_value = replica.get("connectivity")
+            if not isinstance(connectivity_value, str) or not connectivity_value.strip():
+                raise HydrogenBondDiscoveryError(
+                    f"{system_id}/{replica_id} requires explicit connectivity"
+                )
+            connectivity_path = resolve_manifest_path(connectivity_value, system_path)
+            cache_key = (str(topology_path), str(connectivity_path))
+            cached = topology_cache.get(cache_key)
+            if cached is None:
+                _, atoms = read_topology_atoms(topology_path)
+                bonds, _ = load_connectivity(connectivity_path, len(atoms))
+                donors, acceptors, _ = _automatic_endpoint_identity_sets(atoms, bonds)
+                needed = {
+                    identity
+                    for donor, hydrogen, _ in donors
+                    for identity in (donor, hydrogen)
+                } | {identity for identity, _ in acceptors}
+                metadata: Dict[AtomIdentityKey, Tuple[str, str]] = {}
+                for atom in atoms:
+                    identity = _atom_identity_key(atom)
+                    if identity not in needed:
+                        continue
+                    if identity in metadata:
+                        raise HydrogenBondDiscoveryError(
+                            "topology contains duplicate identities among retained solute endpoints"
+                        )
+                    classes = {
+                        entity_class
+                        for endpoint, entity_class in acceptors
+                        if endpoint == identity
+                    } | {
+                        entity_class
+                        for donor, _, entity_class in donors
+                        if donor == identity
+                    }
+                    metadata[identity] = (
+                        atom.element.upper(),
+                        next(iter(classes)) if len(classes) == 1 else "",
+                    )
+                topology_cache[cache_key] = (
+                    frozenset(donors), frozenset(acceptors), metadata,
+                )
+            else:
+                donors = set(cached[0])
+                acceptors = set(cached[1])
+                metadata = cached[2]
+            if expected_donors is None:
+                expected_donors = set(donors)
+                expected_acceptors = set(acceptors)
+            elif donors != expected_donors or acceptors != expected_acceptors:
+                raise HydrogenBondDiscoveryError(
+                    f"{system_id} endpoint chemistry differs across replicas"
+                )
+            for identity, (element, entity_class) in metadata.items():
+                endpoint_elements.setdefault(identity, set()).add(element)
+                if entity_class:
+                    endpoint_classes.setdefault(identity, set()).add(entity_class)
+            raw_count = _conceptual_endpoint_candidate_count(
+                sorted(donors), sorted(acceptors),
+                interaction_scope=str(settings["interaction_scope"]),
+                exclude_same_residue=bool(settings["exclude_same_residue"]),
+            )
+            row = {
+                "system_id": system_id,
+                "replica_id": replica_id,
+                "raw_donor_hydrogen_group_count": len(donors),
+                "raw_acceptor_count": len(acceptors),
+                "raw_conceptual_candidate_count": raw_count,
+                "raw_candidate_count": raw_count,
+            }
+            replica_rows.append(row)
+            system_replica_rows.append(row)
+        if not expected_donors or not expected_acceptors:
+            raise HydrogenBondDiscoveryError(
+                f"{system_id} has no complete donor-H/acceptor endpoint universe"
+            )
+        stratum_counts = _conceptual_endpoint_candidate_stratum_counts(
+            sorted(expected_donors), sorted(expected_acceptors),
+            interaction_scope=str(settings["interaction_scope"]),
+            exclude_same_residue=bool(settings["exclude_same_residue"]),
+        )
+        candidate_count = sum(stratum_counts.values())
+        if not candidate_count:
+            raise HydrogenBondDiscoveryError(
+                f"{system_id} endpoint universe has no candidates"
+            )
+        donors_by_system[system_id] = expected_donors
+        acceptors_by_system[system_id] = expected_acceptors
+        system_rows.append({
+            "system_id": system_id,
+            "donor_hydrogen_group_count": len(expected_donors),
+            "acceptor_count": len(expected_acceptors),
+            "conceptual_candidate_count": candidate_count,
+            "conceptual_candidate_stratum_counts": stratum_counts,
+            "replica_ids": sorted(str(row["replica_id"]) for row in system_replica_rows),
+        })
+
+    incompatible_elements = {
+        identity: values for identity, values in endpoint_elements.items()
+        if len(values) != 1
+    }
+    incompatible_classes = {
+        identity: values for identity, values in endpoint_classes.items()
+        if len(values) != 1
+    }
+    if incompatible_elements:
+        raise HydrogenBondDiscoveryError(
+            "common endpoint chemistry is missing or element-inconsistent"
+        )
+    if incompatible_classes:
+        raise HydrogenBondDiscoveryError(
+            "common endpoint entity class differs across systems"
+        )
+    union_strata = _conceptual_endpoint_union_stratum_counts(
+        donors_by_system,
+        acceptors_by_system,
+        interaction_scope=str(settings["interaction_scope"]),
+        exclude_same_residue=bool(settings["exclude_same_residue"]),
+    )
+    union_count = sum(union_strata.values())
+    return donors_by_system, acceptors_by_system, {
+        "policy": "per_system_endpoint_union_lazy_v3",
+        "requested_policy": "per_system_full_with_chemical_identity_comparison_v2",
+        "identity_fields": [
+            "chain_id", "residue_number", "insertion_code", "atom_name", "altloc",
+        ],
+        "residue_name_policy": "preserved_by_system",
+        "system_feature_spaces": system_rows,
+        "system_candidate_counts": {
+            str(row["system_id"]): int(row["conceptual_candidate_count"])
+            for row in system_rows
+        },
+        "system_candidate_stratum_counts": {
+            str(row["system_id"]): row["conceptual_candidate_stratum_counts"]
+            for row in system_rows
+        },
+        "union_candidate_count": union_count,
+        "union_candidate_stratum_counts": union_strata,
+        "total_candidate_count_across_replicas": sum(
+            int(row["raw_candidate_count"]) for row in replica_rows
+        ),
+        "maximum_candidate_count_per_replica": max(
+            int(row["raw_candidate_count"]) for row in replica_rows
+        ),
+        "mean_candidate_count_per_replica": (
+            sum(int(row["raw_candidate_count"]) for row in replica_rows)
+            / len(replica_rows)
+        ),
+        "materialized_precoordinate_candidate_count": 0,
+        "replica_endpoint_dictionaries": replica_rows,
+        "selection_basis": (
+            "complete topology-backed endpoint dictionaries are retained within each "
+            "system; candidate Cartesian products remain implicit and the exact "
+            "cross-system union is counted from endpoint membership"
+        ),
+    }
+
+
 def discover_automatic_candidate_bonds(
     atoms: Sequence[AtomRecord],
     bonds: Sequence[Tuple[int, int]],
@@ -609,22 +879,23 @@ def _settings(project: Mapping[str, object]) -> Dict[str, object]:
             "interaction_scope": str(scope),
             "cutoff_definitions": _cutoff_definitions(raw["cutoff_policy"]),
         }
-        # Generic multi-system and mixed protein--DNA campaigns commonly have
-        # valid system-specific candidates. Use an outcome-independent common
-        # chemical-position intersection unless a publication lock explicitly
-        # asks for exact dictionary equality. Raw atom indices are not stable
-        # when variants add or remove atoms.
+        # The default retains each system's complete topology-defined chemistry.
+        # Lazy v3 evaluation keeps those Cartesian products implicit and
+        # materializes only the observed cross-system union.
         candidate_harmonization = raw.get(
-            "candidate_harmonization", "intersection_by_atom_identity_v2"
+            "candidate_harmonization",
+            "per_system_full_with_chemical_identity_comparison_v2",
         )
         if candidate_harmonization not in {
             "strict_v1", "intersection_by_atom_index_v1",
             "intersection_by_atom_identity_v2",
+            "per_system_full_with_chemical_identity_comparison_v2",
         }:
             raise HydrogenBondDiscoveryError(
                 "candidate_harmonization must be strict_v1, "
                 "intersection_by_atom_index_v1, or "
-                "intersection_by_atom_identity_v2"
+                "intersection_by_atom_identity_v2, or "
+                "per_system_full_with_chemical_identity_comparison_v2"
             )
         result["candidate_harmonization"] = candidate_harmonization
     else:
@@ -1052,17 +1323,57 @@ def _hydrogen_bond_discovery_project_lazy_partial(
     frame_selection_plan: Mapping[Tuple[str, str, str], set[int]],
     frame_selection_report: Mapping[str, object],
     issues: List[Dict[str, object]],
-    common_donors: set[DonorHydrogenIdentityKey],
-    common_acceptors: set[AcceptorIdentityKey],
+    donor_endpoints_by_system: Mapping[str, set[DonorHydrogenIdentityKey]],
+    acceptor_endpoints_by_system: Mapping[str, set[AcceptorIdentityKey]],
     endpoint_report: Mapping[str, object],
     *,
     hash_content: bool,
 ) -> Dict[str, object]:
     """Evaluate a lazy endpoint universe and return one reducible sparse partial."""
 
-    conceptual_count = int(endpoint_report["common_candidate_count"])
+    system_count_rows = {
+        str(row["system_id"]): row
+        for row in endpoint_report.get("system_feature_spaces", [])
+        if isinstance(row, Mapping) and isinstance(row.get("system_id"), str)
+    }
+    per_system_policy = (
+        endpoint_report.get("policy") == "per_system_endpoint_union_lazy_v3"
+    )
+    if per_system_policy:
+        conceptual_count_by_system = {
+            system_id: int(row["conceptual_candidate_count"])
+            for system_id, row in system_count_rows.items()
+        }
+        conceptual_strata_by_system = {
+            system_id: row["conceptual_candidate_stratum_counts"]
+            for system_id, row in system_count_rows.items()
+        }
+        conceptual_count = int(endpoint_report["union_candidate_count"])
+        conceptual_strata = endpoint_report["union_candidate_stratum_counts"]
+    else:
+        conceptual_count = int(endpoint_report["common_candidate_count"])
+        conceptual_strata = endpoint_report["common_candidate_stratum_counts"]
+        conceptual_count_by_system = {
+            str(row["system_id"]): conceptual_count
+            for row in system["systems"]  # type: ignore[index]
+        }
+        conceptual_strata_by_system = {
+            system_id: conceptual_strata
+            for system_id in conceptual_count_by_system
+        }
     selected_count = int(frame_selection_report["selected_frame_count"])
-    conceptual_observations = conceptual_count * selected_count
+    selected_by_system: Dict[str, int] = {}
+    for row in frame_selection_report.get("replicas", []):
+        if not isinstance(row, Mapping):
+            continue
+        system_id = str(row.get("system_id", ""))
+        selected_by_system[system_id] = selected_by_system.get(system_id, 0) + int(
+            row.get("selected_frame_count", 0)
+        )
+    conceptual_observations = sum(
+        conceptual_count_by_system[system_id] * frame_count
+        for system_id, frame_count in selected_by_system.items()
+    )
     if conceptual_count > int(settings["maximum_candidate_bonds"]):
         raise HydrogenBondDiscoveryError("maximum_candidate_bonds gate exceeded")
     if conceptual_observations > int(settings["maximum_feature_observations"]):
@@ -1076,6 +1387,7 @@ def _hydrogen_bond_discovery_project_lazy_partial(
     frame_records: List[Dict[str, object]] = []
     chemistry_reports: List[Dict[str, object]] = []
     endpoint_metadata_records: List[Dict[str, object]] = []
+    endpoint_universe_records: List[Dict[str, object]] = []
     spatial_pairs = 0
     explicit_geometry = 0
     present_events = 0
@@ -1085,6 +1397,23 @@ def _hydrogen_bond_discovery_project_lazy_partial(
 
     for raw_system in system["systems"]:  # type: ignore[index]
         system_id = str(raw_system["system_id"])
+        common_donors = donor_endpoints_by_system.get(system_id)
+        common_acceptors = acceptor_endpoints_by_system.get(system_id)
+        if not common_donors or not common_acceptors:
+            raise HydrogenBondDiscoveryError(
+                f"{system_id} lacks its retained endpoint universe"
+            )
+        endpoint_universe_records.append({
+            "system_id": system_id,
+            "donor_endpoints": [
+                [list(donor), list(hydrogen), entity_class]
+                for donor, hydrogen, entity_class in sorted(common_donors)
+            ],
+            "acceptor_endpoints": [
+                [list(acceptor), entity_class]
+                for acceptor, entity_class in sorted(common_acceptors)
+            ],
+        })
         for replica in raw_system["replicas"]:
             replica_id = str(replica["replica_id"])
             topology_path = resolve_manifest_path(str(replica["topology"]), system_path)
@@ -1264,12 +1593,15 @@ def _hydrogen_bond_discovery_project_lazy_partial(
         "candidate_harmonization": endpoint_report,
         "chemistry_reports": chemistry_reports,
         "common_endpoint_identity_metadata": endpoint_metadata_records,
+        "retained_endpoint_universes": endpoint_universe_records,
         "frame_matrix_representation": "sparse_spatial_partial_v3",
         "candidate_dictionary": candidate_dictionary,
         "conceptual_candidate_count": conceptual_count,
-        "conceptual_candidate_stratum_counts": endpoint_report[
-            "common_candidate_stratum_counts"
-        ],
+        "conceptual_candidate_count_by_system": conceptual_count_by_system,
+        "conceptual_candidate_stratum_counts": conceptual_strata,
+        "conceptual_candidate_stratum_counts_by_system": (
+            conceptual_strata_by_system
+        ),
         "materialized_observed_candidate_count": len(candidate_dictionary),
         "unobserved_zero_candidate_count": conceptual_count - len(candidate_dictionary),
         "evaluated_frame_count": evaluated_frames,
@@ -1295,8 +1627,12 @@ def _hydrogen_bond_discovery_project_serial(
     *,
     harmonized_candidate_keys_override: set[HarmonizedCandidateKey] | None = None,
     candidate_harmonization_report_override: Mapping[str, object] | None = None,
-    common_donor_endpoints_override: set[DonorHydrogenIdentityKey] | None = None,
-    common_acceptor_endpoints_override: set[AcceptorIdentityKey] | None = None,
+    donor_endpoints_by_system_override: Mapping[
+        str, set[DonorHydrogenIdentityKey]
+    ] | None = None,
+    acceptor_endpoints_by_system_override: Mapping[
+        str, set[AcceptorIdentityKey]
+    ] | None = None,
 ) -> Dict[str, object]:
     source = Path(project_path).expanduser().resolve(strict=False)
     project = load_json(source)
@@ -1315,17 +1651,35 @@ def _hydrogen_bond_discovery_project_serial(
     issues = [issue for issue in context.get("warnings", []) if isinstance(issue, dict)]
     if settings["output_mode"] == "sparse_spatial_observed_union_v3":
         if (
-            common_donor_endpoints_override is None
-            or common_acceptor_endpoints_override is None
+            donor_endpoints_by_system_override is None
+            or acceptor_endpoints_by_system_override is None
             or candidate_harmonization_report_override is None
         ):
-            (
-                common_donor_endpoints_override,
-                common_acceptor_endpoints_override,
-                endpoint_report,
-            ) = _automatic_endpoint_identity_intersection(
-                system, system_path, settings
-            )
+            if (
+                settings["candidate_harmonization"]
+                == "per_system_full_with_chemical_identity_comparison_v2"
+            ):
+                (
+                    donor_endpoints_by_system_override,
+                    acceptor_endpoints_by_system_override,
+                    endpoint_report,
+                ) = _automatic_endpoint_identity_inventory(
+                    system, system_path, settings
+                )
+            else:
+                common_donors, common_acceptors, endpoint_report = (
+                    _automatic_endpoint_identity_intersection(
+                        system, system_path, settings
+                    )
+                )
+                donor_endpoints_by_system_override = {
+                    str(row["system_id"]): set(common_donors)
+                    for row in system["systems"]  # type: ignore[index]
+                }
+                acceptor_endpoints_by_system_override = {
+                    str(row["system_id"]): set(common_acceptors)
+                    for row in system["systems"]  # type: ignore[index]
+                }
         else:
             endpoint_report = dict(candidate_harmonization_report_override)
         return _hydrogen_bond_discovery_project_lazy_partial(
@@ -1338,8 +1692,8 @@ def _hydrogen_bond_discovery_project_serial(
             frame_selection_plan,
             frame_selection_report,
             issues,
-            common_donor_endpoints_override,
-            common_acceptor_endpoints_override,
+            donor_endpoints_by_system_override,
+            acceptor_endpoints_by_system_override,
             endpoint_report,
             hash_content=hash_content,
         )
@@ -2092,6 +2446,46 @@ def _reduce_lazy_hbond_reports(
                     f"lazy replica hydrogen-bond reports disagree on {key}"
                 )
 
+    donors_by_system: Dict[str, set[DonorHydrogenIdentityKey]] = {}
+    acceptors_by_system: Dict[str, set[AcceptorIdentityKey]] = {}
+    for report in reports:
+        for row in report.get("retained_endpoint_universes", []):
+            if not isinstance(row, Mapping):
+                raise HydrogenBondDiscoveryError(
+                    "retained endpoint universe is malformed"
+                )
+            system_id = str(row.get("system_id", ""))
+            raw_donors = row.get("donor_endpoints")
+            raw_acceptors = row.get("acceptor_endpoints")
+            if (
+                not system_id
+                or not isinstance(raw_donors, list)
+                or not isinstance(raw_acceptors, list)
+            ):
+                raise HydrogenBondDiscoveryError(
+                    "retained endpoint universe is incomplete"
+                )
+            donors = {
+                (tuple(value[0]), tuple(value[1]), str(value[2]))
+                for value in raw_donors
+            }
+            acceptors = {
+                (tuple(value[0]), str(value[1]))
+                for value in raw_acceptors
+            }
+            if (
+                system_id in donors_by_system
+                and (
+                    donors_by_system[system_id] != donors
+                    or acceptors_by_system[system_id] != acceptors
+                )
+            ):
+                raise HydrogenBondDiscoveryError(
+                    f"{system_id} endpoint chemistry differs across replicas"
+                )
+            donors_by_system[system_id] = donors
+            acceptors_by_system[system_id] = acceptors
+
     stratum_by_key: Dict[CandidateIdentityKey, str] = {}
     local_keys_by_report: List[List[CandidateIdentityKey]] = []
     for report in reports:
@@ -2176,6 +2570,25 @@ def _reduce_lazy_hbond_reports(
         identity["element"] = next(iter(elements))
         return identity
 
+    candidate_system_presence: Dict[CandidateIdentityKey, Dict[str, bool]] = {}
+    for key in global_keys:
+        donor_class, separator, acceptor_class = stratum_by_key[key].partition("_to_")
+        if not separator:
+            raise HydrogenBondDiscoveryError(
+                "observed candidate interaction stratum is malformed"
+            )
+        candidate_system_presence[key] = {
+            system_id: (
+                (key[0], key[1], donor_class) in donors_by_system[system_id]
+                and (key[2], acceptor_class) in acceptors_by_system[system_id]
+            )
+            for system_id in sorted(donors_by_system)
+        }
+        if not any(candidate_system_presence[key].values()):
+            raise HydrogenBondDiscoveryError(
+                "observed candidate is absent from every retained system universe"
+            )
+
     candidate_dictionary = [{
         "bond_id": _identity_bond_id(key),
         "donor_atom_index": atom_index[key[0]],
@@ -2185,6 +2598,11 @@ def _reduce_lazy_hbond_reports(
         "hydrogen_identity": canonical_identity(key[1]),
         "acceptor_identity": canonical_identity(key[2]),
         "interaction_stratum": stratum_by_key[key],
+        "chemically_present_in_systems": [
+            system_id
+            for system_id, present in candidate_system_presence[key].items()
+            if present
+        ],
     } for key in global_keys]
     atom_dictionary = [{
         "atom_index": atom_index[key],
@@ -2258,6 +2676,110 @@ def _reduce_lazy_hbond_reports(
                 ),
             })
 
+    system_feature_spaces: List[Dict[str, object]] = []
+    system_strata = first.get("conceptual_candidate_stratum_counts_by_system", {})
+    for system_id in sorted(donors_by_system):
+        retained_global_indices = [
+            index for index, key in enumerate(global_keys)
+            if candidate_system_presence[key][system_id]
+        ]
+        global_to_local = {
+            global_index_value: local_index
+            for local_index, global_index_value in enumerate(retained_global_indices)
+        }
+        local_candidates = [
+            candidate_dictionary[index] for index in retained_global_indices
+        ]
+        local_frames: List[Dict[str, object]] = []
+        for frame in frame_records:
+            if str(frame["system_id"]) != system_id:
+                continue
+            if not local_candidates:
+                local_frames.append({
+                    key: frame[key]
+                    for key in (
+                        "system_id", "replica_id", "segment_id",
+                        "source_frame_index", "axis_kind", "axis_value",
+                    )
+                } | {
+                    "representation": "sparse_implicit_zero_v1",
+                    "candidate_count": 0,
+                    "primary_present_candidate_indices": [],
+                    "cutoff_present_candidate_indices": {
+                        str(cutoff["cutoff_id"]): []
+                        for cutoff in cutoff_definitions
+                    },
+                    "present_geometry": [],
+                })
+                continue
+            geometry_rows = []
+            for event in unpack_sparse_present_events(frame):
+                global_candidate_index = int(event["candidate_index"])
+                if global_candidate_index not in global_to_local:
+                    raise HydrogenBondDiscoveryError(
+                        "frame contains an event that is chemically absent in its system"
+                    )
+                mask = int(event["cutoff_mask"])
+                geometry_rows.append({
+                    "candidate_index": global_to_local[global_candidate_index],
+                    "donor_acceptor_distance_angstrom": float(
+                        event["donor_acceptor_distance_angstrom"]
+                    ),
+                    "donor_hydrogen_acceptor_angle_degrees": float(
+                        event["donor_hydrogen_acceptor_angle_degrees"]
+                    ),
+                    "present_cutoff_ids": [
+                        str(cutoff["cutoff_id"])
+                        for cutoff_index, cutoff in enumerate(cutoff_definitions)
+                        if mask & (1 << cutoff_index)
+                    ],
+                })
+            geometry_rows.sort(key=lambda row: int(row["candidate_index"]))
+            local_frames.append({
+                key: frame[key]
+                for key in (
+                    "system_id", "replica_id", "segment_id",
+                    "source_frame_index", "axis_kind", "axis_value",
+                )
+            } | {
+                "candidate_count": len(local_candidates),
+                **pack_sparse_present_geometry(
+                    geometry_rows,
+                    cutoff_definitions,  # type: ignore[arg-type]
+                    len(local_candidates),
+                ),
+            })
+        conceptual_system_count = int(
+            first["conceptual_candidate_count_by_system"][system_id]
+        )
+        system_feature_spaces.append({
+            "system_id": system_id,
+            "feature_space_representation": (
+                "implicit_endpoint_universe_with_observed_union_v3"
+            ),
+            "frame_matrix_representation": (
+                "sparse_spatial_observed_union_v3"
+                if local_candidates else "sparse_implicit_zero_v1"
+            ),
+            "sparse_zero_contract": (
+                "Candidates absent from a frame are exact zeros; topology-defined "
+                "candidates absent from the materialized observed union are exact "
+                "global zeros under every declared cutoff."
+            ),
+            "candidate_dictionary": local_candidates,
+            "atom_dictionary": atom_dictionary,
+            "candidate_count": len(local_candidates),
+            "conceptual_candidate_count": conceptual_system_count,
+            "conceptual_candidate_stratum_counts": system_strata.get(
+                system_id, {}
+            ) if isinstance(system_strata, Mapping) else {},
+            "materialized_observed_candidate_count": len(local_candidates),
+            "implicit_unmaterialized_candidate_count": (
+                conceptual_system_count - len(local_candidates)
+            ),
+            "frame_bond_matrix": local_frames,
+        })
+
     occupancies = []
     packed_cutoff_segments = []
     for segment_key, per_cutoff in sorted(cutoff_counts.items()):
@@ -2286,7 +2808,31 @@ def _reduce_lazy_hbond_reports(
 
     evaluated = sum(int(report["evaluated_frame_count"]) for report in reports)
     conceptual_count = int(first["conceptual_candidate_count"])
-    conceptual_observations = conceptual_count * evaluated
+    conceptual_counts_by_system = {
+        str(system_id): int(count)
+        for system_id, count in first.get(
+            "conceptual_candidate_count_by_system", {}
+        ).items()
+    }
+    evaluated_by_system: Dict[str, int] = {}
+    for report in reports:
+        for row in report.get("frame_selection", {}).get("replicas", []):
+            if not isinstance(row, Mapping):
+                continue
+            system_id = str(row.get("system_id", ""))
+            evaluated_by_system[system_id] = (
+                evaluated_by_system.get(system_id, 0)
+                + int(row.get("selected_frame_count", 0))
+            )
+    conceptual_observations = sum(
+        conceptual_counts_by_system[system_id] * frame_count
+        for system_id, frame_count in evaluated_by_system.items()
+    )
+    if conceptual_observations > int(first["settings"]["maximum_feature_observations"]):
+        raise HydrogenBondDiscoveryError(
+            "parallel per-system hydrogen-bond feature count exceeds "
+            "maximum_feature_observations"
+        )
     spatial_pairs = sum(int(report["spatial_neighbor_pair_count"]) for report in reports)
     explicit_geometry = sum(
         int(report["explicit_geometry_evaluation_count"]) for report in reports
@@ -2301,6 +2847,30 @@ def _reduce_lazy_hbond_reports(
         stratum = str(row["interaction_stratum"])
         candidate_stratum_counts[stratum] = candidate_stratum_counts.get(stratum, 0) + 1
     issues = unique_issues(reports)
+    harmonization = dict(first["candidate_harmonization"])
+    harmonization["materialized_feature_statuses"] = [
+        {
+            "bond_id": candidate_dictionary[index]["bond_id"],
+            "status_by_system": {
+                system_id: (
+                    "chemically_present" if present else "chemically_absent"
+                )
+                for system_id, present in candidate_system_presence[key].items()
+            },
+        }
+        for index, key in enumerate(global_keys)
+    ]
+    if harmonization.get("policy") == "per_system_endpoint_union_lazy_v3":
+        issues.append({
+            "severity": "info",
+            "code": "HBOND_FULL_PER_SYSTEM_ENDPOINT_UNIVERSES_RETAINED",
+            "location": source_context["project_manifest_path"],
+            "message": (
+                "Retained complete per-system topology-defined endpoint universes; "
+                "candidate products remain implicit and only the observed union is "
+                "materialized."
+            ),
+        })
     first.update({
         "frame_selection": frame_selection,
         "chemistry_reports": [
@@ -2315,14 +2885,17 @@ def _reduce_lazy_hbond_reports(
         "packed_event_codec": PACKED_EVENT_CODEC,
         "cutoff_occupancy_representation": "sparse_packed_cutoff_counts_v1",
         "packed_cutoff_count_codec": PACKED_CUTOFF_COUNT_CODEC,
+        "candidate_harmonization": harmonization,
         "candidate_dictionary": candidate_dictionary,
         "atom_dictionary": atom_dictionary,
+        "system_feature_spaces": system_feature_spaces,
         "candidate_count": len(candidate_dictionary),
         "candidate_stratum_counts": candidate_stratum_counts,
         "conceptual_candidate_count": conceptual_count,
         "materialized_observed_candidate_count": len(candidate_dictionary),
         "unobserved_zero_candidate_count": conceptual_count - len(candidate_dictionary),
         "evaluated_frame_count": evaluated,
+        "planned_feature_observation_count": conceptual_observations,
         "conceptual_candidate_frame_count": conceptual_observations,
         "spatial_neighbor_pair_count": spatial_pairs,
         "explicit_geometry_evaluation_count": explicit_geometry,
@@ -2330,10 +2903,17 @@ def _reduce_lazy_hbond_reports(
         "observation_accounting": {
             "source_physical_frame_count": int(frame_selection["source_frame_count"]),
             "selected_physical_frame_count": evaluated,
+            "selected_physical_frame_count_by_system": evaluated_by_system,
+            "conceptual_candidate_count_by_system": conceptual_counts_by_system,
+            "conceptual_candidate_frame_count_by_system": {
+                system_id: conceptual_counts_by_system[system_id] * frame_count
+                for system_id, frame_count in evaluated_by_system.items()
+            },
             "conceptual_candidate_frame_count": conceptual_observations,
             "spatial_neighbor_pair_count": spatial_pairs,
             "explicit_geometry_evaluation_count": explicit_geometry,
             "present_event_count": present_event_count,
+            "planner_work_basis": "measured_spatial_neighbor_pairs_v1",
             "geometry_evaluation_avoidance_fraction": (
                 1.0 - explicit_geometry / conceptual_observations
                 if conceptual_observations else None
@@ -2351,6 +2931,7 @@ def _reduce_lazy_hbond_reports(
         "warning_count": sum(issue.get("severity") == "warning" for issue in issues),
     })
     first.pop("common_endpoint_identity_metadata", None)
+    first.pop("retained_endpoint_universes", None)
     restore_source_provenance(first, source_context)
     return first
 
@@ -2373,17 +2954,38 @@ def hydrogen_bond_discovery_project(
             project_path, hash_content=hash_content
         )
     keys = None
-    common_donors = None
-    common_acceptors = None
+    donor_endpoints_by_system = None
+    acceptor_endpoints_by_system = None
     harmonization = None
     if settings["output_mode"] == "sparse_spatial_observed_union_v3":
         context = compile_project_context_file(source, hash_content=hash_content)
         system_path = Path(context["system_manifest_path"])
-        common_donors, common_acceptors, harmonization = (
-            _automatic_endpoint_identity_intersection(
-                load_json(system_path), system_path, settings
+        system = load_json(system_path)
+        if (
+            settings["candidate_harmonization"]
+            == "per_system_full_with_chemical_identity_comparison_v2"
+        ):
+            (
+                donor_endpoints_by_system,
+                acceptor_endpoints_by_system,
+                harmonization,
+            ) = _automatic_endpoint_identity_inventory(
+                system, system_path, settings
             )
-        )
+        else:
+            common_donors, common_acceptors, harmonization = (
+                _automatic_endpoint_identity_intersection(
+                    system, system_path, settings
+                )
+            )
+            donor_endpoints_by_system = {
+                str(row["system_id"]): set(common_donors)
+                for row in system["systems"]  # type: ignore[index]
+            }
+            acceptor_endpoints_by_system = {
+                str(row["system_id"]): set(common_acceptors)
+                for row in system["systems"]  # type: ignore[index]
+            }
     elif (
         settings["mode"] == "automatic"
         and str(settings["candidate_harmonization"]).startswith("intersection_by_atom_")
@@ -2414,19 +3016,29 @@ def hydrogen_bond_discovery_project(
                 if keys is not None else None
             ),
             "candidate_harmonization_report": harmonization,
-            "common_donor_endpoints": (
-                [
-                    [list(donor), list(hydrogen), entity_class]
-                    for donor, hydrogen, entity_class in sorted(common_donors)
-                ]
-                if common_donors is not None else None
+            "donor_endpoints_by_system": (
+                {
+                    system_id: [
+                        [list(donor), list(hydrogen), entity_class]
+                        for donor, hydrogen, entity_class in sorted(endpoints)
+                    ]
+                    for system_id, endpoints in sorted(
+                        donor_endpoints_by_system.items()
+                    )
+                }
+                if donor_endpoints_by_system is not None else None
             ),
-            "common_acceptor_endpoints": (
-                [
-                    [list(acceptor), entity_class]
-                    for acceptor, entity_class in sorted(common_acceptors)
-                ]
-                if common_acceptors is not None else None
+            "acceptor_endpoints_by_system": (
+                {
+                    system_id: [
+                        [list(acceptor), entity_class]
+                        for acceptor, entity_class in sorted(endpoints)
+                    ]
+                    for system_id, endpoints in sorted(
+                        acceptor_endpoints_by_system.items()
+                    )
+                }
+                if acceptor_endpoints_by_system is not None else None
             ),
         },
     )
