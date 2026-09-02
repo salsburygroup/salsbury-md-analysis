@@ -276,25 +276,43 @@ def _automatic_endpoint_identity_intersection(
     common_donors: set[DonorHydrogenIdentityKey] | None = None
     common_acceptors: set[AcceptorIdentityKey] | None = None
     reports: List[Dict[str, object]] = []
+    topology_cache: Dict[
+        Tuple[str, str],
+        Tuple[
+            frozenset[DonorHydrogenIdentityKey],
+            frozenset[AcceptorIdentityKey],
+            int,
+        ],
+    ] = {}
     for raw_system in system["systems"]:  # type: ignore[index]
         system_id = str(raw_system["system_id"])
         for replica in raw_system["replicas"]:
             replica_id = str(replica["replica_id"])
             topology_path = resolve_manifest_path(str(replica["topology"]), system_path)
-            _, atoms = read_topology_atoms(topology_path)
             connectivity_value = replica.get("connectivity")
             if not isinstance(connectivity_value, str) or not connectivity_value.strip():
                 raise HydrogenBondDiscoveryError(
                     f"{system_id}/{replica_id} requires explicit connectivity"
                 )
             connectivity_path = resolve_manifest_path(connectivity_value, system_path)
-            bonds, _ = load_connectivity(connectivity_path, len(atoms))
-            donors, acceptors, _ = _automatic_endpoint_identity_sets(atoms, bonds)
-            raw_count = _conceptual_endpoint_candidate_count(
-                sorted(donors), sorted(acceptors),
-                interaction_scope=str(settings["interaction_scope"]),
-                exclude_same_residue=bool(settings["exclude_same_residue"]),
-            )
+            cache_key = (str(topology_path), str(connectivity_path))
+            cached = topology_cache.get(cache_key)
+            if cached is None:
+                _, atoms = read_topology_atoms(topology_path)
+                bonds, _ = load_connectivity(connectivity_path, len(atoms))
+                donors, acceptors, _ = _automatic_endpoint_identity_sets(atoms, bonds)
+                raw_count = _conceptual_endpoint_candidate_count(
+                    sorted(donors), sorted(acceptors),
+                    interaction_scope=str(settings["interaction_scope"]),
+                    exclude_same_residue=bool(settings["exclude_same_residue"]),
+                )
+                topology_cache[cache_key] = (
+                    frozenset(donors), frozenset(acceptors), raw_count,
+                )
+            else:
+                donors = set(cached[0])
+                acceptors = set(cached[1])
+                raw_count = cached[2]
             reports.append({
                 "system_id": system_id,
                 "replica_id": replica_id,
