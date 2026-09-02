@@ -124,7 +124,9 @@ def _task_report_path(
     report_path = report_path / command / "report.json"
     reuse_relative = (
         "project.json"
-        if runtime_project.name == "project-cache-base.json"
+        if runtime_project.name in {
+            "project-cache-base.json", "project-structural-qc-parallel.json",
+        }
         else runtime_relative
     )
     return report_path, runtime_project, reuse_relative

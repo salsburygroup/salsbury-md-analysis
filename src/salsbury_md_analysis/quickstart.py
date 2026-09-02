@@ -1662,6 +1662,11 @@ def _configure_structural_qc_parallel_execution(
         raise QuickstartError(
             "campaign plan lacks exactly one structural-QC resource task"
         )
+    task = task_rows[0]
+    if task.get("externally_satisfied") is True:
+        # Experimental-after-main retains the upstream resource row for
+        # provenance, but no structural-QC worker is launched in this workflow.
+        return None
     system_manifest = Path(str(project["system_manifest"]))
     if not system_manifest.is_absolute():
         system_manifest = project_path.parent / system_manifest
@@ -1676,8 +1681,16 @@ def _configure_structural_qc_parallel_execution(
     )
     if replica_count <= 0:
         raise QuickstartError("structural-QC system manifest has no replicas")
-    task = task_rows[0]
-    declared_shards = int(task.get("parallel_worker_count", 0))
+    declared_shards_value = task.get("parallel_worker_count")
+    if (
+        isinstance(declared_shards_value, bool)
+        or not isinstance(declared_shards_value, int)
+        or declared_shards_value <= 0
+    ):
+        raise QuickstartError(
+            "structural-QC planner did not declare a positive replica-worker count"
+        )
+    declared_shards = declared_shards_value
     if declared_shards != replica_count:
         raise QuickstartError(
             "structural-QC planner/runtime replica mismatch: planner declared "
@@ -1686,7 +1699,16 @@ def _configure_structural_qc_parallel_execution(
     # Every replica remains one stable shard.  This limit is the maximum number
     # of shards that may run concurrently; the execution adapter may use fewer
     # simultaneous workers when CPU, memory, or node capacity requires waves.
-    workers = min(replica_count, int(task["effective_cpu_cap"]))
+    worker_cap_value = task.get("effective_cpu_cap")
+    if (
+        isinstance(worker_cap_value, bool)
+        or not isinstance(worker_cap_value, int)
+        or worker_cap_value <= 0
+    ):
+        raise QuickstartError(
+            "structural-QC planner did not declare a positive worker cap"
+        )
+    workers = min(replica_count, worker_cap_value)
     if workers <= 0:
         raise QuickstartError("structural-QC planner selected no replica workers")
     cache_root = coordinate_cache_directory.expanduser().resolve(strict=False)
