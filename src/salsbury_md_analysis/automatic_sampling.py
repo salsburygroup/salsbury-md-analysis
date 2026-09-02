@@ -53,7 +53,7 @@ class AutomaticSamplingError(ValueError):
 
 
 REFERENCE_ATOM_COUNT = 85_199
-REFERENCE_HYDROGEN_BOND_CANDIDATE_COUNT = 64_640
+REFERENCE_HYDROGEN_BOND_SPATIAL_ENDPOINT_COUNT = 2_348
 MINIMUM_HYDROGEN_BOND_WORKLOAD_MULTIPLIER = 0.50
 POLICY_ID = "method-time-size-frame-budgets-v5"
 DEFAULT_TARGET_WALL_SECONDS = 14_400.0
@@ -391,9 +391,9 @@ RUNTIME_CALIBRATIONS: Tuple[RuntimeCalibration, ...] = (
     RuntimeCalibration("hydrogen_bonds", 0.400000, 0.0,
                        "apollo-trex-tier-proxy-explicit-hbond-v1", "conservative_proxy",
                        "proxy from automatic direct hydrogen-bond discovery"),
-    RuntimeCalibration("hydrogen_bond_discovery", 0.0433, 275.7228153187316,
-                       "trex-250ns-hbond-597364-candidate-gate-v53", "partial_gate_timing_calibration",
-                       "597,364 common candidates; 2.0 billion candidate-frame observations completed before the prior fixed gate, used for timing only with candidate-count scaling and a 0.5 I/O floor"),
+    RuntimeCalibration("hydrogen_bond_discovery", 301.46992 / 12.0, 0.0,
+                       "apollo-top1-hbond-spatial-12-20260902", "completed_spatial_runtime_pilot",
+                       "301.46992 CPU seconds for 12 selected frames, 25,164 spatial neighbor pairs, and 2,348 donor-H plus acceptor endpoints; runtime evidence only"),
     RuntimeCalibration("radial_distribution_functions", 0.316831, 0.0,
                        "apollo-trex-rdf-30k-20260812", "completed_30k",
                        "9,504.94 seconds for 30,000 frames"),
@@ -546,7 +546,7 @@ def _campaign_direct_resource_plan(
             max(maximum_per_replica, minimum_per_replica),
         )
         workload_multiplier, workload_basis = _runtime_workload_multiplier(
-            profile, dimensions
+            profile, dimensions, measured
         )
         reference_memory_gib = {
             "streaming": 4.0,
@@ -579,8 +579,8 @@ def _campaign_direct_resource_plan(
         seconds_per_frame = calibration.seconds_per_frame
         calibration_source_policy = "built_in_completed_calibration"
         if measured is not None:
-            measured_rate = float(
-                measured["conservative_cpu_seconds_per_frame"]
+            measured_rate, measured_work_unit = (
+                _measured_reference_seconds_per_frame(module_id, measured)
             )
             # A right-censored timeout is a lower bound, not a reason to
             # discard a later completed calibration.  Completed catalog data
@@ -588,7 +588,11 @@ def _campaign_direct_resource_plan(
             # larger of the completed built-in rate and the censored bound.
             if int(measured["complete_measurement_count"]) > 0:
                 seconds_per_frame = measured_rate
-                calibration_source_policy = "completed_catalog_measurement"
+                calibration_source_policy = (
+                    "completed_catalog_spatial_work_measurement"
+                    if measured_work_unit == "spatial_neighbor_pairs_v1" else
+                    "completed_catalog_measurement"
+                )
             else:
                 seconds_per_frame = max(
                     calibration.seconds_per_frame, measured_rate
@@ -1173,8 +1177,37 @@ def _hydrogen_bond_candidate_dimensions(
     }
 
 
+def _measured_reference_seconds_per_frame(
+    module_id: str, measured: Mapping[str, object],
+) -> Tuple[float, str]:
+    """Return a report-bound reference-frame rate and its work unit."""
+
+    spatial_rate = measured.get(
+        "conservative_cpu_seconds_per_spatial_neighbor_pair"
+    )
+    spatial_pairs = measured.get(
+        "conservative_spatial_neighbor_pairs_per_selected_frame"
+    )
+    if (
+        module_id == "hydrogen_bond_discovery"
+        and isinstance(spatial_rate, (int, float))
+        and not isinstance(spatial_rate, bool)
+        and spatial_rate > 0
+        and isinstance(spatial_pairs, (int, float))
+        and not isinstance(spatial_pairs, bool)
+        and spatial_pairs > 0
+    ):
+        return float(spatial_rate) * float(spatial_pairs), (
+            "spatial_neighbor_pairs_v1"
+        )
+    return float(measured["conservative_cpu_seconds_per_frame"]), (
+        "selected_physical_frames_v1"
+    )
+
+
 def _runtime_workload_multiplier(
     profile: SamplingProfile, dimensions: Mapping[str, object],
+    measured_calibration: Optional[Mapping[str, object]] = None,
 ) -> Tuple[float, Dict[str, object]]:
     """Return the method-specific runtime dimension and provenance."""
 
@@ -1189,31 +1222,66 @@ def _runtime_workload_multiplier(
         and isinstance(candidate_plan, dict)
         and candidate_plan.get("status") == "complete"
     ):
-        candidate_count = int(candidate_plan["common_candidate_count"])
-        # The lazy spatial engine never materializes or evaluates the full
-        # donor-H x acceptor Cartesian product. Until a campaign-specific
-        # pilot supplies the measured nearby-pair rate, its endpoint work is
-        # conservatively approximated by the square root of that product.
-        candidate_multiplier = max(
-            MINIMUM_HYDROGEN_BOND_WORKLOAD_MULTIPLIER,
-            math.sqrt(
-                candidate_count / REFERENCE_HYDROGEN_BOND_CANDIDATE_COUNT
-            ),
+        donor_count = candidate_plan.get(
+            "maximum_donor_hydrogen_group_count_per_system"
         )
-        return candidate_multiplier, {
-            "dimension": (
-                "lazy spatial donor/acceptor endpoint proxy from the square root "
-                "of the implicit common candidate universe"
+        acceptor_count = candidate_plan.get("maximum_acceptor_count_per_system")
+        if not (
+            isinstance(donor_count, int) and not isinstance(donor_count, bool)
+            and donor_count > 0
+            and isinstance(acceptor_count, int)
+            and not isinstance(acceptor_count, bool)
+            and acceptor_count > 0
+        ):
+            return atom_multiplier, {
+                "dimension": "maximum topology atom count proxy",
+                "observed_atom_count": atom_count,
+                "reference_atom_count": REFERENCE_ATOM_COUNT,
+                "atom_scaling_exponent": profile.atom_scaling_exponent,
+                "resolved_multiplier": atom_multiplier,
+                "limitation": "hydrogen-bond endpoint counts are unavailable",
+            }
+        endpoint_count = donor_count + acceptor_count
+        measured_reference = (
+            measured_calibration.get(
+                "maximum_measured_spatial_endpoint_count_per_system"
+            )
+            if measured_calibration is not None else None
+        )
+        reference_endpoint_count = (
+            int(measured_reference)
+            if isinstance(measured_reference, int)
+            and not isinstance(measured_reference, bool)
+            and measured_reference > 0
+            else REFERENCE_HYDROGEN_BOND_SPATIAL_ENDPOINT_COUNT
+        )
+        endpoint_multiplier = max(
+            MINIMUM_HYDROGEN_BOND_WORKLOAD_MULTIPLIER,
+            endpoint_count / reference_endpoint_count,
+        )
+        measured_pairs_per_frame = (
+            measured_calibration.get(
+                "conservative_spatial_neighbor_pairs_per_selected_frame"
+            )
+            if measured_calibration is not None else None
+        )
+        return endpoint_multiplier, {
+            "dimension": "spatial donor-H and acceptor endpoint work proxy",
+            "spatial_endpoint_count": endpoint_count,
+            "reference_spatial_endpoint_count": reference_endpoint_count,
+            "reference_spatial_neighbor_pairs_per_selected_frame": (
+                float(measured_pairs_per_frame)
+                if isinstance(measured_pairs_per_frame, (int, float))
+                and not isinstance(measured_pairs_per_frame, bool)
+                and measured_pairs_per_frame > 0 else 25_164 / 12.0
             ),
-            "implicit_candidate_count": candidate_count,
-            "reference_candidate_count": REFERENCE_HYDROGEN_BOND_CANDIDATE_COUNT,
             "minimum_multiplier": MINIMUM_HYDROGEN_BOND_WORKLOAD_MULTIPLIER,
-            "resolved_multiplier": candidate_multiplier,
+            "resolved_multiplier": endpoint_multiplier,
             "coordinate_data_used": False,
             "full_cartesian_candidate_dictionary_materialized": False,
             "limitation": (
-                "replace this topology-only proxy with a measured nearby-pair "
-                "pilot calibration before a full campaign"
+                "the endpoint scaling assumes comparable local density; final "
+                "calibration requires multiple system sizes and trajectory lengths"
             ),
         }
     return atom_multiplier, {
@@ -1280,8 +1348,10 @@ def _runtime_budget(
     evidence_level = calibration.evidence_level
     rationale = calibration.rationale
     if measured_calibration is not None:
-        seconds_per_frame = float(
-            measured_calibration["conservative_cpu_seconds_per_frame"]
+        seconds_per_frame, measured_work_unit = (
+            _measured_reference_seconds_per_frame(
+                profile.module_id, measured_calibration
+            )
         )
         fixed_overhead_seconds = 0.0
         calibration_id = (
@@ -1293,7 +1363,7 @@ def _runtime_budget(
             measured_calibration["calibration_evidence_status"]
         )
         rationale = (
-            f"conservative planner rate from "
+            f"conservative {measured_work_unit} planner rate from "
             f"{measured_calibration['complete_measurement_count']} complete "
             "report-bound measurement(s) and "
             f"{measured_calibration['censored_timeout_count']} separately "
@@ -1305,7 +1375,7 @@ def _runtime_budget(
         (atom_count / REFERENCE_ATOM_COUNT) ** profile.atom_scaling_exponent,
     )
     workload_multiplier, workload_basis = _runtime_workload_multiplier(
-        profile, dimensions
+        profile, dimensions, measured_calibration
     )
     estimated_seconds_per_frame = (
         seconds_per_frame * workload_multiplier
