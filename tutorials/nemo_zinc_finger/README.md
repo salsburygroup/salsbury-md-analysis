@@ -180,8 +180,8 @@ metastability, kinetics, zinc affinity, or a biological binding mechanism.
 
 ### Reference acceptance run
 
-The tutorial was exercised from a clean editable installation on an Apple
-silicon workstation with Python 3.12. The known-good run completed 28 module
+The tutorial was exercised from a clean wheel installation on an Apple silicon
+workstation with Python 3.12. The known-good run completed 28 module
 reports in 7 minutes 55 seconds, used 0.155 measured CPU-hours, and reached a
 maximum measured resident memory of 300 MiB. Every error log was empty and no
 temporary report remained. The planner used all 1,000 frames for each
@@ -190,6 +190,11 @@ stride of 2 (500 frames) and projected all 1,000 frames afterward. These values
 are acceptance evidence for this fixture and machine, not general performance
 guarantees. The hash-bound summary is retained in
 [`validation/nemo_zinc_finger_tutorial_acceptance.json`](../../validation/nemo_zinc_finger_tutorial_acceptance.json).
+
+A separate release-candidate run installs the built wheel into an empty Python
+3.12 environment, runs the full tutorial, checks every report and sidecar hash,
+and previews the Slurm plan without submitting it. Its record is
+[`validation/release_candidate_20260902.json`](../../validation/release_candidate_20260902.json).
 
 ## 6. Use your own trajectory
 

@@ -25,6 +25,94 @@ from salsbury_md_analysis.scientific_sampling import (
 
 
 class ResourcePlanningTests(unittest.TestCase):
+    @staticmethod
+    def _fixed_stride_task(task_id="fixed", stride=7):
+        return {
+            "task_id": task_id,
+            "module_id": "replica_rmsd_rg",
+            "dependency_stage": 0,
+            "effective_cpu_cap": 1,
+            "source_frames_per_replica": [1_000, 1_000],
+            "minimum_frames_per_replica": 100,
+            "maximum_frames_per_replica": 1_000,
+            "cpu_seconds_per_physical_frame": 0.1,
+            "fixed_cpu_hours": 0.0,
+            "estimated_peak_memory_gib": 1.0,
+            "priority_weight": 1.0,
+            "balance_group": "shared",
+            "required_integer_stride": stride,
+        }
+
+    def test_required_integer_stride_is_not_upgraded_with_spare_capacity(self):
+        plan = plan_campaign_resource_budget(
+            [self._fixed_stride_task()], maximum_parallel_cpus=8,
+            maximum_wall_hours=24.0, maximum_memory_gib=8.0,
+            planning_utilization=1.0, pilot_budget_fraction=0.0,
+        )
+        row = plan["tasks"][0]
+        self.assertEqual(row["integer_stride"], 7)
+        self.assertEqual(row["selected_physical_frames_per_replica"], [142, 142])
+        self.assertEqual(
+            plan["allocation_saturation"]["groups_at_frame_ceiling"], 1
+        )
+
+    def test_conflicting_required_strides_in_one_balance_group_fail_closed(self):
+        tasks = [
+            self._fixed_stride_task("a", 7),
+            self._fixed_stride_task("b", 8),
+        ]
+        with self.assertRaisesRegex(
+            ResourcePlanningError, "conflicting required integer strides"
+        ):
+            plan_campaign_resource_budget(
+                tasks, maximum_parallel_cpus=8,
+                maximum_wall_hours=24.0, maximum_memory_gib=8.0,
+                planning_utilization=1.0, pilot_budget_fraction=0.0,
+            )
+
+    def test_required_stride_below_scientific_floor_fails_closed(self):
+        task = self._fixed_stride_task(stride=20)
+        task["minimum_frames_per_replica"] = 100
+        with self.assertRaisesRegex(
+            ResourcePlanningError, "violates a scientific sampling floor"
+        ):
+            plan_campaign_resource_budget(
+                [task], maximum_parallel_cpus=8,
+                maximum_wall_hours=24.0, maximum_memory_gib=8.0,
+                planning_utilization=1.0, pilot_budget_fraction=0.0,
+            )
+
+    def test_resolved_scientific_minimum_stricter_than_embedded_profile_is_hard(self):
+        task = {
+            "task_id": "strict-hbond",
+            "module_id": "hydrogen_bond_discovery",
+            "dependency_stage": 1,
+            "effective_cpu_cap": 1,
+            "source_frames_per_replica": [1_000, 1_000],
+            "system_ids_per_replica": ["system", "system"],
+            "minimum_frames_per_replica": 200,
+            "scientific_minimum_frames_per_replica": 600,
+            "maximum_frames_per_replica": 1_000,
+            "cpu_seconds_per_physical_frame": 1.0,
+            "fixed_cpu_hours": 0.0,
+            "estimated_peak_memory_gib": 1.0,
+            "priority_weight": 1.0,
+            "replica_sampling_mode": "balanced_pooled",
+            "scientific_sampling_requirements": profile_contract(
+                scientific_sampling_profile("hydrogen_bond_discovery")
+            ),
+        }
+        plan = plan_campaign_resource_budget(
+            [task], maximum_parallel_cpus=1,
+            maximum_wall_hours=24.0, maximum_memory_gib=8.0,
+            planning_utilization=1.0, pilot_budget_fraction=0.0,
+        )
+        self.assertEqual(plan["feasibility_status"], "feasible")
+        self.assertTrue(all(
+            count >= 600
+            for count in plan["tasks"][0]["selected_physical_frames_per_replica"]
+        ))
+
     def test_useful_cpu_ceiling_sums_independent_bundles_in_busiest_stage(self):
         tasks = [
             {
@@ -853,7 +941,8 @@ class ResourcePlanningTests(unittest.TestCase):
         )
         self.assertGreater(plan["unused_science_cpu_hours"], 0.0)
         utilization = plan["resource_budget_utilization"]
-        self.assertLess(utilization["science_cpu_hour_fraction"], 0.1)
+        self.assertGreater(utilization["science_cpu_hour_fraction"], 0.9)
+        self.assertGreater(plan["unused_requested_capacity_cpu_hours"], 40.0)
         self.assertGreater(utilization["science_wall_time_fraction"], 0.9)
         self.assertEqual(
             plan["allocation_saturation"]["stop_reason"],
@@ -1648,9 +1737,11 @@ class ResourcePlanningTests(unittest.TestCase):
             finalization_headroom_fraction=0.10,
         )
         self.assertAlmostEqual(plan["raw_capacity_cpu_hours"], 40.0)
-        self.assertAlmostEqual(plan["reserved_pilot_cpu_hours"], 2.0)
-        self.assertAlmostEqual(plan["reserved_finalization_cpu_hours"], 4.0)
-        self.assertAlmostEqual(plan["science_budget_cpu_hours"], 28.0)
+        self.assertAlmostEqual(plan["usable_capacity_cpu_hours"], 10.0)
+        self.assertAlmostEqual(plan["unused_requested_capacity_cpu_hours"], 30.0)
+        self.assertAlmostEqual(plan["reserved_pilot_cpu_hours"], 0.5)
+        self.assertAlmostEqual(plan["reserved_finalization_cpu_hours"], 1.0)
+        self.assertAlmostEqual(plan["science_budget_cpu_hours"], 7.0)
         self.assertAlmostEqual(plan["science_budget_wall_hours"], 7.0)
 
     def test_rejects_reserved_fraction_that_consumes_utilization(self):
@@ -2075,6 +2166,8 @@ class ResourcePlanningTests(unittest.TestCase):
         )
         self.assertEqual(report["resource_warnings"][0]["excess_parallel_cpus"], 7)
         self.assertEqual(report["effective_parallel_cpu_cap"], 1)
+        self.assertEqual(report["usable_capacity_cpu_hours"], 1.0)
+        self.assertEqual(report["unused_requested_capacity_cpu_hours"], 7.0)
         self.assertEqual(
             report["workflow_parallel_capacity"]["effective_parallel_cpu_cap"],
             1,

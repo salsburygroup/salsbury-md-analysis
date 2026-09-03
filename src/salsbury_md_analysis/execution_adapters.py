@@ -251,10 +251,11 @@ def load_slurm_profile(path: Path) -> Dict[str, object]:
         "walltime_overhead_minutes", "minimum_memory_gib",
         "memory_safety_factor", "memory_overhead_gib",
         "large_memory_threshold_gib",
+        "request_campaign_wall_limit_for_planned_tasks",
     }
     if not isinstance(policy, dict) or set(policy).difference(allowed_policy):
         raise ExecutionAdapterError("Slurm resource_policy mapping is invalid")
-    checked_policy: Dict[str, float] = {}
+    checked_policy: Dict[str, object] = {}
     for name, default in _RESOURCE_POLICY_DEFAULTS.items():
         value = policy.get(name, default)
         if (
@@ -272,6 +273,17 @@ def load_slurm_profile(path: Path) -> Dict[str, object]:
             "campaign planner already applies task-time uncertainty; use "
             "walltime_overhead_minutes for explicit scheduler-only overhead"
         )
+    full_campaign_wall = policy.get(
+        "request_campaign_wall_limit_for_planned_tasks", False
+    )
+    if not isinstance(full_campaign_wall, bool):
+        raise ExecutionAdapterError(
+            "resource_policy.request_campaign_wall_limit_for_planned_tasks "
+            "must be true or false"
+        )
+    checked_policy["request_campaign_wall_limit_for_planned_tasks"] = (
+        full_campaign_wall
+    )
     normalized["resource_policy"] = checked_policy
 
     node_policy = profile.get("node_policy", {})
@@ -711,9 +723,15 @@ def _enrich_task_resources(
             wall_hours * 60.0 * float(policy["walltime_safety_factor"])
             + float(policy["walltime_overhead_minutes"])
         )
-        requested_wall_minutes = min(
-            maximum_hours * 60.0,
-            max(float(policy["minimum_wall_minutes"]), float(safe_minutes)),
+        requested_wall_minutes = (
+            maximum_hours * 60.0
+            if bool(policy.get(
+                "request_campaign_wall_limit_for_planned_tasks", False
+            ))
+            else min(
+                maximum_hours * 60.0,
+                max(float(policy["minimum_wall_minutes"]), float(safe_minutes)),
+            )
         )
         try:
             requested_memory_gib = max(
@@ -807,6 +825,11 @@ def _enrich_task_resources(
                     wall_hours * 60.0 * float(policy["walltime_safety_factor"])
                     + float(policy["walltime_overhead_minutes"])
                 ),
+            )
+        ),
+        "wall_request_uses_campaign_cap": bool(
+            matched and policy.get(
+                "request_campaign_wall_limit_for_planned_tasks", False
             )
         ),
         "memory_request_limited_by_campaign_cap": False,
@@ -905,6 +928,13 @@ def _fit_walltime_requests_to_campaign(
     tasks = [
         task for phase in phases for task in phase.get("tasks", [])
     ]
+    resource_policy = execution_plan.get("resource_policy", {})
+    full_campaign_wall = bool(
+        isinstance(resource_policy, Mapping)
+        and resource_policy.get(
+            "request_campaign_wall_limit_for_planned_tasks", False
+        )
+    )
 
     def assign(scale: float) -> float:
         for task in tasks:
@@ -924,6 +954,38 @@ def _fit_walltime_requests_to_campaign(
             maximum_parallel_memory_gib=maximum_memory,
             node_policy=node_policy,
         )
+
+    if full_campaign_wall:
+        for task in tasks:
+            if task.get("wall_request_uses_campaign_cap"):
+                task["requested_wall_minutes"] = campaign_wall * 60.0
+                task["preferred_requested_wall_minutes"] = campaign_wall * 60.0
+                task["wall_request_limited_by_campaign_cap"] = False
+        selected_path = _walltime_path_for_phases(
+            phases,
+            maximum_parallel_cpus=maximum_cpus,
+            maximum_parallel_memory_gib=maximum_memory,
+            node_policy=node_policy,
+        )
+        allocation = {
+            "walltime_allocation_schema": "salsbury-walltime-allocation-v2",
+            "contract": "full_campaign_limit_per_planner_backed_job",
+            "campaign_wall_limit_hours": campaign_wall,
+            "minimum_scheduler_reservation_critical_path_hours": None,
+            "preferred_scheduler_reservation_critical_path_hours": selected_path,
+            "selected_scheduler_reservation_critical_path_hours": selected_path,
+            "preferred_padding_scale_applied": 1.0,
+            "status": "full_campaign_limit_per_planned_task",
+            "submission_time_feasible": True,
+            "interpretation": (
+                "Every planner-backed Slurm job requests the configured campaign "
+                "wall limit as timeout headroom. Submission feasibility uses the "
+                "planner's expected dependency-chain runtime; serialized job kill "
+                "limits are not treated as elapsed runtime."
+            ),
+        }
+        execution_plan["walltime_allocation"] = allocation
+        return allocation
 
     minimum_path = assign(0.0)
     preferred_path = assign(1.0)
@@ -1990,7 +2052,13 @@ def _slurm_submission_preview(
         or planner_critical_path <= campaign_wall_hours + 1.0e-9
     )
     scheduler_path_feasible = (
-        campaign_wall_hours is None
+        bool(
+            isinstance(execution_plan.get("resource_policy"), Mapping)
+            and execution_plan["resource_policy"].get(
+                "request_campaign_wall_limit_for_planned_tasks", False
+            )
+        )
+        or campaign_wall_hours is None
         or scheduler_reservation_path <= campaign_wall_hours + 1.0e-9
     )
     walltime_allocation = execution_plan.get("walltime_allocation", {})
@@ -2380,9 +2448,16 @@ def _render_resource_bounded_submit(
             options.append('--dependency="' + ",".join(clauses) + '"')
         command_options = " ".join(options)
         script = shlex.quote(str(item["script"]))
+        completion_report_arguments = " ".join(
+            shlex.quote(str(value))
+            for value in item.get("completion_reports", [])
+        )
+        if completion_report_arguments:
+            completion_report_arguments = " " + completion_report_arguments
         lines.extend([
             f'{variable}=$("$SUBMIT_COMMAND" {command_options} '
-            f'"$RECOVERY_RUNNER" "$ROOT"/{script})',
+            f'"$RECOVERY_RUNNER" "$ROOT"/{script}'
+            f'{completion_report_arguments})',
             f'{variable}="${{{variable}%%;*}}"',
         ])
         if lane_index >= 0:
@@ -2415,6 +2490,7 @@ def _render_task_recovery_runner(
     return f'''#!/usr/bin/env bash
 set -uo pipefail
 TASK="${{1:?worker script is required}}"
+shift
 AUTORECOVERY_ENABLED={enabled}
 MAXIMUM_TASK_ATTEMPTS={maximum_task_attempts}
 RESTART_COUNT="${{SLURM_RESTART_COUNT:-0}}"
@@ -2438,6 +2514,28 @@ record_status() {{
   printf '{{"event":"%s","task":"%s","attempt":%s,"restart_count":%s,"exit_code":%s,"stdout":"%s","stderr":"%s"}}\n' \
     "$event" "${{TASK##*/}}" "$attempt" "$RESTART_COUNT" "$exit_code" \
     "${{ATTEMPT_STDOUT##*/}}" "${{ATTEMPT_STDERR##*/}}" >> "$STATUS_FILE"
+}}
+validate_completion_reports() {{
+  if [[ "$#" -eq 0 ]]; then
+    return 0
+  fi
+  python3 - "$ROOT" "$@" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1]).resolve()
+for name in sys.argv[2:]:
+    path = (root / name).resolve()
+    if root not in path.parents or not path.is_file():
+        raise SystemExit(1)
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise SystemExit(1)
+    if not isinstance(report, dict) or report.get("technical_status") != "complete":
+        raise SystemExit(1)
+PY
 }}
 handle_timeout_signal() {{
   trap - USR1 TERM
@@ -2471,15 +2569,20 @@ for ((attempt=1; attempt<=remaining; attempt++)); do
   bash "$TASK" > "$ATTEMPT_STDOUT" 2> "$ATTEMPT_STDERR" &
   CHILD_PID=$!
   wait "$CHILD_PID"
-  exit_code=$?
+  child_exit_code=$?
   CHILD_PID=""
   cat "$ATTEMPT_STDOUT"
   cat "$ATTEMPT_STDERR" >&2
-  if [[ "$exit_code" -eq 0 ]]; then
+  exit_code="$child_exit_code"
+  if [[ "$child_exit_code" -eq 0 ]] && ! validate_completion_reports "$@"; then
+    exit_code=66
+    record_status output_contract_failed "$exit_code" "$global_attempt"
+  elif [[ "$exit_code" -eq 0 ]]; then
     record_status complete 0 "$global_attempt"
     exit 0
+  else
+    record_status failed "$exit_code" "$global_attempt"
   fi
-  record_status failed "$exit_code" "$global_attempt"
 done
 exit "$exit_code"
 '''
@@ -3282,8 +3385,9 @@ def prepare_execution_artifacts(
             "completion without requiring upstream success"
         ),
         "task_success_policy": (
-            "a task succeeds only with exit code zero; skip only tasks whose own "
-            "depends_on_task_ids failed or timed out, and continue unrelated tasks"
+            "a task succeeds only with exit code zero and valid declared "
+            "completion reports; skip only tasks whose own depends_on_task_ids "
+            "failed or timed out, and continue unrelated tasks"
         ),
         "autorecovery": {
             "enabled": bool(execution.get("autorecovery", True)),
@@ -3564,6 +3668,19 @@ def _run_local_task(
                     except subprocess.TimeoutExpired:
                         os.killpg(process.pid, signal.SIGKILL)
                         exit_code = process.wait()
+            child_exit_code = exit_code
+            completion_reports_valid = None
+            if (
+                not timed_out
+                and child_exit_code == 0
+                and isinstance(completion_reports, list)
+                and completion_reports
+            ):
+                completion_reports_valid = _reports_complete(
+                    root, [str(value) for value in completion_reports]
+                )
+                if not completion_reports_valid:
+                    exit_code = 66
             attempt_status = (
                 "timed_out" if timed_out else
                 "complete" if exit_code == 0 else "failed"
@@ -3572,6 +3689,9 @@ def _run_local_task(
                 "attempt_number": attempt_number,
                 "status": attempt_status,
                 "exit_code": exit_code,
+                "child_exit_code": child_exit_code,
+                "completion_reports_valid": completion_reports_valid,
+                "completion_report_paths": list(completion_reports),
                 "wall_seconds": time.monotonic() - attempt_start,
                 "allowed_wall_minutes": timeout_seconds / 60.0,
                 "stdout": str(stdout_path.relative_to(root)),

@@ -49,12 +49,13 @@
     "minimum_memory_gib": 0,
     "memory_safety_factor": 1.5,
     "memory_overhead_gib": 1,
-    "large_memory_threshold_gib": 96
+    "large_memory_threshold_gib": 96,
+    "request_campaign_wall_limit_for_planned_tasks": true
   },
   "node_policy": {
     "cpus_per_node": 44,
     "memory_gib_per_node": 185,
-    "maximum_nodes_per_campaign": null
+    "maximum_nodes_per_campaign": 16
   },
   "additional_sbatch_directives": []
 }

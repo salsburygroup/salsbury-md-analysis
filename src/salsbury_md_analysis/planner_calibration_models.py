@@ -13,6 +13,8 @@ from scipy.optimize import nnls
 
 
 MODEL_SCHEMA = "salsbury-planner-size-length-cpu-models-v1"
+HOLDOUT_EVIDENCE_SCHEMA = "salsbury-planner-runtime-holdouts-v1"
+HOLDOUT_ACCEPTANCE_SCHEMA = "salsbury-planner-runtime-holdout-acceptance-v1"
 SUPPORTED_MODULES = {
     "structural_integrity_qc": {
         "work_field": "topology_atom_frame_count",
@@ -112,6 +114,228 @@ def validate_size_length_models(payload: Mapping[str, object]) -> Dict[str, obje
     result = dict(payload)
     result["models"] = models
     return result
+
+
+def predict_size_length_cpu_terms(
+    module_id: str,
+    model: Mapping[str, object],
+    *,
+    source_topology_atom_frame_count: int,
+    selected_work_proxy_count_per_frame: int,
+    campaign_time_safety_factor: float = 1.0,
+) -> Dict[str, object]:
+    """Convert a fitted model into affine task-planner CPU terms.
+
+    The selected-work proxy is a topology-derived endpoint count for hydrogen
+    bonds and a topology atom count for structural QC and ion atmosphere. No
+    trajectory coordinates or Cartesian candidate dictionary are needed.
+    """
+
+    if module_id not in SUPPORTED_MODULES:
+        raise PlannerCalibrationModelError(f"unsupported model: {module_id}")
+    if model.get("module_id") != module_id:
+        raise PlannerCalibrationModelError(
+            f"model module mismatch: expected {module_id}"
+        )
+    source_work = _positive_integer(
+        source_topology_atom_frame_count,
+        "source_topology_atom_frame_count",
+    )
+    proxy_count = _positive_integer(
+        selected_work_proxy_count_per_frame,
+        "selected_work_proxy_count_per_frame",
+    )
+    campaign_safety = _positive(
+        campaign_time_safety_factor,
+        "campaign_time_safety_factor",
+    )
+    residual_safety = _positive(
+        model.get("residual_safety_factor"),
+        "residual_safety_factor",
+    )
+    proxy_rate = _positive(
+        model.get("selected_work_units_per_proxy_unit"),
+        "selected_work_units_per_proxy_unit",
+    )
+    intercept = _positive(
+        model.get("intercept_cpu_seconds"),
+        "intercept_cpu_seconds",
+        allow_zero=True,
+    )
+    source_rate = _positive(
+        model.get("cpu_seconds_per_topology_atom_source_frame"),
+        "cpu_seconds_per_topology_atom_source_frame",
+        allow_zero=True,
+    )
+    selected_rate = _positive(
+        model.get("cpu_seconds_per_selected_work_unit"),
+        "cpu_seconds_per_selected_work_unit",
+        allow_zero=True,
+    )
+    combined_safety = residual_safety * campaign_safety
+    selected_work_per_frame = proxy_rate * proxy_count
+    return {
+        "fixed_cpu_hours": combined_safety * (
+            intercept + source_rate * source_work
+        ) / 3600.0,
+        "cpu_seconds_per_physical_frame": (
+            combined_safety * selected_rate * selected_work_per_frame
+        ),
+        "workload_basis": {
+            "dimension": (
+                "measured source topology-atom frames plus selected-work proxy"
+            ),
+            "source_topology_atom_frame_count": source_work,
+            "selected_work_unit": model.get("selected_work_unit"),
+            "selected_work_planning_proxy": model.get("planning_proxy"),
+            "selected_work_proxy_count_per_frame": proxy_count,
+            "selected_work_units_per_proxy_unit": proxy_rate,
+            "estimated_selected_work_units_per_frame": selected_work_per_frame,
+            "model_residual_safety_factor": residual_safety,
+            "campaign_time_safety_factor": campaign_safety,
+            "combined_time_safety_factor": combined_safety,
+            "independent_heldout_validation_passed": model.get(
+                "heldout_validation_passed"
+            ) is True,
+            "measured_ranges": model.get("measured_ranges"),
+            "coordinate_data_used": False,
+            "full_cartesian_candidate_dictionary_materialized": False,
+            "limitation": model.get("extrapolation_policy"),
+        },
+    }
+
+
+def validate_runtime_holdouts(
+    model_payload: Mapping[str, object],
+    holdout_payload: Mapping[str, object],
+) -> Dict[str, object]:
+    """Check independent runtime observations against planning upper bounds.
+
+    The prediction uses only manifest-derived source size, selected-frame count,
+    and the module's pre-coordinate work proxy. Observed spatial work is kept in
+    the acceptance record for later model review but never enters the prediction.
+    """
+
+    model_artifact = validate_size_length_models(model_payload)
+    if (
+        holdout_payload.get("holdout_schema") != HOLDOUT_EVIDENCE_SCHEMA
+        or holdout_payload.get("technical_status") != "complete"
+        or holdout_payload.get("unexpected_error_count") != 0
+    ):
+        raise PlannerCalibrationModelError("invalid runtime holdout evidence")
+    raw_points = holdout_payload.get("points")
+    if not isinstance(raw_points, list) or not raw_points:
+        raise PlannerCalibrationModelError("runtime holdout evidence has no points")
+
+    rows = []
+    for point in raw_points:
+        if not isinstance(point, Mapping):
+            raise PlannerCalibrationModelError("runtime holdout point must be an object")
+        module_id = point.get("module_id")
+        model = model_artifact["models"].get(module_id)  # type: ignore[union-attr]
+        if not isinstance(module_id, str) or not isinstance(model, Mapping):
+            raise PlannerCalibrationModelError(
+                f"holdout has no fitted model: {module_id}"
+            )
+        source_work = _positive_integer(
+            point.get("source_topology_atom_frame_count"),
+            "source_topology_atom_frame_count",
+        )
+        selected_frames = _positive_integer(
+            point.get("selected_source_physical_frames"),
+            "selected_source_physical_frames",
+        )
+        proxy_count = _positive_integer(
+            point.get("selected_work_proxy_count_per_frame"),
+            "selected_work_proxy_count_per_frame",
+        )
+        observed_cpu = _positive(point.get("observed_total_cpu_seconds"), (
+            "observed_total_cpu_seconds"
+        ))
+        if point.get("stderr_nonempty") is not False:
+            raise PlannerCalibrationModelError(
+                f"{point.get('point_id')} wrote unexpected stderr"
+            )
+        for field in (
+            "report_sha256",
+            "project_manifest_sha256",
+            "input_content_signature_sha256",
+            "contract_signature_sha256",
+        ):
+            value = point.get(field)
+            if not isinstance(value, str) or len(value) != 64:
+                raise PlannerCalibrationModelError(
+                    f"{point.get('point_id')}.{field} must be a SHA-256"
+                )
+
+        estimated_selected_work = (
+            float(model["selected_work_units_per_proxy_unit"])
+            * proxy_count
+            * selected_frames
+        )
+        raw_prediction = (
+            float(model["intercept_cpu_seconds"])
+            + float(model["cpu_seconds_per_topology_atom_source_frame"])
+            * source_work
+            + float(model["cpu_seconds_per_selected_work_unit"])
+            * estimated_selected_work
+        )
+        upper = float(model["residual_safety_factor"]) * raw_prediction
+        passed = observed_cpu <= upper
+        rows.append({
+            "point_id": point.get("point_id"),
+            "module_id": module_id,
+            "report_sha256": point["report_sha256"],
+            "project_manifest_sha256": point["project_manifest_sha256"],
+            "input_content_signature_sha256": point[
+                "input_content_signature_sha256"
+            ],
+            "contract_signature_sha256": point["contract_signature_sha256"],
+            "slurm_job_id": point.get("slurm_job_id"),
+            "source_topology_atom_frame_count": source_work,
+            "selected_source_physical_frames": selected_frames,
+            "selected_work_proxy_count_per_frame": proxy_count,
+            "estimated_selected_work_units": estimated_selected_work,
+            "observed_selected_work_units": point.get(
+                "observed_selected_work_units"
+            ),
+            "observed_total_cpu_seconds": observed_cpu,
+            "raw_predicted_cpu_seconds": raw_prediction,
+            "planning_upper_cpu_seconds": upper,
+            "observed_to_planning_upper_ratio": observed_cpu / upper,
+            "observed_wall_seconds": point.get("observed_wall_seconds"),
+            "instrumented_maximum_resident_memory_mib": point.get(
+                "instrumented_maximum_resident_memory_mib"
+            ),
+            "passed": passed,
+        })
+    if not all(bool(row["passed"]) for row in rows):
+        failed = [str(row["point_id"]) for row in rows if not row["passed"]]
+        raise PlannerCalibrationModelError(
+            "runtime holdout exceeded planning upper bound: " + ", ".join(failed)
+        )
+    return {
+        "acceptance_schema": HOLDOUT_ACCEPTANCE_SCHEMA,
+        "technical_status": "complete",
+        "scientific_status": "runtime evidence only; scientific validity not evaluated",
+        "model_source_evidence_sha256": model_artifact[
+            "source_evidence_sha256"
+        ],
+        "holdout_evidence_sha256": holdout_payload.get("content_sha256"),
+        "prediction_coordinate_data_used": False,
+        "prediction_dense_candidate_universe_materialized": False,
+        "model_coefficients_changed": False,
+        "model_change_reason": (
+            "all independent observations remained below the existing planning "
+            "upper bounds"
+        ),
+        "point_count": len(rows),
+        "maximum_observed_to_planning_upper_ratio": max(
+            float(row["observed_to_planning_upper_ratio"]) for row in rows
+        ),
+        "all_holdouts_passed": True,
+        "points": rows,
+    }
 
 
 def _fit_one(

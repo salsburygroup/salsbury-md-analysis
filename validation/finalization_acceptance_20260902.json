@@ -1,0 +1,88 @@
+{
+  "schema_version": "salsbury-finalization-acceptance-v1",
+  "recorded_at": "2026-09-02",
+  "software_release_gate": {
+    "status": "pass_for_branch_integration",
+    "tested_source_head": "d5ba518859a1ada3065e0487a661396932d7b323",
+    "full_test_count": 680,
+    "failure_count": 0,
+    "expected_skip_count": 1,
+    "live_main_before_integration": "3fdf0bc2296c95679c0bbe17dd28ca9516358174",
+    "live_experimental_before_integration": "84438d8d938cd1953c3d1edfa4eb86b7dda77fb2",
+    "top1_worktree_branch_pushed": false
+  },
+  "top1_equivalence": {
+    "technical_status": "complete",
+    "frame_count": 36,
+    "observed_identity_count": 2487,
+    "present_event_count": 22000,
+    "identity_mismatch_count": 0,
+    "cutoff_mask_mismatch_count": 0,
+    "distance_mismatch_count": 0,
+    "angle_mismatch_count": 0
+  },
+  "top1_hydrogen_bond_reports": {
+    "validator_job_id": 8298362,
+    "validator_state": "COMPLETED",
+    "validator_exit_code": "0:0",
+    "validator_elapsed_seconds": 2,
+    "validator_stderr_bytes": 0,
+    "trajectory_recomputed": false,
+    "historical_destinations_overwritten": false,
+    "downstream_remap_required": true,
+    "D": {
+      "stride": 15,
+      "replica_count": 12,
+      "selected_frames_per_replica": 1333,
+      "selected_frame_count": 15996,
+      "report_sha256": "52523fcf0ff5bad8bcad33c4dea2f1f6e4d795e529d52bed7e239c8a88bb92ef",
+      "summary_sha256": "3dea0adb65fb9730b3b6173e1e7d11af2898678af94d69c8bd572006d2026410"
+    },
+    "T": {
+      "stride": 29,
+      "replica_count": 6,
+      "selected_frames_per_replica": 689,
+      "selected_frame_count": 4134,
+      "report_sha256": "64b3be98fbc00874aa295fba0a35e3fa048f54dc9d10225ca3b22e3bb538ecd3",
+      "summary_sha256": "76d3d8cc0a04e9f99d300d6f6ef5c6f04c2adb16f15528c5ba686602246f2427"
+    }
+  },
+  "tba": {
+    "structural_qc_job_id": 8296182,
+    "structural_qc_technical_status": "complete",
+    "structural_qc_source_frame_count": 200000,
+    "structural_qc_selected_frame_count": 2500,
+    "structural_qc_replica_count": 20,
+    "structural_qc_stride": 80,
+    "structural_qc_error_count": 0,
+    "structural_qc_warning_count": 1,
+    "structural_qc_report_sha256": "154e997289f18181429301fe7a3dc8f85a305ee65594697e827c211055453863",
+    "authoritative_report_job_id": 8298046,
+    "authoritative_report_state": "COMPLETED",
+    "authoritative_report_exit_code": "0:0",
+    "reviewed_report_count": 121,
+    "reviewed_module_count": 33,
+    "candidate_count": 904,
+    "quality_control_record_count": 697,
+    "silent_omission_count": 0,
+    "final_summary_sha256": "b6a6afb474e2b0b22f70ca0ae0989c93d657a07f74a62f515fa074b60d7e1e57"
+  },
+  "planner": {
+    "cores_per_node": 44,
+    "memory_gib_per_node": 185,
+    "maximum_nodes_per_campaign": 16,
+    "slurm_requested_time": "7-00:00:00",
+    "queue_delay_included": false,
+    "planning_jobs_submitted": 0,
+    "unexpected_error_count": 0,
+    "evidence_sha256": "3ab9f9657edd83c1d2827b7eaee078fae58ccbe24d75a90cf7361a1ee8f03472"
+  },
+  "scientific_acceptance": {
+    "status": "not_evaluated",
+    "top1_t_dihedral_state_at_record": "RUNNING",
+    "top1_downstream_reporting_state": "held_pending_dihedral_and_human_path_acceptance",
+    "trex_biological_use": "not_accepted",
+    "biological_conclusions_supported": false
+  },
+  "unexpected_errors": []
+}

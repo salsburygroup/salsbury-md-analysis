@@ -1551,6 +1551,15 @@ def plan_campaign_resource_budget(
             raise ResourcePlanningError(
                 f"task {task_id} balance_group must be a nonempty string"
             )
+        required_integer_stride = raw.get("required_integer_stride")
+        if required_integer_stride is not None and (
+            isinstance(required_integer_stride, bool)
+            or not isinstance(required_integer_stride, int)
+            or required_integer_stride <= 0
+        ):
+            raise ResourcePlanningError(
+                f"task {task_id} required_integer_stride must be a positive integer"
+            )
         execution_bundle_id = raw.get("execution_bundle_id", task_id)
         if not isinstance(execution_bundle_id, str) or not execution_bundle_id:
             raise ResourcePlanningError(
@@ -1591,15 +1600,25 @@ def plan_campaign_resource_budget(
             "priority_weight": weight,
             "member_observation_multiplier": int(multiplier),
             "balance_group": balance_group or task_id,
+            "required_integer_stride": required_integer_stride,
             "execution_bundle_id": execution_bundle_id,
             "calibration_status": calibration_status,
             "replica_sampling_mode": replica_sampling_mode,
         })
 
+    useful_parallel_cpu_ceiling = workflow_useful_parallel_cpu_ceiling(
+        normalized, maximum_cpus_per_node=maximum_cpus_per_node
+    )
+    effective_parallel_cpu_cap = min(
+        maximum_parallel_cpus, useful_parallel_cpu_ceiling
+    )
     raw_cpu_hours = maximum_parallel_cpus * wall_hours
-    planned_cpu_hours = raw_cpu_hours * utilization
-    reserved_pilot_cpu_hours = raw_cpu_hours * pilot_fraction
-    reserved_finalization_cpu_hours = raw_cpu_hours * finalization_fraction
+    usable_cpu_hours = effective_parallel_cpu_cap * wall_hours
+    planned_cpu_hours = usable_cpu_hours * utilization
+    reserved_pilot_cpu_hours = usable_cpu_hours * pilot_fraction
+    reserved_finalization_cpu_hours = (
+        usable_cpu_hours * finalization_fraction
+    )
     science_cpu_hours = (
         planned_cpu_hours
         - reserved_pilot_cpu_hours
@@ -1624,8 +1643,22 @@ def plan_campaign_resource_budget(
             for row in rows
             for value in row["source_frames_per_replica"]  # type: ignore[union-attr]
         ]
-        stride = integer_stride_for_budget(
-            source_counts, budget, error_type=ResourcePlanningError
+        required_strides = {
+            int(row["required_integer_stride"])
+            for row in rows if row.get("required_integer_stride") is not None
+        }
+        if len(required_strides) > 1:
+            raise ResourcePlanningError(
+                f"balance group {rows[0]['balance_group']} declares conflicting "
+                "required integer strides"
+            )
+        stride_is_fixed = bool(required_strides)
+        stride = (
+            next(iter(required_strides))
+            if stride_is_fixed else
+            integer_stride_for_budget(
+                source_counts, budget, error_type=ResourcePlanningError
+            )
         )
         def minimum_is_satisfied(row: Mapping[str, object], stride: int) -> bool:
             source = [
@@ -1662,7 +1695,25 @@ def plan_campaign_resource_budget(
                         if isinstance(spans, list) else None
                     ),
                 )
-                return bool(assessment["keep_enabled"])
+                if not bool(assessment["keep_enabled"]):
+                    return False
+                resolved_scientific_minimum = row.get(
+                    "scientific_minimum_frames_per_replica"
+                )
+                if (
+                    isinstance(resolved_scientific_minimum, int)
+                    and not isinstance(resolved_scientific_minimum, bool)
+                    and resolved_scientific_minimum > 0
+                ):
+                    return all(
+                        retained_count >= min(
+                            source_count, resolved_scientific_minimum
+                        )
+                        for retained_count, source_count in zip(
+                            retained, source
+                        )
+                    )
+                return True
             if row["replica_sampling_mode"] == "balanced_pooled":
                 # The declared pilot is a pooled technical minimum.  A single
                 # common stride preserves temporal spacing and each replica's
@@ -1680,10 +1731,18 @@ def plan_campaign_resource_budget(
         # method meets both its per-replica and per-system contract. Project-
         # local preprocessing tasks without a registered profile retain their
         # declared pooled or replica-resolved technical minimum.
-        while stride > 1 and any(
+        if stride_is_fixed and any(
             not minimum_is_satisfied(row, stride) for row in rows
         ):
-            stride -= 1
+            raise ResourcePlanningError(
+                f"balance group {rows[0]['balance_group']} required integer "
+                f"stride {stride} violates a scientific sampling floor"
+            )
+        if not stride_is_fixed:
+            while stride > 1 and any(
+                not minimum_is_satisfied(row, stride) for row in rows
+            ):
+                stride -= 1
         counts = {
             str(row["task_id"]): [
                 integer_stride_selected_count(int(value), stride)
@@ -2196,6 +2255,9 @@ def plan_campaign_resource_budget(
         memory_blocked: list[str] = []
         at_ceiling: list[str] = []
         for group_id, rows in groups.items():
+            if any(row.get("required_integer_stride") is not None for row in rows):
+                at_ceiling.append(group_id)
+                continue
             current_budget = group_budgets[group_id]
             maximum_budget = maximum_group_budget(rows)
             if current_budget >= maximum_budget:
@@ -2612,12 +2674,6 @@ def plan_campaign_resource_budget(
             "wall/CPU envelope. Unused CPU-hours are stranded by discrete stride "
             "steps and available parallelism, not silently discarded work."
         )
-    useful_parallel_cpu_ceiling = workflow_useful_parallel_cpu_ceiling(
-        normalized, maximum_cpus_per_node=maximum_cpus_per_node
-    )
-    effective_parallel_cpu_cap = min(
-        maximum_parallel_cpus, useful_parallel_cpu_ceiling
-    )
     resource_warnings = []
     if maximum_parallel_cpus > useful_parallel_cpu_ceiling:
         cpu_label = "CPU" if effective_parallel_cpu_cap == 1 else "CPUs"
@@ -2696,6 +2752,10 @@ def plan_campaign_resource_budget(
         "memory_overhead_gib": memory_overhead,
         "minimum_scheduler_memory_gib": minimum_scheduler_memory,
         "raw_capacity_cpu_hours": raw_cpu_hours,
+        "usable_capacity_cpu_hours": usable_cpu_hours,
+        "unused_requested_capacity_cpu_hours": (
+            raw_cpu_hours - usable_cpu_hours
+        ),
         "planning_utilization": utilization,
         "planned_capacity_cpu_hours": planned_cpu_hours,
         "pilot_budget_fraction": pilot_fraction,
@@ -2715,7 +2775,8 @@ def plan_campaign_resource_budget(
             "average_parallel_cpus_during_selected_schedule": (
                 average_parallel_cpus
             ),
-            "maximum_parallel_cpus": maximum_parallel_cpus,
+            "maximum_parallel_cpus": effective_parallel_cpu_cap,
+            "requested_maximum_parallel_cpus": maximum_parallel_cpus,
         },
         "warning_count": len(resource_warnings),
         "resource_warnings": resource_warnings,
