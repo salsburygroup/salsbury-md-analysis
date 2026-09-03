@@ -135,7 +135,36 @@ scheduler requests without submitting:
 ./submit.sh --preview
 ```
 
-Only after the preview matches local policy should you run `./submit.sh`.
+To compare one through sixteen 44-core, 185-GiB nodes without submitting work,
+run:
+
+```bash
+salsbury-md-analysis plan-node-sweep campaign-resource-plan.json \
+  --cpus-per-node 44 \
+  --memory-gib-per-node 185 \
+  --maximum-nodes 16 \
+  --maximum-wall-hours 120 \
+  > node-sweep.json
+```
+
+The sweep first plans at the maximum allocation. It reads the complete enabled
+task graph, replica-worker caps, dependency stages, execution bundles, and
+safety-adjusted memory requests. It then checks smaller allocations only up to
+the largest node count that the maximum-node schedule can use. Larger points
+remain in the curve as explicit replays and cannot gain information.
+
+Read `task_inventory_ceiling` for that maximum useful node count. Read
+`threshold_sensitivity` for the first node count reaching 75%, 80%, 90%, 95%,
+99%, or 100% of the best information score. Each threshold row also reports
+the mean and median multiple of the registered scientific minimum. These are
+planning comparisons, not evidence of adequate sampling.
+
+The preview can refuse submission even when the local tutorial completed. A
+cluster's minimum job reservation and scheduler overhead can make a short
+workstation wall limit impossible. In that case, prepare a new plan with at
+least the reported campaign-wall requirement and inspect it again; do not
+bypass the refusal. Only after the preview matches local policy should you run
+`./submit.sh`.
 Submission uses the planned dependencies and task-specific CPU, memory, and
 wall requests. A terminal Slurm failure is handled under the same bounded
 recovery policy; a dependency is not accepted because its predecessor merely

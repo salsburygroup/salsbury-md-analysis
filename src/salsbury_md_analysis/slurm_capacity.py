@@ -781,6 +781,12 @@ def advise_slurm_capacity(
             },
             "feasibility_status": replanned["feasibility_status"],
             "raw_capacity_cpu_hours": replanned["raw_capacity_cpu_hours"],
+            "usable_capacity_cpu_hours": replanned[
+                "usable_capacity_cpu_hours"
+            ],
+            "unused_requested_capacity_cpu_hours": replanned[
+                "unused_requested_capacity_cpu_hours"
+            ],
             "estimated_selected_cpu_hours": replanned["estimated_selected_cpu_hours"],
             "estimated_selected_wall_hours_lower_bound": replanned[
                 "estimated_selected_wall_hours_lower_bound"
@@ -857,7 +863,9 @@ def render_capacity_markdown(report: Mapping[str, object]) -> str:
         f"{cpus['planned_resource_wave_cpu_peak']} CPUs",
         f"- Recommended request: {cpus['recommended_maximum_parallel_cpus']} CPUs",
         f"- Requested duration: {report['requested_wall_hours']:g} hours",
-        f"- CPU-hour envelope: {campaign['raw_capacity_cpu_hours']:g}",
+        f"- Requested CPU-hour envelope: {campaign['raw_capacity_cpu_hours']:g}",
+        f"- Runnable-task CPU-hour envelope: "
+        f"{campaign['usable_capacity_cpu_hours']:g}",
         f"- Estimated selected CPU-hours: "
         f"{campaign['estimated_selected_cpu_hours']:.2f}",
         f"- Unallocated science CPU-hours: "

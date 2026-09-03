@@ -313,6 +313,10 @@ fixed-allocation floor, and a 4x upper bound. Measured maxima instead scale from
 their measured observation coverage with a square-root relationship and the
 same 10% floor. This avoids charging a tiny solute or short run the unchanged
 allowance of a large, long calibration while retaining substantial headroom.
+The size-and-length CPU model has an independent multi-system TOP1 holdout in
+`validation/planner_final_holdout_acceptance_20260902.json`; both observations
+fell below the existing planning upper bounds, so the shipped coefficients were
+left unchanged.
 
 `execution.maximum_memory_gib` is the maximum simultaneous memory request for
 the complete campaign, not an allowance for every job. The planner first turns

@@ -134,6 +134,7 @@ from .resource_planning import (
     recommend_frame_budget,
     recommend_scientifically_valid_task_subset,
 )
+from .node_sweep import plan_node_sweep
 from .resource_calibrations import (
     ResourceCalibrationError, build_resource_calibration_catalog,
     redact_resource_calibration_catalog,
@@ -1595,6 +1596,34 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    node_sweep_parser = subparsers.add_parser(
+        "plan-node-sweep",
+        help="Compare one through N identical cluster nodes without submitting jobs.",
+    )
+    node_sweep_parser.add_argument(
+        "path", type=Path,
+        help="JSON task list or campaign plan containing a tasks list.",
+    )
+    node_sweep_parser.add_argument("--cpus-per-node", type=int, required=True)
+    node_sweep_parser.add_argument(
+        "--memory-gib-per-node", type=float, required=True
+    )
+    node_sweep_parser.add_argument("--maximum-nodes", type=int, default=16)
+    node_sweep_parser.add_argument(
+        "--maximum-wall-hours", type=float, default=120.0
+    )
+    node_sweep_parser.add_argument(
+        "--information-plateau-fraction", type=float, default=0.95
+    )
+    node_sweep_parser.add_argument(
+        "--information-plateau-tolerance-fraction", type=float,
+        default=0.0,
+    )
+    node_sweep_parser.add_argument(
+        "--planning-processes", type=int, default=1,
+        help="Independent local planning processes; this does not submit jobs.",
+    )
+
     automatic_parser = subparsers.add_parser(
         "plan-automatic-sampling",
         help=(
@@ -2264,6 +2293,42 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             maximum_wall_hours=args.maximum_wall_hours,
             recommend_method_reduction=args.recommend_method_reduction,
         )
+    if args.command == "plan-node-sweep":
+        try:
+            payload = load_json(args.path)
+            tasks = payload.get("tasks") if isinstance(payload, dict) else payload
+            if not isinstance(tasks, list) or not tasks or not all(
+                isinstance(row, dict) for row in tasks
+            ):
+                raise ResourcePlanningError(
+                    "node-sweep input must be a task list or an object with tasks"
+                )
+            report = plan_node_sweep(
+                tasks,
+                cpus_per_node=args.cpus_per_node,
+                memory_gib_per_node=args.memory_gib_per_node,
+                maximum_nodes=args.maximum_nodes,
+                maximum_wall_hours=args.maximum_wall_hours,
+                information_plateau_fraction=(
+                    args.information_plateau_fraction
+                ),
+                information_plateau_tolerance_fraction=(
+                    args.information_plateau_tolerance_fraction
+                ),
+                planning_processes=args.planning_processes,
+            )
+            print(json.dumps(report, indent=2, sort_keys=True))
+            return 0 if report["technical_status"] == "complete" else 2
+        except (OSError, ResourcePlanningError, ValueError) as exc:
+            print(json.dumps({
+                "technical_status": "failed",
+                "issues": [{
+                    "severity": "error",
+                    "code": "NODE_SWEEP_FAILED",
+                    "message": str(exc),
+                }],
+            }, indent=2, sort_keys=True))
+            return 2
     if args.command == "plan-automatic-sampling":
         return _plan_automatic_sampling_command(
             args.path,

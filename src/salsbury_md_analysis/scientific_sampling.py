@@ -443,6 +443,13 @@ def apply_scientific_minimums_to_tasks(
                 if timing_available else None
             ),
         )
+        existing_scientific = row.get("scientific_minimum_frames_per_replica")
+        if (
+            isinstance(existing_scientific, int)
+            and not isinstance(existing_scientific, bool)
+            and existing_scientific > 0
+        ):
+            required = max(required, existing_scientific)
         attainable = min(required, min(counts))
         existing = int(row.get("minimum_frames_per_replica", 1))
         row["minimum_frames_per_replica"] = max(existing, attainable)

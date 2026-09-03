@@ -2426,33 +2426,36 @@ import hashlib, json, sys
 from pathlib import Path
 from salsbury_md_analysis.upstream_cache import load_cached_project_report
 project_path, report_path, summary_path = sys.argv[1:]
-with open(report_path, encoding='utf-8') as handle:
-    report = json.load(handle)
-with open(summary_path, encoding='utf-8') as handle:
-    summary = json.load(handle)
-digest = hashlib.sha256()
-with open(report_path, 'rb') as handle:
-    for chunk in iter(lambda: handle.read(1024 * 1024), b''):
-        digest.update(chunk)
-if report.get('technical_status') != 'complete':
+try:
+    with open(report_path, encoding='utf-8') as handle:
+        report = json.load(handle)
+    with open(summary_path, encoding='utf-8') as handle:
+        summary = json.load(handle)
+    digest = hashlib.sha256()
+    with open(report_path, 'rb') as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+            digest.update(chunk)
+    if report.get('technical_status') != 'complete':
+        raise ValueError('cached report is incomplete')
+    if report.get('module_id') != {json.dumps(module_id)}:
+        raise ValueError('cached report names another module')
+    if summary.get('technical_status') != 'complete':
+        raise ValueError('cached report summary is incomplete')
+    if summary.get('report_sha256') != digest.hexdigest():
+        raise ValueError('cached report hash does not match its summary')
+    load_cached_project_report(
+        {json.dumps(module_id)}, Path(project_path), hash_content=True,
+        error_type=ValueError,
+    )
+except (OSError, TypeError, ValueError):
     raise SystemExit(1)
-if report.get('module_id') != {json.dumps(module_id)}:
-    raise SystemExit(1)
-if summary.get('technical_status') != 'complete':
-    raise SystemExit(1)
-if summary.get('report_sha256') != digest.hexdigest():
-    raise SystemExit(1)
-load_cached_project_report(
-    {json.dumps(module_id)}, Path(project_path), hash_content=True,
-    error_type=ValueError,
-)
 PY
   then
     unset {variable}
   fi
 fi
 if [[ -z "${{{variable}:-}}" ]]; then
-  printf 'Validated cache unavailable for {module_id}; {fallback_action}.\\n' >&2
+  printf 'Validated cache unavailable for {module_id}; {fallback_action}.\\n'
 fi"""
 
 
