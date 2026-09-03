@@ -919,6 +919,176 @@ class FinalReportingTests(unittest.TestCase):
             self.assertAlmostEqual(hydrogen["effect_value"], 0.6)
             self.assertEqual(len(hydrogen["report_paths"]), 2)
 
+    def test_picker_balances_categories_and_keeps_context_searchable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def write(parts, payload):
+                path = root / "results"
+                for part in parts:
+                    path /= part
+                path /= "report.json"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps({
+                    "technical_status": "complete", **payload,
+                }), encoding="utf-8")
+                return path
+
+            candidates = [
+                {
+                    "category": "free_energy_surface",
+                    "statement": f"FES state {index}",
+                    "effect_value": 1000.0 - index,
+                    "system_ids": ["control", "variant"],
+                    "comparison_family": "pca_fes_basins:state_population",
+                }
+                for index in range(60)
+            ]
+            candidates.extend([
+                {
+                    "category": category,
+                    "statement": f"{category} result",
+                    "effect_value": 0.1,
+                    "system_ids": ["control", "variant"],
+                    "comparison_family": family,
+                }
+                for category, family in (
+                    ("free_energy_conformation", "fixture:conformation"),
+                    ("clustering", "clustering_kmeans:model_selection"),
+                    ("clustering_conformation", "fixture:cluster_structure"),
+                    ("coupled_interaction", "dccm:pairwise_extreme_difference"),
+                    ("rmsf", "pooled_rmsf:pairwise_atom_difference"),
+                    ("other_physical", "hydrogen_bond_discovery:pairwise_occupancy_difference"),
+                )
+            ])
+            write(("conformational-views", "shared", "pca-fes-basins"), {
+                "module_id": "pca_fes_basins",
+                "finding_candidates": candidates,
+            })
+            export_path = write(
+                ("conformational-views", "shared", "state-coordinate-exports"),
+                {
+                    "module_id": "state_coordinate_exports",
+                    "representative_count": 4,
+                    "exported_frame_count": 20,
+                },
+            )
+            write(("grouped-ml",), {
+                "module_id": "grouped_ml",
+                "pooled_held_out_metrics": {"macro_f1": 0.99},
+            })
+            write(("cross-method",), {
+                "module_id": "optional_observables",
+                "finding_candidates": [{
+                    "category": "other_physical",
+                    "statement": "Independent cross-method comparison",
+                    "effect_value": 0.2,
+                    "system_ids": ["control", "variant"],
+                    "comparison_family": "optional_observables:pairwise",
+                }],
+            })
+            write(("msm",), {
+                "module_id": "markov_state_models",
+                "best_clustering_state_model": {
+                    "candidate_id": "kmeans-k4", "state_count": 4,
+                    "geometric_score": 0.95,
+                    "kinetic_validation_status": "not passed",
+                },
+            })
+
+            report = prioritize_findings(root, maximum_findings=10)
+            categories = {row["category"] for row in report["findings"]}
+            self.assertGreaterEqual(len(categories), 5)
+            self.assertLess(
+                sum(
+                    row["category"] == "free_energy_surface"
+                    for row in report["findings"]
+                ),
+                10,
+            )
+            self.assertFalse(any(
+                row["module_id"] in {"grouped_ml", "markov_state_models"}
+                for row in report["findings"]
+            ))
+            supporting = {
+                row["module_id"]: row
+                for row in report["all_candidates"]
+                if row["presentation_eligible"] is False
+            }
+            self.assertEqual(
+                supporting["markov_state_models"]["ranking_role"],
+                "validation_context",
+            )
+            self.assertEqual(
+                supporting["grouped_ml"]["ranking_role"],
+                "technical_diagnostic",
+            )
+            fes = next(
+                row for row in report["findings"]
+                if row["module_id"] == "pca_fes_basins"
+            )
+            self.assertIn(
+                str(export_path.resolve()), fes["companion_artifact_paths"]
+            )
+            self.assertTrue(fes["representative_coordinates_available"])
+            self.assertGreater(report["supporting_context_candidate_count"], 0)
+            self.assertTrue(report["evidence_bundles"])
+
+    def test_picker_recovers_pairwise_hydrogen_bonds_from_system_views(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "results" / "hydrogen-bonds" / "report.json"
+            path.parent.mkdir(parents=True)
+            atom = lambda index, name: {
+                "atom_index": index,
+                "identity": {
+                    "chain_id": "A", "residue_name": "POSITION_HARMONIZED",
+                    "residue_number": 5, "insertion_code": "",
+                    "atom_name": name,
+                },
+            }
+            path.write_text(json.dumps({
+                "module_id": "hydrogen_bond_discovery",
+                "technical_status": "complete",
+                "candidate_dictionary": [{
+                    "bond_id": "bond-1", "donor_atom_index": 0,
+                    "hydrogen_atom_index": 2, "acceptor_atom_index": 1,
+                }],
+                "atom_dictionary": [atom(0, "N2"), atom(1, "O6")],
+                "occupancies": [
+                    {
+                        "system_id": system_id, "replica_id": "replica-1",
+                        "bond_id": "bond-1", "evaluated_frame_count": 100,
+                        "present_frame_count": present,
+                        "occupancy_fraction": present / 100.0,
+                    }
+                    for system_id, present in (("control", 80), ("variant", 20))
+                ],
+                "system_feature_spaces": [
+                    {
+                        "system_id": system_id,
+                        "occupancies": [{
+                            "system_id": system_id, "replica_id": "replica-1",
+                            "bond_id": "bond-1", "evaluated_frame_count": 100,
+                            "present_frame_count": present,
+                            "occupancy_fraction": present / 100.0,
+                        }],
+                    }
+                    for system_id, present in (("control", 80), ("variant", 20))
+                ],
+            }), encoding="utf-8")
+
+            report = prioritize_findings(root, maximum_findings=50)
+            pairwise = [
+                row for row in report["findings"]
+                if row["comparison_family"]
+                == "hydrogen_bond_discovery:pairwise_occupancy_difference"
+            ]
+            self.assertEqual(len(pairwise), 1)
+            self.assertEqual(pairwise[0]["system_ids"], ["control", "variant"])
+            self.assertAlmostEqual(pairwise[0]["effect_value"], 0.6)
+            self.assertIn("A:position5:N2", pairwise[0]["statement"])
+
 
 if __name__ == "__main__":
     unittest.main()

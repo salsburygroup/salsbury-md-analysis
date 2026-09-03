@@ -479,21 +479,31 @@ are also written as hash-bound numeric columns rather than rebuilt as large
 lists of dictionaries. Legacy inline trajectory-feature reports remain
 readable.
 
-The finding picker uses the documented presentation order (FES, FES
-conformations, silhouette-scored clustering, cluster conformations, RMSF, then
-other physical results) and uses deterministic
-lexicographic ranking rather than an opaque composite score. It is a triage
-aid: report pointers, evidence class, effects, and corrected p-values remain
-visible for scientific review. When the corresponding completed reports are
-present, it names the highest-RMSF atom in each system, the largest pairwise
-atom-level RMSF change, the strongest DCCM pair and pairwise DCCM change, and
-the most occupied or most changed direct hydrogen bond. These extrema are
-explicitly descriptive unless an upstream inferential method supplies a valid
-p-value; the picker never converts a large effect into statistical
-significance. The same transparent triage covers residue SASA, declared
-observables, nucleic-acid and ion geometry, RDF peaks, circular dihedral
-differences, and water-mediated bridges. When systems were executed into
-separate reports, it selects the highest evaluated-frame coverage for each
-system, compares those reports, and records every contributing path. This
-keeps shorter RDF/resource pilots out of a comparison when a higher-coverage
-completed report is available.
+The finding picker interleaves FES, structural representatives, clustering,
+coupled interactions, RMSF, and other physical measurements. It rotates among
+method-specific comparison families inside each category, preventing a large
+set of state populations from filling the opening page. Inferential status and
+effect magnitude order results only within one compatible family. The picker
+does not compare unlike units or calculate a composite score. Report pointers,
+evidence classes, effects, and corrected p-values remain visible for scientific
+review.
+
+Failed kinetic validations, PCA or tICA basis summaries, grouped-ML
+diagnostics, and coordinate-export records stay searchable as supporting
+context but do not occupy headline or secondary positions. Coordinate exports
+are linked to matching FES and clustering results. Evidence bundles connect
+method-specific findings for the same system pair or molecular entity without
+combining their effects or assigning a biological interpretation.
+
+When the corresponding completed reports are present, the picker names the
+highest-RMSF atom in each system, the largest pairwise atom-level RMSF change,
+the strongest DCCM pair and pairwise DCCM change, and the most occupied or most
+changed direct hydrogen bond. These extrema are descriptive unless an upstream
+inferential method supplies a valid p-value; the picker never converts a large
+effect into statistical significance. The same triage covers residue SASA,
+declared observables, nucleic-acid and ion geometry, RDF peaks, circular
+dihedral differences, and water-mediated bridges. When systems were executed
+into separate reports, it selects the highest evaluated-frame coverage for each
+system, compares those reports, and records every contributing path. This keeps
+shorter RDF/resource pilots out of a comparison when a higher-coverage report
+is available.
