@@ -21,6 +21,10 @@ from .resource_planning import (
 
 NODE_SWEEP_SCHEMA = "salsbury-planner-node-sweep-v2"
 PARETO_SELECTION_POLICIES = ("minimum_nodes", "balanced")
+PARETO_OBJECTIVE_MODES = (
+    "nodes_walltime_information",
+    "walltime_information",
+)
 
 
 def _maximum_task_working_memory(task: Mapping[str, object]) -> float:
@@ -710,6 +714,7 @@ def plan_node_sweep(
     overall_stride_candidate_strides: Optional[Sequence[int]] = None,
     planning_processes: int = 1,
     pareto_selection_policy: str = "minimum_nodes",
+    pareto_objectives: str = "nodes_walltime_information",
 ) -> Dict[str, object]:
     """Return a plan-only node curve and a selected Pareto allocation."""
 
@@ -744,6 +749,11 @@ def plan_node_sweep(
         choices = ", ".join(PARETO_SELECTION_POLICIES)
         raise ResourcePlanningError(
             f"pareto_selection_policy must be one of: {choices}"
+        )
+    if pareto_objectives not in PARETO_OBJECTIVE_MODES:
+        choices = ", ".join(PARETO_OBJECTIVE_MODES)
+        raise ResourcePlanningError(
+            f"pareto_objectives must be one of: {choices}"
         )
     task_rows = [dict(row) for row in tasks]
     if not task_rows:
@@ -1069,12 +1079,12 @@ def plan_node_sweep(
             (int(row["requested_nodes"]) - minimum_nodes)
             / (maximum_operational_nodes - minimum_nodes)
         )
+        operational_regrets = [information_regret, wait_regret]
+        if pareto_objectives == "nodes_walltime_information":
+            operational_regrets.append(node_regret)
         row["balanced_operational_score"] = 1.0 - math.sqrt(
-            (
-                information_regret ** 2
-                + wait_regret ** 2
-                + node_regret ** 2
-            ) / 3.0
+            sum(regret ** 2 for regret in operational_regrets)
+            / len(operational_regrets)
         )
         row["pareto_efficient"] = not any(
             other is not row
@@ -1083,11 +1093,18 @@ def plan_node_sweep(
             and not bool(other["above_task_inventory_useful_node_ceiling"])
             and float(other["balanced_information_utility"]) >= float(value)
             and float(other["planned_makespan_hours"]) <= float(wall_value)
-            and int(other["requested_nodes"]) <= int(row["requested_nodes"])
+            and (
+                pareto_objectives == "walltime_information"
+                or int(other["requested_nodes"]) <= int(row["requested_nodes"])
+            )
             and (
                 float(other["balanced_information_utility"]) > float(value)
                 or float(other["planned_makespan_hours"]) < float(wall_value)
-                or int(other["requested_nodes"]) < int(row["requested_nodes"])
+                or (
+                    pareto_objectives == "nodes_walltime_information"
+                    and int(other["requested_nodes"])
+                    < int(row["requested_nodes"])
+                )
             )
             for other in operational_rows
         )
@@ -1114,11 +1131,15 @@ def plan_node_sweep(
                 -int(row["requested_nodes"]),
             ),
         )
+        balanced_dimensions = (
+            "information, planner makespan, and requested nodes"
+            if pareto_objectives == "nodes_walltime_information"
+            else "information and planner makespan"
+        )
         operational_selection_rule = (
-            "highest equal-weight closeness to the observed ideal of maximum "
-            "information, minimum planner makespan, and minimum requested "
-            "nodes; each regret is range-normalized over feasible points at "
-            "or below the useful-node ceiling"
+            "highest equal-weight closeness to the observed ideal for "
+            f"{balanced_dimensions}; each regret is range-normalized over "
+            "feasible points at or below the useful-node ceiling"
         )
     operational_minimums = scientific_minimum_multiples(
         planned_by_node[int(operational_choice["requested_nodes"])]["tasks"]
@@ -1231,6 +1252,18 @@ def plan_node_sweep(
         "threshold_sensitivity": threshold_sensitivity,
         "operational_balance": {
             "pareto_filtering_enabled": True,
+            "pareto_objective_mode": pareto_objectives,
+            "pareto_objectives": (
+                ["requested_nodes", "planned_makespan_hours", "information"]
+                if pareto_objectives == "nodes_walltime_information"
+                else ["planned_makespan_hours", "information"]
+            ),
+            "node_constraint": {
+                "maximum_nodes": node_limit,
+                "task_inventory_useful_node_ceiling": task_inventory_ceiling[
+                    "maximum_useful_nodes_within_campaign_cap"
+                ],
+            },
             "selection_policy": pareto_selection_policy,
             "pareto_front_node_counts": [
                 row["requested_nodes"] for row in pareto_rows

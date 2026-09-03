@@ -223,6 +223,33 @@ class NodeSweepTests(unittest.TestCase):
         )
         self.assertTrue(minimum_nodes["curve"][0]["pareto_efficient"])
 
+        with patch(
+            "salsbury_md_analysis.node_sweep.plan_campaign_resource_budget",
+            side_effect=fake_plan,
+        ):
+            walltime_information = plan_node_sweep(
+                [self._task()], cpus_per_node=44,
+                memory_gib_per_node=185.0, maximum_nodes=2,
+                maximum_wall_hours=24.0,
+                pareto_objectives="walltime_information",
+            )
+        self.assertEqual(
+            walltime_information["operational_balance"][
+                "pareto_front_node_counts"
+            ],
+            [2],
+        )
+        self.assertEqual(
+            walltime_information["operational_balance"][
+                "pareto_objective_mode"
+            ],
+            "walltime_information",
+        )
+        self.assertEqual(
+            walltime_information["operational_balance"]["pareto_objectives"],
+            ["planned_makespan_hours", "information"],
+        )
+
     def test_unknown_pareto_selection_policy_fails_closed(self):
         with self.assertRaisesRegex(
             ResourcePlanningError, "pareto_selection_policy must be one of"
@@ -232,6 +259,17 @@ class NodeSweepTests(unittest.TestCase):
                 memory_gib_per_node=185.0, maximum_nodes=2,
                 maximum_wall_hours=24.0,
                 pareto_selection_policy="fewest_cores",
+            )
+
+    def test_unknown_pareto_objectives_fail_closed(self):
+        with self.assertRaisesRegex(
+            ResourcePlanningError, "pareto_objectives must be one of"
+        ):
+            plan_node_sweep(
+                [self._task()], cpus_per_node=44,
+                memory_gib_per_node=185.0, maximum_nodes=2,
+                maximum_wall_hours=24.0,
+                pareto_objectives="walltime_only",
             )
 
     def test_full_inventory_ceiling_uses_tasks_and_scheduler_memory(self):
