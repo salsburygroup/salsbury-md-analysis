@@ -135,6 +135,12 @@ node count used by its exact lane schedule. The reported useful-node ceiling
 is the larger of that result and the analytical full-inventory pack, capped by
 the user-supplied campaign limit.
 
+The command-line node sweep uses a 168-hour (seven-day) maximum wall-time
+ceiling unless `--maximum-wall-hours` is supplied. This Pareto-search ceiling
+is separate from the routine preparation default of 24 hours; it lets the
+planner find a scientifically valid small-node solution without treating the
+routine runtime target as the longest acceptable run.
+
 The information curve uses a priority-weighted mean square root of normalized
 physical-frame coverage. Coordinate-cache work is excluded from this score.
 The 75%, 80%, 90%, 95%, 99%, and 100% rows report the first allocation that
