@@ -26,7 +26,7 @@ STANDARD_NUCLEIC_RESIDUES = frozenset({
 })
 
 NUCLEIC_RESIDUES = STANDARD_NUCLEIC_RESIDUES | frozenset({
-    "8OG", "8OX", "OX3", "EDU", "5MC", "PSU",
+    "8OG", "8OX", "OX3", "EDU", "FDU", "5MC", "PSU",
 })
 
 ION_RESIDUES = frozenset({
