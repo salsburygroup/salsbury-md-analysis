@@ -1,7 +1,7 @@
 # Release rights and provenance review
 
-Review date: 2026-08-25
-Candidate: `0.1.1`
+Review date: 2026-09-03
+Candidate: `0.1.2`
 
 ## Decision
 
@@ -36,6 +36,9 @@ the repository does not distribute.
   tutorial fixture described above.
 - The DEAC profile intentionally documents a group account, partitions, and
   storage roots. It contains no password, token, private key, or user credential.
+- The 0.1.2 presentation code, tables, figures, and state-ion visualization
+  logic are original group software. They add no third-party source or private
+  molecular coordinates.
 
 ## Ongoing rule
 

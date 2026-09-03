@@ -1,0 +1,26 @@
+name: Analysis-method request
+description: Propose a general biomolecular analysis or a change to an existing method.
+title: "[Method] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Scientific question
+      description: What physical or biological quantity should the method estimate?
+    validations:
+      required: true
+  - type: textarea
+    id: definition
+    attributes:
+      label: Proposed definition and references
+      description: Describe inputs, units, parameters, expected outputs, interpretation limits, and primary references.
+    validations:
+      required: true
+  - type: textarea
+    id: generality
+    attributes:
+      label: Generality and validation
+      description: Explain which system classes it should support and how it could be tested without private data.
+    validations:
+      required: true

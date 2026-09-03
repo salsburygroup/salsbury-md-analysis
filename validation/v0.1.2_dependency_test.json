@@ -1,0 +1,27 @@
+{
+  "validation_schema": "salsbury-release-dependency-test-v1",
+  "candidate_version": "0.1.2",
+  "recorded_at": "2026-09-03",
+  "execution_host": "Apple silicon workstation, macOS 15.0",
+  "python": "3.12.13",
+  "dependencies": {
+    "numpy": "2.3.5",
+    "scipy": "1.18.1",
+    "scikit-learn": "1.9.0",
+    "hdbscan": "0.8.44",
+    "openmm": "not installed; one expected optional test skip"
+  },
+  "command": "PYTHONPATH=src PYTHONPYCACHEPREFIX=<isolated> python3.12 -m unittest discover -s tests -q",
+  "tests_run": 700,
+  "expected_skips": 1,
+  "failures": 0,
+  "errors": 0,
+  "elapsed_seconds": 14.531,
+  "generated_documentation_check": "pass",
+  "artifact_build_check": "local wheel and source archive passed twine check; exact release hashes are published with the GitHub release",
+  "artifact_install_check": "pass; an empty Python 3.12 environment installed the wheel and its declared dependencies, pip check passed, version was 0.1.2, and the installed command listed 45 modules",
+  "github_ci_status": "required for the exact release commit",
+  "technical_status": "local regression pass; exact-head CI and artifact-install gates pending",
+  "scientific_status": "not evaluated",
+  "interpretation": "Regression and packaging evidence only. This does not promote experimental modules to supported status or establish scientific validity."
+}

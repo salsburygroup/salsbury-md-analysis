@@ -1,18 +1,19 @@
 # Production-readiness assessment
 
-Assessment date: 2026-08-25
-Candidate: `0.1.1`
+Assessment date: 2026-09-03
+Candidate: `0.1.2`
 
 ## Decision boundary
 
-This branch contains the proposed `v0.1.1` experimental patch release. It is not
+This branch contains the proposed `v0.1.2` experimental patch release. It is not
 presented as a supported scientific release.
 Every registered module remains `experimental`; technical completion, scheduler
 success, and scientific validity are separate statuses.
 
 The source contains 45 of 45 MD/core/reporting modules in the registry and
-standard profile. The prior `v0.1.0` dependency test is retained in
-`validation/v0.1.0_dependency_test.json`. Earlier candidate evidence remains in
+standard profile. The current dependency test is retained in
+`validation/v0.1.2_dependency_test.json`. Earlier release evidence remains in
+`validation/v0.1.0_dependency_test.json`, and earlier candidate evidence remains in
 `validation/v0.1.0a1_dependency_test.json`. The later memory-planning update,
 including its exact source hashes, 457-test result, generated-document check,
 low-memory NEMO preparation, and private-remote readback, is recorded separately
@@ -50,14 +51,14 @@ states require the original simulation topology and explicit project review.
 | Gate | Current evidence | Interpretation |
 |---|---|---|
 | Registry/profile | 45 of 45 modules with exact-set tests | Coverage contract, not scientific approval |
-| Dependency-equipped suite | Machine-readable release record in `validation/v0.1.0_dependency_test.json`, with earlier candidate evidence retained separately | Software behavior in the recorded environments only |
+| Dependency-equipped suite | Machine-readable release record in `validation/v0.1.2_dependency_test.json`, with earlier release and candidate evidence retained separately | Software behavior in the recorded environments only |
 | Memory-planner update | Source-hash-bound 457-test, low-memory preparation, and GitHub Actions record in `validation/v0.1.0a1_memory_planner_update_test.json` | Current update behavior on the recorded workstation and CI matrix; scientific status remains unevaluated |
 | GitHub Actions | Six successful Linux/macOS jobs for Python 3.10--3.12 plus the successful isolated artifact-build/install job | Technical portability and packaging gate for the tested head; rerun after every later commit |
 | Installed local workflow | One-CPU, 100-frame TBA result in `validation/v80_installed_local_execution_test.json` | Local-adapter portability check, not a performance or scientific claim |
 | Teaching workflow | 1,000-frame NEMO protein-plus-zinc run in `validation/nemo_zinc_finger_tutorial_acceptance.json` | End-to-end tutorial acceptance, not converged sampling or a biological conclusion |
 | Generated documentation | Deterministic `scripts/generate_docs.py --check` | Documentation agrees with code metadata |
 | Package artifacts | Rebuild and scan the wheel and source archive from the exact retained snapshot; keep their hashes with the candidate evidence | Installability, not method validity |
-| Generic acceptance matrix | Protein-only, DNA-only, protein–DNA oligomer, ligand/cofactor, and multi-ion rows are required | Bounded technical generality check |
+| Generic acceptance matrix | `validation/v0.1.2_public_acceptance_matrix.json` records protein-only, DNA-only, protein–DNA oligomer, ligand/cofactor, and multi-ion rows | One public end-to-end trajectory run plus bounded technical generality checks; the record names the distinction |
 | Real trajectories | Hash-bounded private TREX, TOP1, TBA, and thrombin execution evidence is retained outside the reusable source | Project evidence; no automatic biological conclusion |
 | Scientific status | Every registry module remains `experimental` | Human scientific review is still required per method/project |
 
@@ -70,11 +71,10 @@ bounded software test. Every current module and final-summary JSON uses
 `scientific_status: not evaluated` unless a later, separate human review record
 says otherwise.
 
-## Before a future public release
+## Release gate
 
-1. Do not change repository visibility or tag a public release until Linux/macOS
-   CI for Python 3.10--3.12 and the isolated artifact-install job pass for the
-   exact candidate commit.
+1. Do not tag a release until Linux/macOS CI for Python 3.10--3.12 and the
+   isolated artifact-install job pass for the exact candidate commit.
 2. Retain the final source-archive and wheel hashes with the release evidence.
 3. Keep the source and dependency provenance decision in
    `RELEASE_RIGHTS_REVIEW.md` and re-open it when third-party material is added.
@@ -89,9 +89,8 @@ module from `experimental` to `supported`; it is not silently implied by making
 the experimental source visible.
 
 PyPI, conda-forge, containers, Zenodo DOIs, and formal community governance are
-not required for the first group-supported release. Repository visibility,
-package upload, DOI creation, and public announcement remain separate explicit
-actions. Preparing or merging this alpha does not authorize any of them.
+not required for this experimental release. The reviewed GitHub tag, source
+archive, wheel, and hashes are the release record.
 
 ## Support gate
 

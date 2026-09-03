@@ -1,0 +1,38 @@
+name: Bug report
+description: Report a reproducible software or workflow failure.
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not attach private trajectories, structures, credentials, or cluster paths.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v0.1.2 or a full commit hash
+    validations:
+      required: true
+  - type: dropdown
+    id: execution
+    attributes:
+      label: Execution environment
+      options:
+        - Local workstation
+        - Slurm cluster
+        - Custom launcher
+        - Planning only
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Include the command, expected result, observed result, and a minimal public reproducer when possible.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Safe diagnostic evidence
+      description: Paste redacted traceback, technical status, and relevant package versions. Do not include unpublished molecular data.

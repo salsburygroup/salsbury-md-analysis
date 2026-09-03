@@ -1,0 +1,129 @@
+{
+  "acceptance_schema": "salsbury-public-release-acceptance-matrix-v1",
+  "candidate_version": "0.1.2",
+  "recorded_at": "2026-09-03",
+  "scope": "technical release acceptance",
+  "matrix": [
+    {
+      "system_class": "protein-only",
+      "fixture": "public NEMO zinc-finger tutorial trajectory",
+      "acceptance_kind": "public end-to-end trajectory run",
+      "source_frame_count": 100,
+      "effective_raw_stride": 1,
+      "planned_task_count": 35,
+      "executed_task_count": 31,
+      "accepted_module_report_count": 28,
+      "presentation_artifact_count": 88,
+      "presentation_figure_count": 43,
+      "presentation_table_count": 42,
+      "presentation_structure_count": 3,
+      "measured_cpu_hours": 0.015638807777777777,
+      "dependency_critical_path_seconds": 51.447984331753105,
+      "recovered_task_count": 0,
+      "terminal_failure_count": 0,
+      "input_trajectory_sha256": "b7ea8e74096a9c0bb8ea4554e5cdb9c4d3f921eda6873095b0dba9b0aa1b96b9",
+      "project_sha256": "ea139be6e0f4793032bf305456949af2bbc88b56ff022102f938cc2710f89aa4",
+      "planning_report_sha256": "6c85c673204b42bfd17fab7acd940753019833b787feacbc92c888d0098d24ca",
+      "local_execution_status_sha256": "f7a24114372fc325e5ca08cb87ca5dc74ede7031f86777afca0ad108e5cb40fd",
+      "final_resource_summary_sha256": "0518244c7bb10a0ea25de17067b20a8f7205c5384891307a1eeba970790c595a",
+      "prioritized_findings_sha256": "61e468273be214fd09f41bd9904ba96682fb8047b2ad3b569ea34a6bc2351c3e",
+      "presentation_manifest_sha256": "936ca6afe401392511b994a37acd3569ae7aab6c68a1e98ac5a69e407494831e",
+      "technical_status": "complete",
+      "scientific_status": "not evaluated"
+    },
+    {
+      "system_class": "DNA-only",
+      "fixture": "bounded DNA and RNA chemistry, geometry, structure, and conformational-view fixtures",
+      "acceptance_kind": "dependency-equipped contract and module tests",
+      "coverage": [
+        "canonical DNA and RNA identity",
+        "modified-nucleotide handling",
+        "nucleic-acid-only conformational classification",
+        "geometry definitions",
+        "optional DSSR integration contract"
+      ],
+      "technical_status": "complete",
+      "scientific_status": "not evaluated"
+    },
+    {
+      "system_class": "protein-DNA oligomer",
+      "fixture": "bounded TREX control and 8OG fixtures plus oligomer-symmetry tests",
+      "acceptance_kind": "hash-bound retained-input checks and dependency-equipped tests",
+      "coverage": [
+        "protein-DNA positional atom mapping",
+        "modified-base identity preservation",
+        "pooled oligomer-member representation",
+        "all four directed protein/DNA hydrogen-bond strata",
+        "periodic Mg distance invariance"
+      ],
+      "technical_status": "complete",
+      "scientific_status": "not evaluated"
+    },
+    {
+      "system_class": "ligand/cofactor",
+      "fixture": "bounded apo/bound, ligand, cofactor, and interaction-scope fixtures",
+      "acceptance_kind": "dependency-equipped contract and module tests",
+      "coverage": [
+        "apo/bound common-atom comparison",
+        "ligand and cofactor chemical classification",
+        "protein-ligand hydrogen-bond scope",
+        "all-atom non-solvent state export contract"
+      ],
+      "technical_status": "complete",
+      "scientific_status": "not evaluated"
+    },
+    {
+      "system_class": "multi-ion",
+      "fixture": "bounded automatic-chemistry, ion-atmosphere, ion-geometry, and NEMO zinc fixtures",
+      "acceptance_kind": "public trajectory run plus dependency-equipped contract and module tests",
+      "covered_species": [
+        "K",
+        "Mg",
+        "Zn",
+        "Na",
+        "Ca",
+        "Cl",
+        "Fe"
+      ],
+      "coverage": [
+        "species-resolved atmosphere",
+        "mobile-ion versus retained-site screening",
+        "coordination geometry",
+        "periodic minimum-image distances",
+        "state-local stable-ion presentation"
+      ],
+      "technical_status": "complete",
+      "scientific_status": "not evaluated"
+    }
+  ],
+  "dependency_suite": {
+    "python": "3.12.13",
+    "tests_run": 700,
+    "expected_skips": 1,
+    "failures": 0,
+    "errors": 0,
+    "elapsed_seconds": 14.531
+  },
+  "interactive_acceptance": {
+    "candidate_version": "0.1.3",
+    "source_module_report_count": 28,
+    "inline_figure_count": 43,
+    "inline_structure_count": 6,
+    "omitted_figure_count": 0,
+    "omitted_structure_count": 0,
+    "portable_evidence_count": 130,
+    "index_html_sha256": "44af002639fcdeb67ab9175114429bf7c56f760d5a8761912312ee98fe01d128",
+    "network_dependency": "none",
+    "technical_status": "complete",
+    "scientific_status": "not evaluated"
+  },
+  "limitations": [
+    "Only the protein-only row is a fresh public end-to-end trajectory run in this release record.",
+    "The DNA-only and ligand/cofactor rows use bounded fixtures rather than independent production trajectories.",
+    "The TREX row is retained only for implementation checks; earlier scientific-QC concerns prevent biological interpretation without human review.",
+    "The matrix checks software behavior and report contracts, not convergence, kinetics, mechanism, causality, or biological significance."
+  ],
+  "unexpected_errors": [],
+  "technical_acceptance": "pass",
+  "scientific_status": "not evaluated"
+}

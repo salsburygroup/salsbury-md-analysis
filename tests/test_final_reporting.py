@@ -1145,6 +1145,38 @@ class FinalReportingTests(unittest.TestCase):
             self.assertEqual(context["system_ids"], ["legacy-variant"])
             self.assertEqual(context["context_label"], "legacy-variant")
 
+    def test_exact_null_effect_remains_searchable_but_not_a_headline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "results" / "correlation-networks" / "report.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({
+                "module_id": "correlation_networks",
+                "technical_status": "complete",
+                "analysis_atoms": [{
+                    "chain_id": "A", "residue_name": "GLY",
+                    "residue_number": 1, "insertion_code": "",
+                    "atom_name": "CA",
+                }],
+                "systems": [{
+                    "system_id": "single-system",
+                    "matrices": [{
+                        "matrix_kind": "difference-from-reference",
+                        "network": {"node_absolute_strengths": [0.0]},
+                    }],
+                }],
+            }), encoding="utf-8")
+
+            report = prioritize_findings(root)
+
+            self.assertEqual(report["headline_count"], 0)
+            self.assertEqual(report["presentation_eligible_candidate_count"], 0)
+            self.assertEqual(report["searchable_candidate_count"], 1)
+            null_effect = report["all_candidates"][0]
+            self.assertEqual(null_effect["ranking_role"], "null_effect_context")
+            self.assertEqual(null_effect["validation_status"], "no_observed_effect")
+            self.assertFalse(null_effect["presentation_eligible"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,7 +9,7 @@ write local and Slurm launchers. It will not modify the simulation inputs.
 
 ## Status
 
-Version 0.1.1 is an **experimental toolkit release**. It contains
+Version 0.1.2 is an **experimental toolkit release**. It contains
 45 registered MD, core, and reporting modules. Every registered module has an
 implementation and automated tests, but none is yet marked `supported` for
 unreviewed production or publication use. Technical completion and scientific
@@ -72,12 +72,21 @@ The base package requires Python 3.10 or newer, NumPy, and SciPy:
 
 ```bash
 python -m venv .venv
-./.venv/bin/python -m pip install -e .
+./.venv/bin/python -m pip install \
+  "salsbury-md-analysis @ git+https://github.com/salsburygroup/salsbury-md-analysis.git@v0.1.2"
 ```
 
-For the reviewed Python stack plus HDBSCAN and DSSP, use the Conda environment:
+That command installs the immutable `v0.1.2` release. Contributors working
+from a source checkout can instead run
+`./.venv/bin/python -m pip install -e .` from the repository root.
+
+For the reviewed Python stack plus HDBSCAN and DSSP, clone the `v0.1.2` release
+and use its Conda environment:
 
 ```bash
+git clone --branch v0.1.2 --depth 1 \
+  https://github.com/salsburygroup/salsbury-md-analysis.git
+cd salsbury-md-analysis
 micromamba create --prefix ./.venv --file environment.yml \
   --override-channels --channel conda-forge --strict-channel-priority
 ./.venv/bin/python -m pip install --no-deps --no-build-isolation -e .

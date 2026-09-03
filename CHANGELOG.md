@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.2 - 2026-09-03
+
 - Balance headline and secondary findings across scientific categories and
   method-specific comparison families. Effect magnitudes are compared only
   within a compatible family; failed kinetic validations, basis descriptions,

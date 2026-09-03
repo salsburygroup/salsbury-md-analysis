@@ -2423,6 +2423,14 @@ def _normalize_candidate(row: Mapping[str, object]) -> Dict[str, object]:
     if module_id == "markov_state_models" and "not passed" in statement:
         validation_status = "not passed"
         role = "validation_context"
+    absolute_effect = _numeric(normalized.get("absolute_effect_value"))
+    if (
+        role == "scientific_finding"
+        and absolute_effect is not None
+        and absolute_effect == 0.0
+    ):
+        role = "null_effect_context"
+        validation_status = "no_observed_effect"
     normalized["ranking_role"] = role
     normalized["validation_status"] = validation_status
     normalized["presentation_eligible"] = role == "scientific_finding"
