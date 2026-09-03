@@ -1,8 +1,125 @@
 {
+  "allocation_efficient_review": {
+    "absolute_wall_hours_cap": 168.0,
+    "campaigns": [
+      {
+        "fraction_of_best_information": 0.9377875715943168,
+        "planned_makespan_hours": 115.43081736456851,
+        "requested_nodes": 1,
+        "scenario_id": "tba_current",
+        "scientific_minimum_multiples": {
+          "maximum_multiple_of_scientific_minimum": 100.0,
+          "mean_multiple_of_scientific_minimum": 26.995984251968505,
+          "median_multiple_of_scientific_minimum": 20.0,
+          "minimum_multiple_of_scientific_minimum": 1.0,
+          "source_limited_task_count": 0,
+          "task_count": 254
+        }
+      },
+      {
+        "fraction_of_best_information": 1.0,
+        "planned_makespan_hours": 75.0736184717381,
+        "requested_nodes": 3,
+        "scenario_id": "trex_current_250ns",
+        "scientific_minimum_multiples": {
+          "maximum_multiple_of_scientific_minimum": 247.0,
+          "mean_multiple_of_scientific_minimum": 65.98323083966999,
+          "median_multiple_of_scientific_minimum": 73.95209580838323,
+          "minimum_multiple_of_scientific_minimum": 36.97604790419162,
+          "source_limited_task_count": 0,
+          "task_count": 142
+        }
+      },
+      {
+        "fraction_of_best_information": 0.8969752667364261,
+        "planned_makespan_hours": 124.48793500259052,
+        "requested_nodes": 1,
+        "scenario_id": "thrombin_current_100ns",
+        "scientific_minimum_multiples": {
+          "maximum_multiple_of_scientific_minimum": 100.0,
+          "mean_multiple_of_scientific_minimum": 27.764705882352942,
+          "median_multiple_of_scientific_minimum": 4.0,
+          "minimum_multiple_of_scientific_minimum": 1.0,
+          "source_limited_task_count": 0,
+          "task_count": 34
+        }
+      },
+      {
+        "fraction_of_best_information": 0.9435556027823074,
+        "planned_makespan_hours": 118.01631559783672,
+        "requested_nodes": 5,
+        "scenario_id": "trex_future_1us",
+        "scientific_minimum_multiples": {
+          "maximum_multiple_of_scientific_minimum": 1000.0,
+          "mean_multiple_of_scientific_minimum": 232.3440581092603,
+          "median_multiple_of_scientific_minimum": 299.4011976047904,
+          "minimum_multiple_of_scientific_minimum": 42.76946107784431,
+          "source_limited_task_count": 0,
+          "task_count": 142
+        }
+      },
+      {
+        "fraction_of_best_information": 0.8100571938562918,
+        "planned_makespan_hours": 124.1987753802908,
+        "requested_nodes": 1,
+        "scenario_id": "thrombin_future_1us",
+        "scientific_minimum_multiples": {
+          "maximum_multiple_of_scientific_minimum": 1000.0,
+          "mean_multiple_of_scientific_minimum": 164.1691176470588,
+          "median_multiple_of_scientific_minimum": 2.0,
+          "minimum_multiple_of_scientific_minimum": 1.0,
+          "source_limited_task_count": 0,
+          "task_count": 34
+        }
+      }
+    ],
+    "mechanical_score_role": "retained as a diagnostic, not used as the reviewed recommendation, because within-curve wait normalization can exaggerate a small absolute runtime difference",
+    "minimum_information_fraction": 0.75,
+    "selection_rule": "start with the smallest-node Pareto point at or above 75% of the best observed information; move to a larger point only when the additional nodes buy a material reduction in time-to-result and information gain; 168 hours is only the feasibility ceiling",
+    "status": "operator_reviewed_from_complete_pareto_curves",
+    "top1_edu_pair": {
+      "D": {
+        "fraction_of_best_information": 1.0,
+        "planned_makespan_hours": 121.09393116564101,
+        "requested_nodes": 6,
+        "scenario_id": "top1_edu_d_component_harmonized",
+        "scientific_minimum_multiples": {
+          "maximum_multiple_of_scientific_minimum": 29.985007496251875,
+          "mean_multiple_of_scientific_minimum": 11.26893815896443,
+          "median_multiple_of_scientific_minimum": 7.496251874062969,
+          "minimum_multiple_of_scientific_minimum": 1.0,
+          "source_limited_task_count": 0,
+          "task_count": 120
+        }
+      },
+      "T": {
+        "fraction_of_best_information": 0.9514902865353788,
+        "planned_makespan_hours": 123.00027268487398,
+        "requested_nodes": 3,
+        "scenario_id": "top1_edu_t_component_harmonized",
+        "scientific_minimum_multiples": {
+          "maximum_multiple_of_scientific_minimum": 29.985007496251875,
+          "mean_multiple_of_scientific_minimum": 14.380809431240376,
+          "median_multiple_of_scientific_minimum": 14.992503748125937,
+          "minimum_multiple_of_scientific_minimum": 1.0,
+          "source_limited_task_count": 0,
+          "task_count": 129
+        }
+      },
+      "combined_information_fraction": 0.9757451432676894,
+      "concurrent_elapsed_hours_after_start": 123.00027268487398,
+      "total_requested_nodes": 9
+    },
+    "upgrade_options": {
+      "tba_current": "3 nodes: 100.33 hours and 99.47%; two added nodes save 15.10 hours and add 5.69 percentage points",
+      "thrombin_current_100ns": "4 nodes: 112.64 hours and 100%; three added nodes save 11.84 hours and add 10.30 percentage points",
+      "thrombin_future_1us": "3 nodes: 117.87 hours and 88.91%; two added nodes save 6.32 hours and add 7.90 percentage points"
+    }
+  },
   "comparison_horizon_hours": 168.0,
   "evidence_schema": "salsbury-apollo-node-sweet-spots-v2",
   "execution_started": false,
-  "generated_at": "2026-09-03T00:42:36.947437+00:00",
+  "generated_at": "2026-09-03T01:14:31.621072+00:00",
   "hardware": {
     "absolute_node_cap": 16,
     "absolute_wall_hours_cap": 168.0,
@@ -19,6 +136,7 @@
   "model_sha256": "4cf0b32a3811337bc8b10ed2db5778d6494d069f27192d6e744e1889f52523f9",
   "model_source_evidence_sha256": "2765618a19bc6bf88c3d0d4e3151ac51c251c6144c4369700b914964b378d2dd",
   "planning_policy": {
+    "absolute_wall_hours_role": "hard feasibility ceiling only; not a target runtime or preferred fraction of a scheduler request",
     "campaign_time_safety_factor": 1.5,
     "coordinate_cache": "full sequential scan within each replica where retained structural analyses require continuous unwrapping; ion atmosphere does not",
     "hydrogen_bonds": "spatial endpoint selected-work proxy",
@@ -32,20 +150,19 @@
     "overall_stride_reason": "with full cache scanning, stride one preserves every downstream exact integer-stride option and coarser overall streams cannot increase information or reduce scan work",
     "planned_makespan_role": "expected dependency-chain runtime after allocation start; the full 168-hour request remains unchanged",
     "reserved_node_hours_role": "reported for accounting; not the selection target",
+    "reviewed_sweet_spot_role": "operator-reviewed Pareto knee balancing time-to-result, requested nodes, and information above the 75% floor",
     "scheduler_memory_overhead_gib_per_task": 1.0,
     "scheduler_memory_safety_factor": 1.5,
     "slurm_requested_time": "7-00:00:00",
     "slurm_requested_wall_hours": 168.0,
     "structural_qc": "one worker per replica",
-    "sweet_spot_primary_cost": "planned dependency-chain makespan within a 168-hour Slurm limit",
-    "sweet_spot_secondary_cost": "requested node count",
     "top1_d_t_stride_policy": "identical effective raw integer strides for every balance group present in both component plans"
   },
   "postprocessing_reuse": {
     "curve_values_recomputed": false,
     "reuse_gate": "schema, zero errors, hardware, hard caps, model hash, and every source-plan hash matched",
     "scope": "joint TOP1 operational ranking only",
-    "source_evidence_sha256": "3690a379da03a1c1c4e8ada07456763b6482f1736b135e5d61603525a3980162"
+    "source_evidence_sha256": "8c4930ced44a114bda6000123727c357ad203a29ccf2abc64ecb5953444b6b7d"
   },
   "scenarios": [
     {

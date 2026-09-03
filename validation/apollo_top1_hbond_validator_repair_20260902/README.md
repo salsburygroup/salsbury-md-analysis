@@ -14,3 +14,18 @@ failure.
 
 Technical validation does not establish scientific validity or support a
 biological interpretation.
+
+## Post-run reconciliation
+
+Before the validator-only repair completed, independently submitted
+complete-interval jobs `8298283` (T) and `8298284` (D) installed valid reports
+at the originally planned destinations. That is why validator attempt
+`8298341` encountered nonidentical destination files and failed closed. It did
+not overwrite them.
+
+Both recomputation jobs completed with exit code `0:0`. Their validation and
+installation gates pass, and the reports' scientific payloads match the saved
+validator-only reports exactly. Full-file hashes differ because each report
+records its own provenance and resource measurements. No downstream path remap
+is required. The executed batch script and its output are retained unchanged
+as historical evidence of what the validator-only run reported at that time.
