@@ -595,6 +595,137 @@ def _top1_joint_stride_analysis(
     }
 
 
+def _scientific_floor_summary(
+    scenario: Mapping[str, object], node_count: int,
+) -> Dict[str, object]:
+    """Return the recorded floor summary for a curve point."""
+
+    sweep = scenario["sweep"]
+    for row in sweep["threshold_sensitivity"]:
+        if int(row["first_qualifying_node_count"]) == node_count:
+            return {
+                "task_count": row["scientific_minimum_task_count"],
+                "mean_multiple_of_scientific_minimum": row[
+                    "mean_multiple_of_scientific_minimum"
+                ],
+                "median_multiple_of_scientific_minimum": row[
+                    "median_multiple_of_scientific_minimum"
+                ],
+                "minimum_multiple_of_scientific_minimum": row[
+                    "minimum_multiple_of_scientific_minimum"
+                ],
+                "maximum_multiple_of_scientific_minimum": row[
+                    "maximum_multiple_of_scientific_minimum"
+                ],
+                "source_limited_task_count": row["source_limited_task_count"],
+            }
+    operational = sweep["operational_balance"]
+    if int(operational["recommended_node_count"]) == node_count:
+        return dict(operational["scientific_minimum_multiples"])
+    raise ValueError(
+        f"no scientific-floor summary for {scenario['scenario_id']} at "
+        f"{node_count} nodes"
+    )
+
+
+def _reviewed_curve_point(
+    scenario: Mapping[str, object], node_count: int,
+) -> Dict[str, object]:
+    point = next(
+        row for row in scenario["sweep"]["curve"]
+        if int(row["requested_nodes"]) == node_count
+    )
+    if point.get("feasibility_status") != "feasible":
+        raise ValueError(
+            f"reviewed point is infeasible: {scenario['scenario_id']} "
+            f"at {node_count} nodes"
+        )
+    return {
+        "scenario_id": scenario["scenario_id"],
+        "requested_nodes": node_count,
+        "planned_makespan_hours": point["planned_makespan_hours"],
+        "fraction_of_best_information": point["fraction_of_best_information"],
+        "scientific_minimum_multiples": _scientific_floor_summary(
+            scenario, node_count
+        ),
+    }
+
+
+def _allocation_efficient_review(
+    scenarios: Sequence[Mapping[str, object]],
+    harmonized_components: Sequence[Mapping[str, object]],
+) -> Dict[str, object]:
+    """Record the operator-reviewed knees without changing measured curves."""
+
+    selected_nodes = {
+        "tba_current": 1,
+        "trex_current_250ns": 3,
+        "thrombin_current_100ns": 1,
+        "trex_future_1us": 5,
+        "thrombin_future_1us": 1,
+    }
+    scenario_by_id = {str(row["scenario_id"]): row for row in scenarios}
+    component_by_id = {
+        str(row["scenario_id"]): row for row in harmonized_components
+    }
+    d_point = _reviewed_curve_point(
+        component_by_id["top1_edu_d_component_harmonized"], 6
+    )
+    t_point = _reviewed_curve_point(
+        component_by_id["top1_edu_t_component_harmonized"], 3
+    )
+    return {
+        "status": "operator_reviewed_from_complete_pareto_curves",
+        "minimum_information_fraction": 0.75,
+        "absolute_wall_hours_cap": 168.0,
+        "selection_rule": (
+            "start with the smallest-node Pareto point at or above 75% of the "
+            "best observed information; move to a larger point only when the "
+            "additional nodes buy a material reduction in time-to-result and "
+            "information gain; 168 hours is only the feasibility ceiling"
+        ),
+        "mechanical_score_role": (
+            "retained as a diagnostic, not used as the reviewed recommendation, "
+            "because within-curve wait normalization can exaggerate a small "
+            "absolute runtime difference"
+        ),
+        "top1_edu_pair": {
+            "D": d_point,
+            "T": t_point,
+            "total_requested_nodes": (
+                int(d_point["requested_nodes"])
+                + int(t_point["requested_nodes"])
+            ),
+            "concurrent_elapsed_hours_after_start": max(
+                float(d_point["planned_makespan_hours"]),
+                float(t_point["planned_makespan_hours"]),
+            ),
+            "combined_information_fraction": (
+                float(d_point["fraction_of_best_information"])
+                + float(t_point["fraction_of_best_information"])
+            ) / 2.0,
+        },
+        "campaigns": [
+            _reviewed_curve_point(scenario_by_id[scenario_id], node_count)
+            for scenario_id, node_count in selected_nodes.items()
+        ],
+        "upgrade_options": {
+            "tba_current": (
+                "3 nodes: 100.33 hours and 99.47%; two added nodes save 15.10 "
+                "hours and add 5.69 percentage points"
+            ),
+            "thrombin_current_100ns": (
+                "4 nodes: 112.64 hours and 100%; three added nodes save 11.84 "
+                "hours and add 10.30 percentage points"
+            ),
+            "thrombin_future_1us": (
+                "3 nodes: 117.87 hours and 88.91%; two added nodes save 6.32 "
+                "hours and add 7.90 percentage points"
+            ),
+        },
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--top1-d-plan", type=Path, required=True)
@@ -660,12 +791,25 @@ def main() -> int:
         existing["top1_joint_stride_analysis"] = (
             _top1_joint_stride_analysis(components[0], components[1])
         )
+        existing["allocation_efficient_review"] = (
+            _allocation_efficient_review(scenarios, components)
+        )
+        existing["planning_policy"].pop("sweet_spot_primary_cost", None)
+        existing["planning_policy"].pop("sweet_spot_secondary_cost", None)
         existing["planning_policy"].update({
             "slurm_requested_wall_hours": 168.0,
             "slurm_requested_time": "7-00:00:00",
             "planned_makespan_role": (
                 "expected dependency-chain runtime after allocation start; the "
                 "full 168-hour request remains unchanged"
+            ),
+            "absolute_wall_hours_role": (
+                "hard feasibility ceiling only; not a target runtime or preferred "
+                "fraction of a scheduler request"
+            ),
+            "reviewed_sweet_spot_role": (
+                "operator-reviewed Pareto knee balancing time-to-result, requested "
+                "nodes, and information above the 75% floor"
             ),
         })
         existing["generated_at"] = datetime.now(timezone.utc).isoformat()
@@ -828,10 +972,17 @@ def main() -> int:
                 "expected dependency-chain runtime after allocation start; the "
                 "full 168-hour request remains unchanged"
             ),
-            "sweet_spot_primary_cost": (
-                "planned dependency-chain makespan within a 168-hour Slurm limit"
+            "absolute_wall_hours_role": (
+                "hard feasibility ceiling only; not a target runtime or preferred "
+                "fraction of a scheduler request"
             ),
-            "sweet_spot_secondary_cost": "requested node count",
+            "reviewed_sweet_spot_role": (
+                "operator-reviewed Pareto knee balancing time-to-result, requested "
+                "nodes, and information above the 75% floor"
+            ),
+            "mechanical_operational_score_role": (
+                "diagnostic only; the reviewed recommendation controls the report"
+            ),
             "reserved_node_hours_role": "reported for accounting; not the selection target",
             "top1_d_t_stride_policy": (
                 "identical effective raw integer strides for every balance group "
@@ -866,6 +1017,9 @@ def main() -> int:
             "components": top1_harmonized_scenarios,
         },
         "top1_joint_stride_analysis": top1_joint_stride_analysis,
+        "allocation_efficient_review": _allocation_efficient_review(
+            scenarios, top1_harmonized_scenarios
+        ),
         "unexpected_error_count": 0,
         "interpretation": (
             "The current scenarios use verified available inputs. Future TREX and "

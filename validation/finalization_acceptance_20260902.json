@@ -29,7 +29,47 @@
     "validator_stderr_bytes": 0,
     "trajectory_recomputed": false,
     "historical_destinations_overwritten": false,
-    "downstream_remap_required": true,
+    "downstream_remap_required": false,
+    "scientific_payload_match": true,
+    "scientific_payload_match_fields": [
+      "project_signature",
+      "system_signature",
+      "input_signature",
+      "comparison_contract_signature",
+      "evaluated_frame_count",
+      "conceptual_pair_count",
+      "candidate_pair_count",
+      "materialized_pair_count",
+      "present_event_count",
+      "explicit_geometry_evaluation_count",
+      "spatial_neighbor_pair_count"
+    ],
+    "complete_interval_recomputations": {
+      "D": {
+        "job_id": 8298284,
+        "state": "COMPLETED",
+        "exit_code": "0:0",
+        "elapsed": "00:07:53",
+        "cpu_count": 12,
+        "memory_gib": 16,
+        "preflight_test_count": 39,
+        "unexpected_stderr_error_count": 0,
+        "report_sha256": "df8b6cb5f229dc39b7894e74db33f2919fdd1dd0328f60cbf0b069370d46ed35",
+        "summary_sha256": "d5b6c230fa9427bb3e257c5ef38d8a0363b6ca9999d63481b99332e02907303a"
+      },
+      "T": {
+        "job_id": 8298283,
+        "state": "COMPLETED",
+        "exit_code": "0:0",
+        "elapsed": "00:07:58",
+        "cpu_count": 6,
+        "memory_gib": 16,
+        "preflight_test_count": 39,
+        "unexpected_stderr_error_count": 0,
+        "report_sha256": "9c4cd89ae4a5415d9c8fe29d94e5f4169c5ce498d84e0943a9c9edee92876e0a",
+        "summary_sha256": "237a052df53b105301f94e9be898e31d0c39291b4a07a25b1cb20814566316eb"
+      }
+    },
     "D": {
       "stride": 15,
       "replica_count": 12,
@@ -75,12 +115,12 @@
     "queue_delay_included": false,
     "planning_jobs_submitted": 0,
     "unexpected_error_count": 0,
-    "evidence_sha256": "3ab9f9657edd83c1d2827b7eaee078fae58ccbe24d75a90cf7361a1ee8f03472"
+    "evidence_sha256": "42ae50cfebf1ce92adffa30f0d2885dd4ac9bbd651ac44050fff06bcf6fc59f5"
   },
   "scientific_acceptance": {
     "status": "not_evaluated",
     "top1_t_dihedral_state_at_record": "RUNNING",
-    "top1_downstream_reporting_state": "held_pending_dihedral_and_human_path_acceptance",
+    "top1_downstream_reporting_state": "held_pending_dihedral_and_human_acceptance",
     "trex_biological_use": "not_accepted",
     "biological_conclusions_supported": false
   },
