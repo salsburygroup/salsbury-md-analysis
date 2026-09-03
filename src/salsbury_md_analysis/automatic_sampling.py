@@ -29,6 +29,7 @@ from .memory_policy import (
     resolve_memory_uncertainty_policy,
 )
 from .preflight import FileProbeError, probe_topology, probe_trajectory
+from .planner_calibration_models import predict_size_length_cpu_terms
 from .registry import list_modules
 from .resource_planning import plan_campaign_resource_budget
 from .resource_calibrations import (
@@ -1312,40 +1313,19 @@ def _size_length_cpu_terms(
     else:
         proxy_count = atom_count
         proxy_dimension = "maximum topology atom count"
-    proxy_rate = float(model["selected_work_units_per_proxy_unit"])
-    work_units_per_selected_frame = proxy_rate * proxy_count
-    residual_safety = float(model["residual_safety_factor"])
-    fixed_seconds = residual_safety * (
-        float(model["intercept_cpu_seconds"])
-        + float(model["cpu_seconds_per_topology_atom_source_frame"])
-        * source_atom_frames
+    terms = predict_size_length_cpu_terms(
+        module_id,
+        model,
+        source_topology_atom_frame_count=source_atom_frames,
+        selected_work_proxy_count_per_frame=proxy_count,
     )
-    seconds_per_selected_frame = residual_safety * (
-        float(model["cpu_seconds_per_selected_work_unit"])
-        * work_units_per_selected_frame
+    basis = dict(terms["workload_basis"])
+    basis["selected_work_proxy_dimension"] = proxy_dimension
+    return (
+        float(terms["fixed_cpu_hours"]) * 3600.0,
+        float(terms["cpu_seconds_per_physical_frame"]),
+        basis,
     )
-    return fixed_seconds, seconds_per_selected_frame, {
-        "dimension": (
-            "measured source topology-atom frames plus selected-work proxy"
-        ),
-        "source_topology_atom_frame_count": source_atom_frames,
-        "selected_work_unit": model["selected_work_unit"],
-        "selected_work_planning_proxy": model["planning_proxy"],
-        "selected_work_proxy_dimension": proxy_dimension,
-        "selected_work_proxy_count_per_frame": proxy_count,
-        "selected_work_units_per_proxy_unit": proxy_rate,
-        "estimated_selected_work_units_per_frame": (
-            work_units_per_selected_frame
-        ),
-        "model_residual_safety_factor": residual_safety,
-        "independent_heldout_validation_passed": model[
-            "heldout_validation_passed"
-        ],
-        "measured_ranges": model["measured_ranges"],
-        "coordinate_data_used": False,
-        "full_cartesian_candidate_dictionary_materialized": False,
-        "limitation": model["extrapolation_policy"],
-    }
 
 
 def _effective_ceiling(profile: SamplingProfile, atom_count: int) -> Tuple[int, float]:

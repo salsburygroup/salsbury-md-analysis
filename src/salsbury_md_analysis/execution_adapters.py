@@ -251,10 +251,11 @@ def load_slurm_profile(path: Path) -> Dict[str, object]:
         "walltime_overhead_minutes", "minimum_memory_gib",
         "memory_safety_factor", "memory_overhead_gib",
         "large_memory_threshold_gib",
+        "request_campaign_wall_limit_for_planned_tasks",
     }
     if not isinstance(policy, dict) or set(policy).difference(allowed_policy):
         raise ExecutionAdapterError("Slurm resource_policy mapping is invalid")
-    checked_policy: Dict[str, float] = {}
+    checked_policy: Dict[str, object] = {}
     for name, default in _RESOURCE_POLICY_DEFAULTS.items():
         value = policy.get(name, default)
         if (
@@ -272,6 +273,17 @@ def load_slurm_profile(path: Path) -> Dict[str, object]:
             "campaign planner already applies task-time uncertainty; use "
             "walltime_overhead_minutes for explicit scheduler-only overhead"
         )
+    full_campaign_wall = policy.get(
+        "request_campaign_wall_limit_for_planned_tasks", False
+    )
+    if not isinstance(full_campaign_wall, bool):
+        raise ExecutionAdapterError(
+            "resource_policy.request_campaign_wall_limit_for_planned_tasks "
+            "must be true or false"
+        )
+    checked_policy["request_campaign_wall_limit_for_planned_tasks"] = (
+        full_campaign_wall
+    )
     normalized["resource_policy"] = checked_policy
 
     node_policy = profile.get("node_policy", {})
@@ -711,9 +723,15 @@ def _enrich_task_resources(
             wall_hours * 60.0 * float(policy["walltime_safety_factor"])
             + float(policy["walltime_overhead_minutes"])
         )
-        requested_wall_minutes = min(
-            maximum_hours * 60.0,
-            max(float(policy["minimum_wall_minutes"]), float(safe_minutes)),
+        requested_wall_minutes = (
+            maximum_hours * 60.0
+            if bool(policy.get(
+                "request_campaign_wall_limit_for_planned_tasks", False
+            ))
+            else min(
+                maximum_hours * 60.0,
+                max(float(policy["minimum_wall_minutes"]), float(safe_minutes)),
+            )
         )
         try:
             requested_memory_gib = max(
@@ -807,6 +825,11 @@ def _enrich_task_resources(
                     wall_hours * 60.0 * float(policy["walltime_safety_factor"])
                     + float(policy["walltime_overhead_minutes"])
                 ),
+            )
+        ),
+        "wall_request_uses_campaign_cap": bool(
+            matched and policy.get(
+                "request_campaign_wall_limit_for_planned_tasks", False
             )
         ),
         "memory_request_limited_by_campaign_cap": False,
@@ -905,6 +928,13 @@ def _fit_walltime_requests_to_campaign(
     tasks = [
         task for phase in phases for task in phase.get("tasks", [])
     ]
+    resource_policy = execution_plan.get("resource_policy", {})
+    full_campaign_wall = bool(
+        isinstance(resource_policy, Mapping)
+        and resource_policy.get(
+            "request_campaign_wall_limit_for_planned_tasks", False
+        )
+    )
 
     def assign(scale: float) -> float:
         for task in tasks:
@@ -924,6 +954,38 @@ def _fit_walltime_requests_to_campaign(
             maximum_parallel_memory_gib=maximum_memory,
             node_policy=node_policy,
         )
+
+    if full_campaign_wall:
+        for task in tasks:
+            if task.get("wall_request_uses_campaign_cap"):
+                task["requested_wall_minutes"] = campaign_wall * 60.0
+                task["preferred_requested_wall_minutes"] = campaign_wall * 60.0
+                task["wall_request_limited_by_campaign_cap"] = False
+        selected_path = _walltime_path_for_phases(
+            phases,
+            maximum_parallel_cpus=maximum_cpus,
+            maximum_parallel_memory_gib=maximum_memory,
+            node_policy=node_policy,
+        )
+        allocation = {
+            "walltime_allocation_schema": "salsbury-walltime-allocation-v2",
+            "contract": "full_campaign_limit_per_planner_backed_job",
+            "campaign_wall_limit_hours": campaign_wall,
+            "minimum_scheduler_reservation_critical_path_hours": None,
+            "preferred_scheduler_reservation_critical_path_hours": selected_path,
+            "selected_scheduler_reservation_critical_path_hours": selected_path,
+            "preferred_padding_scale_applied": 1.0,
+            "status": "full_campaign_limit_per_planned_task",
+            "submission_time_feasible": True,
+            "interpretation": (
+                "Every planner-backed Slurm job requests the configured campaign "
+                "wall limit as timeout headroom. Submission feasibility uses the "
+                "planner's expected dependency-chain runtime; serialized job kill "
+                "limits are not treated as elapsed runtime."
+            ),
+        }
+        execution_plan["walltime_allocation"] = allocation
+        return allocation
 
     minimum_path = assign(0.0)
     preferred_path = assign(1.0)
@@ -1990,7 +2052,13 @@ def _slurm_submission_preview(
         or planner_critical_path <= campaign_wall_hours + 1.0e-9
     )
     scheduler_path_feasible = (
-        campaign_wall_hours is None
+        bool(
+            isinstance(execution_plan.get("resource_policy"), Mapping)
+            and execution_plan["resource_policy"].get(
+                "request_campaign_wall_limit_for_planned_tasks", False
+            )
+        )
+        or campaign_wall_hours is None
         or scheduler_reservation_path <= campaign_wall_hours + 1.0e-9
     )
     walltime_allocation = execution_plan.get("walltime_allocation", {})

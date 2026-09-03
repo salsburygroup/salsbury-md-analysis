@@ -6,6 +6,7 @@ from pathlib import Path
 from salsbury_md_analysis.planner_calibration_models import (
     PlannerCalibrationModelError,
     fit_size_length_models,
+    predict_size_length_cpu_terms,
     validate_runtime_holdouts,
     validate_size_length_models,
 )
@@ -44,6 +45,36 @@ def _evidence_points():
 
 
 class PlannerCalibrationModelTests(unittest.TestCase):
+    def test_affine_task_terms_use_source_length_and_spatial_proxy(self):
+        model = {
+            "module_id": "hydrogen_bond_discovery",
+            "intercept_cpu_seconds": 2.0,
+            "cpu_seconds_per_topology_atom_source_frame": 0.01,
+            "cpu_seconds_per_selected_work_unit": 0.5,
+            "selected_work_units_per_proxy_unit": 0.25,
+            "residual_safety_factor": 2.0,
+            "selected_work_unit": "spatial_neighbor_pairs_v1",
+            "planning_proxy": "spatial_pairs_per_endpoint_selected_frame_v1",
+            "heldout_validation_passed": True,
+            "measured_ranges": {},
+            "extrapolation_policy": "pilot required outside measured range",
+        }
+        terms = predict_size_length_cpu_terms(
+            "hydrogen_bond_discovery",
+            model,
+            source_topology_atom_frame_count=1_000,
+            selected_work_proxy_count_per_frame=40,
+            campaign_time_safety_factor=1.5,
+        )
+        self.assertAlmostEqual(terms["fixed_cpu_hours"], 36.0 / 3600.0)
+        self.assertAlmostEqual(terms["cpu_seconds_per_physical_frame"], 15.0)
+        self.assertFalse(terms["workload_basis"]["coordinate_data_used"])
+        self.assertFalse(
+            terms["workload_basis"][
+                "full_cartesian_candidate_dictionary_materialized"
+            ]
+        )
+
     def test_fit_reserves_middle_system_and_passes_heldout_gate(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "evidence.json"
