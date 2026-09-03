@@ -1080,6 +1080,7 @@ def _register_pair(
     fieldnames: Sequence[str],
     svg: Tuple[int, int, str],
     context: Optional[Mapping[str, object]] = None,
+    primary_human_output: bool = True,
 ) -> None:
     table_path = directory / f"{_slug(purpose)}.csv"
     figure_path = directory / f"{_slug(purpose)}.svg"
@@ -1100,6 +1101,7 @@ def _register_pair(
             source_report_sha256=hashes,
             context=context,
             media_type=media_type,
+            primary_human_output=primary_human_output,
         ))
 
 
@@ -1154,6 +1156,11 @@ def _rmsd_rg_artifacts(
                 fieldnames=("system_id", "replica_id", "segment_id", "time", "time_unit", metric),
                 svg=_line_svg(series, title, f"Time ({time_unit})", y_label),
                 context={"system_id": system_id, "metric": metric},
+                # RMSD is interpreted from its replica-resolved time series.
+                # Radius of gyration is presented first as a Scott-rule
+                # distribution; its trajectory trace remains available as a
+                # secondary diagnostic.
+                primary_human_output=(metric == "rmsd_angstrom"),
             )
             if metric == "radius_of_gyration_angstrom":
                 histogram, binning = _scott_histogram(
