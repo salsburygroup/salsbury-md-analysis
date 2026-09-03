@@ -66,6 +66,7 @@ from .representative_structures import (
     RepresentativeStructureError,
     representative_structures,
 )
+from .state_ion_stability import analyze_state_ion_stability_safe
 from .rmsf_inference import (
     RMSFInferenceError,
     rmsf_permutation_test,
@@ -85,6 +86,10 @@ from .planning_report import (
     PlanningReportError,
     write_plan_matrix,
     write_planning_report,
+)
+from .presentation_artifacts import (
+    PresentationArtifactError,
+    generate_presentation_artifacts,
 )
 from .quickstart import (
     QuickstartError,
@@ -1098,6 +1103,41 @@ def _prioritize_findings_command(
     return 0 if report.get("technical_status") == "complete" else 2
 
 
+def _presentation_artifacts_command(root: Path, output: Optional[Path]) -> int:
+    try:
+        report = generate_presentation_artifacts(root, output_root=output)
+    except (PresentationArtifactError, OSError, ValueError) as exc:
+        report = {
+            "technical_status": "failed",
+            "issues": [{
+                "severity": "error",
+                "code": "PRESENTATION_ARTIFACTS_FAILED",
+                "message": str(exc),
+            }],
+        }
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report.get("technical_status") == "complete" else 2
+
+
+def _state_ion_stability_command(path: Path) -> int:
+    try:
+        request = load_json(path)
+        report = analyze_state_ion_stability_safe(request)
+    except (OSError, ValueError) as exc:
+        report = {
+            "module_id": "state_conditioned_ion_stability",
+            "technical_status": "failed",
+            "scientific_status": "not evaluated",
+            "issues": [{
+                "severity": "error",
+                "code": "STATE_ION_STABILITY_REQUEST_INVALID",
+                "message": str(exc),
+            }],
+        }
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report.get("technical_status") == "complete" else 2
+
+
 def _standalone_method_command(module_id: str, path: Path) -> int:
     """Run a small JSON-in/JSON-out method contract without touching source data."""
 
@@ -2026,6 +2066,24 @@ def build_parser() -> argparse.ArgumentParser:
             "campaign configs require 50."
         ),
     )
+
+    presentation_parser = subparsers.add_parser(
+        "build-presentation-artifacts",
+        help="Build labeled human figures, tables, and a provenance manifest.",
+    )
+    presentation_parser.add_argument("root", type=Path, help="Generated analysis root.")
+    presentation_parser.add_argument(
+        "--output", type=Path,
+        help="New artifact directory; defaults to ROOT/presentation-artifacts.",
+    )
+    ion_stability_parser = subparsers.add_parser(
+        "analyze-state-ion-stability",
+        help="Identify occupied, positionally stable ion sites within aligned states.",
+    )
+    ion_stability_parser.add_argument(
+        "request", type=Path,
+        help="JSON request containing aligned state frames and ion coordinates.",
+    )
     finding_parser.add_argument(
         "--headline-findings", type=int,
         help=(
@@ -2469,6 +2527,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _prioritize_findings_command(
             args.root, args.maximum_findings, args.headline_findings
         )
+    if args.command == "build-presentation-artifacts":
+        return _presentation_artifacts_command(args.root, args.output)
+    if args.command == "analyze-state-ion-stability":
+        return _state_ion_stability_command(args.request)
     if args.command == "export-rmsf-visualization":
         return _export_rmsf_visualization_command(
             args.report,
