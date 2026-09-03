@@ -12,6 +12,14 @@ from tests.test_quickstart import _write_inputs
 
 
 class CLIWorkflowModeTests(unittest.TestCase):
+    def test_node_sweep_defaults_to_seven_day_pareto_ceiling(self):
+        parser = build_parser()
+        args = parser.parse_args([
+            "plan-node-sweep", "campaign-resource-plan.json",
+            "--cpus-per-node", "44", "--memory-gib-per-node", "185",
+        ])
+        self.assertEqual(args.maximum_wall_hours, 168.0)
+
     def test_prepare_commands_expose_explicit_plan_only_switch(self):
         parser = build_parser()
         analysis = parser.parse_args([
