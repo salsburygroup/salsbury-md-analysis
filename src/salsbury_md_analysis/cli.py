@@ -1623,6 +1623,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--planning-processes", type=int, default=1,
         help="Independent local planning processes; this does not submit jobs.",
     )
+    node_sweep_parser.add_argument(
+        "--pareto-selection-policy",
+        choices=("minimum_nodes", "balanced"),
+        default="minimum_nodes",
+        help=(
+            "Choose the smallest-node Pareto point (default) or the explicit "
+            "equal-weight balanced point."
+        ),
+    )
 
     automatic_parser = subparsers.add_parser(
         "plan-automatic-sampling",
@@ -2316,6 +2325,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     args.information_plateau_tolerance_fraction
                 ),
                 planning_processes=args.planning_processes,
+                pareto_selection_policy=args.pareto_selection_policy,
             )
             print(json.dumps(report, indent=2, sort_keys=True))
             return 0 if report["technical_status"] == "complete" else 2
