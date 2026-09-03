@@ -159,6 +159,12 @@ Read `task_inventory_ceiling` for that maximum useful node count. Read
 the mean and median multiple of the registered scientific minimum. These are
 planning comparisons, not evidence of adequate sampling.
 
+Pareto filtering is always active. The default `minimum_nodes` policy selects
+the smallest-node point on the front. Pass
+`--pareto-selection-policy balanced` to give equal weight to information,
+modeled wall time, and node count. The selected point is recorded in
+`operational_balance`; no jobs are submitted by this command.
+
 The preview can refuse submission even when the local tutorial completed. A
 cluster's minimum job reservation and scheduler overhead can make a short
 workstation wall limit impossible. In that case, prepare a new plan with at

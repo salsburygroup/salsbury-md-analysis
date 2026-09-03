@@ -20,6 +20,7 @@ from .resource_planning import (
 
 
 NODE_SWEEP_SCHEMA = "salsbury-planner-node-sweep-v2"
+PARETO_SELECTION_POLICIES = ("minimum_nodes", "balanced")
 
 
 def _maximum_task_working_memory(task: Mapping[str, object]) -> float:
@@ -708,8 +709,9 @@ def plan_node_sweep(
     coordinate_cache_full_scan_fraction: float = 1.0,
     overall_stride_candidate_strides: Optional[Sequence[int]] = None,
     planning_processes: int = 1,
+    pareto_selection_policy: str = "minimum_nodes",
 ) -> Dict[str, object]:
-    """Return a plan-only node curve and the smallest near-maximum allocation."""
+    """Return a plan-only node curve and a selected Pareto allocation."""
 
     per_node_cpus = _positive_integer(cpus_per_node, "cpus_per_node")
     per_node_memory = _positive_number(
@@ -737,6 +739,11 @@ def plan_node_sweep(
     if tolerance >= 1.0:
         raise ResourcePlanningError(
             "information_plateau_tolerance_fraction must be smaller than one"
+        )
+    if pareto_selection_policy not in PARETO_SELECTION_POLICIES:
+        choices = ", ".join(PARETO_SELECTION_POLICIES)
+        raise ResourcePlanningError(
+            f"pareto_selection_policy must be one of: {choices}"
         )
     task_rows = [dict(row) for row in tasks]
     if not task_rows:
@@ -1084,14 +1091,35 @@ def plan_node_sweep(
             )
             for other in operational_rows
         )
-    operational_choice = max(
-        operational_rows,
-        key=lambda row: (
-            float(row["balanced_operational_score"]),
-            -float(row["planned_makespan_hours"]),
-            -int(row["requested_nodes"]),
-        ),
-    )
+    pareto_rows = [row for row in operational_rows if row["pareto_efficient"]]
+    if pareto_selection_policy == "minimum_nodes":
+        operational_choice = min(
+            pareto_rows,
+            key=lambda row: (
+                int(row["requested_nodes"]),
+                float(row["planned_makespan_hours"]),
+                -float(row["balanced_information_utility"]),
+            ),
+        )
+        operational_selection_rule = (
+            "smallest requested node count on the Pareto front; ties prefer "
+            "shorter planner makespan and then greater information"
+        )
+    else:
+        operational_choice = max(
+            pareto_rows,
+            key=lambda row: (
+                float(row["balanced_operational_score"]),
+                -float(row["planned_makespan_hours"]),
+                -int(row["requested_nodes"]),
+            ),
+        )
+        operational_selection_rule = (
+            "highest equal-weight closeness to the observed ideal of maximum "
+            "information, minimum planner makespan, and minimum requested "
+            "nodes; each regret is range-normalized over feasible points at "
+            "or below the useful-node ceiling"
+        )
     operational_minimums = scientific_minimum_multiples(
         planned_by_node[int(operational_choice["requested_nodes"])]["tasks"]
     )
@@ -1202,14 +1230,14 @@ def plan_node_sweep(
         "curve": curve,
         "threshold_sensitivity": threshold_sensitivity,
         "operational_balance": {
+            "pareto_filtering_enabled": True,
+            "selection_policy": pareto_selection_policy,
+            "pareto_front_node_counts": [
+                row["requested_nodes"] for row in pareto_rows
+            ],
             "recommended_node_count": operational_choice["requested_nodes"],
             "recommended_curve_point": dict(operational_choice),
-            "selection_rule": (
-                "highest equal-weight closeness to the observed ideal of maximum "
-                "information, minimum planner makespan, and minimum requested "
-                "nodes; each regret is range-normalized over feasible points at "
-                "or below the useful-node ceiling"
-            ),
+            "selection_rule": operational_selection_rule,
             "queue_wait_included": False,
             "wall_time_scope": (
                 "predicted dependency-chain execution time after resources start; "

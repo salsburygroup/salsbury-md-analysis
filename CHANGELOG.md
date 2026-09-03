@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep Pareto filtering active in `plan-node-sweep` and make `minimum_nodes`
+  the default selection policy. Operators can request the former equal-weight
+  policy with `--pareto-selection-policy balanced`.
+
 - Preserve complete per-system protein-protein, protein-DNA, and DNA-DNA
   hydrogen-bond endpoint universes while materializing only the spatially
   observed union. Cross-system pooling retains chemical identity and fails

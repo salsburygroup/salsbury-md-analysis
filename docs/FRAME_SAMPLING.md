@@ -143,6 +143,12 @@ mean and median multiples of each method's registered scientific floor.
 Neither the score nor its cutoff establishes convergence or scientific
 validity.
 
+Pareto filtering is always active. The default `minimum_nodes` policy chooses
+the smallest requested node count on the computed Pareto front, so small gains
+in information or modeled wall time do not automatically reserve more nodes.
+It cannot make a dominated one-node plan eligible. Use `balanced` explicitly to
+give equal weight to information, modeled wall time, and requested node count.
+
 ## Scientific minima used by the planner
 
 Each framed method has a permissive feasibility floor: a minimum number of
