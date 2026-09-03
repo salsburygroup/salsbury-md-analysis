@@ -571,7 +571,7 @@ def validate_system(
                         segment,
                         {
                             "segment_id", "trajectory", "continuous_with_previous",
-                            "weights", "timing", "sample_axis",
+                            "dcd_header_step_policy", "weights", "timing", "sample_axis",
                         },
                         segment_prefix,
                         issues,
@@ -597,6 +597,16 @@ def validate_system(
                     elif segment_index == 0 and continuous:
                         issues.append(
                             f"{segment_prefix}.continuous_with_previous cannot be true for the first segment"
+                        )
+                    dcd_header_step_policy = segment.get(
+                        "dcd_header_step_policy", "continuous"
+                    )
+                    if dcd_header_step_policy not in {
+                        "continuous", "reset_per_segment"
+                    }:
+                        issues.append(
+                            f"{segment_prefix}.dcd_header_step_policy must be "
+                            "continuous or reset_per_segment"
                         )
                     has_timing = segment.get("timing") is not None
                     has_sample_axis = segment.get("sample_axis") is not None

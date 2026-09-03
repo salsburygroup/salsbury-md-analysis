@@ -44,6 +44,14 @@ Units are normalized before comparison. This contract assumes no duplicated
 boundary frame. DCD step continuity is checked independently when both adjacent
 segments are DCD.
 
+Some simulation writers restart the DCD header step counter for each file even
+when coordinates continue from the preceding checkpoint. Declare
+`dcd_header_step_policy: reset_per_segment` on such a continuing segment only
+when checkpoint or state-file lineage has been verified. The repeated header
+step then produces `DCD_HEADER_STEP_RESET` as a warning; the declared physical
+time or sample axis must still be continuous. Without that explicit policy, a
+nonzero repeated header step remains an error.
+
 ## Deliberate limits
 
 - This preflight command does not scan DCD coordinate records. Its frame count
