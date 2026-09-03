@@ -165,6 +165,41 @@ class GeneratedDocumentationTests(unittest.TestCase):
         manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
         self.assertIn(f"include validation/{record_name}", manifest.splitlines())
 
+    def test_public_acceptance_matrix_is_honest_and_packaged(self):
+        path = ROOT / "validation" / "v0.1.2_public_acceptance_matrix.json"
+        record = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(record["candidate_version"], "0.1.2")
+        self.assertEqual(record["technical_acceptance"], "pass")
+        self.assertEqual(record["scientific_status"], "not evaluated")
+        self.assertEqual(record["unexpected_errors"], [])
+        self.assertEqual(
+            {row["system_class"] for row in record["matrix"]},
+            {
+                "protein-only",
+                "DNA-only",
+                "protein-DNA oligomer",
+                "ligand/cofactor",
+                "multi-ion",
+            },
+        )
+        nemo = next(
+            row for row in record["matrix"] if row["system_class"] == "protein-only"
+        )
+        self.assertEqual(nemo["acceptance_kind"], "public end-to-end trajectory run")
+        self.assertEqual(nemo["source_frame_count"], 100)
+        self.assertEqual(nemo["effective_raw_stride"], 1)
+        self.assertEqual(nemo["accepted_module_report_count"], 28)
+        self.assertEqual(nemo["presentation_artifact_count"], 88)
+        self.assertEqual(nemo["terminal_failure_count"], 0)
+        for row in record["matrix"]:
+            self.assertEqual(row["technical_status"], "complete")
+            self.assertEqual(row["scientific_status"], "not evaluated")
+        manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+        self.assertIn(
+            "include validation/v0.1.2_public_acceptance_matrix.json",
+            manifest.splitlines(),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

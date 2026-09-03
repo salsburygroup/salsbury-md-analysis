@@ -35,6 +35,8 @@ include validation/v0.1.0a1_dependency_test.json
 include validation/v0.1.0a1_memory_planner_update_test.json
 include validation/v0.1.0_dependency_test.json
 include validation/v0.1.1_dependency_test.json
+include validation/v0.1.2_dependency_test.json
+include validation/v0.1.2_public_acceptance_matrix.json
 include validation/nemo_zinc_finger_tutorial_acceptance.json
 include validation/nemo_zinc_finger_v0.1.1_picker_acceptance.json
 include validation/trex_thrombin_technical_fixture_acceptance.json
