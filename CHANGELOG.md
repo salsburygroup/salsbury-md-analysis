@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Let node sweeps compute either a node-count/wall-time/information Pareto
+  front or a wall-time/information front within an explicit node constraint.
+  Reports record the selected objective mode and the applied node ceiling.
+
 - Keep Pareto filtering active in `plan-node-sweep` and make `minimum_nodes`
   the default selection policy. Operators can request the former equal-weight
   policy with `--pareto-selection-policy balanced`.

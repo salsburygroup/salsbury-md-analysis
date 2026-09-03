@@ -147,7 +147,17 @@ Pareto filtering is always active. The default `minimum_nodes` policy chooses
 the smallest requested node count on the computed Pareto front, so small gains
 in information or modeled wall time do not automatically reserve more nodes.
 It cannot make a dominated one-node plan eligible. Use `balanced` explicitly to
-give equal weight to information, modeled wall time, and requested node count.
+give equal weight to the active information, modeled-wall-time, and optional
+node-count objective dimensions.
+
+The default `nodes_walltime_information` objective mode computes dominance
+from all three quantities. Use `--pareto-objectives walltime_information` to
+compute dominance from modeled wall time and information after applying
+`--maximum-nodes`. In that mode, the node count is a constraint rather than a
+Pareto objective. The report records the objective mode, objective fields, and
+node constraint. With a fixed one-node constraint, the second mode lets the
+planner determine the modeled execution time from the selected scientific work
+instead of treating node count as another score dimension.
 
 ## Scientific minima used by the planner
 
