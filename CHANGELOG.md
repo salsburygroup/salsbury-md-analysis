@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Balance headline and secondary findings across scientific categories and
+  method-specific comparison families. Effect magnitudes are compared only
+  within a compatible family; failed kinetic validations, basis descriptions,
+  grouped-ML diagnostics, and coordinate-export records remain searchable
+  without displacing physical findings.
+- Link representative-coordinate exports to their FES and clustering results,
+  restore per-system and conformational-view context, add transparent
+  cross-method evidence bundles, and summarize replica-level RMSF inference in
+  the QC channel.
+- Recover pairwise direct-hydrogen-bond comparisons from compact evidence made
+  by older completed reports, without rerunning trajectory analysis.
+
 - Let node sweeps compute either a node-count/wall-time/information Pareto
   front or a wall-time/information front within an explicit node constraint.
   Reports record the selected objective mode and the applied node ceiling.

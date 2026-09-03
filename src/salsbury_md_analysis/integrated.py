@@ -136,7 +136,11 @@ def integrated_comparison_results(root: Path) -> Dict[str, object]:
     prioritized = prioritize_findings(
         analysis_root, maximum_findings=1_000_000, write_outputs=False
     )
-    if prioritized.get("unreported_candidate_count") != 0:
+    unreported_eligible = prioritized.get(
+        "unreported_eligible_candidate_count",
+        prioritized.get("unreported_candidate_count"),
+    )
+    if unreported_eligible != 0:
         raise IntegratedAnalysisError(
             "comparison candidate count exceeds the fail-closed integration bound"
         )
