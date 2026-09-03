@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep Pareto filtering active in `plan-node-sweep` and make `minimum_nodes`
+  the default selection policy. Operators can request the former equal-weight
+  policy with `--pareto-selection-policy balanced`.
+
 - Add an effective `--experimental-after-main` continuation mode for single-
   and multi-system campaigns. It verifies immutable main reports and their
   provenance, preserves their exact planner allocations, reuses a validated
