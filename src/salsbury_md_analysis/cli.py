@@ -1632,6 +1632,16 @@ def build_parser() -> argparse.ArgumentParser:
             "equal-weight balanced point."
         ),
     )
+    node_sweep_parser.add_argument(
+        "--pareto-objectives",
+        choices=("nodes_walltime_information", "walltime_information"),
+        default="nodes_walltime_information",
+        help=(
+            "Compute the Pareto front over nodes, modeled wall time, and "
+            "information (default), or over wall time and information after "
+            "applying the node limit."
+        ),
+    )
 
     automatic_parser = subparsers.add_parser(
         "plan-automatic-sampling",
@@ -2326,6 +2336,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 ),
                 planning_processes=args.planning_processes,
                 pareto_selection_policy=args.pareto_selection_policy,
+                pareto_objectives=args.pareto_objectives,
             )
             print(json.dumps(report, indent=2, sort_keys=True))
             return 0 if report["technical_status"] == "complete" else 2
