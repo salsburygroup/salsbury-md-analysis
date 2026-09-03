@@ -6,6 +6,7 @@ from salsbury_md_analysis.node_sweep import (
     plan_node_sweep,
     scientific_minimum_multiples,
 )
+from salsbury_md_analysis.resource_planning import ResourcePlanningError
 from salsbury_md_analysis.scientific_sampling import (
     profile_contract,
     scientific_sampling_profile,
@@ -153,6 +154,85 @@ class NodeSweepTests(unittest.TestCase):
              for row in report["curve"]],
             [0.9, 0.2, 1.0],
         )
+
+    def test_minimum_nodes_policy_selects_smallest_pareto_point(self):
+        plans = []
+        for coverage, wall in ((0.64, 10.0), (1.0, 5.0)):
+            task = self._task()
+            task.update({
+                "coverage_fraction": coverage,
+                "selected_member_observation_count": int(2_000 * coverage),
+                "selected_physical_frames_per_replica": [500, 500],
+            })
+            plans.append({
+                "feasibility_status": "feasible",
+                "tasks": [task],
+                "stages": [{
+                    "dependency_stage": 1,
+                    "planned_node_count": len(plans) + 1,
+                    "estimated_wall_hours_with_resource_lanes": wall,
+                }],
+                "estimated_selected_cpu_hours": 1.0,
+                "estimated_selected_wall_hours_lower_bound": wall,
+                "minimum_known_cpu_hours": 1.0,
+                "minimum_wall_hours_lower_bound": wall,
+            })
+        plans_by_nodes = {
+            index: plan for index, plan in enumerate(plans, start=1)
+        }
+
+        def fake_plan(_tasks, **kwargs):
+            return plans_by_nodes[int(kwargs["maximum_nodes"])]
+
+        with patch(
+            "salsbury_md_analysis.node_sweep.plan_campaign_resource_budget",
+            side_effect=fake_plan,
+        ):
+            balanced = plan_node_sweep(
+                [self._task()], cpus_per_node=44,
+                memory_gib_per_node=185.0, maximum_nodes=2,
+                maximum_wall_hours=24.0,
+                pareto_selection_policy="balanced",
+            )
+        with patch(
+            "salsbury_md_analysis.node_sweep.plan_campaign_resource_budget",
+            side_effect=fake_plan,
+        ):
+            minimum_nodes = plan_node_sweep(
+                [self._task()], cpus_per_node=44,
+                memory_gib_per_node=185.0, maximum_nodes=2,
+                maximum_wall_hours=24.0,
+            )
+
+        self.assertEqual(
+            balanced["operational_balance"]["recommended_node_count"], 2
+        )
+        self.assertEqual(
+            minimum_nodes["operational_balance"]["recommended_node_count"], 1
+        )
+        self.assertEqual(
+            minimum_nodes["operational_balance"]["selection_policy"],
+            "minimum_nodes",
+        )
+        self.assertTrue(
+            minimum_nodes["operational_balance"]["pareto_filtering_enabled"]
+        )
+        self.assertEqual(
+            minimum_nodes["operational_balance"]["pareto_front_node_counts"],
+            [1, 2],
+        )
+        self.assertTrue(minimum_nodes["curve"][0]["pareto_efficient"])
+
+    def test_unknown_pareto_selection_policy_fails_closed(self):
+        with self.assertRaisesRegex(
+            ResourcePlanningError, "pareto_selection_policy must be one of"
+        ):
+            plan_node_sweep(
+                [self._task()], cpus_per_node=44,
+                memory_gib_per_node=185.0, maximum_nodes=2,
+                maximum_wall_hours=24.0,
+                pareto_selection_policy="fewest_cores",
+            )
 
     def test_full_inventory_ceiling_uses_tasks_and_scheduler_memory(self):
         tasks = []
