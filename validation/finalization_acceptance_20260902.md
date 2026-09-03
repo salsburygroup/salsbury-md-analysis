@@ -54,11 +54,22 @@ endpoint, and completed in two seconds with exit code `0:0`. Its stderr was
 empty. The accepted reports are hard links to the saved calculation outputs,
 so their bytes did not change. The repair did not read a trajectory.
 
-An older, nonidentical report already occupies each historical prepared-result
-path. Validator attempt `8298341` therefore failed closed instead of
-overwriting it. New results remain at the versioned attempt03 paths. Scientific
-reporting must explicitly select those paths after human review; the existing
-reports and failed attempts remain immutable.
+Before that validator ran, independently submitted complete-interval jobs
+`8298283` (T) and `8298284` (D) had installed valid reports at the historical
+prepared-result paths. Both jobs completed with exit code `0:0`; their stderr
+files contain only the passing 39-test preflight. Fresh validation and
+installation gates pass for both reports. Their file hashes differ from the
+validator-only copies because the files retain run-specific provenance and
+resource records, but their scientific payloads match exactly: project,
+system, input, and comparison-contract signatures; evaluated-frame counts;
+and conceptual, candidate, materialized, event, geometry, and spatial-work
+counts.
+
+Validator attempt `8298341` therefore failed closed when it found existing,
+nonidentical bytes. It did not overwrite either report. The historical
+prepared-result paths now contain the validated complete-interval reports, so
+downstream reporting does not require a path remap. The versioned attempt03
+copies, the failed attempt, and all original evidence remain immutable.
 
 ## TBA recovery evidence
 
@@ -91,6 +102,10 @@ If both allocations begin together, time until both finish is 123.00 hours,
 with nine requested nodes and 97.57% combined information. The complete curves,
 including the 75%, 80%, 90%, 95%, 99%, and 100% thresholds, are in
 `apollo_node_sweet_spots_20260902.json`. No planning-sweep job was submitted.
+The reviewed allocation-efficient choices are one node for current TBA, three
+for current TREX, one for current thrombin, five for projected TREX, and one
+for projected thrombin. The 168-hour request is only the hard feasibility
+ceiling; it is not an optimization target.
 
 ## Scientific acceptance
 
@@ -100,7 +115,7 @@ TBA v5, TOP1 D/T hydrogen bonds, the TREX fixtures, and the thrombin fixture are
 technical evidence. They do not establish convergence, metastability, kinetics,
 mechanism, or biological importance. The TOP1 T-dihedral replacement was still
 running when this record was written. TOP1 downstream reporting remains held
-until that result and the versioned hydrogen-bond paths pass explicit human
+until that result and the installed hydrogen-bond reports pass explicit human
 review. TREX remains unsuitable for biological conclusions without human
 acceptance of its earlier scientific-QC concerns. No TREX or thrombin campaign
 was submitted.
