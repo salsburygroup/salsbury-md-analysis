@@ -627,6 +627,9 @@ def preflight_system(
                             )
                         )
                     continuous = bool(raw_segment.get("continuous_with_previous", False))
+                    dcd_header_step_policy = str(
+                        raw_segment.get("dcd_header_step_policy", "continuous")
+                    )
                     if continuous:
                         if previous_probe is None or previous_axis is None:
                             issues.append(
@@ -696,11 +699,23 @@ def preflight_system(
                             expected_start = previous_start + dcd_previous_frames * previous_interval
                             observed_start = int(trajectory_probe["starting_step"])
                             if observed_start != expected_start:
-                                if previous_start == 0 and observed_start == 0:
+                                declared_reset = (
+                                    dcd_header_step_policy == "reset_per_segment"
+                                    and observed_start == previous_start
+                                )
+                                if declared_reset or (
+                                    previous_start == 0 and observed_start == 0
+                                ):
+                                    basis = (
+                                        "the declared reset_per_segment policy"
+                                        if declared_reset
+                                        else "matching zero-valued headers"
+                                    )
                                     issues.append(
                                         issue_record(
                                             "warning", "DCD_HEADER_STEP_RESET", segment_location,
-                                            "both DCD headers reset their starting step to zero; "
+                                            "adjacent DCD headers repeat their starting step under "
+                                            f"{basis}; "
                                             "header step continuity is unavailable and continuity "
                                             "rests on the declared frame axis and external lineage",
                                         )
@@ -721,6 +736,9 @@ def preflight_system(
                         "segment_id": segment_id,
                         "continuous_with_previous": bool(
                             raw_segment.get("continuous_with_previous", False)
+                        ),
+                        "dcd_header_step_policy": str(
+                            raw_segment.get("dcd_header_step_policy", "continuous")
                         ),
                         "frame_axis": axis,
                         "trajectory": trajectory_probe,

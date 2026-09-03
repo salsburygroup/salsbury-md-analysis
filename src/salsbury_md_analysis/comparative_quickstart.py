@@ -93,7 +93,7 @@ _ALLOWED_SYSTEM_FIELDS = {
 _ALLOWED_REPLICA_FIELDS = {"replica_id", "segments"}
 _ALLOWED_SEGMENT_FIELDS = {
     "segment_id", "trajectory", "frame_interval_ps", "first_frame_time_ps",
-    "continuous_with_previous",
+    "continuous_with_previous", "dcd_header_step_policy",
 }
 
 
@@ -736,6 +736,17 @@ def prepare_comparative_analysis(
                         f"{system_id}.{replica_id}.{segment_id} is the first segment "
                         "and cannot be continuous_with_previous"
                     )
+                dcd_header_step_policy = raw_segment.get(
+                    "dcd_header_step_policy", "continuous"
+                )
+                if dcd_header_step_policy not in {
+                    "continuous", "reset_per_segment"
+                }:
+                    raise QuickstartError(
+                        f"{system_id}.{replica_id}.{segment_id}."
+                        "dcd_header_step_policy must be continuous or "
+                        "reset_per_segment"
+                    )
                 try:
                     probe = probe_trajectory(trajectory)
                 except (FileProbeError, OSError) as exc:
@@ -763,6 +774,8 @@ def prepare_comparative_analysis(
                 }
                 if segment_index > 0:
                     segment["continuous_with_previous"] = continuous
+                if dcd_header_step_policy != "continuous":
+                    segment["dcd_header_step_policy"] = dcd_header_step_policy
                 segments.append(segment)
             if replica_frame_count < 1:
                 raise QuickstartError(
