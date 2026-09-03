@@ -1543,7 +1543,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     node_sweep_parser.add_argument("--maximum-nodes", type=int, default=16)
     node_sweep_parser.add_argument(
-        "--maximum-wall-hours", type=float, default=120.0
+        "--maximum-wall-hours", type=float, default=168.0,
+        help=(
+            "Maximum end-to-end wall time available to each node-count plan; "
+            "defaults to 168 hours (seven days)."
+        ),
     )
     node_sweep_parser.add_argument(
         "--information-plateau-fraction", type=float, default=0.95
