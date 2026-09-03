@@ -153,6 +153,23 @@ class PreflightTests(unittest.TestCase):
             self.assertIn(
                 "DCD_HEADER_STEP_RESET", {issue["code"] for issue in reset["issues"]}
             )
+            _write_dcd(first, frames=2, start=5000, interval=100)
+            _write_dcd(second, frames=2, start=5000, interval=100)
+            undeclared_nonzero_reset = preflight_system(data, manifest)
+            self.assertEqual(undeclared_nonzero_reset["technical_status"], "failed")
+            self.assertIn(
+                "DCD_CONTINUITY_MISMATCH",
+                {issue["code"] for issue in undeclared_nonzero_reset["issues"]},
+            )
+            data["systems"][0]["replicas"][0]["segments"][1][
+                "dcd_header_step_policy"
+            ] = "reset_per_segment"
+            declared_nonzero_reset = preflight_system(data, manifest)
+            self.assertEqual(declared_nonzero_reset["technical_status"], "complete")
+            self.assertIn(
+                "DCD_HEADER_STEP_RESET",
+                {issue["code"] for issue in declared_nonzero_reset["issues"]},
+            )
             data["systems"][0]["replicas"][0]["segments"][1]["timing"][
                 "first_frame_time"
             ] = 3
