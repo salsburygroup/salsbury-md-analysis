@@ -1374,12 +1374,25 @@ def _hydrogen_bond_discovery_project_lazy_partial(
         conceptual_count_by_system[system_id] * frame_count
         for system_id, frame_count in selected_by_system.items()
     )
-    if conceptual_count > int(settings["maximum_candidate_bonds"]):
-        raise HydrogenBondDiscoveryError("maximum_candidate_bonds gate exceeded")
-    if conceptual_observations > int(settings["maximum_feature_observations"]):
-        raise HydrogenBondDiscoveryError(
-            "maximum_feature_observations conceptual-universe gate exceeded"
-        )
+    maximum_candidate_bonds = int(settings["maximum_candidate_bonds"])
+    maximum_feature_observations = int(
+        settings["maximum_feature_observations"]
+    )
+    if (
+        conceptual_count > maximum_candidate_bonds
+        or conceptual_observations > maximum_feature_observations
+    ):
+        issues.append({
+            "severity": "info",
+            "code": "HBOND_SPARSE_CONCEPTUAL_WORK_RETAINED_IMPLICITLY",
+            "location": str(source),
+            "message": (
+                "The topology-defined candidate-frame universe exceeds a sparse "
+                "materialization gate, but remains implicit. Runtime gates apply "
+                "only to spatial neighbor pairs, the observed candidate dictionary, "
+                "and materialized present events."
+            ),
+        })
 
     cutoff_definitions = settings["cutoff_definitions"]
     candidate_index_by_key: Dict[CandidateIdentityKey, int] = {}
@@ -1505,6 +1518,11 @@ def _hydrogen_bond_discovery_project_lazy_partial(
                         )
                         candidate_index = candidate_index_by_key.get(key)
                         if candidate_index is None:
+                            if len(candidate_dictionary) >= maximum_candidate_bonds:
+                                raise HydrogenBondDiscoveryError(
+                                    "materialized observed candidate count exceeds "
+                                    "maximum_candidate_bonds"
+                                )
                             candidate_index = len(candidate_dictionary)
                             candidate_index_by_key[key] = candidate_index
                             candidate_dictionary.append({
@@ -1526,6 +1544,11 @@ def _hydrogen_bond_discovery_project_lazy_partial(
                         })
                     geometry_rows.sort(key=lambda row: int(row["candidate_index"]))
                     present_events += len(geometry_rows)
+                    if present_events > maximum_feature_observations:
+                        raise HydrogenBondDiscoveryError(
+                            "sparse present-event count exceeds "
+                            "maximum_feature_observations"
+                        )
                     frame_records.append({
                         "system_id": system_id,
                         "replica_id": replica_id,
@@ -1605,6 +1628,10 @@ def _hydrogen_bond_discovery_project_lazy_partial(
         "materialized_observed_candidate_count": len(candidate_dictionary),
         "unobserved_zero_candidate_count": conceptual_count - len(candidate_dictionary),
         "evaluated_frame_count": evaluated_frames,
+        "materialized_feature_observation_count": present_events,
+        "maximum_feature_observations_measurement_basis": (
+            "materialized_sparse_present_events_v1"
+        ),
         "conceptual_candidate_frame_count": conceptual_observations,
         "spatial_neighbor_pair_count": spatial_pairs,
         "explicit_geometry_evaluation_count": explicit_geometry,
@@ -2841,16 +2868,21 @@ def _reduce_lazy_hbond_reports(
         + acceptor_counts_by_system[system_id]
         for system_id in donor_counts_by_system
     }
-    if conceptual_observations > int(first["settings"]["maximum_feature_observations"]):
-        raise HydrogenBondDiscoveryError(
-            "parallel per-system hydrogen-bond feature count exceeds "
-            "maximum_feature_observations"
-        )
     spatial_pairs = sum(int(report["spatial_neighbor_pair_count"]) for report in reports)
     explicit_geometry = sum(
         int(report["explicit_geometry_evaluation_count"]) for report in reports
     )
     present_event_count = sum(int(report["present_event_count"]) for report in reports)
+    if len(candidate_dictionary) > int(first["settings"]["maximum_candidate_bonds"]):
+        raise HydrogenBondDiscoveryError(
+            "parallel materialized observed candidate count exceeds "
+            "maximum_candidate_bonds"
+        )
+    if present_event_count > int(first["settings"]["maximum_feature_observations"]):
+        raise HydrogenBondDiscoveryError(
+            "parallel sparse present-event count exceeds "
+            "maximum_feature_observations"
+        )
     frame_selection = merge_frame_selection_reports([
         report["frame_selection"] for report in reports
         if isinstance(report.get("frame_selection"), dict)
@@ -2909,6 +2941,10 @@ def _reduce_lazy_hbond_reports(
         "unobserved_zero_candidate_count": conceptual_count - len(candidate_dictionary),
         "evaluated_frame_count": evaluated,
         "planned_feature_observation_count": conceptual_observations,
+        "materialized_feature_observation_count": present_event_count,
+        "maximum_feature_observations_measurement_basis": (
+            "materialized_sparse_present_events_v1"
+        ),
         "conceptual_candidate_frame_count": conceptual_observations,
         "spatial_neighbor_pair_count": spatial_pairs,
         "explicit_geometry_evaluation_count": explicit_geometry,
@@ -2932,6 +2968,13 @@ def _reduce_lazy_hbond_reports(
             "spatial_neighbor_pair_count": spatial_pairs,
             "explicit_geometry_evaluation_count": explicit_geometry,
             "present_event_count": present_event_count,
+            "materialized_feature_observation_count": present_event_count,
+            "maximum_feature_observations": int(
+                first["settings"]["maximum_feature_observations"]
+            ),
+            "maximum_feature_observations_measurement_basis": (
+                "materialized_sparse_present_events_v1"
+            ),
             "planner_work_basis": "measured_spatial_neighbor_pairs_v1",
             "geometry_evaluation_avoidance_fraction": (
                 1.0 - explicit_geometry / conceptual_observations
