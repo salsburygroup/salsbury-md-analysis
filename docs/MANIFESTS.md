@@ -54,6 +54,7 @@ Validation rejects:
 - duplicate system, replica, segment, requested-module, or output-module IDs;
 - unknown suite module IDs;
 - a first trajectory segment marked continuous with a nonexistent predecessor;
+- a DCD header-step policy other than `continuous` or `reset_per_segment`;
 - missing, non-finite, or nonpositive segment timing;
 - malformed SHA-256 values or Git commits;
 - relative authoritative data roots and protected locations;

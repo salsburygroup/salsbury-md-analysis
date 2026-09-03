@@ -369,6 +369,7 @@ class ComparativeQuickstartTests(unittest.TestCase):
                                 "first_frame_time_ps": 4010.0,
                                 "frame_interval_ps": 10.0,
                                 "continuous_with_previous": False,
+                                "dcd_header_step_policy": "reset_per_segment",
                             },
                         ],
                     })
@@ -400,6 +401,10 @@ class ComparativeQuickstartTests(unittest.TestCase):
             )
             self.assertFalse(
                 first_replica["segments"][1]["continuous_with_previous"]
+            )
+            self.assertEqual(
+                first_replica["segments"][1]["dcd_header_step_policy"],
+                "reset_per_segment",
             )
             campaign = json.loads(
                 (output / "campaign-resource-plan.json").read_text()
