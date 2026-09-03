@@ -207,16 +207,17 @@ hash-pinned regression on adequate sampling, documented limitations and
 resource bounds, and an independent software review. The full private evidence
 matrix should be retained with the group's controlled validation records.
 
-Automatic direct discovery also has an explicit scaling boundary: it retains
-the full chemically eligible donor–hydrogen–acceptor dictionary, so evaluation
-work grows with donor–hydrogen pairs × acceptors × frames. The opt-in chunked
-sparse representation prevents dense frame/cutoff report growth but does not
-remove that evaluation cost. The water-mediated module instead uses spatial
-neighbor lists and sparse observed paths, with independent gates on waters,
-neighbor pairs, per-frame paths, and total sparse records. Neither path is yet
-approved for arbitrary ligands, unusually named water models, multi-water
-wires, or a real solvated production comparison. Water-edge pairing is
-partitioned by the requested interaction scope before within-water path
-construction, preventing avoidable all-solute quadratic expansion for targeted
-protein-nucleic-acid questions while retaining the same geometry and eligibility
-contract.
+Automatic direct discovery now uses spatial candidate discovery and stores the
+observed union. It still accounts for the full chemically eligible
+donor–hydrogen–acceptor universe, including implicit zero-occupancy candidates,
+without building that Cartesian universe in memory or evaluating every pair in
+every frame. Resource planning uses measured endpoint and spatial-neighbor work
+instead of the old dense candidate-by-frame proxy. The water-mediated module
+uses its own spatial neighbor lists and sparse observed paths, with independent
+gates on waters, neighbor pairs, per-frame paths, and total sparse records.
+Neither path is approved for arbitrary ligands, unusually named water models,
+multi-water wires, or a real solvated production comparison. Water-edge pairing
+is partitioned by the requested interaction scope before within-water path
+construction, avoiding all-solute quadratic expansion for targeted
+protein–nucleic-acid questions while retaining the same geometry and
+eligibility contract.
