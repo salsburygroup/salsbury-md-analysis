@@ -17,7 +17,7 @@ from .alternative_clustering import (
     alternative_clustering_project,
 )
 from .atom_mapping import AtomMappingError, AtomRecord, read_topology_atoms
-from .chemical_identity import WATER_RESIDUES
+from .chemical_identity import ION_RESIDUES, WATER_RESIDUES
 from .clustering import (
     ClusteringAnalysisError,
     clustering_hdbscan_project,
@@ -47,6 +47,7 @@ from .representative_frames import (
     _basin_candidates,
     select_state_representatives,
 )
+from .state_ion_stability import analyze_state_ion_stability
 from .selections import build_common_correspondences
 from .selections import select_atoms
 from .validation import positive_integer
@@ -156,7 +157,7 @@ def _settings(project: Mapping[str, object]) -> Dict[str, object]:
     }
     optional = {
         "fes_smoothing_sigma_bins", "alternative_algorithm", "coordinate_selection",
-        "write_trajectories",
+        "write_trajectories", "state_conditioned_ion_stability",
     }
     missing = sorted(required.difference(raw))
     unknown = sorted(set(raw).difference(required | optional))
@@ -188,6 +189,32 @@ def _settings(project: Mapping[str, object]) -> Dict[str, object]:
     }
     if not isinstance(result["write_trajectories"], bool):
         raise StateCoordinateExportError("write_trajectories must be boolean")
+    ion_stability = raw.get("state_conditioned_ion_stability", {"enabled": True})
+    if not isinstance(ion_stability, dict):
+        raise StateCoordinateExportError(
+            "state_conditioned_ion_stability must be an object"
+        )
+    allowed_ion_fields = {
+        "enabled", "site_discovery_radius_angstrom",
+        "site_assignment_cutoff_angstrom", "minimum_state_frames",
+        "minimum_site_occupancy_fraction", "maximum_site_rmsf_angstrom",
+        "maximum_sites_per_species",
+    }
+    unknown_ion_fields = sorted(set(ion_stability).difference(allowed_ion_fields))
+    if unknown_ion_fields:
+        raise StateCoordinateExportError(
+            "state_conditioned_ion_stability contains unknown fields: "
+            + ", ".join(unknown_ion_fields)
+        )
+    enabled = ion_stability.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise StateCoordinateExportError(
+            "state_conditioned_ion_stability.enabled must be boolean"
+        )
+    result["state_conditioned_ion_stability"] = {
+        "enabled": enabled,
+        **{key: value for key, value in ion_stability.items() if key != "enabled"},
+    }
     if "coordinate_selection" in raw:
         selection = raw["coordinate_selection"]
         if not isinstance(selection, str) or not selection.strip():
@@ -292,6 +319,21 @@ def _safe_slug(value: object) -> str:
     text = str(value)
     normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", text).strip("-.") or "unnamed"
     return normalized[:64]
+
+
+def _is_ion(atom: AtomRecord) -> bool:
+    return atom.residue_name.upper() in ION_RESIDUES
+
+
+def _ion_id(atom: AtomRecord) -> str:
+    return ":".join((
+        atom.element.upper() or atom.residue_name.upper(),
+        atom.chain_id or "_",
+        atom.residue_name,
+        str(atom.residue_number),
+        str(atom.serial),
+        str(atom.atom_index),
+    ))
 
 
 def _pdb_atom_line(atom: AtomRecord, coordinate: Coordinate) -> str:
@@ -419,6 +461,8 @@ def _capture_coordinates(
     Dict[Tuple[str, str], Tuple[List[AtomRecord], Path]],
     Dict[Tuple[str, str, str], int],
     List[Dict[str, object]],
+    Dict[Tuple[str, str, str, int], List[Dict[str, object]]],
+    Dict[Tuple[str, str], List[AtomRecord]],
 ]:
     requested_set = set(requested)
     requested_by_segment: Dict[Tuple[str, str, str], set[int]] = {}
@@ -431,7 +475,11 @@ def _capture_coordinates(
     assert isinstance(systems, list)
     coordinate_unit = str(project["coordinate_unit"])
     captured: Dict[Tuple[str, str, str, int], Tuple[Coordinate, ...]] = {}
+    captured_ions: Dict[
+        Tuple[str, str, str, int], List[Dict[str, object]]
+    ] = {}
     topologies: Dict[Tuple[str, str], Tuple[List[AtomRecord], Path]] = {}
+    ion_topologies: Dict[Tuple[str, str], List[AtomRecord]] = {}
     segment_order: Dict[Tuple[str, str, str], int] = {}
     reference_path = resolve_manifest_path(
         str(project["reference_structure"]), project_path
@@ -542,10 +590,13 @@ def _capture_coordinates(
             alignment_indices = correspondence_by_key[
                 (system_id, replica_id)
             ].target_indices
+            ion_atoms = [atom for atom in atoms if _is_ion(atom)]
+            ion_indices = tuple(atom.atom_index for atom in ion_atoms)
             reconstruction_indices = tuple(sorted(set(
-                output_indices + alignment_indices
+                output_indices + alignment_indices + ion_indices
             )))
             topologies[(system_id, replica_id)] = (output_atoms, topology_path)
+            ion_topologies[(system_id, replica_id)] = ion_atoms
             processor = PeriodicFrameProcessor.from_replica(
                 project, replica, system_path, len(atoms)
             )
@@ -593,12 +644,32 @@ def _capture_coordinates(
                             for index in output_indices
                         )
                         captured[key] = apply_transform(mobile_output, transform)
+                        mobile_ions = tuple(
+                            frame.coordinates_angstrom[index]
+                            for index in ion_indices
+                        )
+                        aligned_ions = (
+                            apply_transform(mobile_ions, transform)
+                            if mobile_ions else ()
+                        )
+                        captured_ions[key] = [
+                            {
+                                "ion_id": _ion_id(atom),
+                                "element": atom.element.upper()
+                                or atom.residue_name.upper(),
+                                "coordinates_angstrom": list(coordinate),
+                            }
+                            for atom, coordinate in zip(ion_atoms, aligned_ions)
+                        ]
     missing = sorted(requested_set.difference(captured))
     if missing:
         raise StateCoordinateExportError(
             f"{len(missing)} requested source frames were not found; first={missing[0]}"
         )
-    return captured, topologies, segment_order, alignment_mapping
+    return (
+        captured, topologies, segment_order, alignment_mapping,
+        captured_ions, ion_topologies,
+    )
 
 
 def _capture_member_coordinates(
@@ -915,6 +986,12 @@ def state_coordinate_exports_project(
         _selected_state_rows(candidates, state_field, settings)
         if settings["write_trajectories"] else []
     )
+    ion_settings = settings["state_conditioned_ion_stability"]
+    assert isinstance(ion_settings, dict)
+    ion_selected = (
+        _selected_state_rows(candidates, state_field, settings)
+        if ion_settings["enabled"] else []
+    )
     representatives = select_state_representatives(
         candidates,
         state_field=state_field,
@@ -923,8 +1000,9 @@ def state_coordinate_exports_project(
         maximum_states=int(settings["maximum_states"]),
         maximum_candidates=max(len(candidates), int(settings["maximum_total_frames"])),
     )
-    member_mode = any("member_id" in row for row in [*selected, *representatives])
-    if member_mode and any("member_id" not in row for row in [*selected, *representatives]):
+    requested_rows = [*selected, *ion_selected, *representatives]
+    member_mode = any("member_id" in row for row in requested_rows)
+    if member_mode and any("member_id" not in row for row in requested_rows):
         raise StateCoordinateExportError(
             "state assignments mix symmetry-expanded and physical-frame identities"
         )
@@ -942,22 +1020,70 @@ def state_coordinate_exports_project(
                 str(row["segment_id"]), int(row["source_frame_index"]),
                 str(row["member_id"]),
             )
-            for row in [*selected, *representatives]
+            for row in requested_rows
         }
         captured, topologies, segment_order, alignment_mapping = _capture_member_coordinates(
             project, source_path, system_path, requested_members, plan
         )
+        captured_ions: Dict[Tuple[str, str, str, int], List[Dict[str, object]]] = {}
+        ion_topologies: Dict[Tuple[str, str], List[AtomRecord]] = {}
     else:
         requested = {
             (
                 str(row["system_id"]), str(row["replica_id"]),
                 str(row["segment_id"]), int(row["source_frame_index"]),
             )
-            for row in [*selected, *representatives]
+            for row in requested_rows
         }
-        captured, topologies, segment_order, alignment_mapping = _capture_coordinates(
-            project, source_path, system_path, requested
-        )
+        (
+            captured, topologies, segment_order, alignment_mapping,
+            captured_ions, ion_topologies,
+        ) = _capture_coordinates(project, source_path, system_path, requested)
+
+    if not ion_settings["enabled"]:
+        ion_stability_report: Dict[str, object] = {
+            "module_id": "state_conditioned_ion_stability",
+            "technical_status": "disabled",
+            "reason": "disabled_by_state_coordinate_export_configuration",
+        }
+    elif member_mode:
+        ion_stability_report = {
+            "module_id": "state_conditioned_ion_stability",
+            "technical_status": "not_applicable",
+            "reason": (
+                "pooled equivalent-member coordinates do not define a unique "
+                "member-specific mobile-ion assignment; use the full oligomer state view"
+            ),
+        }
+    else:
+        unique_ion_rows = {
+            (
+                str(row["system_id"]), str(row["replica_id"]),
+                str(row["segment_id"]), int(row["source_frame_index"]),
+                int(row["state_id"]),
+            ): row
+            for row in [*ion_selected, *representatives]
+        }
+        ion_request_frames = []
+        for key, row in sorted(unique_ion_rows.items()):
+            system_id, replica_id, segment_id, frame_index, state_id = key
+            coordinate_key = (system_id, replica_id, segment_id, frame_index)
+            ion_request_frames.append({
+                "system_id": system_id,
+                "state_id": state_id,
+                "frame_id": "/".join((
+                    system_id, replica_id, segment_id, str(frame_index)
+                )),
+                "ions": captured_ions.get(coordinate_key, []),
+            })
+        ion_stability_report = analyze_state_ion_stability({
+            "coordinates_aligned_to_polymer": True,
+            "frames": ion_request_frames,
+            "settings": {
+                key: value for key, value in ion_settings.items()
+                if key != "enabled"
+            },
+        })
 
     output_root = resolve_manifest_path(str(project["analysis_output_root"]), source_path)
     parent = output_root / "08_clustering" / "state_coordinate_exports"
@@ -971,6 +1097,29 @@ def state_coordinate_exports_project(
         prefix=f".{settings['export_id']}.", dir=str(parent)
     ))
     output_records: List[Dict[str, object]] = []
+    stable_ion_ids_by_frame: Dict[Tuple[str, int, str], set[str]] = {}
+    raw_state_reports = ion_stability_report.get("state_reports")
+    for state_report in raw_state_reports if isinstance(raw_state_reports, list) else []:
+        if not isinstance(state_report, dict):
+            continue
+        report_system_id = str(state_report.get("system_id", ""))
+        report_state_id = state_report.get("state_id")
+        if isinstance(report_state_id, bool) or not isinstance(report_state_id, int):
+            continue
+        raw_sites = state_report.get("stable_sites")
+        for site in raw_sites if isinstance(raw_sites, list) else []:
+            if not isinstance(site, dict):
+                continue
+            raw_assignments = site.get("frame_assignments")
+            for assignment in raw_assignments if isinstance(raw_assignments, list) else []:
+                if not isinstance(assignment, dict):
+                    continue
+                frame_id = str(assignment.get("frame_id", ""))
+                ion_id = str(assignment.get("ion_id", ""))
+                if frame_id and ion_id:
+                    stable_ion_ids_by_frame.setdefault(
+                        (report_system_id, report_state_id, frame_id), set()
+                    ).add(ion_id)
     try:
         # State ensembles are pooled across simulation replicas and equivalent
         # oligomer members. Replica/member identities remain per-frame
@@ -1062,10 +1211,65 @@ def state_coordinate_exports_project(
                     *((str(representative["member_id"]),) if member_mode else ()),
                 )
                 representative_path = directory / f"representative-{rank:02d}.pdb"
+                representative_atoms = list(atoms)
+                representative_coordinates = captured[key]
+                stable_ion_ids: List[str] = []
+                if ion_settings["enabled"] and not member_mode:
+                    replica_id = str(representative["replica_id"])
+                    segment_id = str(representative["segment_id"])
+                    frame_index = int(representative["source_frame_index"])
+                    frame_id = "/".join((
+                        system_id, replica_id, segment_id, str(frame_index)
+                    ))
+                    allowed = stable_ion_ids_by_frame.get(
+                        (system_id, state_id, frame_id), set()
+                    )
+                    combined = [
+                        (atom, coordinate)
+                        for atom, coordinate in zip(
+                            representative_atoms, representative_coordinates
+                        )
+                        if not _is_ion(atom)
+                    ]
+                    coordinate_key = (
+                        system_id, replica_id, segment_id, frame_index
+                    )
+                    observations = {
+                        str(row["ion_id"]): row
+                        for row in captured_ions.get(coordinate_key, [])
+                    }
+                    atoms_by_ion_id = {
+                        _ion_id(atom): atom
+                        for atom in ion_topologies.get(
+                            (system_id, replica_id), []
+                        )
+                    }
+                    for ion_id in sorted(allowed):
+                        atom = atoms_by_ion_id.get(ion_id)
+                        observation = observations.get(ion_id)
+                        coordinates = (
+                            observation.get("coordinates_angstrom")
+                            if isinstance(observation, dict) else None
+                        )
+                        if (
+                            atom is None
+                            or not isinstance(coordinates, list)
+                            or len(coordinates) != 3
+                        ):
+                            continue
+                        combined.append((
+                            atom, tuple(float(value) for value in coordinates)
+                        ))
+                        stable_ion_ids.append(ion_id)
+                    combined.sort(key=lambda row: row[0].atom_index)
+                    representative_atoms = [row[0] for row in combined]
+                    representative_coordinates = tuple(
+                        row[1] for row in combined
+                    )
                 _write_pdb(
                     representative_path,
-                    atoms,
-                    [(representative, captured[key])],
+                    representative_atoms,
+                    [(representative, representative_coordinates)],
                     multi_model=False,
                 )
                 representative_files.append({
@@ -1077,6 +1281,8 @@ def state_coordinate_exports_project(
                         {"member_id": representative["member_id"]}
                         if member_mode else {}
                     ),
+                    "state_conditioned_stable_ion_count": len(stable_ion_ids),
+                    "state_conditioned_stable_ion_ids": stable_ion_ids,
                 })
             output_records.append({
                 "state_id": state_id,
@@ -1167,6 +1373,7 @@ def state_coordinate_exports_project(
                 "member_observations_are_independent_replicas": False
                 if member_mode else None,
             },
+            "state_conditioned_ion_stability": ion_stability_report,
             "outputs": output_records,
             "limitations": [
                 (

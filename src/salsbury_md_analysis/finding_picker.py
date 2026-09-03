@@ -17,6 +17,7 @@ from .analysis_config import (
     MINIMUM_HEADLINE_FINDINGS,
 )
 from .manifests import load_json
+from .presentation_artifacts import finding_target, validate_manifest
 
 
 class FindingPickerError(ValueError):
@@ -102,6 +103,25 @@ def _candidate(
     }
 
 
+def _target_context(path: Path, **extra: object) -> Dict[str, object]:
+    parts = path.parts
+    context: Dict[str, object] = {}
+    if "per-system" in parts:
+        index = parts.index("per-system")
+        if index + 1 < len(parts):
+            context.update({
+                "system_id": parts[index + 1],
+                "analysis_scope": "per_system",
+            })
+    if "conformational-views" in parts:
+        index = parts.index("conformational-views")
+        if index + 1 < len(parts):
+            context["view_id"] = parts[index + 1]
+            context.setdefault("analysis_scope", "pooled_system_comparison")
+    context.update(extra)
+    return context
+
+
 def _state_differences(
     report: Mapping[str, object], module_id: str, path: Path
 ) -> List[Dict[str, object]]:
@@ -130,11 +150,18 @@ def _state_differences(
                 findings.append(_candidate(
                     module_id=module_id, category=category,
                     statement=(
-                        f"State {state_id} frame fraction differs descriptively between "
+                        f"State {state_id} frame fraction differs between "
                         f"{left} and {right} by {float(effect):+.4f} ({left} minus {right})."
                     ),
                     report_path=path, effect_value=float(effect), systems=(left, right),
                     family=f"{module_id}:state_population",
+                    presentation_target=finding_target(
+                        module_id=module_id, purpose="state_populations",
+                        context=_target_context(
+                            path, highlight_state_id=state_id,
+                            highlight_system_ids=[left, right],
+                        ),
+                    ),
                 ))
     coupling = comparison.get("paired_member_state_coupling")
     if isinstance(coupling, dict) and isinstance(coupling.get("pair_reports"), list):
@@ -240,8 +267,14 @@ def _alternative_clustering_candidates(
             f"{f' and {cluster_count} clusters' if cluster_count is not None else ''}."
         ),
         report_path=path, effect_value=silhouette,
-        evidence_level="descriptive geometric validation",
+        evidence_level="geometric validation",
         family="alternative_clustering:model_selection",
+        presentation_target=finding_target(
+            module_id="alternative_clustering", purpose="model_selection",
+            context=_target_context(
+                path, highlight_algorithm=selected.get("algorithm")
+            ),
+        ),
     )]
 
 
@@ -729,6 +762,14 @@ def _dccm_candidates(
                         ),
                         report_path=path, effect_value=value, systems=(system_id,),
                         family="dccm:within_system_extreme",
+                        presentation_target=finding_target(
+                            module_id="dccm", purpose="system_matrix",
+                            context={
+                                "system_id": system_id,
+                                "highlight_atom_i": left_index,
+                                "highlight_atom_j": right_index,
+                            },
+                        ),
                     ))
     for left, right in itertools.combinations(sorted(profiles), 2):
         keys = set(profiles[left]).intersection(profiles[right])
@@ -748,12 +789,19 @@ def _dccm_candidates(
             findings.append(_candidate(
                 module_id="dccm", category="coupled_interaction",
                 statement=(
-                    f"Largest descriptive DCCM difference between {left} and {right} is "
+                    f"Largest DCCM difference between {left} and {right} is "
                     f"{_atom_label(left_atom)} with {_atom_label(right_atom)}: "
                     f"{effect:+.3f} ({left} minus {right})."
                 ),
                 report_path=path, effect_value=effect, systems=(left, right),
                 family="dccm:pairwise_extreme_difference",
+                presentation_target=finding_target(
+                    module_id="dccm", purpose="pairwise_difference",
+                    context={
+                        "left_system_id": left, "right_system_id": right,
+                        "atom_i": pair[0], "atom_j": pair[1],
+                    },
+                ),
             ))
     return findings
 
@@ -2109,6 +2157,14 @@ def _report_candidates(path: Path, report: Mapping[str, object]) -> List[Dict[st
                     ),
                     report_path=path, effect_value=fraction,
                     family="pca_fes_basins:basin_population",
+                    presentation_target=finding_target(
+                        module_id=module_id, purpose="primary_fes",
+                        context=_target_context(
+                            path,
+                            smoothing_sigma_bins=report.get("primary_smoothing_sigma_bins"),
+                            highlight_basin_id=basin.get("basin_id"),
+                        ),
+                    ),
                 ))
     selected = report.get("selected_model")
     if module_id.startswith("clustering_") and isinstance(selected, dict):
@@ -2137,6 +2193,10 @@ def _report_candidates(path: Path, report: Mapping[str, object]) -> List[Dict[st
                 ),
                 report_path=path, effect_value=float(silhouette),
                 family=f"{module_id}:model_selection",
+                presentation_target=finding_target(
+                    module_id=module_id, purpose="model_selection",
+                    context=_target_context(path),
+                ),
             ))
     if module_id == "markov_state_models":
         for field, category, label in (
