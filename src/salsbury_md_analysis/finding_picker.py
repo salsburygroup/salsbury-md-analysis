@@ -2287,11 +2287,19 @@ def _path_context(row: Mapping[str, object]) -> tuple[str | None, str | None]:
 
 def _normalize_candidate(row: Mapping[str, object]) -> Dict[str, object]:
     normalized = dict(row)
+    module_id = str(normalized.get("module_id", ""))
+    statement = str(normalized.get("statement", ""))
     systems = normalized.get("system_ids")
     normalized["system_ids"] = (
         list(dict.fromkeys(str(value) for value in systems if str(value)))
         if isinstance(systems, list) else []
     )
+    if module_id == "individual_pca" and not normalized["system_ids"]:
+        legacy_context = re.search(
+            r"coordinate variance for ([^/\s]+)/[^.\s]+\.?$", statement
+        )
+        if legacy_context:
+            normalized["system_ids"] = [legacy_context.group(1)]
     system_id, view_id = _path_context(normalized)
     if system_id and not normalized["system_ids"]:
         normalized["system_ids"] = [system_id]
@@ -2301,8 +2309,6 @@ def _normalize_candidate(row: Mapping[str, object]) -> Dict[str, object]:
         context_parts.append(view_id)
     normalized["context_label"] = "/".join(context_parts) if context_parts else None
 
-    module_id = str(normalized.get("module_id", ""))
-    statement = str(normalized.get("statement", ""))
     if module_id in {
         "generalized_correlation_and_information", "information_dynamics"
     }:

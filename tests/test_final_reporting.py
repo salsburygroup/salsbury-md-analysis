@@ -1117,6 +1117,34 @@ class FinalReportingTests(unittest.TestCase):
             self.assertEqual(context["context_label"], "variant")
             self.assertFalse(context["presentation_eligible"])
 
+    def test_legacy_individual_pca_context_recovers_system_from_statement(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "results" / "legacy-individual-pca" / "report.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({
+                "module_id": "individual_pca",
+                "technical_status": "complete",
+                "finding_candidates": [{
+                    "category": "other_physical",
+                    "statement": (
+                        "PC1 explains 42.0% of coordinate variance for "
+                        "legacy-variant/replica-1."
+                    ),
+                    "effect_value": 0.42,
+                    "comparison_family": "individual_pca:variance_accounting",
+                    "ranking_role": "interpretive_context",
+                }],
+            }), encoding="utf-8")
+
+            report = prioritize_findings(root, maximum_findings=50)
+            context = next(
+                row for row in report["all_candidates"]
+                if row["module_id"] == "individual_pca"
+            )
+            self.assertEqual(context["system_ids"], ["legacy-variant"])
+            self.assertEqual(context["context_label"], "legacy-variant")
+
 
 if __name__ == "__main__":
     unittest.main()
