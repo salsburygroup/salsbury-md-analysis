@@ -207,6 +207,20 @@ class PresentationArtifactContractTests(unittest.TestCase):
                 rg_histogram["analysis_class"],
                 "rmsd_and_radius_of_gyration",
             )
+            rg_timeseries = next(
+                row for row in manifest["artifacts"]
+                if row["module_id"] == "replica_rmsd_rg"
+                and row["purpose"] == "radius_of_gyration_angstrom_timeseries"
+                and row["artifact_type"] == "figure"
+            )
+            rmsd_timeseries = next(
+                row for row in manifest["artifacts"]
+                if row["module_id"] == "replica_rmsd_rg"
+                and row["purpose"] == "rmsd_angstrom_timeseries"
+                and row["artifact_type"] == "figure"
+            )
+            self.assertFalse(rg_timeseries["primary_human_output"])
+            self.assertTrue(rmsd_timeseries["primary_human_output"])
             rg_table = next(
                 root / "presentation-artifacts" / row["relative_path"]
                 for row in manifest["artifacts"]
