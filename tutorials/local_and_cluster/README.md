@@ -161,9 +161,14 @@ planning comparisons, not evidence of adequate sampling.
 
 Pareto filtering is always active. The default `minimum_nodes` policy selects
 the smallest-node point on the front. Pass
-`--pareto-selection-policy balanced` to give equal weight to information,
-modeled wall time, and node count. The selected point is recorded in
+`--pareto-selection-policy balanced` to give equal weight to the active Pareto
+dimensions. The selected point is recorded in
 `operational_balance`; no jobs are submitted by this command.
+
+To compare modeled wall time and information within a fixed node limit, add
+`--pareto-objectives walltime_information`. The default
+`nodes_walltime_information` mode also treats node count as a Pareto objective.
+Both modes apply `--maximum-nodes` before computing the front.
 
 The preview can refuse submission even when the local tutorial completed. A
 cluster's minimum job reservation and scheduler overhead can make a short
