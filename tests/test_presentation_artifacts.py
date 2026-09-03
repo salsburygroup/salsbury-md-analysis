@@ -262,6 +262,66 @@ class PresentationArtifactContractTests(unittest.TestCase):
                 classes["random_feature_koopman"], "kinetic_models"
             )
 
+    def test_integrated_comparison_reuses_module_owned_pairwise_artifacts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def write_report(directory, payload):
+                path = root / "results" / directory / "report.json"
+                path.parent.mkdir(parents=True)
+                path.write_text(json.dumps(payload), encoding="utf-8")
+
+            atom = {
+                "common_atom_index": 0,
+                "chain_id": "A",
+                "residue_name": "GLY",
+                "residue_number": 1,
+                "atom_name": "CA",
+                "frame_pooled_rmsf_angstrom": 1.0,
+            }
+            write_report("rmsf", {
+                "module_id": "pooled_rmsf",
+                "technical_status": "complete",
+                "systems": [
+                    {"system_id": "control", "atom_statistics": [atom]},
+                    {
+                        "system_id": "variant",
+                        "atom_statistics": [
+                            {**atom, "frame_pooled_rmsf_angstrom": 1.5}
+                        ],
+                    },
+                ],
+            })
+            write_report("integrated-comparison", {
+                "module_id": "integrated_comparison",
+                "technical_status": "complete",
+                "comparison_system_ids": ["control", "variant"],
+                "comparison_findings": [{
+                    "module_id": "pooled_rmsf",
+                    "system_ids": ["control", "variant"],
+                    "comparison_family": "pooled_rmsf:pairwise_atom_difference",
+                    "statement": "Variant RMSF differs from control.",
+                    "effect_value": 0.5,
+                }],
+            })
+
+            manifest = generate_presentation_artifacts(root)
+            pairwise = [
+                row for row in manifest["artifacts"]
+                if row["module_id"] == "pooled_rmsf"
+                and row["purpose"] == "pairwise_comparison"
+            ]
+            self.assertEqual(len(pairwise), 2)
+            self.assertEqual(
+                {row["source_report_paths"][0] for row in pairwise},
+                {str((root / "results" / "rmsf" / "report.json").resolve())},
+            )
+            self.assertTrue(any(
+                row["module_id"] == "integrated_comparison"
+                and row["purpose"] == "comparison_coverage"
+                for row in manifest["artifacts"]
+            ))
+
 
 if __name__ == "__main__":
     unittest.main()
