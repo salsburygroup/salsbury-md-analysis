@@ -7,6 +7,7 @@ import hashlib
 import itertools
 import json
 import math
+import re
 from pathlib import Path
 from typing import Dict, List, Mapping, Sequence
 
@@ -17,6 +18,7 @@ from .analysis_config import (
     MINIMUM_HEADLINE_FINDINGS,
 )
 from .manifests import load_json
+from .presentation_artifacts import finding_target, validate_manifest
 
 
 class FindingPickerError(ValueError):
@@ -61,7 +63,52 @@ _INTERPRETIVE_CONTEXT_MODULES = {
     "trajectory_features",
     "representative_frames",
     "representative_structures",
+    "state_coordinate_exports",
     "integrated_comparison",
+    "grouped_ml",
+}
+
+
+_PRESENTATION_CATEGORY_CYCLE = (
+    "free_energy_surface",
+    "free_energy_surface",
+    "free_energy_conformation",
+    "clustering",
+    "clustering_conformation",
+    "coupled_interaction",
+    "rmsf",
+    "other_physical",
+    "coupled_interaction",
+    "other_physical",
+)
+
+
+_FAMILY_PRESENTATION_PRIORITY = {
+    "pca_fes_basins:state_population": 0,
+    "pca_fes_basins:basin_population": 1,
+    "clustering_kmeans:model_selection": 10,
+    "alternative_clustering:model_selection": 11,
+    "clustering_imwkmeans:model_selection": 12,
+    "clustering_kmeans:state_population": 13,
+    "clustering_imwkmeans:state_population": 14,
+    "pooled_rmsf:pairwise_atom_difference": 20,
+    "pooled_rmsf:within_system_maximum": 21,
+    "dccm:pairwise_extreme_difference": 30,
+    "water_mediated_hydrogen_bond_networks:pairwise_occupancy_difference": 31,
+    "correlation_networks:difference_from_reference_dccm": 32,
+    "correlation_networks:frame_pooled_dccm": 33,
+    "generalized_correlation_and_information:generalized_correlation": 34,
+    "generalized_correlation_and_information:normalized_mutual_information": 35,
+    "information_dynamics:transfer_entropy": 36,
+    "information_dynamics:lagged_cross_correlation": 37,
+    "hydrogen_bond_discovery:pairwise_occupancy_difference": 40,
+    "hydrogen_bond_discovery:chemical_identity_pairwise_difference": 41,
+    "ion_coordination_geometry:pairwise_metric_difference": 42,
+    "radial_distribution_functions:pairwise_bin_difference": 43,
+    "nucleic_acid_geometry:pairwise_metric_difference": 44,
+    "solvent_accessible_surface_area:pairwise_residue_difference": 45,
+    "dihedral_distributions:pairwise_circular_mean_difference": 46,
+    "ion_atmosphere:pairwise_species_maximum_difference": 47,
 }
 
 
@@ -81,6 +128,9 @@ def _candidate(
     evidence_level: str = "descriptive", systems: Sequence[str] = (),
     family: str = "single_system",
     report_paths: Sequence[Path] = (),
+    ranking_role: str = "scientific_finding",
+    validation_status: str = "not_applicable",
+    presentation_target: Mapping[str, object] | None = None,
 ) -> Dict[str, object]:
     if effect_value is not None and not math.isfinite(effect_value):
         raise FindingPickerError("finding effect must be finite")
@@ -99,7 +149,33 @@ def _candidate(
         "adjusted_p_value": None,
         "report_path": str(report_path),
         "report_paths": [str(value) for value in (report_paths or (report_path,))],
+        "ranking_role": ranking_role,
+        "validation_status": validation_status,
+        "presentation_eligible": ranking_role == "scientific_finding",
+        "presentation_target": (
+            dict(presentation_target) if isinstance(presentation_target, Mapping)
+            else None
+        ),
     }
+
+
+def _target_context(path: Path, **extra: object) -> Dict[str, object]:
+    parts = path.parts
+    context: Dict[str, object] = {}
+    if "per-system" in parts:
+        index = parts.index("per-system")
+        if index + 1 < len(parts):
+            context.update({
+                "system_id": parts[index + 1],
+                "analysis_scope": "per_system",
+            })
+    if "conformational-views" in parts:
+        index = parts.index("conformational-views")
+        if index + 1 < len(parts):
+            context["view_id"] = parts[index + 1]
+            context.setdefault("analysis_scope", "pooled_system_comparison")
+    context.update(extra)
+    return context
 
 
 def _state_differences(
@@ -130,11 +206,18 @@ def _state_differences(
                 findings.append(_candidate(
                     module_id=module_id, category=category,
                     statement=(
-                        f"State {state_id} frame fraction differs descriptively between "
+                        f"State {state_id} frame fraction differs between "
                         f"{left} and {right} by {float(effect):+.4f} ({left} minus {right})."
                     ),
                     report_path=path, effect_value=float(effect), systems=(left, right),
                     family=f"{module_id}:state_population",
+                    presentation_target=finding_target(
+                        module_id=module_id, purpose="state_populations",
+                        context=_target_context(
+                            path, highlight_state_id=state_id,
+                            highlight_system_ids=[left, right],
+                        ),
+                    ),
                 ))
     coupling = comparison.get("paired_member_state_coupling")
     if isinstance(coupling, dict) and isinstance(coupling.get("pair_reports"), list):
@@ -240,8 +323,14 @@ def _alternative_clustering_candidates(
             f"{f' and {cluster_count} clusters' if cluster_count is not None else ''}."
         ),
         report_path=path, effect_value=silhouette,
-        evidence_level="descriptive geometric validation",
+        evidence_level="geometric validation",
         family="alternative_clustering:model_selection",
+        presentation_target=finding_target(
+            module_id="alternative_clustering", purpose="model_selection",
+            context=_target_context(
+                path, highlight_algorithm=selected.get("algorithm")
+            ),
+        ),
     )]
 
 
@@ -729,6 +818,14 @@ def _dccm_candidates(
                         ),
                         report_path=path, effect_value=value, systems=(system_id,),
                         family="dccm:within_system_extreme",
+                        presentation_target=finding_target(
+                            module_id="dccm", purpose="system_matrix",
+                            context={
+                                "system_id": system_id,
+                                "highlight_atom_i": left_index,
+                                "highlight_atom_j": right_index,
+                            },
+                        ),
                     ))
     for left, right in itertools.combinations(sorted(profiles), 2):
         keys = set(profiles[left]).intersection(profiles[right])
@@ -748,12 +845,19 @@ def _dccm_candidates(
             findings.append(_candidate(
                 module_id="dccm", category="coupled_interaction",
                 statement=(
-                    f"Largest descriptive DCCM difference between {left} and {right} is "
+                    f"Largest DCCM difference between {left} and {right} is "
                     f"{_atom_label(left_atom)} with {_atom_label(right_atom)}: "
                     f"{effect:+.3f} ({left} minus {right})."
                 ),
                 report_path=path, effect_value=effect, systems=(left, right),
                 family="dccm:pairwise_extreme_difference",
+                presentation_target=finding_target(
+                    module_id="dccm", purpose="pairwise_difference",
+                    context={
+                        "left_system_id": left, "right_system_id": right,
+                        "atom_i": pair[0], "atom_j": pair[1],
+                    },
+                ),
             ))
     return findings
 
@@ -2109,6 +2213,14 @@ def _report_candidates(path: Path, report: Mapping[str, object]) -> List[Dict[st
                     ),
                     report_path=path, effect_value=fraction,
                     family="pca_fes_basins:basin_population",
+                    presentation_target=finding_target(
+                        module_id=module_id, purpose="primary_fes",
+                        context=_target_context(
+                            path,
+                            smoothing_sigma_bins=report.get("primary_smoothing_sigma_bins"),
+                            highlight_basin_id=basin.get("basin_id"),
+                        ),
+                    ),
                 ))
     selected = report.get("selected_model")
     if module_id.startswith("clustering_") and isinstance(selected, dict):
@@ -2137,6 +2249,10 @@ def _report_candidates(path: Path, report: Mapping[str, object]) -> List[Dict[st
                 ),
                 report_path=path, effect_value=float(silhouette),
                 family=f"{module_id}:model_selection",
+                presentation_target=finding_target(
+                    module_id=module_id, purpose="model_selection",
+                    context=_target_context(path),
+                ),
             ))
     if module_id == "markov_state_models":
         for field, category, label in (
@@ -2336,6 +2452,261 @@ def _benjamini_hochberg(findings: List[Dict[str, object]]) -> None:
             row["adjusted_p_value"] = min(1.0, running)
 
 
+def _path_context(row: Mapping[str, object]) -> tuple[str | None, str | None]:
+    raw_paths = [row.get("report_path")]
+    for key in ("source_report_paths", "report_paths"):
+        values = row.get(key)
+        if isinstance(values, list):
+            raw_paths.extend(values)
+    system_id = None
+    view_id = None
+    for raw in raw_paths:
+        if not isinstance(raw, str):
+            continue
+        parts = Path(raw).parts
+        if system_id is None and "per-system" in parts:
+            index = parts.index("per-system")
+            if index + 1 < len(parts):
+                system_id = parts[index + 1]
+        if view_id is None and "conformational-views" in parts:
+            index = parts.index("conformational-views")
+            if index + 1 < len(parts):
+                view_id = parts[index + 1]
+    return system_id, view_id
+
+
+def _normalize_candidate(row: Mapping[str, object]) -> Dict[str, object]:
+    normalized = dict(row)
+    module_id = str(normalized.get("module_id", ""))
+    statement = str(normalized.get("statement", ""))
+    systems = normalized.get("system_ids")
+    normalized["system_ids"] = (
+        list(dict.fromkeys(str(value) for value in systems if str(value)))
+        if isinstance(systems, list) else []
+    )
+    system_id, view_id = _path_context(normalized)
+    if system_id and not normalized["system_ids"]:
+        normalized["system_ids"] = [system_id]
+    normalized["view_ids"] = [view_id] if view_id else []
+    context = [*normalized["system_ids"]]
+    if view_id:
+        context.append(view_id)
+    normalized["context_label"] = "/".join(context) if context else None
+    statement = re.sub(r"\bdescriptively\s+", "", statement, flags=re.IGNORECASE)
+    statement = re.sub(r"\bdescriptive\s+", "", statement, flags=re.IGNORECASE)
+    normalized["statement"] = statement
+    role = normalized.get("ranking_role")
+    if not isinstance(role, str) or not role:
+        role = "scientific_finding"
+    normalized["ranking_role"] = role
+    normalized.setdefault("validation_status", "not_applicable")
+    normalized["presentation_eligible"] = role == "scientific_finding"
+    if not isinstance(normalized.get("presentation_target"), dict):
+        target_context: Dict[str, object] = {}
+        if normalized["system_ids"]:
+            target_context["system_ids"] = sorted(normalized["system_ids"])
+        if view_id:
+            target_context["view_id"] = view_id
+        normalized["presentation_target"] = finding_target(
+            module_id=module_id,
+            purpose=(
+                "pairwise_comparison"
+                if len(normalized["system_ids"]) >= 2 else "summary"
+            ),
+            context=target_context,
+        )
+    return normalized
+
+
+def _deduplicate_candidates(
+    rows: Sequence[Mapping[str, object]],
+) -> List[Dict[str, object]]:
+    unique: Dict[tuple[object, ...], Dict[str, object]] = {}
+    for raw in rows:
+        row = dict(raw)
+        signature = (
+            str(row.get("module_id", "")),
+            str(row.get("comparison_family", "")),
+            tuple(sorted(map(str, row.get("system_ids", [])))),
+            str(row.get("statement", "")),
+        )
+        current = unique.get(signature)
+        if current is None:
+            unique[signature] = row
+            continue
+        paths = []
+        for source in (current, row):
+            values = source.get("report_paths")
+            if isinstance(values, list):
+                paths.extend(map(str, values))
+            elif source.get("report_path"):
+                paths.append(str(source["report_path"]))
+        current["report_paths"] = list(dict.fromkeys(paths))
+    return list(unique.values())
+
+
+def _presentation_context_matches(
+    target: Mapping[str, object], artifact: Mapping[str, object]
+) -> bool:
+    artifact_context = artifact.get("context")
+    if not isinstance(artifact_context, dict):
+        artifact_context = {}
+    for key, value in target.items():
+        if str(key).startswith("highlight_") or value is None:
+            continue
+        candidate = artifact_context.get(key)
+        if isinstance(candidate, list):
+            requested = value if isinstance(value, list) else [value]
+            if not set(map(str, requested)).issubset(set(map(str, candidate))):
+                return False
+        elif candidate != value:
+            return False
+    return True
+
+
+def _attach_presentation_artifacts(
+    analysis_root: Path, findings: Sequence[Dict[str, object]]
+) -> None:
+    manifest_path = (
+        analysis_root / "presentation-artifacts" / "presentation-manifest.json"
+    )
+    if not manifest_path.is_file():
+        for row in findings:
+            row["presentation_artifact_resolution"] = "manifest_not_available"
+            row["presentation_artifacts"] = []
+        return
+    manifest = load_json(manifest_path)
+    validate_manifest(manifest)
+    if manifest.get("technical_status") != "complete":
+        raise FindingPickerError("presentation artifact manifest is not complete")
+    if int(manifest.get("unadapted_report_count", 0) or 0) != 0:
+        raise FindingPickerError(
+            "presentation artifact manifest leaves completed reports unadapted"
+        )
+    raw_artifacts = manifest.get("artifacts")
+    artifacts = (
+        [row for row in raw_artifacts if isinstance(row, dict)]
+        if isinstance(raw_artifacts, list) else []
+    )
+    for row in findings:
+        target = row.get("presentation_target")
+        matches = []
+        if isinstance(target, dict):
+            context = (
+                target.get("context")
+                if isinstance(target.get("context"), dict) else {}
+            )
+            matches = [
+                artifact for artifact in artifacts
+                if artifact.get("module_id") == target.get("module_id")
+                and artifact.get("purpose") == target.get("purpose")
+                and _presentation_context_matches(context, artifact)
+            ]
+        if not matches:
+            report_paths = set(map(str, row.get("report_paths", [])))
+            matches = [
+                artifact for artifact in artifacts
+                if artifact.get("module_id") == row.get("module_id")
+                and (
+                    not report_paths
+                    or not set(map(str, artifact.get("source_report_paths", []))).isdisjoint(
+                        report_paths
+                    )
+                )
+            ]
+        matches.sort(key=lambda artifact: (
+            0 if artifact.get("primary_human_output") is True else 1,
+            str(artifact.get("artifact_type")),
+            str(artifact.get("artifact_id")),
+        ))
+        row["presentation_artifacts"] = [
+            {
+                "artifact_id": artifact.get("artifact_id"),
+                "artifact_type": artifact.get("artifact_type"),
+                "analysis_class": artifact.get("analysis_class"),
+                "title": artifact.get("title"),
+                "relative_path": artifact.get("relative_path"),
+            }
+            for artifact in matches
+        ]
+        row["presentation_artifact_resolution"] = (
+            "resolved" if matches else "unresolved"
+        )
+
+
+def _within_family_key(row: Mapping[str, object]) -> tuple[object, ...]:
+    systems = row.get("system_ids")
+    system_count = len(set(map(str, systems))) if isinstance(systems, list) else 0
+    adjusted = row.get("adjusted_p_value")
+    effect = row.get("absolute_effect_value")
+    return (
+        0 if row.get("statistically_significant") is True else 1,
+        float(adjusted) if isinstance(adjusted, (int, float)) else 2.0,
+        0 if system_count >= 2 else 1,
+        -float(effect) if isinstance(effect, (int, float)) else 0.0,
+        str(row.get("statement", "")),
+    )
+
+
+def _family_priority(family: str) -> tuple[int, str]:
+    if family in _FAMILY_PRESENTATION_PRIORITY:
+        return _FAMILY_PRESENTATION_PRIORITY[family], family
+    if "pairwise" in family or "difference" in family:
+        return 60, family
+    if "model_selection" in family:
+        return 70, family
+    if "within_system" in family:
+        return 90, family
+    return 80, family
+
+
+def _balanced_scientific_order(
+    rows: Sequence[Dict[str, object]],
+) -> List[Dict[str, object]]:
+    by_category: Dict[str, Dict[str, List[Dict[str, object]]]] = {}
+    for row in rows:
+        category = str(row.get("category", "other_physical"))
+        family = str(row.get("comparison_family", "unspecified"))
+        by_category.setdefault(category, {}).setdefault(family, []).append(row)
+    queues: Dict[str, List[Dict[str, object]]] = {}
+    for category, families in by_category.items():
+        ordered_families = sorted(families, key=_family_priority)
+        for rows_for_family in families.values():
+            rows_for_family.sort(key=_within_family_key)
+        queue = []
+        while any(families[family] for family in ordered_families):
+            for family in ordered_families:
+                if families[family]:
+                    queue.append(families[family].pop(0))
+        queues[category] = queue
+    positions = {category: 0 for category in queues}
+    categories = [
+        *dict.fromkeys(_PRESENTATION_CATEGORY_CYCLE),
+        *sorted(set(queues).difference(_PRESENTATION_CATEGORY_CYCLE)),
+    ]
+    ordered = []
+    while True:
+        advanced = False
+        for category in _PRESENTATION_CATEGORY_CYCLE:
+            queue = queues.get(category, [])
+            position = positions.get(category, 0)
+            if position < len(queue):
+                ordered.append(queue[position])
+                positions[category] = position + 1
+                advanced = True
+        for category in categories:
+            if category in _PRESENTATION_CATEGORY_CYCLE:
+                continue
+            queue = queues.get(category, [])
+            position = positions.get(category, 0)
+            if position < len(queue):
+                ordered.append(queue[position])
+                positions[category] = position + 1
+                advanced = True
+        if not advanced:
+            return ordered
+
+
 def prioritize_findings(
     root: Path, *, maximum_findings: int | None = None,
     headline_findings: int | None = None,
@@ -2486,6 +2857,9 @@ def prioritize_findings(
             ))
     if not integrated_present:
         findings.extend(_cross_report_candidates(complete_records))
+    findings = _deduplicate_candidates(
+        [_normalize_candidate(row) for row in findings]
+    )
     if mode == "reference_vs_all" and reference:
         findings = [
             row for row in findings
@@ -2497,14 +2871,20 @@ def prioritize_findings(
         row["statistically_significant"] = (
             bool(adjusted <= alpha) if isinstance(adjusted, (int, float)) else None
         )
-    findings.sort(key=lambda row: (
-        _PRIORITY.get(str(row["category"]), 99),
-        0 if row.get("statistically_significant") is True else 1,
-        float(row["adjusted_p_value"]) if isinstance(row.get("adjusted_p_value"), (int, float)) else 2.0,
-        -float(row["absolute_effect_value"]) if isinstance(row.get("absolute_effect_value"), (int, float)) else 0.0,
-        str(row["module_id"]), str(row["statement"]),
-    ))
-    selected = findings[:maximum_findings]
+    _attach_presentation_artifacts(analysis_root, findings)
+    presentation_eligible = _balanced_scientific_order([
+        row for row in findings if row.get("presentation_eligible") is True
+    ])
+    supporting_context = sorted(
+        (row for row in findings if row.get("presentation_eligible") is not True),
+        key=lambda row: (
+            str(row.get("ranking_role", "supporting_context")),
+            str(row.get("module_id", "")),
+            str(row.get("statement", "")),
+        ),
+    )
+    findings = [*presentation_eligible, *supporting_context]
+    selected = presentation_eligible[:maximum_findings]
     boundary_promotions = []
     if headline_override_supplied:
         selected_headline_count = min(headline_findings, len(selected))
@@ -2545,7 +2925,7 @@ def prioritize_findings(
         row["finding_id"] = f"finding-{index:06d}"
         row["presentation_tier"] = (
             "headline" if index <= selected_headline_count else
-            "secondary" if index <= maximum_findings else
+            "secondary" if index <= len(selected) else
             "additional_candidate"
         )
     headlines = selected[:selected_headline_count]
@@ -2557,7 +2937,7 @@ def prioritize_findings(
         <= headline_findings
         <= MAXIMUM_HEADLINE_FINDINGS
     )
-    candidate_limited = len(findings) < HIGHLIGHTED_FINDINGS_TOTAL
+    candidate_limited = len(presentation_eligible) < HIGHLIGHTED_FINDINGS_TOTAL
     presentation_contract_status = (
         "candidate_limited" if standard_contract_requested and candidate_limited
         else "satisfied" if standard_contract_requested
@@ -2567,10 +2947,12 @@ def prioritize_findings(
         module_reviews, findings, selected
     )
     output = {
-        "finding_schema": "salsbury-prioritized-findings-v1",
+        "finding_schema": "salsbury-prioritized-findings-v2",
         "technical_status": "complete",
         "scientific_status": "not evaluated",
         "candidate_count": len(findings),
+        "presentation_eligible_candidate_count": len(presentation_eligible),
+        "supporting_context_candidate_count": len(supporting_context),
         "reported_count": len(selected),
         "headline_count": len(headlines),
         "secondary_count": len(secondary),
@@ -2611,8 +2993,10 @@ def prioritize_findings(
         "module_accounting": module_accounting,
         "quality_control_records": quality_control_records,
         "ranking_contract": (
-            "scientific presentation category, then declared inferential significance, "
-            "then adjusted p value, then absolute effect; no opaque composite score"
+            "presentation-eligible findings are interleaved across scientific "
+            "categories and method-specific comparison families; inferential "
+            "significance and effect magnitude order candidates only within one "
+            "method family; no cross-unit composite score is used"
         ),
         "cross_report_selection_contract": (
             "for modules stored separately by system, select the technically complete "
@@ -2621,8 +3005,8 @@ def prioritize_findings(
         ),
         "interpretation": (
             "Only findings with adjusted p values are labeled statistically significant. "
-            "All other ranked differences and correlations remain descriptive or exploratory. "
-            "Headline and secondary tiers control presentation only; every ranked candidate remains "
+            "All other ranked differences and correlations remain exploratory. "
+            "Headline and secondary tiers control presentation only; every candidate remains "
             "available in the JSON, CSV, and interactive report. Every completed report is accounted "
             "for as a ranked candidate source, quality-control "
             "evidence, interpretive context, technical support, or an explicit no-highlight result."
@@ -2635,9 +3019,12 @@ def prioritize_findings(
     csv_path = analysis_root / "prioritized_findings.csv"
     fields = [
         "finding_id", "category", "module_id", "evidence_level", "statement",
-        "system_ids", "effect_value", "p_value", "adjusted_p_value",
+        "system_ids", "view_ids", "context_label", "comparison_family",
+        "effect_value", "p_value", "adjusted_p_value",
         "statistically_significant", "report_path",
-        "report_paths", "presentation_tier",
+        "report_paths", "ranking_role", "validation_status",
+        "presentation_eligible", "presentation_artifact_resolution",
+        "presentation_tier",
     ]
     with csv_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
@@ -2646,16 +3033,16 @@ def prioritize_findings(
             writer.writerow({
                 **row,
                 "system_ids": ";".join(row["system_ids"]),
+                "view_ids": ";".join(row.get("view_ids", [])),
                 "report_paths": ";".join(row["report_paths"]),
             })
     markdown_path = analysis_root / "prioritized_findings.md"
     lines = [
         "# Prioritized findings", "",
-        "Technical status is complete; scientific status is not evaluated.", "",
         (
             f"The report presents {len(headlines)} headline findings first and "
             f"{len(secondary)} secondary findings afterward. All {len(findings)} "
-            "ranked candidates remain available in the JSON, CSV, and interactive report."
+            "candidates remain available in the JSON, CSV, and interactive report."
         ), "", "## Headline findings", "",
     ]
     for rank, row in enumerate(headlines, start=1):

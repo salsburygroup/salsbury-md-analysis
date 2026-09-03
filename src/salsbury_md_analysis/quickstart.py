@@ -3011,6 +3011,27 @@ ln "$RESOURCE_TMP" "$RESOURCE_FINAL"
 rm "$RESOURCE_TMP"
 """))
     if finding_picker_enabled:
+        reporting_commands.append(("presentation_artifacts", """PRESENTATION_TMP="$ROOT/presentation-artifacts-build.json.tmp.$SLURM_JOB_ID"
+PRESENTATION_FINAL="$ROOT/presentation-artifacts-build.json"
+if [[ -e "$PRESENTATION_FINAL" || -e "$ROOT/presentation-artifacts" ]]; then
+  printf 'Presentation artifacts already exist; refusing overwrite.\n' >&2
+  exit 1
+fi
+"$PYTHON" -m salsbury_md_analysis build-presentation-artifacts "$ROOT" > "$PRESENTATION_TMP"
+"$PYTHON" - "$PRESENTATION_TMP" <<'PY'
+import json, sys
+report = json.load(open(sys.argv[1], encoding='utf-8'))
+if report.get('technical_status') != 'complete':
+    raise SystemExit('presentation-artifact generation did not complete')
+if report.get('unadapted_report_count') != 0:
+    raise SystemExit('a completed analysis lacks a human-facing presentation adapter')
+if report.get('artifact_count', 0) < report.get('adapted_report_count', 0):
+    raise SystemExit('presentation artifact count is below the completed-report count')
+PY
+ln "$PRESENTATION_TMP" "$PRESENTATION_FINAL"
+rm "$PRESENTATION_TMP"
+"""))
+    if finding_picker_enabled:
         reporting_commands.append(("finding_picker", """FINDING_TMP="$ROOT/final-findings-summary.json.tmp.$SLURM_JOB_ID"
 FINDING_FINAL="$ROOT/final-findings-summary.json"
 if [[ -e "$FINDING_FINAL" ]]; then
