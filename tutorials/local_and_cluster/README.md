@@ -143,7 +143,7 @@ salsbury-md-analysis plan-node-sweep campaign-resource-plan.json \
   --cpus-per-node 44 \
   --memory-gib-per-node 185 \
   --maximum-nodes 16 \
-  --maximum-wall-hours 120 \
+  --maximum-wall-hours 168 \
   > node-sweep.json
 ```
 
