@@ -13,6 +13,9 @@ secondary presentation. RMSD is the explicit exception: it remains a
 replica-resolved time series first because drift, discontinuities, and
 replica-specific behavior are central to its interpretation.
 
+Radius of gyration is not an exception. Its primary figure is a Scott-rule
+histogram, and its replica-resolved time series is secondary.
+
 The generic JSON-in/JSON-out adapter applies this rule to any frame-indexed
 scalar records:
 

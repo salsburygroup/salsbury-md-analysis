@@ -44,6 +44,7 @@ they still agree with the source.
 - [Manifest and provenance workflow](MANIFESTS.md)
 - [FES, clustering, and state-coordinate exports](FES_CLUSTERING_EXPORTS.md)
 - [Scientific reporting standard](REPORTING_STANDARD.md)
+- [Figures, tables, and structures](HUMAN_PRESENTATION_ARTIFACTS.md)
 - [Methods and citations](METHODS_AND_CITATIONS.md)
 - [Prioritized findings and complete module accounting](FINDING_PICKER.md)
 - [Automatic and pooled frame sampling](FRAME_SAMPLING.md)

@@ -561,6 +561,15 @@ only when you want to turn a completed campaign into a self-contained offline
 HTML report; the JSON, CSV, Markdown, structures, and method reports produced
 here remain the scientific record.
 
+The final reporting stage also builds a portable presentation manifest. Every
+technically complete analysis receives a labeled figure and, when the report
+contains tabular numerical results, a CSV table. FES, clustering, DCCM, RMSD,
+radius of gyration, RMSF, hydrogen bonds, ions, solvation, and the remaining
+modules keep their own analysis classes and exact source-report links. Radius of
+gyration follows the general scalar rule: a Scott-rule histogram is primary and
+the replica time series is secondary. See
+[`docs/HUMAN_PRESENTATION_ARTIFACTS.md`](docs/HUMAN_PRESENTATION_ARTIFACTS.md).
+
 The generated workflow is safely resumable. A technically complete method
 report is validated and reused on resubmission only after the freshly rehashed
 preflight matches the retained one. An existing malformed or incomplete final
