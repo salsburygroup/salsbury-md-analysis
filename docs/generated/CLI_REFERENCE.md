@@ -224,6 +224,12 @@ positional arguments:
     prioritize-findings
                         Rank transparent single- and multi-system findings
                         without an opaque score.
+    build-presentation-artifacts
+                        Build labeled human figures, tables, and a provenance
+                        manifest.
+    analyze-state-ion-stability
+                        Identify occupied, positionally stable ion sites
+                        within aligned states.
     export-rmsf-visualization
                         Export RMSF as PDB B factors and a VMD NewCartoon/Beta
                         script.
