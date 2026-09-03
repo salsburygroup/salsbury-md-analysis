@@ -119,6 +119,30 @@ to lower sampling. The plan reports every subsampled method,
 selected/source counts, coverage fraction, pooled versus per-replica scope,
 and inherited downstream frame identities.
 
+## Node-count sweeps
+
+The cluster node sweep starts with the maximum allowed allocation. That
+preflight includes every enabled task, deduplicates tasks that run serially in
+one execution bundle, applies replica-worker caps, and packs safety-adjusted
+memory by dependency stage. The planner records two CPU-hour envelopes:
+
+- `raw_capacity_cpu_hours` is the hardware request multiplied by wall time;
+- `usable_capacity_cpu_hours` is limited by the largest runnable task stage.
+
+Only the usable envelope can allocate frames. Idle cores do not create an
+analysis budget. The maximum-node preflight also records the largest physical
+node count used by its exact lane schedule. The reported useful-node ceiling
+is the larger of that result and the analytical full-inventory pack, capped by
+the user-supplied campaign limit.
+
+The information curve uses a priority-weighted mean square root of normalized
+physical-frame coverage. Coordinate-cache work is excluded from this score.
+The 75%, 80%, 90%, 95%, 99%, and 100% rows report the first allocation that
+reaches that fraction of the best score in the bounded sweep, together with
+mean and median multiples of each method's registered scientific floor.
+Neither the score nor its cutoff establishes convergence or scientific
+validity.
+
 ## Scientific minima used by the planner
 
 Each framed method has a permissive feasibility floor: a minimum number of
@@ -137,7 +161,7 @@ costs only.
 
 | Methods | Frames per replica | Frames per system | Temporal rule |
 |---|---:|---:|---|
-| Structural-integrity QC | 100 | 500 | Count floor; continuity preprocessing still scans every raw frame |
+| Structural-integrity QC | 100 | 500 | Count floor; selected frames use frame-local whole-molecule repair, one worker per replica |
 | Replica RMSD/Rg | 100 | 100 | Count floor; order and times are retained for reporting |
 | RMSF, dihedrals, nucleic-acid geometry, optional observables, scalar distributions, H-bond pattern/comparison, grouped regularized classification, RMSF permutation | 200 | 1,000 | Count floor; no spacing gate |
 | H bonds, automatic H-bond discovery, ion coordination, ion atmosphere, RDF, trajectory features | 200 | 1,000 | Count floor; no spacing gate |

@@ -32,6 +32,20 @@ class ExecutionAdapterTests(unittest.TestCase):
                 name,
             )
 
+    def test_deac_profile_requests_the_padded_campaign_wall_limit(self):
+        repository = Path(__file__).resolve().parents[1]
+        deac = load_slurm_profile(repository / "profiles/slurm/deac.json")
+        generic = load_slurm_profile(
+            repository / "profiles/slurm/generic-template.json"
+        )
+        self.assertTrue(deac["resource_policy"][
+            "request_campaign_wall_limit_for_planned_tasks"
+        ])
+        self.assertEqual(deac["node_policy"]["maximum_nodes_per_campaign"], 16)
+        self.assertFalse(generic["resource_policy"][
+            "request_campaign_wall_limit_for_planned_tasks"
+        ])
+
     def test_scheduler_timeout_padding_is_bounded_by_campaign_wall(self):
         def task(task_id):
             return {
@@ -604,6 +618,8 @@ class ExecutionAdapterTests(unittest.TestCase):
             )
         self.assertEqual(task["planned_peak_memory_gib"], 10)
         self.assertEqual(task["requested_memory_gib"], 16)
+        self.assertEqual(task["requested_wall_minutes"], 24 * 60)
+        self.assertTrue(task["wall_request_uses_campaign_cap"])
         self.assertEqual(
             task["resource_request_source"],
             "campaign_planner_final_memory_reservation_passthrough",
@@ -1203,7 +1219,7 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertEqual(preview["maximum_parallel_cpus_in_generated_waves"], 2)
         self.assertEqual(preview["maximum_parallel_memory_gib_configured"], 185)
         self.assertEqual(preview["maximum_parallel_memory_gib_in_generated_waves"], 180)
-        self.assertEqual(preview["planned_node_count"], 1)
+        self.assertEqual(preview["planned_node_count"], 2)
         self.assertTrue(all(
             row["reserved_memory_gib_per_node"] <= 185.0
             for row in preview["planned_node_reservations"]

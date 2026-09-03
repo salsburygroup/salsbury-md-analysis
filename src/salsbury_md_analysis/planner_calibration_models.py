@@ -116,6 +116,95 @@ def validate_size_length_models(payload: Mapping[str, object]) -> Dict[str, obje
     return result
 
 
+def predict_size_length_cpu_terms(
+    module_id: str,
+    model: Mapping[str, object],
+    *,
+    source_topology_atom_frame_count: int,
+    selected_work_proxy_count_per_frame: int,
+    campaign_time_safety_factor: float = 1.0,
+) -> Dict[str, object]:
+    """Convert a fitted model into affine task-planner CPU terms.
+
+    The selected-work proxy is a topology-derived endpoint count for hydrogen
+    bonds and a topology atom count for structural QC and ion atmosphere. No
+    trajectory coordinates or Cartesian candidate dictionary are needed.
+    """
+
+    if module_id not in SUPPORTED_MODULES:
+        raise PlannerCalibrationModelError(f"unsupported model: {module_id}")
+    if model.get("module_id") != module_id:
+        raise PlannerCalibrationModelError(
+            f"model module mismatch: expected {module_id}"
+        )
+    source_work = _positive_integer(
+        source_topology_atom_frame_count,
+        "source_topology_atom_frame_count",
+    )
+    proxy_count = _positive_integer(
+        selected_work_proxy_count_per_frame,
+        "selected_work_proxy_count_per_frame",
+    )
+    campaign_safety = _positive(
+        campaign_time_safety_factor,
+        "campaign_time_safety_factor",
+    )
+    residual_safety = _positive(
+        model.get("residual_safety_factor"),
+        "residual_safety_factor",
+    )
+    proxy_rate = _positive(
+        model.get("selected_work_units_per_proxy_unit"),
+        "selected_work_units_per_proxy_unit",
+    )
+    intercept = _positive(
+        model.get("intercept_cpu_seconds"),
+        "intercept_cpu_seconds",
+        allow_zero=True,
+    )
+    source_rate = _positive(
+        model.get("cpu_seconds_per_topology_atom_source_frame"),
+        "cpu_seconds_per_topology_atom_source_frame",
+        allow_zero=True,
+    )
+    selected_rate = _positive(
+        model.get("cpu_seconds_per_selected_work_unit"),
+        "cpu_seconds_per_selected_work_unit",
+        allow_zero=True,
+    )
+    combined_safety = residual_safety * campaign_safety
+    selected_work_per_frame = proxy_rate * proxy_count
+    return {
+        "fixed_cpu_hours": combined_safety * (
+            intercept + source_rate * source_work
+        ) / 3600.0,
+        "cpu_seconds_per_physical_frame": (
+            combined_safety * selected_rate * selected_work_per_frame
+        ),
+        "workload_basis": {
+            "dimension": (
+                "measured source topology-atom frames plus selected-work proxy"
+            ),
+            "source_topology_atom_frame_count": source_work,
+            "selected_work_unit": model.get("selected_work_unit"),
+            "selected_work_planning_proxy": model.get("planning_proxy"),
+            "selected_work_proxy_count_per_frame": proxy_count,
+            "selected_work_units_per_proxy_unit": proxy_rate,
+            "estimated_selected_work_units_per_frame": selected_work_per_frame,
+            "model_residual_safety_factor": residual_safety,
+            "campaign_time_safety_factor": campaign_safety,
+            "combined_time_safety_factor": combined_safety,
+            "independent_heldout_validation_passed": model.get(
+                "heldout_validation_passed"
+            ) is True,
+            "measured_ranges": model.get("measured_ranges"),
+            "coordinate_data_used": False,
+            "full_cartesian_candidate_dictionary_materialized": False,
+            "limitation": model.get("extrapolation_policy"),
+        },
+    }
+
+
 def validate_runtime_holdouts(
     model_payload: Mapping[str, object],
     holdout_payload: Mapping[str, object],

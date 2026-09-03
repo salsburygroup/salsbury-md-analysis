@@ -17,6 +17,25 @@ from salsbury_md_analysis.scientific_sampling import (
 
 
 class ScientificSamplingTests(unittest.TestCase):
+    def test_policy_application_never_weakens_existing_scientific_floor(self):
+        tasks = apply_scientific_minimums_to_tasks([{
+            "task_id": "strict-rdf",
+            "module_id": "radial_distribution_functions",
+            "source_frames_per_replica": [20_000, 20_000, 20_000],
+            "system_ids_per_replica": ["D0", "D0", "D0"],
+            "minimum_frames_per_replica": 667,
+            "scientific_minimum_frames_per_replica": 667,
+            "maximum_frames_per_replica": 20_000,
+        }], load_scientific_minimums(None))
+        self.assertEqual(tasks[0]["minimum_frames_per_replica"], 667)
+        self.assertEqual(
+            tasks[0]["scientific_minimum_frames_per_replica"], 667
+        )
+        self.assertEqual(
+            tasks[0]["attainable_scientific_minimum_frames_per_replica"],
+            667,
+        )
+
     def test_editable_minimums_are_complete_and_stricter_values_apply(self):
         document = scientific_minimums_document()
         self.assertEqual(

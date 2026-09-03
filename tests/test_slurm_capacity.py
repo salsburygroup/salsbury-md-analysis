@@ -168,6 +168,9 @@ class SlurmCapacityTests(unittest.TestCase):
         )
         self.assertEqual(report["replanned_campaign"]["raw_capacity_cpu_hours"], 16.0)
         self.assertEqual(
+            report["replanned_campaign"]["usable_capacity_cpu_hours"], 16.0
+        )
+        self.assertEqual(
             report["queue_forecast"]["forecast_quality"],
             "scheduler_projected_for_submitted_job_ids",
         )
