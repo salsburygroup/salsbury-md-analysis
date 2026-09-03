@@ -67,6 +67,7 @@ _NUCLEIC_BASES = {
     "T": "T", "DT": "T", "THY": "T",
     "U": "U", "DU": "U", "RU": "U", "URA": "U", "PSU": "U",
     "8OG": "8OG", "8OX": "8OG", "OX3": "8OG", "EDU": "U",
+    "FDU": "U",
 }
 _NUCLEIC_ACCEPTORS: Mapping[str, frozenset[str]] = {
     "A": frozenset({"N1", "N3", "N7"}),

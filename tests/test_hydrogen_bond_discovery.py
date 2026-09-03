@@ -462,6 +462,20 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
         self.assertTrue(roles[1].acceptor)
         self.assertTrue(roles[2].donor)
 
+    def test_fdu_is_templated_as_uracil_like_nucleic_acid(self):
+        atoms = [
+            AtomRecord(0, 1, "O2", "", "FDU", "C", 4, "", "O"),
+            AtomRecord(1, 2, "O4", "", "FDU", "C", 4, "", "O"),
+            AtomRecord(2, 3, "N3", "", "FDU", "C", 4, "", "N"),
+            AtomRecord(3, 4, "H3", "", "FDU", "C", 4, "", "H"),
+        ]
+        roles = infer_atom_chemical_roles(atoms, [(2, 3)])
+        self.assertEqual(roles[0].entity_class, "nucleic_acid")
+        self.assertEqual(roles[0].confidence, "template")
+        self.assertTrue(roles[0].acceptor)
+        self.assertTrue(roles[1].acceptor)
+        self.assertTrue(roles[2].donor)
+
     def test_charmm_histidine_aliases_use_protein_templates(self):
         atoms = [
             AtomRecord(0, 1, "ND1", "", "HSD", "P", 10, "", "N"),
