@@ -1826,6 +1826,21 @@ def _integrated_comparison_artifacts(
     for (module_id, systems), rows in sorted(groups.items()):
         rows.sort(key=lambda row: float(row["absolute_effect_value"]), reverse=True)
         left, right = systems[0], systems[1]
+        context = {
+            "system_ids": list(systems),
+            **({"left_system_id": left, "right_system_id": right} if len(systems) == 2 else {}),
+        }
+        # Prefer the module's own presentation view when one exists.  The
+        # integrated report is an index of comparisons, not a second owner of
+        # the same figure/table path.  Registering both would overwrite the
+        # module artifact and create duplicate stable IDs.
+        if any(
+            artifact.get("module_id") == module_id
+            and artifact.get("purpose") == "pairwise_comparison"
+            and artifact.get("context") == context
+            for artifact in artifacts
+        ):
+            continue
         for index, row in enumerate(rows, start=1):
             row["finding_number"] = index
             row["finding_label"] = f"Finding {index}"
@@ -1833,10 +1848,6 @@ def _integrated_comparison_artifacts(
             row["right_system_id"] = right
         system_label = ", ".join(human_label(value) for value in systems)
         title = f"{human_label(module_id)} comparison: {system_label}"
-        context = {
-            "system_ids": list(systems),
-            **({"left_system_id": left, "right_system_id": right} if len(systems) == 2 else {}),
-        }
         _register_pair(
             output_root, path, artifacts, module_id=module_id,
             purpose="pairwise_comparison", title=title,
@@ -1979,9 +1990,17 @@ def generate_presentation_artifacts(
     destination.mkdir(parents=True)
     artifacts: List[Dict[str, object]] = []
     reviewed = []
+    report_records = []
     for path in sorted((root / "results").glob("**/report.json")):
         report = load_json(path)
         module_id = str(report.get("module_id", path.parent.name))
+        report_records.append((path, report, module_id))
+    # Module-owned artifacts must exist before the integrated comparison
+    # chooses whether it needs a fallback presentation view.
+    report_records.sort(
+        key=lambda item: (item[2] == "integrated_comparison", str(item[0]))
+    )
+    for path, report, module_id in report_records:
         if report.get("technical_status") != "complete":
             continue
         before = len(artifacts)
