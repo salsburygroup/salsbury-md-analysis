@@ -216,6 +216,52 @@ class PresentationArtifactContractTests(unittest.TestCase):
             )
             self.assertIn("lower_edge_angstrom", rg_table.read_text(encoding="utf-8"))
 
+    def test_experimental_reports_receive_named_analysis_classes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            reports = {
+                "pockets": {
+                    "module_id": "ensemble_pocket_dynamics",
+                    "systems": [
+                        {"system_id": "sample", "pocket_count": 2},
+                        {"system_id": "variant", "pocket_count": 3},
+                    ],
+                },
+                "hydration": {
+                    "module_id": "hydration_density_channels",
+                    "systems": [
+                        {"system_id": "sample", "channel_count": 1},
+                        {"system_id": "variant", "channel_count": 2},
+                    ],
+                },
+                "koopman": {
+                    "module_id": "random_feature_koopman",
+                    "selected_hyperparameters": {
+                        "random_feature_count": 128,
+                        "selection_score": 0.4,
+                    },
+                },
+            }
+            for directory, payload in reports.items():
+                path = root / "results" / directory / "report.json"
+                path.parent.mkdir(parents=True)
+                payload["technical_status"] = "complete"
+                path.write_text(json.dumps(payload), encoding="utf-8")
+            manifest = generate_presentation_artifacts(root)
+            classes = {
+                row["module_id"]: row["analysis_class"]
+                for row in manifest["artifacts"]
+            }
+            self.assertEqual(
+                classes["ensemble_pocket_dynamics"], "pocket_dynamics"
+            )
+            self.assertEqual(
+                classes["hydration_density_channels"], "ions_and_solvation"
+            )
+            self.assertEqual(
+                classes["random_feature_koopman"], "kinetic_models"
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

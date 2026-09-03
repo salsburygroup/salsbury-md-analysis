@@ -69,6 +69,19 @@ ANALYSIS_CLASSES = {
     "grouped_ml": "machine_learning",
     "grouped_regularized_classification": "machine_learning",
     "optional_observables": "other_observables",
+    "perturbation_response_dynamics": "coupled_interactions",
+    "allosteric_pathways": "coupled_interactions",
+    "energetic_network_embeddings": "coupled_interactions",
+    "interaction_fingerprints": "coupled_interactions",
+    "interaction_persistence": "coupled_interactions",
+    "multivalent_molecular_bridges": "coupled_interactions",
+    "spatial_interaction_ensembles": "coupled_interactions",
+    "hydration_density_channels": "ions_and_solvation",
+    "ensemble_pocket_dynamics": "pocket_dynamics",
+    "helical_mechanics": "nucleic_acid_structure",
+    "trajectory_reweighting": "comparisons",
+    "random_feature_koopman": "kinetic_models",
+    "reactive_path_ensembles": "kinetic_models",
 }
 
 
