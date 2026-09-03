@@ -947,6 +947,9 @@ def pca_fes_basins_project(
             "frame_assignments": assignment_rows,
             "replica_populations": replica_populations,
             "block_populations": block_populations,
+            "state_population_comparison": summarize_state_populations(
+                assignment_rows, "basin_id"
+            ),
             "per_system_landscapes": per_system_landscapes,
         })
 

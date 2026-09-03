@@ -423,22 +423,22 @@ class FinalReportingTests(unittest.TestCase):
             report = prioritize_findings(root, maximum_findings=50)
             self.assertEqual(report["scientific_status"], "not evaluated")
             statements = "\n".join(row["statement"] for row in report["findings"])
-            self.assertIn("Largest descriptive atom-level RMSF difference", statements)
+            self.assertIn("Largest atom-level RMSF difference", statements)
             self.assertIn("A:ALA10:CA", statements)
-            self.assertIn("Largest descriptive DCCM difference", statements)
-            self.assertIn("Largest descriptive direct-hydrogen-bond occupancy", statements)
-            self.assertIn("Largest descriptive residue SASA difference", statements)
-            self.assertIn("Largest descriptive declared-observable difference", statements)
+            self.assertIn("Largest DCCM difference", statements)
+            self.assertIn("Largest direct-hydrogen-bond occupancy", statements)
+            self.assertIn("Largest residue SASA difference", statements)
+            self.assertIn("Largest declared-observable difference", statements)
             observable_finding = next(
                 row for row in report["findings"]
                 if row["comparison_family"] == "optional_observables:pairwise_feature_difference"
             )
             self.assertEqual(len(observable_finding["report_paths"]), 2)
-            self.assertIn("Largest descriptive nucleic_acid_geometry metric difference", statements)
-            self.assertIn("Largest descriptive ion_coordination_geometry metric difference", statements)
-            self.assertIn("Largest descriptive RDF difference", statements)
-            self.assertIn("Largest descriptive circular-mean dihedral difference", statements)
-            self.assertIn("Largest descriptive shared one-water-bridge occupancy", statements)
+            self.assertIn("Largest nucleic_acid_geometry metric difference", statements)
+            self.assertIn("Largest ion_coordination_geometry metric difference", statements)
+            self.assertIn("Largest RDF difference", statements)
+            self.assertIn("Largest circular-mean dihedral difference", statements)
+            self.assertIn("Largest shared one-water-bridge occupancy", statements)
             self.assertEqual(
                 [row["finding_id"] for row in report["findings"]],
                 [f"finding-{index:06d}" for index in range(1, report["reported_count"] + 1)],
