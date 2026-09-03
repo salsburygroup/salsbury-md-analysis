@@ -14,7 +14,11 @@ from salsbury_md_analysis.chemical_identity import (
 class ChemicalIdentityVocabularyTests(unittest.TestCase):
     def test_supported_generic_system_vocabulary_covers_documented_classes(self):
         self.assertTrue({"HIS", "HID", "HIE", "HIP"}.issubset(PROTEIN_RESIDUES))
-        self.assertTrue({"DA", "DT", "RA", "RU", "8OG"}.issubset(NUCLEIC_RESIDUES))
+        self.assertTrue(
+            {"DA", "DT", "RA", "RU", "8OG", "EDU", "FDU"}.issubset(
+                NUCLEIC_RESIDUES
+            )
+        )
         self.assertTrue({"NA", "K", "MG", "CA", "ZN", "FE", "CL"}.issubset(ION_RESIDUES))
         self.assertTrue({"NA", "K", "MG", "CA", "ZN", "FE"}.issubset(CATION_ELEMENTS))
         self.assertIn("CL", ANION_ELEMENTS)
