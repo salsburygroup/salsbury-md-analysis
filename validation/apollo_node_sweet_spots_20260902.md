@@ -3,7 +3,7 @@
 Status: technical resource planning complete; scientific validity not evaluated.
 
 Evidence JSON SHA-256:
-`3ab9f9657edd83c1d2827b7eaee078fae58ccbe24d75a90cf7361a1ee8f03472`
+`42ae50cfebf1ce92adffa30f0d2885dd4ac9bbd651ac44050fff06bcf6fc59f5`
 
 The calculations use 44-core, 185-GiB Apollo nodes. Each campaign is capped at
 16 nodes. Every planner-backed analysis job requests the padded Slurm limit of
@@ -12,27 +12,43 @@ after an allocation starts. They do not include queue delay.
 
 No simulation or analysis job was submitted.
 
-## Recommendation
+## Allocation-efficient recommendation
 
-The operational score gives equal weight to three goals: retain information,
-finish sooner, and request fewer nodes. Each recommended point is on the
-scenario's Pareto curve. A point above the maximum useful node count is never
-eligible.
+The 168-hour request is a hard feasibility ceiling, not a target runtime. The
+reviewed recommendation starts at the smallest Pareto point retaining at least
+75% of the best observed information, then moves to a larger allocation only
+when the added nodes buy a material reduction in time-to-result and information
+gain. Each recommendation is on the scenario's Pareto curve. A point above the
+maximum useful node count is never eligible.
+
+The JSON retains the mechanical equal-weight operational score as a diagnostic.
+It is not the reviewed recommendation because normalizing wait to the narrow
+range within one curve can make a small absolute runtime difference look more
+important than it is.
 
 | Case | Request | Peak used | Predicted runtime | Information retained | Mean floor multiple | Median floor multiple |
 |---|---:|---:|---:|---:|---:|---:|
 | TOP1-EdU D, harmonized | 6 nodes | 6 | 121.09 h | 100.00% of shared-contract maximum | 11.27x | 7.50x |
 | TOP1-EdU T, harmonized | 3 nodes | 3 | 123.00 h | 95.15% of shared-contract maximum | 14.38x | 14.99x |
-| TBA current | 3 nodes | 3 | 100.33 h | 99.47% | 29.86x | 40.00x |
+| TBA current | 1 node | 1 | 115.43 h | 93.78% | 27.00x | 20.00x |
 | TREX current, 250 ns | 3 nodes | 3 | 75.07 h | 100.00% | 65.98x | 73.95x |
-| Thrombin current, 60 replicas at 100 ns | 4 nodes | 4 | 112.64 h | 100.00% | 29.62x | 8.00x |
+| Thrombin current, 60 replicas at 100 ns | 1 node | 1 | 124.49 h | 89.70% | 27.76x | 4.00x |
 | TREX projected, 1 us | 5 nodes | 5 | 118.02 h | 94.36% | 232.34x | 299.40x |
-| Thrombin projected, 63 replicas at 1 us | 3 nodes | 3 | 117.87 h | 88.91% | 198.93x | 2.00x |
+| Thrombin projected, 63 replicas at 1 us | 1 node | 1 | 124.20 h | 81.01% | 164.17x | 2.00x |
 
 The TOP1 rows form one paired recommendation. If both allocations start at the
 same time, both components are predicted to finish in 123.00 hours. The pair
 requests nine nodes in total and retains 97.57% of the combined information
 available under the shared-stride contract.
+
+The TBA one-node point is the allocation-efficient knee. Moving to three nodes
+saves 15.10 hours and adds 5.69 information points, but occupies two more
+nodes. Current TREX is the exception where the larger allocation pays clearly:
+moving from one to three nodes saves 48.45 hours and adds 14.11 information
+points. Current thrombin can be upgraded to four nodes for 112.64 hours and
+100% information; future thrombin can be upgraded to three nodes for 117.87
+hours and 88.91% information. Those are faster or higher-information options,
+not the primary allocation-efficient choices.
 
 The independent TOP1 sweeps were rejected: they disagreed on 22 shared sampling
 groups. The accepted pair fixes all 28 groups present in both components to the
