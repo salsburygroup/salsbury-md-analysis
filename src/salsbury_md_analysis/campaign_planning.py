@@ -2217,6 +2217,53 @@ def _apply_direct_project_sampling(
             dccm_row.get("frame_selection", {"mode": "fixed_stride_v1"})
         )
 
+    convergence = definitions.get("convergence_uncertainty")
+    rmsd_row = rows.get("replica_rmsd_rg")
+    if isinstance(convergence, dict) and isinstance(rmsd_row, Mapping):
+        allocation = rmsd_row.get("campaign_resource_allocation")
+        selected_by_replica = (
+            allocation.get("selected_physical_frames_per_replica")
+            if isinstance(allocation, Mapping) else None
+        )
+        if not isinstance(selected_by_replica, list) or not selected_by_replica:
+            selected_by_replica = rmsd_row.get(
+                "planned_selected_frames_per_replica"
+            )
+        if isinstance(selected_by_replica, list) and selected_by_replica:
+            if any(
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 1
+                for value in selected_by_replica
+            ):
+                raise CampaignPlanningError(
+                    "convergence allocation has invalid selected frame counts"
+                )
+            minimum_selected = min(selected_by_replica)
+            minimum_blocks = int(convergence.get("minimum_blocks", 1))
+            include_partial = bool(
+                convergence.get("include_partial_final_block", False)
+            )
+            if minimum_blocks < 1:
+                raise CampaignPlanningError(
+                    "convergence minimum_blocks must be positive"
+                )
+            if include_partial and minimum_blocks > 1:
+                maximum_valid_block = (
+                    (minimum_selected - 1) // (minimum_blocks - 1)
+                )
+            else:
+                maximum_valid_block = minimum_selected // minimum_blocks
+            if maximum_valid_block < 1:
+                raise CampaignPlanningError(
+                    "final sampling allocation cannot satisfy the convergence "
+                    "minimum-block contract"
+                )
+            convergence["block_size_frames"] = min(
+                max(1, minimum_selected // 10),
+                maximum_valid_block,
+            )
+
 
 def _apply_automatic_context_allocation(
     project_path: Path,

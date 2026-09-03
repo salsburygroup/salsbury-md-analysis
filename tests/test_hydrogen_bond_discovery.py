@@ -678,7 +678,7 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
                 "END\n",
             ]), encoding="ascii")
             (root / "control.xyz").write_text(
-                "4\nframe\nN 0 0 0\nH 1 0 0\nO 2.8 0 0\nN 3.2 0 0\n",
+                "4\nframe\nN 0 0 0\nH 1 0 0\nO 8.0 0 0\nN 3.2 0 0\n",
                 encoding="ascii",
             )
             (root / "variant.xyz").write_text(
@@ -730,7 +730,7 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
                     "frame_stride": 1,
                     "maximum_reference_donor_hydrogen_bond_angstrom": 1.2,
                     "maximum_candidate_bonds": 10,
-                    "maximum_feature_observations": 100,
+                    "maximum_feature_observations": 2,
                     "output_mode": "sparse_spatial_observed_union_v3",
                     "candidate_chunk_size": 2,
                 }},
@@ -818,6 +818,15 @@ class HydrogenBondDiscoveryTests(unittest.TestCase):
         )
         self.assertEqual(report["evaluated_frame_count"], 2)
         self.assertEqual(report["conceptual_candidate_frame_count"], 3)
+        self.assertEqual(report["materialized_feature_observation_count"], 2)
+        self.assertEqual(
+            report["maximum_feature_observations_measurement_basis"],
+            "materialized_sparse_present_events_v1",
+        )
+        self.assertGreater(
+            report["conceptual_candidate_frame_count"],
+            report["settings"]["maximum_feature_observations"],
+        )
         self.assertEqual(
             report["geometry_contract"]["coordinate_reconstruction"],
             "none_selected_frames_evaluated_raw_wrapped",

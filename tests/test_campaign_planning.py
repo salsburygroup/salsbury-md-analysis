@@ -393,6 +393,35 @@ class CampaignPlanningTests(unittest.TestCase):
             {"mode": "integer_stride_per_replica_v1", "stride": 29},
         )
 
+    def test_convergence_block_tracks_final_campaign_allocation(self):
+        project = {
+            "definitions": {
+                "convergence_uncertainty": {
+                    "block_size_frames": 500,
+                    "include_partial_final_block": True,
+                    "minimum_blocks": 4,
+                }
+            }
+        }
+        sampling_plan = {
+            "method_plans": [{
+                "module_id": "replica_rmsd_rg",
+                "campaign_resource_allocation": {
+                    "selected_physical_frames_per_replica": [1_000, 1_200],
+                },
+            }]
+        }
+
+        _apply_direct_project_sampling(project, sampling_plan)
+
+        convergence = project["definitions"]["convergence_uncertainty"]
+        self.assertEqual(convergence["block_size_frames"], 100)
+        self.assertLessEqual(
+            convergence["block_size_frames"]
+            * (convergence["minimum_blocks"] - 1) + 1,
+            1_000,
+        )
+
     def test_small_system_memory_scaling_retains_floor_and_headroom(self):
         tasks = [{
             "task_id": "small:sasa",
