@@ -298,13 +298,15 @@ def _alternative_clustering_candidates(
 def _pca_context_candidates(
     report: Mapping[str, object], module_id: str, path: Path
 ) -> List[Dict[str, object]]:
-    component_sets: List[tuple[str, Mapping[str, object]]] = []
+    component_sets: List[
+        tuple[str, Mapping[str, object], tuple[str, ...]]
+    ] = []
     if module_id == "common_pca":
         basis = report.get("basis")
         pca = basis.get("pca") if isinstance(basis, dict) else None
         components = pca.get("components") if isinstance(pca, dict) else None
         if isinstance(components, list) and components and isinstance(components[0], dict):
-            component_sets.append(("shared basis", components[0]))
+            component_sets.append(("shared basis", components[0], ()))
     else:
         systems = report.get("systems")
         if isinstance(systems, list):
@@ -318,9 +320,11 @@ def _pca_context_candidates(
                     components = pca.get("components") if isinstance(pca, dict) else None
                     if isinstance(components, list) and components and isinstance(components[0], dict):
                         label = f"{system.get('system_id')}/{replica.get('replica_id')}"
-                        component_sets.append((label, components[0]))
+                        component_sets.append((
+                            label, components[0], (str(system.get("system_id")),)
+                        ))
     findings = []
-    for label, component in component_sets:
+    for label, component, systems in component_sets:
         variance = _numeric(component.get("explained_variance_fraction"))
         if variance is None:
             continue
@@ -331,6 +335,7 @@ def _pca_context_candidates(
             evidence_level="interpretive context",
             family=f"{module_id}:variance_accounting",
             ranking_role="interpretive_context",
+            systems=systems,
         ))
     return findings
 

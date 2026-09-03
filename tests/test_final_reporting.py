@@ -1089,6 +1089,34 @@ class FinalReportingTests(unittest.TestCase):
             self.assertAlmostEqual(pairwise[0]["effect_value"], 0.6)
             self.assertIn("A:position5:N2", pairwise[0]["statement"])
 
+    def test_individual_pca_context_retains_its_system_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "results" / "individual-pca" / "report.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({
+                "module_id": "individual_pca",
+                "technical_status": "complete",
+                "systems": [{
+                    "system_id": "variant",
+                    "replicas": [{
+                        "replica_id": "replica-1",
+                        "pca": {"components": [{
+                            "explained_variance_fraction": 0.42,
+                        }]},
+                    }],
+                }],
+            }), encoding="utf-8")
+
+            report = prioritize_findings(root, maximum_findings=50)
+            context = next(
+                row for row in report["all_candidates"]
+                if row["module_id"] == "individual_pca"
+            )
+            self.assertEqual(context["system_ids"], ["variant"])
+            self.assertEqual(context["context_label"], "variant")
+            self.assertFalse(context["presentation_eligible"])
+
 
 if __name__ == "__main__":
     unittest.main()
