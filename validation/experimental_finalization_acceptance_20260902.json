@@ -1,0 +1,17 @@
+{
+  "schema_version": "salsbury-experimental-finalization-acceptance-v1",
+  "recorded_at": "2026-09-02",
+  "base_experimental_head": "84438d8d938cd1953c3d1edfa4eb86b7dda77fb2",
+  "main_merge_head": "4d43d9a497e4eb0baafcf463b9f032cb1355d729",
+  "carried_main_change_count": 7,
+  "full_test_count": 775,
+  "failure_count": 0,
+  "expected_skip_count": 1,
+  "experimental_consumers_removed": 0,
+  "node_sweep_command_available": true,
+  "slurm_requested_time": "7-00:00:00",
+  "maximum_nodes_per_campaign": 16,
+  "technical_status": "complete",
+  "scientific_status": "not evaluated",
+  "unexpected_errors": []
+}
