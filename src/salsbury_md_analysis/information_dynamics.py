@@ -9,7 +9,7 @@ from typing import Dict, List, Mapping, Sequence, Tuple
 
 import numpy as np
 
-from .manifests import ManifestValidationError, load_json
+from .manifests import ManifestValidationError, load_json, sha256_file
 from .pca import common_pca_project
 from .validation import positive_integer
 
@@ -362,7 +362,8 @@ def information_dynamics_project(
         "technical_status": "complete",
         "scientific_status": "not evaluated",
         "project_manifest_path": str(source),
-        "project_manifest_sha256": pca["project_manifest_sha256"],
+        "project_manifest_sha256": sha256_file(source),
+        "upstream_project_manifest_sha256": pca["project_manifest_sha256"],
         "system_manifest_path": pca["system_manifest_path"],
         "system_manifest_sha256": pca["system_manifest_sha256"],
         "input_content_signature_sha256": pca["input_content_signature_sha256"],

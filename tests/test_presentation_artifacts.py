@@ -15,6 +15,33 @@ from salsbury_md_analysis.presentation_artifacts import (
 
 
 class PresentationArtifactContractTests(unittest.TestCase):
+    def test_explicit_unavailable_result_has_no_numeric_substitute(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = root / "results" / "unknown" / "report.json"
+            report.parent.mkdir(parents=True)
+            report.write_text(json.dumps({"module_id": "unknown_scientific_module",
+                "technical_status": "complete", "availability_status": "not_available",
+                "availability_reason": "Required scientific input is absent."}))
+            manifest = generate_presentation_artifacts(root)
+            self.assertEqual(manifest["unadapted_report_count"], 0)
+            self.assertEqual(manifest["reviewed_reports"][0]["presentation_adapter"],
+                             "unavailable_with_explanation")
+            self.assertTrue(all(not item["primary_human_output"] for item in manifest["artifacts"]))
+
+    def test_generic_index_cannot_pass_scientific_figure_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = root / "results" / "unknown" / "report.json"
+            report.parent.mkdir(parents=True)
+            report.write_text(json.dumps({"module_id": "unknown_scientific_module",
+                "technical_status": "complete", "rows": [{"index": 1}, {"index": 2}]}))
+            with self.assertRaises(PresentationArtifactError):
+                generate_presentation_artifacts(root)
+            manifest = json.loads((root / "presentation-artifacts/presentation-manifest.json").read_text())
+            self.assertEqual(manifest["technical_status"], "failed")
+            self.assertEqual(manifest["unadapted_report_count"], 1)
+
     def test_stable_ids_include_context_without_exposing_internal_paths(self):
         context = {"left_system_id": "A", "right_system_id": "B", "state_id": 1}
         first = stable_artifact_id(

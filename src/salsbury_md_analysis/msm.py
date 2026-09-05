@@ -26,7 +26,7 @@ from .clustering import (
     clustering_imwkmeans_project,
     clustering_kmeans_project,
 )
-from .manifests import ManifestValidationError, load_json
+from .manifests import ManifestValidationError, load_json, sha256_file
 from .pca import PCAAnalysisError
 from .pca_fes import PCAFESAnalysisError, pca_fes_basins_project
 from .validation import positive_integer
@@ -1416,7 +1416,8 @@ def _multi_state_markov_project(
             else "not passed"
         ),
         "project_manifest_path": str(source),
-        "project_manifest_sha256": first["project_manifest_sha256"],
+        "project_manifest_sha256": sha256_file(source),
+        "upstream_project_manifest_sha256": first["project_manifest_sha256"],
         "system_manifest_path": first["system_manifest_path"],
         "system_manifest_sha256": first["system_manifest_sha256"],
         "input_content_signature_sha256": first["input_content_signature_sha256"],
@@ -1616,7 +1617,8 @@ def markov_state_models_project(
         "scientific_status": "not evaluated",
         "kinetic_validation_status": "passed" if validation_passed else "not passed",
         "project_manifest_path": str(source),
-        "project_manifest_sha256": clustering["project_manifest_sha256"],
+        "project_manifest_sha256": sha256_file(source),
+        "upstream_project_manifest_sha256": clustering["project_manifest_sha256"],
         "system_manifest_path": clustering["system_manifest_path"],
         "system_manifest_sha256": clustering["system_manifest_sha256"],
         "input_content_signature_sha256": clustering["input_content_signature_sha256"],

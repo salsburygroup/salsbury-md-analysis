@@ -2007,12 +2007,23 @@ def _report_candidates(path: Path, report: Mapping[str, object]) -> List[Dict[st
     if module_id.startswith("clustering_") and isinstance(selected, dict):
         silhouette = selected.get("silhouette")
         if isinstance(silhouette, (int, float)) and not isinstance(silhouette, bool):
+            evaluation = selected.get("silhouette_evaluation")
+            stability = report.get("silhouette_selection_stability")
+            silhouette_label = "silhouette"
+            stability_text = ""
+            if isinstance(evaluation, dict):
+                if evaluation.get("estimated") is True:
+                    silhouette_label = "mean sampled silhouette"
+                    if isinstance(stability, dict):
+                        stability_text = f" Winner stability: {stability.get('status')}."
+                elif evaluation.get("estimated") is False:
+                    silhouette_label = "exact silhouette"
             findings.append(_candidate(
                 module_id=module_id, category="clustering",
                 statement=(
                     f"Selected {module_id.replace('clustering_', '').replace('_', ' ')} partition has "
                     f"{selected.get('k', selected.get('cluster_count'))} "
-                    f"states and silhouette {float(silhouette):.3f}."
+                    f"states and {silhouette_label} {float(silhouette):.3f}.{stability_text}"
                 ),
                 report_path=path, effect_value=float(silhouette),
                 family=f"{module_id}:model_selection",
@@ -2636,33 +2647,51 @@ def _category_queue(rows: Sequence[Dict[str, object]]) -> List[Dict[str, object]
 def _balanced_scientific_order(
     rows: Sequence[Dict[str, object]],
 ) -> List[Dict[str, object]]:
-    by_category: Dict[str, List[Dict[str, object]]] = {}
+    """Rank effects without quotas or comparisons between incompatible units.
+
+    Within-family percentiles are relative to the available candidates, not
+    calibrated biological importance. Statistical support breaks comparable
+    effect ranks; raw p values are never treated as effect sizes.
+    """
+    families: Dict[str, List[Dict[str, object]]] = {}
     for row in rows:
-        by_category.setdefault(str(row.get("category", "other_physical")), []).append(row)
-    queues = {
-        category: _category_queue(category_rows)
-        for category, category_rows in by_category.items()
-    }
-    positions = {category: 0 for category in queues}
-    declared = list(dict.fromkeys(_PRESENTATION_CATEGORY_CYCLE))
-    extra = sorted(
-        set(queues).difference(declared),
-        key=lambda value: (_PRIORITY.get(value, 99), value),
-    )
-    cycle = [*_PRESENTATION_CATEGORY_CYCLE, *extra]
-    ordered = []
-    while True:
-        advanced = False
-        for category in cycle:
-            queue = queues.get(category, [])
-            position = positions.get(category, 0)
-            if position >= len(queue):
-                continue
-            ordered.append(queue[position])
-            positions[category] = position + 1
-            advanced = True
-        if not advanced:
-            return ordered
+        family = str(row.get("comparison_family", row.get("module_id", "unspecified")))
+        families.setdefault(family, []).append(row)
+    for family_rows in families.values():
+        effects = [_numeric(row.get("absolute_effect_value")) for row in family_rows]
+        numeric = [value for value in effects if value is not None]
+        ordered = sorted(family_rows, key=lambda row: (
+            -(_numeric(row.get("absolute_effect_value")) or 0), _within_family_key(row)
+        ))
+        for index, row in enumerate(ordered, 1):
+            effect = _numeric(row.get("absolute_effect_value"))
+            percentile = (sum(value <= effect for value in numeric) / len(numeric)
+                          if numeric and effect is not None else 0.0)
+            row["within_family_rank"] = index
+            row["within_family_candidate_count"] = len(family_rows)
+            row["within_family_effect_percentile"] = percentile
+            row["headline_eligible"] = (
+                effect is not None and effect > 0
+                and (row.get("statistically_significant") is True
+                     or (row.get("statistically_significant") is None and percentile >= .75))
+            )
+            row["ranking_explanation"] = {
+                "policy": "effect_percentile_then_statistical_support_v1",
+                "effect_percentile_within_family": percentile,
+                "statistical_support": row.get("statistically_significant"),
+                "raw_effects_compared_between_families": False,
+                "category_quota": False,
+                "biological_importance_inferred": False,
+            }
+    return sorted(rows, key=lambda row: (
+        0 if row.get("headline_eligible") else 1,
+        -float(row["within_family_effect_percentile"]),
+        0 if row.get("statistically_significant") is True else 1,
+        _within_family_key(row)[:3],
+        str(row.get("comparison_family", "")),
+        str(row.get("statement", "")),
+        str(row.get("report_path", "")),
+    ))
 
 
 def _attach_companion_artifacts(rows: Sequence[Dict[str, object]]) -> None:
@@ -2959,35 +2988,18 @@ def prioritize_findings(
             "A direct diagnostic override fixed the headline count."
         )
     else:
-        selected_headline_count = min(
-            minimum_headline_findings, len(selected)
-        )
-        for rank in range(
-            minimum_headline_findings + 1,
-            min(headline_findings, len(selected)) + 1,
-        ):
+        eligible = sum(row.get("headline_eligible") is True for row in selected)
+        selected_headline_count = min(minimum_headline_findings, eligible)
+        for rank in range(minimum_headline_findings + 1, min(headline_findings, eligible) + 1):
             row = selected[rank - 1]
             if row.get("statistically_significant") is True:
                 selected_headline_count = rank
-                boundary_promotions.append({
-                    "rank": rank,
-                    "finding_id": f"finding-{rank:06d}",
-                    "adjusted_p_value": row.get("adjusted_p_value"),
-                    "comparison_family": row.get("comparison_family"),
-                })
-        if minimum_headline_findings == headline_findings:
-            headline_selection_reason = (
-                f"The configured presentation range fixes the opening section "
-                f"at {minimum_headline_findings} findings."
-            )
-        else:
-            headline_selection_reason = (
-                f"The first {minimum_headline_findings} ranked findings are "
-                f"always headlines. Ranks {minimum_headline_findings + 1} "
-                f"through {headline_findings} extend the opening section only "
-                "when a boundary finding is statistically significant after "
-                "Benjamini-Hochberg correction."
-            )
+                boundary_promotions.append({"rank": rank, "adjusted_p_value": row.get("adjusted_p_value")})
+        headline_selection_reason = (
+            "Headlines require a nonzero effect and either statistical support "
+            "or an untested effect in its family's upper quartile. The configured "
+            "minimum is a presentation target, never a quota. Other candidates remain searchable."
+        )
     for index, row in enumerate(findings, start=1):
         row["finding_id"] = f"finding-{index:06d}"
         row["presentation_tier"] = (
@@ -3047,12 +3059,13 @@ def prioritize_findings(
         "presentation_contract": {
             "contract_id": "headline-secondary-50-v1",
             "headline_count_range": [
-                MINIMUM_HEADLINE_FINDINGS, MAXIMUM_HEADLINE_FINDINGS,
+                0, MAXIMUM_HEADLINE_FINDINGS,
             ],
+            "target_headline_count_range": [MINIMUM_HEADLINE_FINDINGS, MAXIMUM_HEADLINE_FINDINGS],
             "highlighted_findings_total": HIGHLIGHTED_FINDINGS_TOTAL,
             "secondary_count_range": [
                 HIGHLIGHTED_FINDINGS_TOTAL - MAXIMUM_HEADLINE_FINDINGS,
-                HIGHLIGHTED_FINDINGS_TOTAL - MINIMUM_HEADLINE_FINDINGS,
+                HIGHLIGHTED_FINDINGS_TOTAL,
             ],
             "configured_headline_count": headline_findings,
             "configured_minimum_headline_count": minimum_headline_findings,
@@ -3060,16 +3073,15 @@ def prioritize_findings(
             "configured_highlighted_total": maximum_findings,
             "status": presentation_contract_status,
             "candidate_limited": candidate_limited,
-            "headline_selection": "bh_significance_at_boundary",
+            "headline_selection": "effect_eligibility_with_bh_boundary",
             "boundary_promotions": boundary_promotions,
             "selection_reason": headline_selection_reason,
         },
         "module_accounting": module_accounting,
         "quality_control_records": quality_control_records,
         "ranking_contract": (
-            "presentation-eligible scientific findings are interleaved across declared "
-            "scientific categories and comparison families; inferential significance and "
-            "effect magnitude order candidates only within one method-specific family. "
+            "Findings are ordered by within-family effect percentile and statistical "
+            "support, with no category quotas or cross-unit raw-effect comparisons. "
             "Validation context, technical diagnostics, and companion artifacts remain "
             "searchable but cannot displace scientific findings. No opaque composite score "
             "or cross-unit effect comparison is used"
@@ -3201,4 +3213,12 @@ def prioritize_findings(
         "csv_path": str(csv_path),
         "markdown_path": str(markdown_path),
         "qc_markdown_path": str(qc_markdown_path),
+        "json_sha256": _sha256_file(json_path),
+        "csv_sha256": _sha256_file(csv_path),
+        "markdown_sha256": _sha256_file(markdown_path),
+        "qc_markdown_sha256": _sha256_file(qc_markdown_path),
+        "source_report_records": [
+            {"path": str(path.resolve()), "sha256": _sha256_file(path)}
+            for path in sorted((analysis_root / "results").glob("**/report.json"))
+        ],
     }

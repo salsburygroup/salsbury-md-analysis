@@ -10,7 +10,7 @@ from typing import Dict, List, Mapping, Sequence
 import numpy as np
 
 from .dccm import dccm_project
-from .manifests import ManifestValidationError, load_json
+from .manifests import ManifestValidationError, load_json, sha256_file
 from .validation import positive_integer
 
 
@@ -349,7 +349,8 @@ def correlation_networks_project(
         "technical_status": "complete",
         "scientific_status": "not evaluated",
         "project_manifest_path": str(source),
-        "project_manifest_sha256": dccm["project_manifest_sha256"],
+        "project_manifest_sha256": sha256_file(source),
+        "upstream_project_manifest_sha256": dccm["project_manifest_sha256"],
         "system_manifest_path": dccm["system_manifest_path"],
         "system_manifest_sha256": dccm["system_manifest_sha256"],
         "input_content_signature_sha256": dccm["input_content_signature_sha256"],

@@ -50,6 +50,12 @@ jobs:
           python -m venv artifact-venv
           artifact-venv/bin/python -m pip install dist/*.whl
           artifact-venv/bin/salsbury-md-analysis list-modules --json
+      - name: Test installed wheel outside the checkout
+        run: |
+          artifact-venv/bin/python -m pip install scikit-learn hdbscan
+          artifact-venv/bin/python -m pip check
+          cd "$RUNNER_TEMP"
+          "$GITHUB_WORKSPACE/artifact-venv/bin/python" -m unittest discover -s "$GITHUB_WORKSPACE/tests" -t "$GITHUB_WORKSPACE"
       - name: Record artifact hashes
         run: sha256sum dist/*
       - uses: actions/upload-artifact@v7

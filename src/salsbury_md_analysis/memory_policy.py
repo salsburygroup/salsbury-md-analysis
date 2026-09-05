@@ -46,7 +46,7 @@ def resolve_memory_uncertainty_policy(
     )
     poor = _positive_factor(
         explicit if explicit is not None else (
-            legacy if legacy is not None else 1.25
+            legacy if legacy is not None else 1.0
         ),
         "execution.poorly_calibrated_memory_uncertainty_factor",
     )

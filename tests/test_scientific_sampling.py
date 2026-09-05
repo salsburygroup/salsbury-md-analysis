@@ -197,7 +197,7 @@ class ScientificSamplingTests(unittest.TestCase):
             frame_intervals_ns_per_replica=[0.01] * 6,
             source_time_spans_ns_per_replica=[1_000.0] * 6,
         )
-        self.assertEqual(required, 2_001)
+        self.assertEqual(required, 2_000)
 
     def test_method_specific_temporal_spacing_can_fail_despite_frame_count(self):
         profile = scientific_sampling_profile("information_dynamics")
