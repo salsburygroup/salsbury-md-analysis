@@ -1509,6 +1509,7 @@ def _slurm_resource_epochs(
                 "source_phase_id": task.get("source_phase_id"),
                 "module_id": task.get("module_id"),
                 "command": task.get("command"),
+                "completion_reports": list(task.get("completion_reports", [])),
                 "task_index": task_index,
                 "script": script,
                 "array_task_id": array_task_id,
