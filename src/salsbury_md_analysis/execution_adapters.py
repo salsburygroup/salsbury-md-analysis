@@ -848,65 +848,19 @@ def _walltime_path_for_phases(
     maximum_parallel_memory_gib: float,
     node_policy: Mapping[str, object],
 ) -> float:
-    """Return the serialized scheduler-time path for dependency phases."""
+    """Use the same dependency/token graph that the Slurm launcher emits.
 
-    node_cpus = node_policy.get("cpus_per_node")
-    node_memory = node_policy.get("memory_gib_per_node")
-    configured_maximum_nodes = node_policy.get("maximum_nodes_per_campaign")
-    maximum_nodes = (
-        int(configured_maximum_nodes)
-        if configured_maximum_nodes is not None else
-        (
-            max(
-                math.ceil(maximum_parallel_cpus / int(node_cpus)),
-                math.ceil(maximum_parallel_memory_gib / float(node_memory)),
-            )
-            if node_cpus is not None and node_memory is not None else None
-        )
+    Phase labels describe the source workflow; they are not execution barriers.
+    Summing phase maxima can reject a schedule whose independent work overlaps.
+    Partition routing does not affect this resource/dependency calculation.
+    """
+    epochs = _slurm_resource_epochs(
+        {"maximum_parallel_cpus": maximum_parallel_cpus,
+         "maximum_parallel_memory_gib": maximum_parallel_memory_gib,
+         "phases": phases},
+        {}, {}, {}, {"large_memory_threshold_gib": float("inf")}, node_policy,
     )
-    total = 0.0
-    for phase_index, phase in enumerate(phases):
-        items = []
-        for task_index, task in enumerate(phase.get("tasks", [])):
-            items.append({
-                "item_id": str(task.get("task_id") or (
-                    f"phase-{phase_index}:task-{task_index}"
-                )),
-                "cpu_slots": int(task["cpu_slots"]),
-                "memory_gib": (
-                    float(task["requested_memory_gib"])
-                    * int(task.get("node_count", 1))
-                ),
-                "wall_hours": float(task["requested_wall_minutes"]) / 60.0,
-                "node_count": int(task.get("node_count", 1)),
-                "workers_per_node": int(task.get(
-                    "workers_per_node", task["cpu_slots"]
-                )),
-                "distributed_replica_execution": bool(task.get(
-                    "distributed_replica_execution", False
-                )),
-            })
-        try:
-            lanes = pack_resource_lanes(
-                items,
-                maximum_parallel_cpus=maximum_parallel_cpus,
-                maximum_parallel_memory_gib=maximum_parallel_memory_gib,
-                maximum_cpus_per_node=(
-                    None if node_cpus is None else int(node_cpus)
-                ),
-                maximum_memory_gib_per_node=(
-                    None if node_memory is None else float(node_memory)
-                ),
-                maximum_nodes=maximum_nodes,
-                node_memory_reserve_gib=float(node_policy.get("memory_reserve_gib", 0.0)),
-            )
-        except ResourcePlanningError as exc:
-            raise ExecutionAdapterError(str(exc)) from exc
-        total += max(
-            (float(lane["wall_hours"]) for lane in lanes),
-            default=0.0,
-        )
-    return total
+    return sum(float(epoch["wall_hours"]) for epoch in epochs)
 
 
 def _fit_walltime_requests_to_campaign(
@@ -2381,6 +2335,11 @@ def _render_resource_bounded_submit(
             "--parsable",
             f"--nodes={int(item.get('node_count', 1))}",
         ]
+        # sbatch reads the recovery wrapper's directives, not the worker's.
+        # Preserve the configured association on the actual submitted command.
+        for association in ("account", "qos"):
+            if profile.get(association):
+                options.append(f"--{association}={shlex.quote(str(profile[association]))}")
         if autorecovery:
             options.extend(["--requeue", "--signal=B:USR1@60"])
         if item.get("distributed_replica_execution"):
