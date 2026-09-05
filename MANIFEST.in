@@ -2,6 +2,7 @@ include README.md
 include CHANGELOG.md
 include CITATION.cff
 include LICENSE
+include validation/v0.1.3rc1_dependency_test.json
 include LICENSE-DOCS.md
 include LICENSE-DATA.md
 include DEPENDENCIES_AND_LICENSES.md
