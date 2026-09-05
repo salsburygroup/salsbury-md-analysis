@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .clustering_presentation import report_models, load_report_models, select_primary_partitions, apply_primary_findings
+
 import csv
 import hashlib
 import itertools
@@ -312,26 +314,37 @@ def _alternative_clustering_candidates(
     ]
     if not scored:
         return []
-    silhouette, selected = max(scored, key=lambda item: (item[0], str(item[1].get("algorithm"))))
-    cluster_sizes = selected.get("full_cluster_sizes", selected.get("cluster_sizes"))
-    cluster_count = len(cluster_sizes) if isinstance(cluster_sizes, list) else None
-    return [_candidate(
+    findings = []
+    for silhouette, selected in scored:
+        algorithm = selected.get("requested_algorithm", selected.get("algorithm"))
+        cluster_sizes = selected.get("full_cluster_sizes", selected.get("cluster_sizes"))
+        cluster_count = len(cluster_sizes) if isinstance(cluster_sizes, list) else None
+        diagnostic = _candidate(
         module_id="alternative_clustering", category="clustering",
         statement=(
-            f"Best alternative-clustering result is {selected.get('algorithm')}"
+            f"{algorithm} reports its method-specific fit"
             f" with silhouette {silhouette:.3f}"
             f"{f' and {cluster_count} clusters' if cluster_count is not None else ''}."
         ),
         report_path=path, effect_value=silhouette,
         evidence_level="geometric validation",
+        ranking_role="method_diagnostic",
         family="alternative_clustering:model_selection",
         presentation_target=finding_target(
             module_id="alternative_clustering", purpose="model_selection",
             context=_target_context(
-                path, highlight_algorithm=selected.get("algorithm")
+                path, highlight_algorithm=algorithm
             ),
         ),
-    )]
+        )
+        diagnostic["clustering_algorithm"] = algorithm
+        findings.append(diagnostic)
+        for row in _state_differences(selected, "alternative_clustering", path):
+            row["clustering_algorithm"] = algorithm
+            row["statement"] = f"{algorithm}: " + row["statement"]
+            row["presentation_target"]["context"]["highlight_algorithm"] = algorithm
+            findings.append(row)
+    return findings
 
 
 def _pca_context_candidates(
@@ -1769,6 +1782,7 @@ def finding_sidecar_evidence(
         "module_id": module_id,
         "report_path": str(path),
         "candidates": candidates,
+        "clustering_models": report_models(report, path),
         "cross_report_summary": _compact_cross_report(report, module_id),
         "module_review": _module_review_record(
             module_id, path, len(candidates), len(quality_control)
@@ -2288,6 +2302,7 @@ def _report_candidates(path: Path, report: Mapping[str, object]) -> List[Dict[st
                 ),
                 report_path=path, effect_value=float(silhouette),
                 family=f"{module_id}:model_selection",
+                ranking_role="method_diagnostic",
                 presentation_target=finding_target(
                     module_id=module_id, purpose="model_selection",
                     context=_target_context(path),
@@ -2623,6 +2638,24 @@ def _path_context(row: Mapping[str, object]) -> tuple[str | None, str | None]:
     return system_id, view_id
 
 
+def _human_evidence_links(root: Path, row: Mapping[str, object]) -> str:
+    from urllib.parse import quote
+    links = []
+    for artifact in row.get("presentation_artifacts", []):
+        raw = artifact.get("path", artifact.get("relative_path"))
+        if not raw:
+            continue
+        path = Path(str(raw))
+        path = path if path.is_absolute() else root / "presentation-artifacts" / path
+        try:
+            relative = path.resolve().relative_to(root.resolve())
+        except ValueError:
+            continue
+        if path.is_file():
+            links.append(f"[{artifact.get('artifact_type', 'evidence')}]({quote(relative.as_posix())})")
+    return " " + " · ".join(dict.fromkeys(links)) if links else ""
+
+
 def _normalize_candidate(row: Mapping[str, object]) -> Dict[str, object]:
     normalized = dict(row)
     module_id = str(normalized.get("module_id", ""))
@@ -2675,6 +2708,8 @@ def _normalize_candidate(row: Mapping[str, object]) -> Dict[str, object]:
     normalized["statement"] = statement
 
     role = normalized.get("ranking_role")
+    if "model_selection" in str(normalized.get("comparison_family", "")):
+        role = "method_diagnostic"
     if not isinstance(role, str) or not role:
         if module_id == "state_coordinate_exports":
             role = "companion_artifact"
@@ -2966,7 +3001,7 @@ def _attach_companion_artifacts(rows: Sequence[Dict[str, object]]) -> None:
             str(value) for value in row.get("report_paths", [])
         )
     for row in rows:
-        if row.get("category") not in {"free_energy_surface", "clustering"}:
+        if row.get("category") not in {"free_energy_surface", "clustering", "free_energy_conformation", "clustering_conformation"}:
             continue
         systems = tuple(sorted(map(str, row.get("system_ids", []))))
         views = tuple(sorted(map(str, row.get("view_ids", []))))
@@ -3054,6 +3089,8 @@ def prioritize_findings(
     root: Path, *, maximum_findings: int | None = None,
     headline_findings: int | None = None,
     write_outputs: bool = True,
+    candidate_snapshot: Path | None = None,
+    expected_snapshot_sha256: str | None = None,
 ) -> Dict[str, object]:
     analysis_root = Path(root).expanduser().resolve(strict=True)
     config_path = analysis_root / "analysis-config.json"
@@ -3128,19 +3165,47 @@ def prioritize_findings(
     reference = comparison_config.get("reference_system_id")
     findings = []
     complete_records = []
+    clustering_models = []
     module_reviews = []
     quality_control_records = []
     integrated_path = (
         analysis_root / "results" / "integrated-comparison" / "report.json"
     )
-    integrated_present = integrated_path.is_file()
-    if integrated_present:
+    snapshot_provenance = None
+    if candidate_snapshot is not None:
+        # Presentation-only replay of a sealed candidate index, not another
+        # scientific analysis or a claim that all original reports are local.
+        candidate_snapshot = Path(candidate_snapshot).resolve(strict=True)
+        digest = _sha256_file(candidate_snapshot)
+        if not expected_snapshot_sha256 or digest != expected_snapshot_sha256:
+            raise FindingPickerError("Candidate snapshot requires its matching SHA-256.")
+        if write_outputs and candidate_snapshot == analysis_root / "prioritized_findings.json":
+            raise FindingPickerError("Replay needs a different output directory; preserve the source index.")
+        previous = load_json(candidate_snapshot)
+        if previous.get("technical_status") != "complete" or previous.get("finding_schema") != "salsbury-prioritized-findings-v2":
+            raise FindingPickerError("Candidate snapshot is not a complete supported index.")
+        findings = previous.get("all_candidates")
+        if not isinstance(findings, list) or len(findings) != previous.get("candidate_count") or not all(isinstance(row, dict) for row in findings):
+            raise FindingPickerError("Candidate snapshot count or records are invalid.")
+        quality_control_records = previous.get("quality_control_records", [])
+        for module in previous.get("module_accounting", []):
+            for index, report_path in enumerate(module.get("report_paths", [])):
+                module_reviews.append(_module_review_record(module["module_id"], Path(report_path),
+                    module.get("candidate_count", 0) if index == 0 else 0,
+                    module.get("quality_control_record_count", 0) if index == 0 else 0))
+        clustering_models = [row for group in previous.get("clustering_selection", {}).get("groups", [])
+                             for row in group.get("candidates", [])]
+        snapshot_provenance = {"path": str(candidate_snapshot), "sha256": digest,
+            "purpose": "presentation-only replay; no trajectory execution or new scientific evaluation",
+            "original_report_count": previous.get("reviewed_report_count")}
+    integrated_present = candidate_snapshot is not None or integrated_path.is_file()
+    if integrated_present and candidate_snapshot is None:
         integrated_report = load_json(integrated_path)
         if integrated_report.get("technical_status") != "complete":
             raise FindingPickerError(
                 "integrated comparison exists but is not technically complete"
             )
-    for path in sorted((analysis_root / "results").glob("**/report.json")):
+    for path in ([] if candidate_snapshot is not None else sorted((analysis_root / "results").glob("**/report.json"))):
         sidecar_path = Path(str(path) + ".summary.json")
         if sidecar_path.is_file():
             sidecar = load_json(sidecar_path)
@@ -3158,6 +3223,11 @@ def prioritize_findings(
             report_candidates = [
                 row for row in evidence["candidates"] if isinstance(row, dict)
             ]
+            model_records = evidence.get("clustering_models", [])
+            if isinstance(model_records, list):
+                clustering_models.extend(row for row in model_records if isinstance(row, dict))
+            if not model_records:
+                clustering_models.extend(load_report_models(path, str(sidecar.get("module_id", ""))))
             compact = evidence.get("cross_report_summary")
             if (
                 not integrated_present
@@ -3193,6 +3263,7 @@ def prioritize_findings(
             continue
         report = load_json(path)
         if report.get("technical_status") == "complete":
+            clustering_models.extend(report_models(report, path))
             module_id = str(report.get("module_id", path.parent.name))
             if module_id in _CROSS_REPORT_ROWS:
                 compact = _compact_cross_report(report, module_id)
@@ -3215,6 +3286,8 @@ def prioritize_findings(
     findings = _deduplicate_candidates(
         [_normalize_candidate(row) for row in findings]
     )
+    clustering_selection = select_primary_partitions(clustering_models)
+    findings = apply_primary_findings(findings, clustering_selection)
     if mode == "reference_vs_all" and reference:
         findings = [
             row for row in findings
@@ -3291,6 +3364,8 @@ def prioritize_findings(
     evidence_bundles = _evidence_bundles(presentation_eligible)
     output = {
         "finding_schema": "salsbury-prioritized-findings-v2",
+        "candidate_snapshot_provenance": snapshot_provenance,
+        "clustering_selection": clustering_selection,
         "technical_status": "complete",
         "scientific_status": "not evaluated",
         "candidate_count": len(findings),
@@ -3393,7 +3468,6 @@ def prioritize_findings(
     markdown_path = analysis_root / "prioritized_findings.md"
     lines = [
         "# Prioritized findings", "",
-        "Technical status is complete; scientific status is not evaluated.", "",
         (
             f"The report presents {len(headlines)} headline findings first and "
             f"{len(secondary)} secondary findings afterward. The searchable outputs retain "
@@ -3407,7 +3481,7 @@ def prioritize_findings(
             if row["statistically_significant"] is True else
             str(row["evidence_level"])
         )
-        lines.append(f"{rank}. {row['statement']} ({qualifier}; `{row['module_id']}`)")
+        lines.append(f"{rank}. {row['statement']} ({qualifier}; `{row['module_id']}`)" + _human_evidence_links(analysis_root, row))
     lines.extend(["", "## Secondary findings", ""])
     if secondary:
         for rank, row in enumerate(secondary, start=len(headlines) + 1):
@@ -3417,10 +3491,19 @@ def prioritize_findings(
                 str(row["evidence_level"])
             )
             lines.append(
-                f"{rank}. {row['statement']} ({qualifier}; `{row['module_id']}`)"
+                f"{rank}. {row['statement']} ({qualifier}; `{row['module_id']}`)" + _human_evidence_links(analysis_root, row)
             )
     else:
         lines.append("No secondary findings were selected.")
+    lines.extend(["", "## Primary clustering by view", "",
+                  "Geometric scores select a presentation partition; they are not physical findings. FES and kinetic model selection remain separate.", "",
+                  "| Scope | Primary method | Selection | Comparable silhouette |", "|---|---|---|---:|"])
+    for group in clustering_selection["groups"]:
+        primary = next((row for row in group["candidates"] if row["presentation_role"] == "primary"), None)
+        score = f"{primary['evaluation']['score']:.4f}" if primary else "—"
+        lines.append(f"| {group['scope']} | {primary['algorithm'] if primary else 'Not ranked'} | {group['status']} | {score} |")
+    for group in clustering_selection["groups"]:
+        lines.extend(["", f"{group['scope']}: {group['reason']}", ""])
     lines.extend(["", "## Evidence bundles", ""])
     if evidence_bundles:
         for bundle in evidence_bundles[:20]:

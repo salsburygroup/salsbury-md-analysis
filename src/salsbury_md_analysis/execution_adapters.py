@@ -2262,6 +2262,10 @@ def _render_resource_bounded_submit(
         ])
     lines.extend([
         'printf "Submitting the reviewed Slurm resource epochs now.\\n"',
+        'mkdir -p "$ROOT/submission-ledgers"',
+        'LEDGER="$ROOT/submission-ledgers/$(date -u +%Y%m%dT%H%M%S)-$$.tsv"',
+        'printf "task_id\\tjob_id\\n" > "$LEDGER"',
+        'printf "Submission ledger: %s\\n" "$LEDGER"',
         "",
     ])
     submitted_jobs: List[str] = []
@@ -2334,6 +2338,7 @@ def _render_resource_bounded_submit(
         variable = f"JOB_T{item_index:04d}"
         options = [
             "--parsable",
+            '--chdir="$ROOT"',
             f"--nodes={int(item.get('node_count', 1))}",
         ]
         # sbatch reads the recovery wrapper's directives, not the worker's.
@@ -2436,6 +2441,7 @@ def _render_resource_bounded_submit(
             f'"$RECOVERY_RUNNER" "$ROOT"/{script}'
             f'{completion_report_arguments})',
             f'{variable}="${{{variable}%%;*}}"',
+            f'printf "%s\\t%s\\n" {shlex.quote(str(item.get("task_id", item.get("item_id"))))} "${{{variable}}}" >> "$LEDGER"',
         ])
         if lane_index >= 0:
             previous_lane_jobs[lane_index] = variable
@@ -3827,6 +3833,13 @@ def _run_ready_dag(
 
 
 def run_local_workflow(root: Path) -> Dict[str, object]:
+    """Execute under a campaign lock, including the legacy run-local entry point."""
+    from .user_workflow import campaign_lock
+    with campaign_lock(root.expanduser().resolve(strict=True)):
+        return _run_local_workflow_locked(root)
+
+
+def _run_local_workflow_locked(root: Path) -> Dict[str, object]:
     """Execute a generated workflow locally while respecting its CPU envelope."""
 
     resolved = root.expanduser().resolve(strict=True)

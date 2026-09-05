@@ -1,5 +1,7 @@
 # Salsbury MD Analysis documentation
 
+- [Independent-user acceptance and remaining release checks](RELEASE_ACCEPTANCE.md)
+
 This toolkit turns an atom-order-matched structure, bond topology, and one or
 more trajectories into a planned, auditable analysis campaign. It can run on a
 workstation or through Slurm. It is designed to choose reasonable routine
@@ -13,6 +15,9 @@ biologically bound, or a result is ready to publish. Those conclusions still
 need scientific review.
 
 ## Where to begin
+
+- [Terminal setup, diagnostics, planning, status, and recovery](TERMINAL_WORKFLOW.md)
+- [Primary clustering and retained alternatives](CLUSTERING_PRESENTATION.md)
 
 - Follow the [NEMO zinc-finger tutorial](../tutorials/nemo_zinc_finger/README.md)
   for a complete workstation example using a real published-simulation subset.

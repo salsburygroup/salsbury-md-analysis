@@ -2276,11 +2276,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run a hash-pinned project regression without changing project data.",
     )
     regression_parser.add_argument("path", type=Path, help="Regression-case path.")
+    from .user_workflow import add_parsers
+    add_parsers(subparsers)
     return parser
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    from .user_workflow import COMMANDS, run_command
+    if args.command in COMMANDS:
+        return run_command(args)
     if args.command == "list-modules":
         return _list_modules(args.json)
     if args.command == "validate-manifest":

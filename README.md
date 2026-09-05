@@ -9,7 +9,7 @@ write local and Slurm launchers. It will not modify the simulation inputs.
 
 ## Status
 
-Version 0.2.0a2 is an **experimental branch candidate**. It contains
+Version 0.2.0a3 is an **unreleased experimental branch candidate**. It contains
 58 registered MD, core, and reporting modules. Every registered module has an
 implementation and automated tests, but none is yet marked `supported` for
 unreviewed production or publication use. Technical completion and scientific
@@ -80,6 +80,12 @@ The complete module-to-method reference map is in
 [`docs/METHODS_AND_CITATIONS.md`](docs/METHODS_AND_CITATIONS.md).
 
 ## Install
+
+This candidate includes the same terminal workflow and primary-clustering
+presentation contract as the main candidate. Start with the
+[terminal guide](docs/TERMINAL_WORKFLOW.md). Its commands use the experimental
+registry when installed from this branch, including experimental-after-main
+configuration. The older release commands below do not install these changes.
 
 The base package requires Python 3.10 or newer, NumPy, and SciPy:
 
