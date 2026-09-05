@@ -167,7 +167,7 @@ class FinalReportingTests(unittest.TestCase):
                 standard_report["presentation_contract"][
                     "headline_selection"
                 ],
-                "bh_significance_at_boundary",
+                "effect_eligibility_with_bh_boundary",
             )
             self.assertEqual(len(standard_report["all_candidates"]), 210)
             persisted = json.loads(

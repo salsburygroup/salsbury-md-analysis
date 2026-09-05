@@ -337,13 +337,15 @@ def _alternative_clustering_candidates(
 def _pca_context_candidates(
     report: Mapping[str, object], module_id: str, path: Path
 ) -> List[Dict[str, object]]:
-    component_sets: List[tuple[str, Mapping[str, object]]] = []
+    component_sets: List[
+        tuple[str, Mapping[str, object], tuple[str, ...]]
+    ] = []
     if module_id == "common_pca":
         basis = report.get("basis")
         pca = basis.get("pca") if isinstance(basis, dict) else None
         components = pca.get("components") if isinstance(pca, dict) else None
         if isinstance(components, list) and components and isinstance(components[0], dict):
-            component_sets.append(("shared basis", components[0]))
+            component_sets.append(("shared basis", components[0], ()))
     else:
         systems = report.get("systems")
         if isinstance(systems, list):
@@ -357,9 +359,11 @@ def _pca_context_candidates(
                     components = pca.get("components") if isinstance(pca, dict) else None
                     if isinstance(components, list) and components and isinstance(components[0], dict):
                         label = f"{system.get('system_id')}/{replica.get('replica_id')}"
-                        component_sets.append((label, components[0]))
+                        component_sets.append((
+                            label, components[0], (str(system.get("system_id")),)
+                        ))
     findings = []
-    for label, component in component_sets:
+    for label, component, systems in component_sets:
         variance = _numeric(component.get("explained_variance_fraction"))
         if variance is None:
             continue
@@ -369,6 +373,8 @@ def _pca_context_candidates(
             report_path=path, effect_value=variance,
             evidence_level="interpretive context",
             family=f"{module_id}:variance_accounting",
+            ranking_role="interpretive_context",
+            systems=systems,
         ))
     return findings
 
@@ -395,6 +401,7 @@ def _tica_context_candidates(
         report_path=path, effect_value=eigenvalue,
         evidence_level="interpretive context",
         family="time_lagged_independent_component_analysis:leading_component",
+        ranking_role="interpretive_context",
     )]
 
 
@@ -421,8 +428,8 @@ def _information_correlation_candidates(
                 module_id="generalized_correlation_and_information",
                 category="coupled_interaction",
                 statement=(
-                    f"Strongest {label} in {system_id} is feature {left + 1} with "
-                    f"feature {right + 1}: {value:.3f}."
+                    f"Strongest {label} in {system_id} is PC{left + 1} with "
+                    f"PC{right + 1}: {value:.3f}."
                 ),
                 report_path=path, effect_value=value, systems=(system_id,),
                 evidence_level="descriptive nonlinear dependence",
@@ -451,7 +458,7 @@ def _information_dynamics_candidates(
         findings.append(_candidate(
             module_id="information_dynamics", category="coupled_interaction",
             statement=(
-                f"Largest absolute {label} is feature {source + 1} at t to feature "
+                f"Largest absolute {label} is PC{source + 1} at t to PC"
                 f"{target + 1} at the declared lag: {value:.3g}."
             ),
             report_path=path, effect_value=value,
@@ -465,6 +472,12 @@ def _correlation_network_candidates(
     report: Mapping[str, object], path: Path
 ) -> List[Dict[str, object]]:
     findings = []
+    analysis_atoms = report.get("analysis_atoms")
+    atom_labels = (
+        [_atom_label(row) if isinstance(row, dict) else f"node {index}"
+         for index, row in enumerate(analysis_atoms)]
+        if isinstance(analysis_atoms, list) else []
+    )
     systems = report.get("systems")
     if not isinstance(systems, list):
         return findings
@@ -484,11 +497,14 @@ def _correlation_network_candidates(
             if not finite:
                 continue
             strength, index = max(finite)
+            node_label = (
+                atom_labels[index] if index < len(atom_labels) else f"node {index}"
+            )
             findings.append(_candidate(
                 module_id="correlation_networks", category="coupled_interaction",
                 statement=(
                     f"Highest absolute network strength in {system_id}/"
-                    f"{matrix.get('matrix_kind')} is node {index}: {strength:.3f}."
+                    f"{matrix.get('matrix_kind')} is {node_label}: {strength:.3f}."
                 ),
                 report_path=path, effect_value=strength, systems=(system_id,),
                 evidence_level="descriptive thresholded network",
@@ -512,6 +528,7 @@ def _grouped_ml_candidates(
         report_path=path, effect_value=macro_f1,
         evidence_level="held-out predictive diagnostic",
         family="grouped_ml:held_out_macro_f1",
+        ranking_role="technical_diagnostic",
     )]
 
 
@@ -691,6 +708,8 @@ def _scalar_threshold_candidates(
 def _atom_label(identity: Mapping[str, object]) -> str:
     chain = str(identity.get("chain_id", "")).strip()
     residue_name = str(identity.get("residue_name", "UNK")).strip()
+    if residue_name == "POSITION_HARMONIZED":
+        residue_name = "position"
     residue_number = identity.get("residue_number", "?")
     insertion = str(identity.get("insertion_code", "")).strip()
     atom_name = str(identity.get("atom_name", "?")).strip()
@@ -879,7 +898,7 @@ def _hydrogen_bond_candidates(
         comparative.pop("system_feature_spaces", None)
         findings.extend(
             candidate for candidate in _hydrogen_bond_candidates(comparative, path)
-            if candidate.get("family")
+            if candidate.get("comparison_family")
             == "hydrogen_bond_discovery:pairwise_occupancy_difference"
         )
         return findings
@@ -887,7 +906,9 @@ def _hydrogen_bond_candidates(
     occupancy_rows = report.get("occupancies")
     candidates = report.get("candidate_dictionary")
     atom_rows = report.get("atom_dictionary")
-    if not isinstance(frame_rows, list) or not isinstance(candidates, list):
+    if not isinstance(candidates, list):
+        return []
+    if not isinstance(frame_rows, list) and not isinstance(occupancy_rows, list):
         return []
     atom_by_index = {
         int(row["atom_index"]): row.get("identity", {})
@@ -902,10 +923,31 @@ def _hydrogen_bond_candidates(
     counts: Dict[str, Dict[str, int]] = {}
     totals: Dict[str, int] = {}
     if isinstance(occupancy_rows, list):
-        for row in frame_rows:
-            if isinstance(row, dict) and isinstance(row.get("system_id"), str):
-                system_id = str(row["system_id"])
-                totals[system_id] = totals.get(system_id, 0) + 1
+        if isinstance(frame_rows, list):
+            for row in frame_rows:
+                if isinstance(row, dict) and isinstance(row.get("system_id"), str):
+                    system_id = str(row["system_id"])
+                    totals[system_id] = totals.get(system_id, 0) + 1
+        else:
+            replica_totals: Dict[tuple[str, str], int] = {}
+            for row in occupancy_rows:
+                if not isinstance(row, dict):
+                    continue
+                system_id = row.get("system_id")
+                replica_id = row.get("replica_id")
+                evaluated = row.get("evaluated_frame_count")
+                if (
+                    not isinstance(system_id, str)
+                    or not isinstance(replica_id, str)
+                    or isinstance(evaluated, bool)
+                    or not isinstance(evaluated, int)
+                    or evaluated < 1
+                ):
+                    continue
+                key = (system_id, replica_id)
+                replica_totals[key] = max(replica_totals.get(key, 0), evaluated)
+            for (system_id, _), evaluated in replica_totals.items():
+                totals[system_id] = totals.get(system_id, 0) + evaluated
         for row in occupancy_rows:
             if not isinstance(row, dict):
                 continue
@@ -923,7 +965,7 @@ def _hydrogen_bond_candidates(
             system_counts = counts.setdefault(system_id, {})
             system_counts[bond_id] = system_counts.get(bond_id, 0) + present
     else:
-        for row in frame_rows:
+        for row in frame_rows or []:
             if not isinstance(row, dict) or not isinstance(row.get("present_bond_ids"), list):
                 continue
             system_id = str(row.get("system_id"))
@@ -1723,7 +1765,7 @@ def finding_sidecar_evidence(
     candidates = _report_candidates(path, report)
     quality_control = _quality_control_records(report, path)
     return {
-        "finding_evidence_schema": "salsbury-finding-evidence-v1",
+        "finding_evidence_schema": "salsbury-finding-evidence-v2",
         "module_id": module_id,
         "report_path": str(path),
         "candidates": candidates,
@@ -2228,24 +2270,21 @@ def _report_candidates(path: Path, report: Mapping[str, object]) -> List[Dict[st
         if isinstance(silhouette, (int, float)) and not isinstance(silhouette, bool):
             evaluation = selected.get("silhouette_evaluation")
             stability = report.get("silhouette_selection_stability")
-            if isinstance(evaluation, dict) and evaluation.get("estimated") is True:
-                silhouette_label = "mean sampled silhouette"
-                stability_text = (
-                    f" Winner stability: {stability.get('status')}."
-                    if isinstance(stability, dict) else ""
-                )
-            elif isinstance(evaluation, dict) and evaluation.get("estimated") is False:
-                silhouette_label = "exact silhouette"
-                stability_text = ""
-            else:
-                silhouette_label = "silhouette"
-                stability_text = ""
+            silhouette_label = "silhouette"
+            stability_text = ""
+            if isinstance(evaluation, dict):
+                if evaluation.get("estimated") is True:
+                    silhouette_label = "mean sampled silhouette"
+                    if isinstance(stability, dict):
+                        stability_text = f" Winner stability: {stability.get('status')}."
+                elif evaluation.get("estimated") is False:
+                    silhouette_label = "exact silhouette"
             findings.append(_candidate(
                 module_id=module_id, category="clustering",
                 statement=(
-                    f"Selected {module_id} partition has {selected.get('k', selected.get('cluster_count'))} "
-                    f"states and {silhouette_label} {float(silhouette):.3f}."
-                    f"{stability_text}"
+                    f"Selected {module_id.replace('clustering_', '').replace('_', ' ')} partition has "
+                    f"{selected.get('k', selected.get('cluster_count'))} "
+                    f"states and {silhouette_label} {float(silhouette):.3f}.{stability_text}"
                 ),
                 report_path=path, effect_value=float(silhouette),
                 family=f"{module_id}:model_selection",
@@ -2263,13 +2302,21 @@ def _report_candidates(path: Path, report: Mapping[str, object]) -> List[Dict[st
             if not isinstance(model, dict):
                 continue
             score = model.get("geometric_score")
+            validation_status = str(
+                model.get("kinetic_validation_status", "not evaluated")
+            )
+            ranking_role = (
+                "scientific_finding"
+                if validation_status == "passed"
+                else "validation_context"
+            )
             findings.append(_candidate(
                 module_id=module_id,
                 category=category,
                 statement=(
                     f"{label} uses {model.get('candidate_id')} with "
                     f"{model.get('state_count')} states; kinetic validation is "
-                    f"{model.get('kinetic_validation_status')}."
+                    f"{validation_status}."
                 ),
                 report_path=path,
                 effect_value=(
@@ -2277,6 +2324,8 @@ def _report_candidates(path: Path, report: Mapping[str, object]) -> List[Dict[st
                     and not isinstance(score, bool) else None
                 ),
                 family=f"markov_state_models:{field}",
+                ranking_role=ranking_role,
+                validation_status=validation_status,
             ))
     if module_id == "state_coordinate_exports":
         findings.append(_candidate(
@@ -2288,6 +2337,7 @@ def _report_candidates(path: Path, report: Mapping[str, object]) -> List[Dict[st
             report_path=path,
             effect_value=float(report.get("exported_frame_count", 0)),
             family="state_coordinate_exports",
+            ranking_role="companion_artifact",
         ))
     raw_candidates = report.get("finding_candidates")
     if isinstance(raw_candidates, list):
@@ -2303,6 +2353,10 @@ def _report_candidates(path: Path, report: Mapping[str, object]) -> List[Dict[st
                 evidence_level=str(raw.get("evidence_level", "descriptive")),
                 systems=tuple(str(value) for value in raw.get("system_ids", [])),
                 family=str(raw.get("comparison_family", module_id)),
+                ranking_role=str(raw.get("ranking_role", "scientific_finding")),
+                validation_status=str(
+                    raw.get("validation_status", "not_applicable")
+                ),
             ))
     return findings
 
@@ -2325,12 +2379,82 @@ def _quality_control_records(
             "report_path": str(path),
         })
     if module_id == "convergence_uncertainty":
-        status = str(report.get("population_validity_status", "not reported"))
+        summary = report.get("diagnostic_summary")
+        if isinstance(summary, dict):
+            reference = summary.get("effective_sample_size_reference")
+            above = summary.get("effective_sample_size_above_reference_count", 0)
+            total = summary.get("series_count", 0)
+            metric_parts = []
+            by_metric = summary.get("by_metric")
+            if isinstance(by_metric, dict):
+                for metric, metric_summary in sorted(by_metric.items()):
+                    if not isinstance(metric_summary, dict):
+                        continue
+                    metric_parts.append(
+                        f"{metric}: "
+                        f"{metric_summary.get('effective_sample_size_above_reference_count', 0)}/"
+                        f"{metric_summary.get('series_count', 0)} above reference"
+                    )
+            metric_text = "; ".join(metric_parts)
+            statement = (
+                f"ESS reference {reference:g}: {above}/{total} RMSD/Rg series are above "
+                f"the reference"
+                if isinstance(reference, (int, float))
+                else f"ESS diagnostics are available for {total} RMSD/Rg series"
+            )
+            if metric_text:
+                statement += f" ({metric_text})"
+            statement += ". No convergence or population-validity conclusion was assigned."
+            records.append({
+                "module_id": module_id,
+                "severity": "information",
+                "status": "quantitative_diagnostics",
+                "statement": statement,
+                "report_path": str(path),
+            })
+        else:
+            records.append({
+                "module_id": module_id,
+                "severity": "warning",
+                "status": "legacy_convergence_report",
+                "statement": (
+                    "This legacy convergence report lacks the quantitative diagnostic summary; "
+                    "regenerate it with the current code before interpretation."
+                ),
+                "report_path": str(path),
+            })
+    if module_id == "rmsf_permutation_inference":
+        comparisons = report.get("comparisons")
+        familywise = []
+        comparison_count = 0
+        if isinstance(comparisons, list):
+            for comparison in comparisons:
+                result = comparison.get("result") if isinstance(comparison, dict) else None
+                values = (
+                    result.get("max_t_familywise_p_values")
+                    if isinstance(result, dict) else None
+                )
+                if isinstance(values, list):
+                    comparison_count += 1
+                    familywise.extend(
+                        float(value) for value in values
+                        if _numeric(value) is not None
+                    )
+        minimum = min(familywise) if familywise else None
+        below_alpha = sum(value <= 0.05 for value in familywise)
         records.append({
             "module_id": module_id,
-            "severity": "information" if status == "passed" else "warning",
-            "status": status,
-            "statement": f"Population-validity status is {status}.",
+            "severity": "information",
+            "status": "replica_level_familywise_inference",
+            "statement": (
+                f"Replica-level RMSF permutation inference evaluated "
+                f"{comparison_count} system comparisons; {below_alpha} familywise "
+                f"p values were at or below 0.05"
+                + (
+                    f" and the minimum was {minimum:.4g}."
+                    if minimum is not None else "."
+                )
+            ),
             "report_path": str(path),
         })
     issues = report.get("issues")
@@ -2405,20 +2529,44 @@ def _aggregate_module_accounting(
             + int(review.get("quality_control_record_count", 0))
         )
     candidate_counts: Dict[str, int] = {}
+    eligible_counts: Dict[str, int] = {}
+    supporting_roles: Dict[str, set[str]] = {}
     selected_counts: Dict[str, int] = {}
     for finding in findings:
         module_id = str(finding.get("module_id"))
         candidate_counts[module_id] = candidate_counts.get(module_id, 0) + 1
+        if finding.get("presentation_eligible") is True:
+            eligible_counts[module_id] = eligible_counts.get(module_id, 0) + 1
+        else:
+            supporting_roles.setdefault(module_id, set()).add(
+                str(finding.get("ranking_role", "supporting_context"))
+            )
     for finding in selected:
         module_id = str(finding.get("module_id"))
         selected_counts[module_id] = selected_counts.get(module_id, 0) + 1
     for module_id, row in by_module.items():
         row["candidate_count"] = candidate_counts.get(module_id, 0)
+        row["presentation_eligible_candidate_count"] = eligible_counts.get(
+            module_id, 0
+        )
+        row["supporting_context_candidate_count"] = (
+            int(row["candidate_count"])
+            - int(row["presentation_eligible_candidate_count"])
+        )
         row["reported_finding_count"] = selected_counts.get(module_id, 0)
         role = str(row["review_role"])
-        if row["candidate_count"]:
+        if row["presentation_eligible_candidate_count"]:
             row["disposition"] = "ranked_candidates"
-            row["reason"] = "The module produced automated candidates for deterministic ranking."
+            row["reason"] = (
+                "The module produced presentation-eligible scientific candidates."
+            )
+        elif row["candidate_count"]:
+            row["disposition"] = "supporting_context"
+            role_labels = ", ".join(sorted(supporting_roles.get(module_id, set())))
+            row["reason"] = (
+                "The module produced supporting records that remain searchable but "
+                f"cannot displace scientific findings ({role_labels})."
+            )
         elif int(row["quality_control_record_count"]) or role == "quality_control":
             row["disposition"] = "quality_control"
             row["reason"] = "The module is represented in the separate QC and interpretation channel."
@@ -2484,37 +2632,96 @@ def _normalize_candidate(row: Mapping[str, object]) -> Dict[str, object]:
         list(dict.fromkeys(str(value) for value in systems if str(value)))
         if isinstance(systems, list) else []
     )
+    if module_id == "individual_pca" and not normalized["system_ids"]:
+        legacy_context = re.search(
+            r"coordinate variance for ([^/\s]+)/[^.\s]+\.?$", statement
+        )
+        if legacy_context:
+            normalized["system_ids"] = [legacy_context.group(1)]
     system_id, view_id = _path_context(normalized)
     if system_id and not normalized["system_ids"]:
         normalized["system_ids"] = [system_id]
     normalized["view_ids"] = [view_id] if view_id else []
-    context = [*normalized["system_ids"]]
+    context_parts = [*normalized["system_ids"]]
     if view_id:
-        context.append(view_id)
-    normalized["context_label"] = "/".join(context) if context else None
+        context_parts.append(view_id)
+    normalized["context_label"] = "/".join(context_parts) if context_parts else None
+
+    if module_id in {
+        "generalized_correlation_and_information", "information_dynamics"
+    }:
+        statement = re.sub(r"\bfeature\s+(\d+)\b", r"PC\1", statement)
+    statement = re.sub(
+        r"([A-Za-z0-9_]+):POSITION_HARMONIZED(-?\d+):",
+        r"\1:position\2:",
+        statement,
+    )
     statement = re.sub(r"\bdescriptively\s+", "", statement, flags=re.IGNORECASE)
     statement = re.sub(r"\bdescriptive\s+", "", statement, flags=re.IGNORECASE)
+    if (
+        normalized.get("context_label")
+        and module_id in {
+            "pca_fes_basins", "clustering_kmeans", "clustering_hdbscan",
+            "clustering_imwkmeans", "alternative_clustering",
+            "markov_state_models", "state_coordinate_exports", "individual_pca",
+            "common_pca", "time_lagged_independent_component_analysis",
+            "information_dynamics", "grouped_ml",
+        }
+        and not any(
+            system in statement for system in normalized["system_ids"]
+        )
+    ):
+        statement = f"{normalized['context_label']}: {statement}"
     normalized["statement"] = statement
+
     role = normalized.get("ranking_role")
     if not isinstance(role, str) or not role:
-        role = "scientific_finding"
+        if module_id == "state_coordinate_exports":
+            role = "companion_artifact"
+        elif module_id == "grouped_ml":
+            role = "technical_diagnostic"
+        elif module_id in {
+            "individual_pca", "common_pca",
+            "time_lagged_independent_component_analysis",
+        }:
+            role = "interpretive_context"
+        elif module_id == "markov_state_models" and "not passed" in statement:
+            role = "validation_context"
+        else:
+            role = "scientific_finding"
+    validation_status = str(
+        normalized.get("validation_status", "not_applicable")
+    )
+    if module_id == "markov_state_models" and "not passed" in statement:
+        validation_status = "not passed"
+        role = "validation_context"
+    absolute_effect = _numeric(normalized.get("absolute_effect_value"))
+    if (
+        role == "scientific_finding"
+        and absolute_effect is not None
+        and absolute_effect == 0.0
+    ):
+        role = "null_effect_context"
+        validation_status = "no_observed_effect"
     normalized["ranking_role"] = role
-    normalized.setdefault("validation_status", "not_applicable")
+    normalized["validation_status"] = validation_status
     normalized["presentation_eligible"] = role == "scientific_finding"
+    normalized.setdefault("companion_artifact_paths", [])
     if not isinstance(normalized.get("presentation_target"), dict):
-        target_context: Dict[str, object] = {}
-        if normalized["system_ids"]:
-            target_context["system_ids"] = sorted(normalized["system_ids"])
-        if view_id:
-            target_context["view_id"] = view_id
-        normalized["presentation_target"] = finding_target(
-            module_id=module_id,
-            purpose=(
-                "pairwise_comparison"
-                if len(normalized["system_ids"]) >= 2 else "summary"
-            ),
-            context=target_context,
-        )
+        systems = normalized["system_ids"]
+        if len(systems) >= 2:
+            ordered = sorted(set(map(str, systems)))
+            target_context: Dict[str, object] = {"system_ids": ordered}
+            if len(ordered) == 2:
+                target_context.update({
+                    "left_system_id": ordered[0],
+                    "right_system_id": ordered[1],
+                })
+            normalized["presentation_target"] = finding_target(
+                module_id=module_id,
+                purpose="pairwise_comparison",
+                context=target_context,
+            )
     return normalized
 
 
@@ -2556,8 +2763,10 @@ def _presentation_context_matches(
             continue
         candidate = artifact_context.get(key)
         if isinstance(candidate, list):
-            requested = value if isinstance(value, list) else [value]
-            if not set(map(str, requested)).issubset(set(map(str, candidate))):
+            if isinstance(value, list):
+                if not set(map(str, value)).issubset(set(map(str, candidate))):
+                    return False
+            elif str(value) not in set(map(str, candidate)):
                 return False
         elif candidate != value:
             return False
@@ -2567,9 +2776,7 @@ def _presentation_context_matches(
 def _attach_presentation_artifacts(
     analysis_root: Path, findings: Sequence[Dict[str, object]]
 ) -> None:
-    manifest_path = (
-        analysis_root / "presentation-artifacts" / "presentation-manifest.json"
-    )
+    manifest_path = analysis_root / "presentation-artifacts" / "presentation-manifest.json"
     if not manifest_path.is_file():
         for row in findings:
             row["presentation_artifact_resolution"] = "manifest_not_available"
@@ -2578,24 +2785,20 @@ def _attach_presentation_artifacts(
     manifest = load_json(manifest_path)
     validate_manifest(manifest)
     if manifest.get("technical_status") != "complete":
-        raise FindingPickerError("presentation artifact manifest is not complete")
+        raise FindingPickerError(
+            "presentation artifact manifest is not technically complete"
+        )
     if int(manifest.get("unadapted_report_count", 0) or 0) != 0:
         raise FindingPickerError(
             "presentation artifact manifest leaves completed reports unadapted"
         )
     raw_artifacts = manifest.get("artifacts")
-    artifacts = (
-        [row for row in raw_artifacts if isinstance(row, dict)]
-        if isinstance(raw_artifacts, list) else []
-    )
+    artifacts = [row for row in raw_artifacts if isinstance(row, dict)] if isinstance(raw_artifacts, list) else []
     for row in findings:
         target = row.get("presentation_target")
         matches = []
         if isinstance(target, dict):
-            context = (
-                target.get("context")
-                if isinstance(target.get("context"), dict) else {}
-            )
+            context = target.get("context") if isinstance(target.get("context"), dict) else {}
             matches = [
                 artifact for artifact in artifacts
                 if artifact.get("module_id") == target.get("module_id")
@@ -2604,19 +2807,34 @@ def _attach_presentation_artifacts(
             ]
         if not matches:
             report_paths = set(map(str, row.get("report_paths", [])))
-            matches = [
-                artifact for artifact in artifacts
-                if artifact.get("module_id") == row.get("module_id")
-                and (
-                    not report_paths
-                    or not set(map(str, artifact.get("source_report_paths", []))).isdisjoint(
-                        report_paths
-                    )
-                )
-            ]
+            systems = set(map(str, row.get("system_ids", [])))
+            candidates = []
+            for artifact in artifacts:
+                if artifact.get("module_id") != row.get("module_id"):
+                    continue
+                sources = set(map(str, artifact.get("source_report_paths", [])))
+                if report_paths and sources.isdisjoint(report_paths):
+                    continue
+                context = artifact.get("context") if isinstance(artifact.get("context"), dict) else {}
+                artifact_systems = set()
+                if context.get("system_id") is not None:
+                    artifact_systems.add(str(context["system_id"]))
+                if isinstance(context.get("system_ids"), list):
+                    artifact_systems.update(map(str, context["system_ids"]))
+                if systems and artifact_systems and systems.isdisjoint(artifact_systems):
+                    continue
+                candidates.append(artifact)
+            matches = candidates
+        preferred = (
+            target.get("preferred_artifact_types")
+            if isinstance(target, dict) else ["figure", "table", "structure"]
+        )
+        preference = {
+            str(kind): index for index, kind in enumerate(preferred)
+        } if isinstance(preferred, list) else {}
         matches.sort(key=lambda artifact: (
+            preference.get(str(artifact.get("artifact_type")), 99),
             0 if artifact.get("primary_human_output") is True else 1,
-            str(artifact.get("artifact_type")),
             str(artifact.get("artifact_id")),
         ))
         row["presentation_artifacts"] = [
@@ -2637,14 +2855,16 @@ def _attach_presentation_artifacts(
 def _within_family_key(row: Mapping[str, object]) -> tuple[object, ...]:
     systems = row.get("system_ids")
     system_count = len(set(map(str, systems))) if isinstance(systems, list) else 0
+    scope_priority = 0 if system_count >= 2 else 1 if system_count == 0 else 2
     adjusted = row.get("adjusted_p_value")
     effect = row.get("absolute_effect_value")
     return (
         0 if row.get("statistically_significant") is True else 1,
         float(adjusted) if isinstance(adjusted, (int, float)) else 2.0,
-        0 if system_count >= 2 else 1,
+        scope_priority,
         -float(effect) if isinstance(effect, (int, float)) else 0.0,
         str(row.get("statement", "")),
+        str(row.get("report_path", "")),
     )
 
 
@@ -2660,51 +2880,174 @@ def _family_priority(family: str) -> tuple[int, str]:
     return 80, family
 
 
+def _category_queue(rows: Sequence[Dict[str, object]]) -> List[Dict[str, object]]:
+    buckets: Dict[str, List[Dict[str, object]]] = {}
+    for row in rows:
+        buckets.setdefault(str(row.get("comparison_family", "unspecified")), []).append(row)
+    for family_rows in buckets.values():
+        family_rows.sort(key=_within_family_key)
+        for rank, row in enumerate(family_rows, start=1):
+            row["within_family_rank"] = rank
+            row["within_family_candidate_count"] = len(family_rows)
+    families = sorted(buckets, key=_family_priority)
+    ordered = []
+    positions = {family: 0 for family in families}
+    while True:
+        advanced = False
+        for family in families:
+            position = positions[family]
+            if position >= len(buckets[family]):
+                continue
+            ordered.append(buckets[family][position])
+            positions[family] = position + 1
+            advanced = True
+        if not advanced:
+            return ordered
+
+
 def _balanced_scientific_order(
     rows: Sequence[Dict[str, object]],
 ) -> List[Dict[str, object]]:
-    by_category: Dict[str, Dict[str, List[Dict[str, object]]]] = {}
+    """Rank effects without quotas or comparisons between incompatible units.
+
+    Within-family percentiles are relative to the available candidates, not
+    calibrated biological importance. Statistical support breaks comparable
+    effect ranks; raw p values are never treated as effect sizes.
+    """
+    families: Dict[str, List[Dict[str, object]]] = {}
     for row in rows:
-        category = str(row.get("category", "other_physical"))
-        family = str(row.get("comparison_family", "unspecified"))
-        by_category.setdefault(category, {}).setdefault(family, []).append(row)
-    queues: Dict[str, List[Dict[str, object]]] = {}
-    for category, families in by_category.items():
-        ordered_families = sorted(families, key=_family_priority)
-        for rows_for_family in families.values():
-            rows_for_family.sort(key=_within_family_key)
-        queue = []
-        while any(families[family] for family in ordered_families):
-            for family in ordered_families:
-                if families[family]:
-                    queue.append(families[family].pop(0))
-        queues[category] = queue
-    positions = {category: 0 for category in queues}
-    categories = [
-        *dict.fromkeys(_PRESENTATION_CATEGORY_CYCLE),
-        *sorted(set(queues).difference(_PRESENTATION_CATEGORY_CYCLE)),
-    ]
-    ordered = []
-    while True:
-        advanced = False
-        for category in _PRESENTATION_CATEGORY_CYCLE:
-            queue = queues.get(category, [])
-            position = positions.get(category, 0)
-            if position < len(queue):
-                ordered.append(queue[position])
-                positions[category] = position + 1
-                advanced = True
-        for category in categories:
-            if category in _PRESENTATION_CATEGORY_CYCLE:
+        family = str(row.get("comparison_family", row.get("module_id", "unspecified")))
+        families.setdefault(family, []).append(row)
+    for family_rows in families.values():
+        effects = [_numeric(row.get("absolute_effect_value")) for row in family_rows]
+        numeric = [value for value in effects if value is not None]
+        ordered = sorted(family_rows, key=lambda row: (
+            -(_numeric(row.get("absolute_effect_value")) or 0), _within_family_key(row)
+        ))
+        for index, row in enumerate(ordered, 1):
+            effect = _numeric(row.get("absolute_effect_value"))
+            percentile = (sum(value <= effect for value in numeric) / len(numeric)
+                          if numeric and effect is not None else 0.0)
+            row["within_family_rank"] = index
+            row["within_family_candidate_count"] = len(family_rows)
+            row["within_family_effect_percentile"] = percentile
+            row["headline_eligible"] = (
+                effect is not None and effect > 0
+                and (row.get("statistically_significant") is True
+                     or (row.get("statistically_significant") is None and percentile >= .75))
+            )
+            row["ranking_explanation"] = {
+                "policy": "effect_percentile_then_statistical_support_v1",
+                "effect_percentile_within_family": percentile,
+                "statistical_support": row.get("statistically_significant"),
+                "raw_effects_compared_between_families": False,
+                "category_quota": False,
+                "biological_importance_inferred": False,
+            }
+    return sorted(rows, key=lambda row: (
+        0 if row.get("headline_eligible") else 1,
+        -float(row["within_family_effect_percentile"]),
+        0 if row.get("statistically_significant") is True else 1,
+        _within_family_key(row)[:3],
+        str(row.get("comparison_family", "")),
+        str(row.get("statement", "")),
+        str(row.get("report_path", "")),
+    ))
+
+
+def _attach_companion_artifacts(rows: Sequence[Dict[str, object]]) -> None:
+    artifacts: Dict[tuple[tuple[str, ...], tuple[str, ...]], List[str]] = {}
+    for row in rows:
+        if row.get("ranking_role") != "companion_artifact":
+            continue
+        systems = tuple(sorted(map(str, row.get("system_ids", []))))
+        views = tuple(sorted(map(str, row.get("view_ids", []))))
+        artifacts.setdefault((systems, views), []).extend(
+            str(value) for value in row.get("report_paths", [])
+        )
+    for row in rows:
+        if row.get("category") not in {"free_energy_surface", "clustering"}:
+            continue
+        systems = tuple(sorted(map(str, row.get("system_ids", []))))
+        views = tuple(sorted(map(str, row.get("view_ids", []))))
+        paths = list(artifacts.get((systems, views), []))
+        if not paths and views:
+            paths = list(artifacts.get(((), views), []))
+        row["companion_artifact_paths"] = sorted(set(paths))
+        row["representative_coordinates_available"] = bool(paths)
+
+
+_ENTITY_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_])([A-Za-z0-9_]+):([A-Za-z0-9_]+)(-?\d+)[A-Za-z]?:"
+)
+
+
+def _evidence_bundles(rows: Sequence[Mapping[str, object]]) -> List[Dict[str, object]]:
+    pair_groups: Dict[tuple[str, str], List[Mapping[str, object]]] = {}
+    entity_groups: Dict[tuple[tuple[str, ...], str], List[Mapping[str, object]]] = {}
+    for row in rows:
+        systems = tuple(sorted(set(map(str, row.get("system_ids", [])))))
+        if len(systems) == 2:
+            pair_groups.setdefault((systems[0], systems[1]), []).append(row)
+        entities = {
+            f"{chain}:{residue}{number}"
+            for chain, residue, number in _ENTITY_PATTERN.findall(
+                str(row.get("statement", ""))
+            )
+        }
+        for entity in entities:
+            entity_groups.setdefault((systems, entity), []).append(row)
+
+    bundles: List[Dict[str, object]] = []
+    for systems, candidates in sorted(pair_groups.items()):
+        representatives = []
+        seen_modules = set()
+        for row in candidates:
+            module_id = str(row.get("module_id"))
+            if module_id in seen_modules:
                 continue
-            queue = queues.get(category, [])
-            position = positions.get(category, 0)
-            if position < len(queue):
-                ordered.append(queue[position])
-                positions[category] = position + 1
-                advanced = True
-        if not advanced:
-            return ordered
+            seen_modules.add(module_id)
+            representatives.append(str(row.get("finding_id")))
+        if len(seen_modules) >= 2:
+            bundles.append({
+                "bundle_type": "system_pair",
+                "system_ids": list(systems),
+                "entity_labels": [],
+                "module_ids": sorted(seen_modules),
+                "candidate_count": len(candidates),
+                "representative_finding_ids": representatives,
+                "interpretation": (
+                    "Method-specific findings for this system pair are grouped without "
+                    "combining effects or assigning a composite biological score."
+                ),
+            })
+    for (systems, entity), candidates in sorted(entity_groups.items()):
+        modules = sorted({str(row.get("module_id")) for row in candidates})
+        if len(modules) < 2:
+            continue
+        bundles.append({
+            "bundle_type": "molecular_entity",
+            "system_ids": list(systems),
+            "entity_labels": [entity],
+            "module_ids": modules,
+            "candidate_count": len(candidates),
+            "representative_finding_ids": list(dict.fromkeys(
+                str(row.get("finding_id")) for row in candidates
+            ))[:len(modules) + 2],
+            "interpretation": (
+                "Multiple modules mention this molecular entity; the linked effects "
+                "remain separate measurements and require scientific review."
+            ),
+        })
+    bundles.sort(key=lambda row: (
+        0 if row["bundle_type"] == "system_pair" else 1,
+        -len(row["module_ids"]),
+        row["system_ids"],
+        row["entity_labels"],
+    ))
+    for index, row in enumerate(bundles, start=1):
+        row["bundle_id"] = f"evidence-bundle-{index:06d}"
+    return bundles
 
 
 def prioritize_findings(
@@ -2815,6 +3158,19 @@ def prioritize_findings(
             report_candidates = [
                 row for row in evidence["candidates"] if isinstance(row, dict)
             ]
+            compact = evidence.get("cross_report_summary")
+            if (
+                not integrated_present
+                and str(sidecar.get("module_id", path.parent.name))
+                == "hydrogen_bond_discovery"
+                and isinstance(compact, dict)
+            ):
+                # Version-1 sidecars accidentally filtered pairwise hydrogen-bond
+                # candidates.  Reconstruct them from compact occupancy evidence so
+                # old completed reports do not need to be recomputed.
+                report_candidates.extend(
+                    _hydrogen_bond_candidates(compact, path)
+                )
             if integrated_present:
                 report_candidates = [
                     row for row in report_candidates
@@ -2832,7 +3188,6 @@ def prioritize_findings(
                     str(sidecar.get("module_id", path.parent.name)), path,
                     len(report_candidates), len(qc_rows),
                 ))
-            compact = evidence.get("cross_report_summary")
             if isinstance(compact, dict) and not integrated_present:
                 complete_records.append((path, compact))
             continue
@@ -2871,6 +3226,7 @@ def prioritize_findings(
         row["statistically_significant"] = (
             bool(adjusted <= alpha) if isinstance(adjusted, (int, float)) else None
         )
+    _attach_companion_artifacts(findings)
     _attach_presentation_artifacts(analysis_root, findings)
     presentation_eligible = _balanced_scientific_order([
         row for row in findings if row.get("presentation_eligible") is True
@@ -2881,6 +3237,7 @@ def prioritize_findings(
             str(row.get("ranking_role", "supporting_context")),
             str(row.get("module_id", "")),
             str(row.get("statement", "")),
+            str(row.get("report_path", "")),
         ),
     )
     findings = [*presentation_eligible, *supporting_context]
@@ -2892,35 +3249,18 @@ def prioritize_findings(
             "A direct diagnostic override fixed the headline count."
         )
     else:
-        selected_headline_count = min(
-            minimum_headline_findings, len(selected)
-        )
-        for rank in range(
-            minimum_headline_findings + 1,
-            min(headline_findings, len(selected)) + 1,
-        ):
+        eligible = sum(row.get("headline_eligible") is True for row in selected)
+        selected_headline_count = min(minimum_headline_findings, eligible)
+        for rank in range(minimum_headline_findings + 1, min(headline_findings, eligible) + 1):
             row = selected[rank - 1]
             if row.get("statistically_significant") is True:
                 selected_headline_count = rank
-                boundary_promotions.append({
-                    "rank": rank,
-                    "finding_id": f"finding-{rank:06d}",
-                    "adjusted_p_value": row.get("adjusted_p_value"),
-                    "comparison_family": row.get("comparison_family"),
-                })
-        if minimum_headline_findings == headline_findings:
-            headline_selection_reason = (
-                f"The configured presentation range fixes the opening section "
-                f"at {minimum_headline_findings} findings."
-            )
-        else:
-            headline_selection_reason = (
-                f"The first {minimum_headline_findings} ranked findings are "
-                f"always headlines. Ranks {minimum_headline_findings + 1} "
-                f"through {headline_findings} extend the opening section only "
-                "when a boundary finding is statistically significant after "
-                "Benjamini-Hochberg correction."
-            )
+                boundary_promotions.append({"rank": rank, "adjusted_p_value": row.get("adjusted_p_value")})
+        headline_selection_reason = (
+            "Headlines require a nonzero effect and either statistical support "
+            "or an untested effect in its family's upper quartile. The configured "
+            "minimum is a presentation target, never a quota. Other candidates remain searchable."
+        )
     for index, row in enumerate(findings, start=1):
         row["finding_id"] = f"finding-{index:06d}"
         row["presentation_tier"] = (
@@ -2937,7 +3277,9 @@ def prioritize_findings(
         <= headline_findings
         <= MAXIMUM_HEADLINE_FINDINGS
     )
-    candidate_limited = len(presentation_eligible) < HIGHLIGHTED_FINDINGS_TOTAL
+    candidate_limited = (
+        len(presentation_eligible) < HIGHLIGHTED_FINDINGS_TOTAL
+    )
     presentation_contract_status = (
         "candidate_limited" if standard_contract_requested and candidate_limited
         else "satisfied" if standard_contract_requested
@@ -2946,6 +3288,7 @@ def prioritize_findings(
     module_accounting = _aggregate_module_accounting(
         module_reviews, findings, selected
     )
+    evidence_bundles = _evidence_bundles(presentation_eligible)
     output = {
         "finding_schema": "salsbury-prioritized-findings-v2",
         "technical_status": "complete",
@@ -2959,6 +3302,9 @@ def prioritize_findings(
         "searchable_candidate_count": len(findings),
         "additional_candidate_count": len(findings) - len(selected),
         "unreported_candidate_count": len(findings) - len(selected),
+        "unreported_eligible_candidate_count": (
+            len(presentation_eligible) - len(selected)
+        ),
         "reviewed_report_count": len(module_reviews),
         "reviewed_module_count": len(module_accounting),
         "silent_omission_count": 0,
@@ -2970,15 +3316,17 @@ def prioritize_findings(
         "headline_findings": headlines,
         "secondary_findings": secondary,
         "all_candidates": findings,
+        "evidence_bundles": evidence_bundles,
         "presentation_contract": {
             "contract_id": "headline-secondary-50-v1",
             "headline_count_range": [
-                MINIMUM_HEADLINE_FINDINGS, MAXIMUM_HEADLINE_FINDINGS,
+                0, MAXIMUM_HEADLINE_FINDINGS,
             ],
+            "target_headline_count_range": [MINIMUM_HEADLINE_FINDINGS, MAXIMUM_HEADLINE_FINDINGS],
             "highlighted_findings_total": HIGHLIGHTED_FINDINGS_TOTAL,
             "secondary_count_range": [
                 HIGHLIGHTED_FINDINGS_TOTAL - MAXIMUM_HEADLINE_FINDINGS,
-                HIGHLIGHTED_FINDINGS_TOTAL - MINIMUM_HEADLINE_FINDINGS,
+                HIGHLIGHTED_FINDINGS_TOTAL,
             ],
             "configured_headline_count": headline_findings,
             "configured_minimum_headline_count": minimum_headline_findings,
@@ -2986,17 +3334,18 @@ def prioritize_findings(
             "configured_highlighted_total": maximum_findings,
             "status": presentation_contract_status,
             "candidate_limited": candidate_limited,
-            "headline_selection": "bh_significance_at_boundary",
+            "headline_selection": "effect_eligibility_with_bh_boundary",
             "boundary_promotions": boundary_promotions,
             "selection_reason": headline_selection_reason,
         },
         "module_accounting": module_accounting,
         "quality_control_records": quality_control_records,
         "ranking_contract": (
-            "presentation-eligible findings are interleaved across scientific "
-            "categories and method-specific comparison families; inferential "
-            "significance and effect magnitude order candidates only within one "
-            "method family; no cross-unit composite score is used"
+            "Findings are ordered by within-family effect percentile and statistical "
+            "support, with no category quotas or cross-unit raw-effect comparisons. "
+            "Validation context, technical diagnostics, and companion artifacts remain "
+            "searchable but cannot displace scientific findings. No opaque composite score "
+            "or cross-unit effect comparison is used"
         ),
         "cross_report_selection_contract": (
             "for modules stored separately by system, select the technically complete "
@@ -3005,9 +3354,10 @@ def prioritize_findings(
         ),
         "interpretation": (
             "Only findings with adjusted p values are labeled statistically significant. "
-            "All other ranked differences and correlations remain exploratory. "
-            "Headline and secondary tiers control presentation only; every candidate remains "
-            "available in the JSON, CSV, and interactive report. Every completed report is accounted "
+            "All other ranked differences and correlations remain descriptive or exploratory. "
+            "Headline and secondary tiers control presentation only; every candidate and supporting "
+            "record remains available in the JSON, CSV, and interactive report. Evidence bundles link "
+            "related method-specific findings without combining their effects. Every completed report is accounted "
             "for as a ranked candidate source, quality-control "
             "evidence, interpretive context, technical support, or an explicit no-highlight result."
         ),
@@ -3023,7 +3373,8 @@ def prioritize_findings(
         "effect_value", "p_value", "adjusted_p_value",
         "statistically_significant", "report_path",
         "report_paths", "ranking_role", "validation_status",
-        "presentation_eligible", "presentation_artifact_resolution",
+        "presentation_eligible", "within_family_rank",
+        "within_family_candidate_count", "companion_artifact_paths",
         "presentation_tier",
     ]
     with csv_path.open("w", encoding="utf-8", newline="") as handle:
@@ -3035,14 +3386,19 @@ def prioritize_findings(
                 "system_ids": ";".join(row["system_ids"]),
                 "view_ids": ";".join(row.get("view_ids", [])),
                 "report_paths": ";".join(row["report_paths"]),
+                "companion_artifact_paths": ";".join(
+                    row.get("companion_artifact_paths", [])
+                ),
             })
     markdown_path = analysis_root / "prioritized_findings.md"
     lines = [
         "# Prioritized findings", "",
+        "Technical status is complete; scientific status is not evaluated.", "",
         (
             f"The report presents {len(headlines)} headline findings first and "
-            f"{len(secondary)} secondary findings afterward. All {len(findings)} "
-            "candidates remain available in the JSON, CSV, and interactive report."
+            f"{len(secondary)} secondary findings afterward. The searchable outputs retain "
+            f"all {len(presentation_eligible)} presentation-eligible candidates and "
+            f"{len(supporting_context)} supporting records."
         ), "", "## Headline findings", "",
     ]
     for rank, row in enumerate(headlines, start=1):
@@ -3065,16 +3421,32 @@ def prioritize_findings(
             )
     else:
         lines.append("No secondary findings were selected.")
+    lines.extend(["", "## Evidence bundles", ""])
+    if evidence_bundles:
+        for bundle in evidence_bundles[:20]:
+            subject = (
+                " versus ".join(bundle["system_ids"])
+                if bundle["bundle_type"] == "system_pair"
+                else ", ".join(bundle["entity_labels"])
+            )
+            lines.append(
+                f"- **{subject}** — {bundle['candidate_count']} candidates across "
+                f"{len(bundle['module_ids'])} modules; findings "
+                f"{', '.join(bundle['representative_finding_ids'])}."
+            )
+    else:
+        lines.append("No cross-method evidence bundles met the grouping rule.")
     lines.extend([
         "", "## Module accounting", "",
         "Every completed report is represented here even when it produced no ranked finding.", "",
-        "| Module | Role | Reports | Candidates | Reported | Disposition |",
-        "|---|---|---:|---:|---:|---|",
+        "| Module | Role | Reports | Candidates | Eligible | Reported | Disposition |",
+        "|---|---|---:|---:|---:|---:|---|",
     ])
     for row in module_accounting:
         lines.append(
             f"| `{row['module_id']}` | {row['review_role']} | {row['report_count']} | "
-            f"{row['candidate_count']} | {row['reported_finding_count']} | "
+            f"{row['candidate_count']} | {row['presentation_eligible_candidate_count']} | "
+            f"{row['reported_finding_count']} | "
             f"{row['disposition']} |"
         )
     qc_markdown_path = analysis_root / "prioritized_findings_qc.md"
@@ -3102,4 +3474,12 @@ def prioritize_findings(
         "csv_path": str(csv_path),
         "markdown_path": str(markdown_path),
         "qc_markdown_path": str(qc_markdown_path),
+        "json_sha256": _sha256_file(json_path),
+        "csv_sha256": _sha256_file(csv_path),
+        "markdown_sha256": _sha256_file(markdown_path),
+        "qc_markdown_sha256": _sha256_file(qc_markdown_path),
+        "source_report_records": [
+            {"path": str(path.resolve()), "sha256": _sha256_file(path)}
+            for path in sorted((analysis_root / "results").glob("**/report.json"))
+        ],
     }

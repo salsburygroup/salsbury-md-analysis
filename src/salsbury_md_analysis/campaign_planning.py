@@ -253,7 +253,7 @@ def _apply_measured_resource_calibrations(
         memory_replacement_qualified = bool(
             calibration.get(
                 "memory_replacement_qualified",
-                int(calibration.get("complete_measurement_count", 0)) >= 2,
+                False,
             )
         )
         current_memory = task.get("estimated_peak_memory_gib")

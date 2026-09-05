@@ -155,6 +155,16 @@ class CoordinateCacheTests(unittest.TestCase):
             reuse = validate_reusable_coordinate_cache(output, manifest)
             self.assertEqual(reuse["technical_status"], "complete")
             self.assertEqual(reuse["replica_count"], 1)
+            # Reuse must reject changed materialized bytes even when the
+            # original source and cached manifest are unchanged.
+            for companion in (trajectory, output / replica["topology"],
+                              output / replica["connectivity"]):
+                original = companion.read_bytes()
+                companion.write_bytes(original + b"changed")
+                with self.assertRaises(CoordinateCacheError):
+                    validate_reusable_coordinate_cache(output, manifest)
+                companion.write_bytes(original)
+            self.assertEqual(validate_reusable_coordinate_cache(output, manifest)["technical_status"], "complete")
             failed = build_coordinate_cache_safe(manifest, output)
             self.assertEqual(failed["technical_status"], "failed")
 

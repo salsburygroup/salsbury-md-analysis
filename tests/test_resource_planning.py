@@ -696,7 +696,7 @@ class ResourcePlanningTests(unittest.TestCase):
         )
         self.assertEqual(
             row["estimated_scheduler_memory_gib_at_selected_observations"],
-            106.0,
+            105.0,
         )
 
     def benchmark(self):
@@ -1164,7 +1164,7 @@ class ResourcePlanningTests(unittest.TestCase):
         self.assertEqual(plan["feasibility_status"], "feasible")
         lanes = plan["stages"][0]["resource_lanes"]
         self.assertEqual(len(lanes), 1)
-        self.assertEqual(lanes[0]["memory_gib"], 91.0)
+        self.assertEqual(lanes[0]["memory_gib"], 90.0)
         self.assertEqual(lanes[0]["cpu_slots"], 1)
         self.assertEqual(len(lanes[0]["items"]), 2)
         self.assertEqual(
@@ -1404,11 +1404,11 @@ class ResourcePlanningTests(unittest.TestCase):
         )
         self.assertEqual(
             row["estimated_scheduler_memory_gib_at_selected_observations"],
-            362.0,
+            360.0,
         )
         self.assertEqual(
             row["estimated_scheduler_memory_gib_per_node_at_selected_observations"],
-            181.0,
+            180.0,
         )
         self.assertEqual(
             row["parallel_node_layout_at_selected_observations"]["node_count"],
@@ -2059,7 +2059,7 @@ class ResourcePlanningTests(unittest.TestCase):
         )
         self.assertEqual(minimum_request["recommended_request"], {
             "parallel_cpus": 2,
-            "aggregate_memory_gib": 6.0,
+            "aggregate_memory_gib": 5.0,
             "wall_hours": 2,
         })
         self.assertAlmostEqual(

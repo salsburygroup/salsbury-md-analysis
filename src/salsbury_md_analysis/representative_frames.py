@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Dict, List, Mapping, Sequence
 
 from .clustering import ClusteringAnalysisError, clustering_kmeans_project
-from .manifests import ManifestValidationError, load_json
+from .manifests import ManifestValidationError, load_json, sha256_file
 from .pca import PCAAnalysisError
 from .pca_fes import PCAFESAnalysisError, pca_fes_basins_project
 from .validation import positive_integer
@@ -307,7 +307,8 @@ def representative_frames_project(
         "technical_status": "complete",
         "scientific_status": "not evaluated",
         "project_manifest_path": str(source_path),
-        "project_manifest_sha256": upstream.get("project_manifest_sha256"),
+        "project_manifest_sha256": sha256_file(source_path),
+        "upstream_project_manifest_sha256": upstream.get("project_manifest_sha256"),
         "system_manifest_path": upstream.get("system_manifest_path"),
         "system_manifest_sha256": upstream.get("system_manifest_sha256"),
         "input_content_signature_sha256": upstream.get(

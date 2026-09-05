@@ -81,25 +81,31 @@ dependencies, but it does not need Slurm:
     "finalization_headroom_fraction": 0.05,
     "time_safety_factor": 1.5,
     "well_calibrated_memory_uncertainty_factor": 1.0,
-    "poorly_calibrated_memory_uncertainty_factor": 1.25,
+    "poorly_calibrated_memory_uncertainty_factor": 1.0,
     "censored_timeout_safety_factor": 1.5
   }
 }
 ```
 
 Prepare with that config and run `./run-local.sh`. The dependency-aware executor
-runs phases in order and atomically reserves both CPU slots and planner-derived
-memory for independent tasks within a phase. Their combined reservations cannot
+dispatches ready tasks across the full dependency graph and atomically reserves
+both CPU slots and planner-derived memory. Phase labels organize the report;
+they do not delay a ready task behind unrelated work. Their combined reservations cannot
 exceed `maximum_parallel_cpus` or `maximum_memory_gib`.
-The two named analysis-config factors express calibration uncertainty inside
-each task's modeled working set. Repeated completed evidence uses the
-well-calibrated factor; weak or absent evidence uses the poorly calibrated
-factor. During planning, the selected cluster profile then contributes its
-separate execution adjustment exactly once. On DEAC, each task receives
-`ceil(1.5 × uncertainty-adjusted working set per node + 1 GiB)` on every
-allocated node. The resulting per-node value is final. Slurm and custom
-execution adapters validate and emit it unchanged; they do not own or repeat
-either adjustment.
+The two named calibration factors default to 1.0. An explicit override remains
+available, but the default no longer adds 1.25 before the site's multiplier.
+The planner applies DEAC's 1.5 factor once to each task working set, rounds the
+task request up to whole GiB, and holds 1 GiB separately per node. Slurm passes
+the padded task request through without multiplying it again.
+
+The resource-token schedule conservatively holds that reserve for each node
+that could be occupied concurrently, bounded by the permitted nodes, task node
+counts, and available CPUs. It prints this upper bound and the aggregate reserve
+in `resource_token_policy`. Co-located tasks do not each incur another 1 GiB.
+The local runner holds one node reserve. A custom launcher must honor the
+same task requests and node reserve. These are reservation limits; local mode
+does not impose an operating-system RSS limit on a process that outgrows its
+estimate.
 
 The memory value is an aggregate campaign ceiling rather than a per-task limit,
 a prediction, or an amount preallocated at startup. Each task keeps both its
@@ -108,8 +114,8 @@ working-set estimate and safety-adjusted reservation in
 resident memory for later calibration.
 `maximum_hours_per_cpu` is the complete local campaign wall-time deadline, and each
 task also receives its planner-derived deadline. Each attempt receives unique logs
-and a retained JSON record under `local-execution-status/`; a failed attempt never
-launches later phases. Technically complete module outputs are revalidated and
+and a retained JSON record under `local-execution-status/`. A terminal failure
+blocks only tasks that require its successful output. Technically complete module outputs are revalidated and
 reused by the same worker logic used on Slurm.
 
 Local mode is also the simplest portability check. A wheel-installed v80
@@ -148,8 +154,9 @@ Set `execution.autorecovery` to `false` to allow only the first attempt.
 the recovery fields existed keep their original one-attempt behavior.
 
 Recovery is task-local. A successful report is hash-checked and reused; it is
-not rerun because another task failed. A failed task is retried only within the
-original campaign deadline and resource request. Local execution records one
+not rerun because another task failed. A local task is retried only within the original campaign deadline and resource
+request. Slurm requeues receive a fresh allocation and are bounded by attempt
+count; cumulative campaign-wall accounting across requeues is not yet enforced. Local execution records one
 stdout file, stderr file, exit code, timing record, and byte count per attempt
 under `local-execution-status/`. A task that succeeds after a failure is labeled
 `recovered_complete`, and its accepted report can release scientific
@@ -157,8 +164,10 @@ dependents.
 
 Exit code zero is necessary but insufficient when a task declares completion
 reports. The local and Slurm recovery wrappers require every declared JSON file
-to exist, parse, and carry `technical_status: complete`. Missing, invalid, or
-failed reports produce recovery exit code 66 and cannot release a
+to match their module and project contract, carry no technical errors, and pass
+report/summary and companion-file hash checks. Recorded input signatures are
+revalidated for local reuse; hashing large source files adds read I/O.
+Missing, stale, invalid, or failed reports produce recovery exit code 66 and cannot release a
 success-dependent task.
 
 The Slurm launcher writes the same attempt events under
@@ -431,8 +440,12 @@ that receive the configured censored-timeout safety factor before planning.
 Wall lower bounds scale with selected frames and never assume speedup from more
 CPUs than the failed attempt validated. A multi-CPU timeout's MaxRSS remains
 aggregate diagnostic evidence; it is not replayed as one worker's memory.
-Repeated complete measurements may replace a legacy memory baseline; one-off
-or censored evidence cannot lower it. Replica-parallel jobs declare the full
+Repeated complete measurements may replace a legacy memory baseline only when
+their measurement scope explicitly qualifies that replacement. Unqualified,
+one-off, and censored evidence cannot lower it. Fresh invocation supervisors
+separate each command's CPU accounting from earlier commands. RSS records say
+whether they describe the largest child or a sampled process-tree peak; sampled
+RSS remains a lower bound and cannot authorize a smaller memory request. Replica-parallel jobs declare the full
 worker population independently from active concurrency. CPU, aggregate memory,
 per-node memory, and node-count limits determine the active workers, and any
 remaining workers run in explicit waves without changing selected frames.

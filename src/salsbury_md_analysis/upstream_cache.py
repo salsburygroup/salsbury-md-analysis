@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, Optional, Type
 
 from .context import compile_project_context_file
+from .accepted_artifacts import validate_complete_report
 from .manifests import load_json, resolve_manifest_path, sha256_file
 
 
@@ -111,6 +112,10 @@ def load_cached_project_report(
         raise error_type(f"cached {module_id} report is unreadable: {exc}") from exc
     if not isinstance(payload, dict):
         raise error_type(f"cached {module_id} report must contain a JSON object")
+    try:
+        validate_complete_report(report_path, expected_module=module_id, require_sidecar=True)
+    except (OSError, ValueError, TypeError) as exc:
+        raise error_type(f"cached {module_id} report failed artifact validation: {exc}") from exc
     if payload.get("technical_status") != "complete":
         raise error_type(f"cached {module_id} report is not technically complete")
     if payload.get("module_id") != module_id:

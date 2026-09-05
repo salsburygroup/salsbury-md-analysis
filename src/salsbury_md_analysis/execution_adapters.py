@@ -11,12 +11,13 @@ import signal
 import subprocess
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence
 
 from .analysis_config import COMMAND_MODULES
+from .accepted_artifacts import reports_complete
 from .ensemble_parallelism import annotate_task_parallelism
 from .manifests import load_json
 from .resource_planning import ResourcePlanningError, pack_resource_lanes
@@ -897,6 +898,7 @@ def _walltime_path_for_phases(
                     None if node_memory is None else float(node_memory)
                 ),
                 maximum_nodes=maximum_nodes,
+                node_memory_reserve_gib=float(node_policy.get("memory_reserve_gib", 0.0)),
             )
         except ResourcePlanningError as exc:
             raise ExecutionAdapterError(str(exc)) from exc
@@ -1587,8 +1589,18 @@ def _slurm_resource_epochs(
             "resource-token scheduling requires both node CPU and memory limits"
         )
     memory_quantum_gib = 0.25
+    node_reserve = float(node_policy.get("memory_reserve_gib", 0.0))
+    # A permitted node count is not itself an allocation. Bound possible
+    # occupancy by the tasks and CPU capacity before reserving node overhead.
+    occupied_node_bound = min(maximum_nodes or 1, maximum_cpus,
+                              sum(int(item["node_count"]) for item in items) or 1)
+    if maximum_nodes is not None:
+        maximum_nodes = occupied_node_bound
+    campaign_reserve = node_reserve * occupied_node_bound
+    if not math.isfinite(node_reserve) or node_reserve < 0:
+        raise ExecutionAdapterError("node memory reserve must be finite and nonnegative")
     memory_token_count = int(
-        math.floor(maximum_memory / memory_quantum_gib + 1.0e-9)
+        math.floor((maximum_memory - campaign_reserve) / memory_quantum_gib + 1.0e-9)
     )
     if memory_token_count <= 0:
         raise ExecutionAdapterError(
@@ -1607,7 +1619,7 @@ def _slurm_resource_epochs(
                 "resource-token scheduling could not determine a node count"
             )
         per_node_memory_tokens = int(math.floor(
-            float(node_memory) / memory_quantum_gib + 1.0e-9
+            (float(node_memory) - node_reserve) / memory_quantum_gib + 1.0e-9
         ))
         node_tokens = [{
             "cpu": [
@@ -1931,9 +1943,14 @@ def _slurm_resource_epochs(
         "scheduled_items": scheduled_items,
         "cpu_slots": peak_cpus,
         "memory_gib": peak_memory,
+        "memory_including_node_reserve_gib": peak_memory + campaign_reserve,
         "planned_wall_hours": planned_wall,
         "wall_hours": reservation_wall,
         "resource_token_policy": {
+            "node_memory_reserve_gib": node_reserve,
+            "reserved_node_count_upper_bound": occupied_node_bound,
+            "aggregate_node_reserve_gib": campaign_reserve,
+            "memory_reserve_policy": "once per potentially occupied node, never per task",
             "cpu_token_count": maximum_cpus,
             "memory_token_count": memory_token_count,
             "memory_token_quantum_gib": memory_quantum_gib,
@@ -2483,12 +2500,20 @@ def _render_resource_bounded_submit(
 
 def _render_task_recovery_runner(
     *, autorecovery: bool, maximum_task_attempts: int,
+    python_executable: Optional[str] = None, package_root: Optional[str] = None,
 ) -> str:
     """Render a bounded task wrapper shared by all generated Slurm jobs."""
 
     enabled = 1 if autorecovery else 0
+    python_executable = python_executable or _active_python_executable()
+    package_root = package_root or str(Path(__file__).resolve().parents[1])
     return f'''#!/usr/bin/env bash
 set -uo pipefail
+PYTHON_DEFAULT={shlex.quote(python_executable)}
+PACKAGE_ROOT_DEFAULT={shlex.quote(package_root)}
+PYTHON="${{SALSBURY_MD_ANALYSIS_PYTHON:-$PYTHON_DEFAULT}}"
+PACKAGE_ROOT="${{SALSBURY_MD_ANALYSIS_PYTHONPATH:-$PACKAGE_ROOT_DEFAULT}}"
+export PYTHONPATH="$PACKAGE_ROOT${{PYTHONPATH:+:$PYTHONPATH}}"
 TASK="${{1:?worker script is required}}"
 shift
 AUTORECOVERY_ENABLED={enabled}
@@ -2519,22 +2544,11 @@ validate_completion_reports() {{
   if [[ "$#" -eq 0 ]]; then
     return 0
   fi
-  python3 - "$ROOT" "$@" <<'PY'
-import json
+  "$PYTHON" - "$ROOT" "$@" <<'PY'
 import pathlib
 import sys
-
-root = pathlib.Path(sys.argv[1]).resolve()
-for name in sys.argv[2:]:
-    path = (root / name).resolve()
-    if root not in path.parents or not path.is_file():
-        raise SystemExit(1)
-    try:
-        report = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        raise SystemExit(1)
-    if not isinstance(report, dict) or report.get("technical_status") != "complete":
-        raise SystemExit(1)
+from salsbury_md_analysis.accepted_artifacts import reports_complete
+raise SystemExit(0 if reports_complete(pathlib.Path(sys.argv[1]), sys.argv[2:]) else 1)
 PY
 }}
 handle_timeout_signal() {{
@@ -2998,6 +3012,23 @@ def _apply_task_dependency_graph(
             task = annotate_task_parallelism(task)
             project_filename = _task_project_filename(root, task)
             task["project_filename"] = project_filename
+            # Resolve generated literal assignments only; never execute shell
+            # text to discover a completion contract.
+            if not task.get("completion_reports"):
+                worker_path = root / script
+                output = _script_scalar(worker_path, "FINAL")
+                if output:
+                    replacements = {"ROOT": str(root), "COMMAND": command or "",
+                                    "OUTPUT_ROOT": _script_scalar(worker_path, "OUTPUT_ROOT") or ""}
+                    for variable, value in replacements.items():
+                        output = output.replace("${" + variable + "}", value).replace("$" + variable, value)
+                    if "$" not in output:
+                        candidate = Path(output)
+                        candidate = candidate if candidate.is_absolute() else root / candidate
+                        try:
+                            task["completion_reports"] = [str(candidate.resolve().relative_to(root.resolve()))]
+                        except ValueError:
+                            raise ExecutionAdapterError("completion report escapes analysis root")
             view = _view_id(script)
             task["scope_id"] = (
                 f"view:{view}" if view else
@@ -3273,6 +3304,10 @@ def build_local_execution_plan(
     if resource_policy is not None:
         policy.update(resource_policy)
     rows = _planner_rows(root)
+    planner_document = load_json(root / "campaign-resource-plan.json") if rows else {}
+    # Older plans already included any overhead in their final task requests.
+    # Never derive a new reserve from a different adapter profile on replay.
+    planned_node_reserve = float(planner_document.get("node_memory_reserve_gib", 0.0))
     for phase in phases:
         phase["tasks"] = [
             _enrich_task_resources(
@@ -3289,7 +3324,12 @@ def build_local_execution_plan(
         "autorecovery": bool(execution.get("autorecovery", True)),
         "maximum_task_attempts": int(execution.get("maximum_task_attempts", 2)),
         "resource_policy": policy,
-        "node_policy": dict(node_policy or {}),
+        "node_policy": {
+            **dict(node_policy or {}),
+            "memory_reserve_gib": planned_node_reserve,
+        },
+        "node_memory_reserve_gib": planned_node_reserve,
+        "memory_reservation_policy": "task requests include model padding; hold node reserve once per node separately",
         "phases": phases,
         "dependency_policy": (
             "depends_on_task_ids contains only success-required inputs that a task "
@@ -3391,6 +3431,8 @@ def prepare_execution_artifacts(
             "maximum_parallel_cpus": plan["maximum_parallel_cpus"],
             "maximum_parallel_memory_gib": plan["maximum_parallel_memory_gib"],
             "maximum_campaign_wall_hours": plan["maximum_campaign_wall_hours"],
+            "node_memory_reserve_gib": plan.get("node_memory_reserve_gib", 0.0),
+            "node_policy": plan.get("node_policy", {}),
         },
         "dependency_policy": (
             "depends_on_task_ids are success-required inputs without a local "
@@ -3471,6 +3513,8 @@ exec "$LAUNCHER" "$CONTRACT"
     recovery_runner = _render_task_recovery_runner(
         autorecovery=bool(execution.get("autorecovery", True)),
         maximum_task_attempts=int(execution.get("maximum_task_attempts", 2)),
+        python_executable=(profile or {}).get("environment", {}).get("python_executable"),
+        package_root=(profile or {}).get("environment", {}).get("package_root"),
     )
     (root / "run-task-with-recovery.sh").write_text(
         recovery_runner, encoding="utf-8"
@@ -3548,18 +3592,8 @@ exec "$LAUNCHER" "$CONTRACT"
     }
 
 
-def _reports_complete(root: Path, names: Sequence[str]) -> bool:
-    for name in names:
-        path = root / name
-        if not path.is_file():
-            return False
-        try:
-            report = load_json(path)
-        except (OSError, ValueError):
-            return False
-        if not isinstance(report, dict) or report.get("technical_status") != "complete":
-            return False
-    return True
+def _reports_complete(root: Path, names: Sequence[str], task=None) -> bool:
+    return reports_complete(root, names, task)
 
 
 class _ResourcePool:
@@ -3613,7 +3647,7 @@ def _run_local_task(
         "wait_for_task_ids": list(task.get("wait_for_task_ids", [])),
     }
     if isinstance(completion_reports, list) and completion_reports and _reports_complete(
-        root, [str(value) for value in completion_reports]
+        root, [str(value) for value in completion_reports], task
     ):
         return {
             **identity,
@@ -3691,7 +3725,7 @@ def _run_local_task(
                 and completion_reports
             ):
                 completion_reports_valid = _reports_complete(
-                    root, [str(value) for value in completion_reports]
+                    root, [str(value) for value in completion_reports], task
                 )
                 if not completion_reports_valid:
                     exit_code = 66
@@ -3739,6 +3773,99 @@ def _run_local_task(
         slots.release(cpu_slots, memory_gib)
 
 
+def _run_ready_dag(
+    root: Path, phases: Sequence[Mapping[str, object]], attempt_id: str,
+    deadline: float, slots: _ResourcePool, autorecovery: bool,
+    maximum_task_attempts: int,
+) -> List[Dict[str, object]]:
+    """Dispatch the full DAG; phase labels organize reports, not barriers."""
+
+    entries = {}
+    for phase in phases:
+        tasks = phase.get("tasks")
+        if not isinstance(tasks, list) or not tasks:
+            raise ExecutionAdapterError(f"local phase {phase['phase_id']} has no tasks")
+        for index, task in enumerate(tasks):
+            entries[str(task["task_id"])] = (str(phase["phase_id"]), index, task)
+    prerequisites = {
+        key: set(map(str, task.get("depends_on_task_ids", [])))
+        | set(map(str, task.get("wait_for_task_ids", [])))
+        for key, (_, _, task) in entries.items()
+    }
+    remaining = set(entries)
+    visited = set()
+    while remaining:
+        ready = {key for key in remaining if prerequisites[key] <= visited}
+        if not ready:
+            raise ExecutionAdapterError("local task dependencies contain a cycle")
+        visited.update(ready)
+        remaining.difference_update(ready)
+
+    successful = {"complete", "recovered_complete", "reused_complete"}
+    results: Dict[str, Dict[str, object]] = {}
+    pending = dict(entries)
+    running = {}
+    reserved_cpus, reserved_memory = 0, 0.0
+
+    def terminal(task, status, **extra):
+        return {**task, "status": status, "exit_code": None, "wall_seconds": 0.0, **extra}
+
+    with ThreadPoolExecutor(max_workers=slots.cpu_capacity) as executor:
+        while pending or running:
+            for key, (phase_id, index, task) in list(pending.items()):
+                needed = list(map(str, task.get("depends_on_task_ids", [])))
+                failed = [dep for dep in needed if dep in results and results[dep]["status"] not in successful]
+                if failed:
+                    results[key] = terminal(task, "skipped_dependency", failed_dependency_task_ids=failed)
+                    del pending[key]
+                    continue
+                if time.monotonic() >= deadline:
+                    results[key] = terminal(task, "timed_out", error="campaign deadline reached before dispatch")
+                    del pending[key]
+                    continue
+                cpus = int(task["cpu_slots"])
+                memory = float(task.get("requested_memory_gib", 1.0))
+                if cpus <= 0 or not math.isfinite(memory) or memory < 0 or cpus > slots.cpu_capacity or memory > slots.memory_capacity_gib:
+                    results[key] = terminal(task, "failed", error="task exceeds local resource capacity")
+                    del pending[key]
+                    continue
+                if not prerequisites[key] <= results.keys():
+                    continue
+                if reserved_cpus + cpus > slots.cpu_capacity or reserved_memory + memory > slots.memory_capacity_gib + 1e-9:
+                    continue
+                reserved_cpus += cpus
+                reserved_memory += memory
+                future = executor.submit(
+                    _run_local_task, root, task, phase_id, index, attempt_id,
+                    deadline, slots, autorecovery, maximum_task_attempts,
+                )
+                running[future] = (key, task, cpus, memory)
+                del pending[key]
+            if running:
+                done, _ = wait(running, return_when=FIRST_COMPLETED)
+                for future in done:
+                    key, task, cpus, memory = running.pop(future)
+                    reserved_cpus -= cpus
+                    reserved_memory -= memory
+                    try:
+                        results[key] = future.result()
+                    except Exception as exc:
+                        results[key] = terminal(task, "failed", error=str(exc))
+            elif pending:
+                # Failure propagation may have made a dependency terminal in
+                # this pass. No sleeping or occupation of a worker is needed.
+                continue
+    reports = []
+    for phase in phases:
+        rows = [results[str(task["task_id"])] for task in phase["tasks"]]
+        reports.append({
+            "phase_id": str(phase["phase_id"]),
+            "technical_status": "complete" if all(row["status"] in successful for row in rows) else "failed",
+            "tasks": rows,
+        })
+    return reports
+
+
 def run_local_workflow(root: Path) -> Dict[str, object]:
     """Execute a generated workflow locally while respecting its CPU envelope."""
 
@@ -3770,7 +3897,11 @@ def run_local_workflow(root: Path) -> Dict[str, object]:
     ) + f"-{os.getpid()}"
     phase_reports = []
     technical_status = "complete"
-    slots = _ResourcePool(maximum_cpus, maximum_memory_gib)
+    # Local execution occupies one host, so it holds exactly one node reserve.
+    local_reserve = float(plan.get("node_memory_reserve_gib", 0.0))
+    if not math.isfinite(local_reserve) or local_reserve < 0 or local_reserve >= maximum_memory_gib:
+        raise ExecutionAdapterError("invalid local node memory reserve")
+    slots = _ResourcePool(maximum_cpus, maximum_memory_gib - local_reserve)
     deadline = time.monotonic() + campaign_seconds
     dependency_dag = plan.get("dependency_model") == "task_dag_v1"
     task_statuses: Dict[str, str] = {}
@@ -3795,7 +3926,14 @@ def run_local_workflow(root: Path) -> Dict[str, object]:
                         f"task {task['task_id']} has unknown dependencies: "
                         + ", ".join(sorted(missing))
                     )
-    for phase in plan.get("phases", []):
+    if dependency_dag:
+        phase_reports = _run_ready_dag(
+            resolved, plan.get("phases", []), attempt_id, deadline, slots,
+            autorecovery, maximum_task_attempts,
+        )
+        if any(phase["technical_status"] != "complete" for phase in phase_reports):
+            technical_status = "failed"
+    for phase in ([] if dependency_dag else plan.get("phases", [])):
         phase_id = str(phase["phase_id"])
         tasks = phase["tasks"]
         if not isinstance(tasks, list) or not tasks:

@@ -148,6 +148,7 @@ def pack_resource_lanes(
     maximum_cpus_per_node: Optional[int] = None,
     maximum_memory_gib_per_node: Optional[float] = None,
     maximum_nodes: Optional[int] = None,
+    node_memory_reserve_gib: float = 0.0,
 ) -> list[Dict[str, object]]:
     """Assign tasks to independent, aggregate-resource-bounded serial lanes.
 
@@ -209,6 +210,17 @@ def pack_resource_lanes(
                 / float(maximum_memory_gib_per_node)
             ),
         )
+    reserve = _nonnegative_number(node_memory_reserve_gib, "node_memory_reserve_gib")
+    total_memory_cap = maximum_parallel_memory_gib
+    # One node is the lower bound. Physical packing below charges additional
+    # reserves only for nodes that are actually occupied.
+    maximum_parallel_memory_gib -= reserve
+    if maximum_memory_gib_per_node is not None:
+        maximum_memory_gib_per_node = float(maximum_memory_gib_per_node) - reserve
+    if maximum_parallel_memory_gib <= 0 or (
+        maximum_memory_gib_per_node is not None and maximum_memory_gib_per_node <= 0
+    ):
+        raise ResourcePlanningError("node memory reserve leaves no task memory")
     normalized: list[Dict[str, object]] = []
     for index, item in enumerate(items):
         item_id = str(item.get("item_id", f"item-{index}"))
@@ -547,6 +559,8 @@ def pack_resource_lanes(
                     "memory_gib": float(fragment["memory_gib"]),
                 })
                 used_for_lane.add(int(selected_node["node_index"]))
+        if sum(float(node["memory_gib"]) for node in nodes) + reserve * len(nodes) > total_memory_cap + 1e-12:
+            return None
         return nodes
 
     # If the aggregate-optimal lane set fragments badly across physical nodes,
@@ -594,6 +608,8 @@ def pack_resource_lanes(
             })
 
     for lane in lanes:
+        lane["node_memory_reserve_gib"] = reserve
+        lane["campaign_node_memory_reserve_gib"] = reserve * max(1, len(assigned_nodes or []))
         lane_items = sorted(
             lane["items"], key=lambda row: int(row["_input_index"])
         )
@@ -686,6 +702,7 @@ def _permissive_minimum_resource_request(
         })
         for stage in stage_lanes
     ), default=0)
+    modeled_aggregate_memory += memory_overhead_gib * max(1, planned_nodes)
     requested_parallel_cpus = modeled_parallel_cpus
     requested_aggregate_memory = modeled_aggregate_memory
     request_replay_policy = "modeled_peak_lane_reservations"
@@ -784,7 +801,7 @@ def _permissive_minimum_resource_request(
             "finalization_headroom_fraction": finalization_headroom_fraction,
             "science_wall_fraction": science_wall_fraction,
             "scheduler_memory_safety_factor": memory_safety_factor,
-            "scheduler_memory_overhead_gib_per_task": memory_overhead_gib,
+            "node_memory_reserve_gib": memory_overhead_gib,
             "scheduler_minimum_memory_gib_per_task": (
                 minimum_scheduler_memory_gib
             ),
@@ -1788,8 +1805,22 @@ def plan_campaign_resource_budget(
     ) -> float:
         """Respect both modeled CPU work and right-censored wall lower bounds."""
 
-        current_slots = int(task_parallel_layout(row)["execution_cpu_slots"])
+        layout = task_parallel_layout(row)
+        current_slots = int(layout["execution_cpu_slots"])
         modeled = cpu_hours / current_slots
+        if row.get("parallel_execution_model") is not None:
+            # Replicas are indivisible work units, submitted in source order.
+            # Serial setup/reduction is never divided by worker concurrency.
+            serial_hours = min(cpu_hours, float(row["fixed_cpu_hours"]))
+            worker_hours = max(0.0, cpu_hours - serial_hours)
+            workers = int(layout["declared_worker_count"])
+            weights = list(counts) if len(counts) == workers else [1] * workers
+            total_weight = sum(weights)
+            lanes = [0.0] * current_slots
+            for weight in weights:
+                lane = min(range(current_slots), key=lambda index: (lanes[index], index))
+                lanes[lane] += worker_hours * weight / max(1, total_weight)
+            modeled = serial_hours + max(lanes, default=0.0)
         selected_frames = sum(int(value) for value in counts)
         censored_floor = max(
             (
@@ -1860,6 +1891,13 @@ def plan_campaign_resource_budget(
             )
         workers_per_node = min(workers_per_node, active_workers)
         node_count = math.ceil(active_workers / workers_per_node)
+        while active_workers > 1 and (
+            math.ceil(max(reducer_memory, per_worker_memory * workers_per_node) * memory_factor)
+            + memory_overhead
+        ) * node_count > memory_gib + 1e-12:
+            active_workers -= 1
+            workers_per_node = min(workers_per_node, active_workers)
+            node_count = math.ceil(active_workers / workers_per_node)
         return {
             "declared_worker_count": declared_workers,
             "active_worker_count": active_workers,
@@ -1931,14 +1969,14 @@ def plan_campaign_resource_budget(
             per_node_scheduler = max(
                 minimum_scheduler_memory,
                 float(math.ceil(
-                    per_node_working * memory_factor + memory_overhead
+                    per_node_working * memory_factor
                 )),
             )
             return per_node_scheduler * int(layout["node_count"])
         return max(
             minimum_scheduler_memory,
             float(math.ceil(
-                task_memory(row, counts) * memory_factor + memory_overhead
+                task_memory(row, counts) * memory_factor
             )),
         )
 
@@ -2013,6 +2051,7 @@ def plan_campaign_resource_budget(
             maximum_cpus_per_node=maximum_cpus_per_node,
             maximum_memory_gib_per_node=node_memory_gib,
             maximum_nodes=maximum_nodes,
+            node_memory_reserve_gib=memory_overhead,
         )
         longest = max(bundle_walls.values())
         lower_bound = max(
@@ -2130,11 +2169,11 @@ def plan_campaign_resource_budget(
                 ),
                 "required_memory_gib": task_scheduler_memory(
                     row, selected[str(row["task_id"])]
-                ),
+                ) + memory_overhead * int(task_parallel_layout(row)["node_count"]),
                 "required_memory_gib_per_node": (
                     task_scheduler_memory(
                         row, selected[str(row["task_id"])]
-                    ) / int(task_parallel_layout(row)["node_count"])
+                    ) / int(task_parallel_layout(row)["node_count"]) + memory_overhead
                 ),
                 "required_node_count": int(
                     task_parallel_layout(row)["node_count"]
@@ -2752,6 +2791,9 @@ def plan_campaign_resource_budget(
         },
         "scheduler_memory_safety_factor": memory_factor,
         "memory_overhead_gib": memory_overhead,
+        "memory_reservation_scope": "padded_task_requests_plus_once_per_occupied_node_reserve",
+        "node_memory_reserve_gib": memory_overhead,
+        "maximum_campaign_node_memory_reserve_gib": memory_overhead * (maximum_nodes or 1),
         "minimum_scheduler_memory_gib": minimum_scheduler_memory,
         "raw_capacity_cpu_hours": raw_cpu_hours,
         "usable_capacity_cpu_hours": usable_cpu_hours,

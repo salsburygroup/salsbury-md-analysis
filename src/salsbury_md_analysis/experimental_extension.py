@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, Mapping, Sequence
 
 from .analysis_config import COMMAND_MODULES, DEFAULT_DISABLED_MODULES
+from .accepted_artifacts import expected_system_manifest, validate_complete_report
 from .manifests import (
     load_json, resolve_manifest_path, sha256_file, validate_project,
 )
@@ -56,6 +57,10 @@ def _complete_report(path: Path) -> Dict[str, object]:
         raise ExperimentalExtensionError(
             f"upstream report summary is incomplete or hash-mismatched: {path}"
         )
+    try:
+        validate_complete_report(path, require_sidecar=True, verify_inputs=True)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ExperimentalExtensionError(f"upstream artifact validation failed: {path}: {exc}") from exc
     return report
 
 
@@ -158,7 +163,7 @@ def _validate_report_provenance(
         raise ExperimentalExtensionError(
             "upstream runtime project has no system manifest"
         )
-    runtime_system = resolve_manifest_path(system_value, runtime_project)
+    runtime_system = expected_system_manifest(module_id, runtime_project)
     reported_system = Path(
         str(report.get("system_manifest_path", ""))
     ).expanduser().resolve(strict=False)

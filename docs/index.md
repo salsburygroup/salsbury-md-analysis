@@ -41,6 +41,7 @@ they still agree with the source.
 
 ## Reference and method guides
 
+- [Unreleased audit repairs and validation limits](AUDIT_REPAIR_NOTES.md)
 - [Module reference](generated/MODULE_REFERENCE.md)
 - [Analysis coverage](generated/ANALYSIS_COVERAGE.md)
 - [Standard profile](generated/PROFILE_REFERENCE.md)

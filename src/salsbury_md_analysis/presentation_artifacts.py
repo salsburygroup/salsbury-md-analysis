@@ -1265,7 +1265,7 @@ def _convergence_artifacts(
         if not isinstance(item, dict):
             continue
         ess = item.get("effective_sample_size")
-        value = _finite(ess.get("estimate") if isinstance(ess, dict) else ess)
+        value = _finite(ess.get("effective_sample_size", ess.get("estimate")) if isinstance(ess, dict) else ess)
         if value is None and isinstance(ess, dict):
             value = _finite(ess.get("value"))
         if value is None:
@@ -1287,6 +1287,14 @@ def _convergence_artifacts(
         rows=rows, fieldnames=("series", "system_id", "replica_id", "metric", "effective_sample_size", "split_mean_difference_in_sd"),
         svg=_bar_svg(rows, title, "series", "effective_sample_size", "Effective sample size"),
         context={"diagnostic": "effective_sample_size"},
+    )
+    _register_pair(
+        output_root, path, artifacts, module_id="convergence_uncertainty",
+        purpose="split_mean_difference", title="First-half versus second-half mean difference",
+        directory=output_root / "quality-control" / "sampling-diagnostics",
+        rows=rows, fieldnames=("series", "system_id", "replica_id", "metric", "effective_sample_size", "split_mean_difference_in_sd"),
+        svg=_bar_svg(rows, "First-half versus second-half mean difference", "series", "split_mean_difference_in_sd", "Mean difference / within-series SD"),
+        context={"diagnostic": "split_mean_difference"},
     )
 
 
@@ -1940,11 +1948,70 @@ def _find_tabular_rows(value: object, prefix: str = "", *, depth: int = 0) -> Op
     return None
 
 
+def _component_artifacts(output_root, path, report, module_id, artifacts):
+    batches = []
+    if module_id == "common_pca":
+        batches.append((_report_context(path, report), report.get("basis", {}).get("pca", {}).get("components", [])))
+    elif module_id == "individual_pca":
+        for system in report.get("systems", []):
+            for replica in system.get("replicas", []):
+                batches.append(({"system_id": system.get("system_id"), "replica_id": replica.get("replica_id")}, replica.get("pca", {}).get("components", [])))
+    else:
+        batches.append((_report_context(path, report), report.get("components", [])))
+    for context, components in batches:
+        rows = [{key: value for key, value in row.items() if key in {
+            "component_index", "explained_variance_fraction", "cumulative_explained_variance_fraction",
+            "eigenvalue_angstrom2", "eigenvalue", "implied_timescale", "time_unit",
+        }} for row in components if isinstance(row, dict)]
+        if not rows:
+            continue
+        specifications = [("explained_variance_fraction", "Explained variance fraction"),
+                          ("cumulative_explained_variance_fraction", "Cumulative explained variance fraction")]
+        if module_id in {"time_lagged_independent_component_analysis", "random_feature_koopman"}:
+            unit = str(rows[0].get("time_unit", report.get("time_unit", "source time unit")))
+            specifications = [("eigenvalue", "Eigenvalue"), ("implied_timescale", f"Implied timescale ({unit})")]
+        for quantity, axis in specifications:
+            if not any(_finite(row.get(quantity)) is not None for row in rows):
+                continue
+            title = f"{human_label(module_id)}: {axis}"
+            directory = output_root / _slug(module_id) / _slug("-".join(str(v) for v in context.values()) or "all")
+            _register_pair(output_root, path, artifacts, module_id=module_id, purpose=quantity,
+                title=title, directory=directory, rows=rows, fieldnames=sorted({key for row in rows for key in row}),
+                svg=_bar_svg(rows, title, "component_index", quantity, axis),
+                context={**context, "quantity": quantity})
+
+
+def _feature_distribution_artifacts(output_root, path, report, artifacts):
+    from .trajectory_features import iter_feature_records
+    groups = {}
+    for segment in report.get("segments", []):
+        for feature in segment.get("features", []):
+            labels = feature.get("value_labels", [])
+            for record in iter_feature_records(feature):
+                for index, value in enumerate(record.get("values", [])):
+                    if _finite(value) is None:
+                        continue
+                    label = str(labels[index]) if index < len(labels) else f"component {index + 1}"
+                    key = (str(segment.get("system_id")), str(feature.get("feature_id")), label)
+                    groups.setdefault(key, []).append(float(value))
+    for (system, feature, label), values in sorted(groups.items()):
+        rows, binning = _scott_histogram(values)
+        title = f"{human_label(system)}: {human_label(feature)}"
+        _register_pair(output_root, path, artifacts, module_id="trajectory_features",
+            purpose="feature_distribution", title=title,
+            directory=output_root / "trajectory-features" / _slug(system) / _slug(feature) / _slug(label),
+            rows=[{key.replace("_angstrom", ""): value for key, value in row.items()} for row in rows],
+            fieldnames=("bin_id", "lower_edge", "upper_edge", "center", "count", "fraction"),
+            svg=_histogram_svg(rows, title, human_label(label)),
+            context={"system_id": system, "feature_id": feature, "quantity": label,
+                     "binning_rule": "scott", "bin_count": binning["bin_count"]})
+
+
 def _generic_artifacts(
     output_root: Path, path: Path, report: Mapping[str, object], module_id: str,
     artifacts: List[Dict[str, object]],
 ) -> None:
-    """Create a truthful minimum presentation for modules without a richer adapter."""
+    """Retain diagnostic tables without mislabeling metadata as scientific plots."""
 
     found = _find_tabular_rows(report)
     rows: List[Dict[str, object]]
@@ -1962,7 +2029,11 @@ def _generic_artifacts(
         if not numeric_fields:
             rows = []
         else:
-            value_key = numeric_fields[0]
+            physical_fields = [field for field in numeric_fields if any(token in field for token in (
+                "angstrom", "fraction", "probability", "occupancy", "density", "volume", "energy",
+                "distance", "correlation", "eigenvalue", "timescale", "score", "rmsf", "rmsd",
+            )) and not field.endswith(("_index", "_count"))]
+            value_key = physical_fields[0] if physical_fields else numeric_fields[0]
             label_candidates = [field for field in fields if field.endswith("_id") or field in {"name", "metric", "feature", "method"}]
             label_key = label_candidates[0] if label_candidates else "presentation_row"
             for index, row in enumerate(rows, start=1):
@@ -1988,7 +2059,31 @@ def _generic_artifacts(
         rows=rows, fieldnames=fields,
         svg=_bar_svg(rows, title, label_key, value_key, human_label(value_key), maximum_rows=40),
         context=_report_context(path, report),
+        primary_human_output=False,
     )
+
+
+def _availability_artifacts(destination, path, report, module_id, artifacts):
+    """Record an explicit unavailable result without substituting metadata."""
+    reason = str(report.get("availability_reason", "Required analysis input is unavailable."))
+    title = human_label(module_id) + ": result unavailable"
+    words, lines, line = reason.split(), [], ""
+    for word in words:
+        if len(line) + len(word) > 85:
+            lines.append(line)
+            line = ""
+        line = (line + " " + word).strip()
+    if line:
+        lines.append(line)
+    svg = '<rect width="100%" height="100%" fill="white"/>'
+    svg += '<text x="25" y="35" font-size="20">' + html.escape(title) + '</text>'
+    for index, text in enumerate(lines):
+        svg += f'<text x="25" y="{72 + index * 24}" font-size="14">{html.escape(text)}</text>'
+    _register_pair(destination, path, artifacts, module_id=module_id,
+        purpose="availability", title=title, directory=destination / _slug(module_id) / "availability",
+        rows=[{"availability": "not_available", "reason": reason}],
+        fieldnames=("availability", "reason"), svg=(820, 95 + 24 * len(lines), svg),
+        context={"result_available": False}, primary_human_output=False)
 
 
 def generate_presentation_artifacts(
@@ -2009,6 +2104,7 @@ def generate_presentation_artifacts(
         )
     destination.mkdir(parents=True)
     artifacts: List[Dict[str, object]] = []
+    from .experimental_presentation import SPECIFICATIONS, generate as experimental_figures
     reviewed = []
     report_records = []
     for path in sorted((root / "results").glob("**/report.json")):
@@ -2024,8 +2120,19 @@ def generate_presentation_artifacts(
         if report.get("technical_status") != "complete":
             continue
         before = len(artifacts)
-        if module_id == "pca_fes_basins":
+        unavailable = report.get("availability_status") == "not_available"
+        if unavailable:
+            _availability_artifacts(destination, path, report, module_id, artifacts)
+        elif module_id in SPECIFICATIONS:
+            experimental_figures(destination, path, report, module_id, artifacts)
+        elif module_id == "random_feature_koopman":
+            _component_artifacts(destination, path, report, module_id, artifacts)
+        elif module_id == "pca_fes_basins":
             _pca_fes_artifacts(destination, path, report, artifacts)
+        elif module_id in {"individual_pca", "common_pca", "time_lagged_independent_component_analysis"}:
+            _component_artifacts(destination, path, report, module_id, artifacts)
+        elif module_id == "trajectory_features":
+            _feature_distribution_artifacts(destination, path, report, artifacts)
         elif module_id.startswith("clustering_"):
             _clustering_artifacts(destination, path, report, module_id, artifacts)
         elif module_id == "alternative_clustering":
@@ -2100,7 +2207,8 @@ def generate_presentation_artifacts(
             _export_inventory_artifacts(
                 destination, path, report, module_id, artifacts
             )
-        if len(artifacts) == before:
+        diagnostic_only = len(artifacts) == before
+        if diagnostic_only:
             _generic_artifacts(destination, path, report, module_id, artifacts)
         reviewed.append({
             "module_id": module_id,
@@ -2108,7 +2216,9 @@ def generate_presentation_artifacts(
             "report_sha256": sha256_file(path),
             "generated_artifact_count": len(artifacts) - before,
             "presentation_adapter": (
-                "complete" if len(artifacts) > before else "failed"
+                "unavailable_with_explanation" if unavailable else
+                "diagnostic_only" if diagnostic_only and ANALYSIS_CLASSES.get(module_id) != "technical_support"
+                else "complete" if len(artifacts) > before else "failed"
             ),
         })
     manifest = write_manifest(
@@ -2116,20 +2226,23 @@ def generate_presentation_artifacts(
     )
     manifest["reviewed_reports"] = reviewed
     manifest["adapted_report_count"] = sum(
-        row["presentation_adapter"] == "complete" for row in reviewed
+        row["presentation_adapter"] in {"complete", "unavailable_with_explanation"} for row in reviewed
     )
     manifest["unadapted_report_count"] = sum(
-        row["presentation_adapter"] != "complete" for row in reviewed
+        row["presentation_adapter"] not in {"complete", "unavailable_with_explanation"} for row in reviewed
     )
     manifest["coverage_policy"] = (
-        "Every technically complete analysis report has at least one labeled figure; "
-        "a table is also emitted whenever the report exposes tabular numerical values."
+        "Complete analyses have method-specific figures and tables. Explicitly unavailable "
+        "results have a reason card and table, never an invented scientific quantity. "
+        "Generic numeric diagnostics do not satisfy scientific presentation coverage."
     )
     if manifest["unadapted_report_count"]:
-        raise PresentationArtifactError(
-            f"{manifest['unadapted_report_count']} complete reports lack presentation artifacts"
-        )
+        manifest["technical_status"] = "failed"
     (destination / "presentation-manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    if manifest["unadapted_report_count"]:
+        raise PresentationArtifactError(
+            f"{manifest['unadapted_report_count']} complete reports lack primary scientific presentation"
+        )
     return manifest

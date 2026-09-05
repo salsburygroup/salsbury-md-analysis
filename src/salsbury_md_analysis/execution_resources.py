@@ -11,6 +11,7 @@ import resource
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Dict, Mapping, Sequence
@@ -34,6 +35,22 @@ def _maximum_rss_mib(raw: float) -> float:
     return raw / (1024.0 * 1024.0) if sys.platform == "darwin" else raw / 1024.0
 
 
+def _measured_subprocess(argv, *, env=None):
+    """Never collect unrelated children from a long-lived caller."""
+    with tempfile.TemporaryDirectory(prefix="salsbury-resources-") as directory:
+        evidence = Path(directory) / "resources.json"
+        completed = subprocess.run(
+            [sys.executable, "-m", "salsbury_md_analysis.execution_measurement", str(evidence), "--", *argv],
+            text=True, capture_output=True, check=False, env=env,
+        )
+        if not evidence.is_file():
+            raise ExecutionResourceError(
+                "isolated command resource evidence is missing; no calibration may be recorded; "
+                f"exit={completed.returncode}; stderr={completed.stderr[-2000:]}"
+            )
+        return completed, load_json(evidence)
+
+
 def run_instrumented_project_command(
     command: str, project_path: Path, *, hash_content: bool,
     columnar_artifact_root: Path | None = None,
@@ -50,12 +67,8 @@ def run_instrumented_project_command(
         child_environment["SALSBURY_MD_ANALYSIS_COLUMNAR_ARTIFACT_ROOT"] = str(
             Path(columnar_artifact_root).expanduser().resolve(strict=False)
         )
-    completed = subprocess.run(
-        argv, text=True, capture_output=True, check=False,
-        env=child_environment,
-    )
+    completed, measured = _measured_subprocess(argv, env=child_environment)
     elapsed = time.perf_counter() - started
-    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
     try:
         report = json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
@@ -79,14 +92,10 @@ def run_instrumented_project_command(
         or os.environ.get("SLURM_MEM_PER_CPU"),
         "requested_time_limit": os.environ.get("SLURM_TIMELIMIT"),
         "wall_seconds": elapsed,
-        "user_cpu_seconds": usage.ru_utime,
-        "system_cpu_seconds": usage.ru_stime,
-        "total_cpu_seconds": usage.ru_utime + usage.ru_stime,
-        "maximum_resident_memory_mib": _maximum_rss_mib(float(usage.ru_maxrss)),
+        **measured,
         "child_exit_code": completed.returncode,
         "stderr_nonempty": bool(completed.stderr.strip()),
         "stderr_tail": completed.stderr[-4000:] if completed.stderr.strip() else None,
-        "measurement_scope": "one fresh child process for one analysis command",
     }
     project = load_json(source) if source.is_file() else None
     physical_count, observation_count = _observation_counts(report, project)
@@ -110,7 +119,9 @@ def run_instrumented_project_command(
         },
         "resources": {
             "wall_seconds": elapsed,
-            "maximum_rss_kib": _maximum_rss_mib(float(usage.ru_maxrss)) * 1024.0,
+            "maximum_rss_kib": float(measured["maximum_resident_memory_mib"]) * 1024.0,
+            "memory_measurement_scope": measured["memory_measurement_scope"],
+            "memory_replacement_qualified": False,
         },
         "report_size_bytes": len(completed.stdout.encode("utf-8")),
         "workload_signature_sha256": report.get("workload_signature_sha256"),
@@ -150,9 +161,8 @@ def run_instrumented_coordinate_cache(
         "--cache-stride", str(cache_stride),
     ]
     started = time.perf_counter()
-    completed = subprocess.run(argv, text=True, capture_output=True, check=False)
+    completed, measured = _measured_subprocess(argv)
     elapsed = time.perf_counter() - started
-    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
     try:
         report = json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
@@ -210,16 +220,10 @@ def run_instrumented_coordinate_cache(
             or os.environ.get("SLURM_MEM_PER_CPU"),
             "requested_time_limit": os.environ.get("SLURM_TIMELIMIT"),
             "wall_seconds": elapsed,
-            "user_cpu_seconds": usage.ru_utime,
-            "system_cpu_seconds": usage.ru_stime,
-            "total_cpu_seconds": usage.ru_utime + usage.ru_stime,
-            "maximum_resident_memory_mib": _maximum_rss_mib(float(usage.ru_maxrss)),
+            **measured,
             "child_exit_code": completed.returncode,
             "stderr_nonempty": bool(completed.stderr.strip()),
             "stderr_tail": completed.stderr[-4000:] if completed.stderr.strip() else None,
-            "measurement_scope": (
-                "one cache builder child including its replica-parallel descendants"
-            ),
         },
     })
     report["planner_benchmark"] = {
@@ -239,7 +243,9 @@ def run_instrumented_coordinate_cache(
         },
         "resources": {
             "wall_seconds": elapsed,
-            "maximum_rss_kib": _maximum_rss_mib(float(usage.ru_maxrss)) * 1024.0,
+            "maximum_rss_kib": float(measured["maximum_resident_memory_mib"]) * 1024.0,
+            "memory_measurement_scope": measured["memory_measurement_scope"],
+            "memory_replacement_qualified": False,
         },
         "report_size_bytes": len(completed.stdout.encode("utf-8")),
         "full_assignment_observation_count": retained_count,
@@ -720,6 +726,11 @@ def summarize_execution_resources(root: Path) -> Dict[str, object]:
         )
     rows = []
     for path in sorted(results_root.glob("**/report.json")):
+        from .accepted_artifacts import validate_complete_report
+        try:
+            validate_complete_report(path, verify_inputs=True)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise ExecutionResourceError(f"unaccepted analysis report {path}: {exc}") from exc
         sidecar_path = Path(str(path) + ".summary.json")
         if sidecar_path.is_file():
             sidecar = load_json(sidecar_path)
@@ -863,4 +874,11 @@ def summarize_execution_resources(root: Path) -> Dict[str, object]:
         "csv_path": str(csv_path),
         "json_path": str(json_path),
         "markdown_path": str(markdown_path),
+        "csv_sha256": _sha256_file(csv_path),
+        "json_sha256": _sha256_file(json_path),
+        "markdown_sha256": _sha256_file(markdown_path),
+        "source_report_records": [
+            {"path": str(path.resolve()), "sha256": _sha256_file(path)}
+            for path in sorted(results_root.glob("**/report.json"))
+        ],
     }
