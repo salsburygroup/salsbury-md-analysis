@@ -16,7 +16,8 @@ class LiveSlurmRegressions(unittest.TestCase):
                 "minimum_requested_wall_minutes": hours * 60,
                 "preferred_requested_wall_minutes": hours * 60,
                 "requested_wall_minutes": hours * 60,
-                "depends_on_task_ids": list(deps)}
+                "depends_on_task_ids": list(deps),
+                "completion_reports": [f"results/{name}/report.json"]}
 
     def test_timeout_fit_uses_real_dag_not_phase_barriers(self):
         plan = {"maximum_parallel_cpus": 2, "maximum_parallel_memory_gib": 8,
@@ -42,3 +43,4 @@ class LiveSlurmRegressions(unittest.TestCase):
         line = next(line for line in script.splitlines() if line.startswith("JOB_T0000="))
         self.assertIn("--account=salsburygrp", line)
         self.assertIn("--qos=normal", line)
+        self.assertIn("results/task/report.json", line)
