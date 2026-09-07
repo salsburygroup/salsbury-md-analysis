@@ -3,9 +3,9 @@
 These commands are in main candidate 0.1.3rc1 and experimental candidate
 0.2.0a3. Both are unreleased. The published v0.1.2 tag is unchanged and does
 not contain them. No AI service, account, or API key is needed.
-Use Linux, macOS, or a Linux environment inside Windows WSL2.
-Native Windows execution is not supported. WSL2 acceptance remains a release
-check until it has been exercised on a Windows host.
+Use Linux or macOS. A Linux environment inside Windows WSL2 may work, but has
+not been validated on a Windows host. WSL2 testing is deferred.
+Native Windows execution is not supported.
 
 ## Install once
 

@@ -1,6 +1,7 @@
 # Salsbury MD Analysis documentation
 
 - [Independent-user acceptance and remaining release checks](RELEASE_ACCEPTANCE.md)
+- [First-user review worksheet](USER_TRIAL.md)
 
 This toolkit turns an atom-order-matched structure, bond topology, and one or
 more trajectories into a planned, auditable analysis campaign. It can run on a
