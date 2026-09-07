@@ -183,7 +183,7 @@ class ComparativeQuickstartTests(unittest.TestCase):
             energetic_availability["availability_reason"],
             "not applicable: protein residues are absent from control, variant",
         )
-    @patch("salsbury_md_analysis.quickstart._discover_dssp_executable", return_value=None)
+    @patch("salsbury_md_analysis.comparative_quickstart._discover_dssp_executable", return_value=None)
     def test_comparison_resource_fit_preserves_protected_core(self, _dssp):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -450,7 +450,7 @@ class ComparativeQuickstartTests(unittest.TestCase):
                 },
             )
 
-    @patch("salsbury_md_analysis.quickstart._discover_dssp_executable", return_value=None)
+    @patch("salsbury_md_analysis.comparative_quickstart._discover_dssp_executable", return_value=None)
     def test_preparation_accepts_wt_plus_twenty_variant_panel(self, _dssp):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
