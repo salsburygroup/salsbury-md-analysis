@@ -2970,6 +2970,13 @@ def _apply_task_dependency_graph(
                 if output:
                     replacements = {"ROOT": str(root), "COMMAND": command or "",
                                     "OUTPUT_ROOT": _script_scalar(worker_path, "OUTPUT_ROOT") or ""}
+                    if array_id is not None and re.search(
+                        r"^OUTPUTS=\($", worker_path.read_text(encoding="utf-8"), re.MULTILINE
+                    ):
+                        outputs = _bash_array_values(worker_path, "OUTPUTS")
+                        if int(array_id) < 0 or int(array_id) >= len(outputs):
+                            raise ExecutionAdapterError("completion OUTPUTS array index is out of range")
+                        replacements["OUTPUT"] = outputs[int(array_id)]
                     for variable, value in replacements.items():
                         output = output.replace("${" + variable + "}", value).replace("$" + variable, value)
                     if "$" not in output:

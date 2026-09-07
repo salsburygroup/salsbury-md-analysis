@@ -16,7 +16,7 @@ from tests.test_quickstart import _write_dcd, _write_inputs, _write_oligomer_inp
 
 
 class ComparativeQuickstartTests(unittest.TestCase):
-    @patch("salsbury_md_analysis.quickstart._discover_dssp_executable", return_value=None)
+    @patch("salsbury_md_analysis.comparative_quickstart._discover_dssp_executable", return_value=None)
     def test_comparison_resource_fit_preserves_protected_core(self, _dssp):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -260,7 +260,7 @@ class ComparativeQuickstartTests(unittest.TestCase):
                 project["reference_connectivity"], str(connectivity.resolve())
             )
 
-    @patch("salsbury_md_analysis.quickstart._discover_dssp_executable", return_value=None)
+    @patch("salsbury_md_analysis.comparative_quickstart._discover_dssp_executable", return_value=None)
     def test_preparation_accepts_wt_plus_twenty_variant_panel(self, _dssp):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
