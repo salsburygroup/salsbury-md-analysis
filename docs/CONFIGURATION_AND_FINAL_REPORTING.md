@@ -19,6 +19,12 @@ available. Residence runs, early/late summaries, and temporal block outputs
 are suppressed; sample-index axes do not imply elapsed time. Filtered frames
 and pooled oligomer members do not become independent simulation replicas.
 
+On experimental, this mode also disables random-feature Koopman models,
+reactive-path ensembles, interaction persistence, and spatial-interaction
+ensembles. The latter currently requires time-block support checks, which are
+not meaningful for filtered frames. Multivalent-bridge occupancy and geometry
+remain available; bridge residence summaries are marked not applicable.
+
 Each frame is made whole using connectivity without carrying an unwrapping
 history across discarded intervals. A static cache cannot be reused by a
 continuous workflow, or vice versa. The mode is written into local, Slurm, and

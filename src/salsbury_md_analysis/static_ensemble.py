@@ -6,7 +6,7 @@ STATIC_DISABLED_MODULES = frozenset({
     "convergence_uncertainty", "information_dynamics", "markov_state_models",
     "scalar_threshold_states", "time_lagged_independent_component_analysis",
     "grouped_ml", "random_feature_koopman", "reactive_path_ensembles",
-    "interaction_persistence",
+    "interaction_persistence", "spatial_interaction_ensembles",
 })
 
 

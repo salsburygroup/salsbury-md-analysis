@@ -338,6 +338,7 @@ def inspect_main_campaign(root: Path) -> Dict[str, object]:
         "upstream_analysis_config_sha256": sha256_file(
             source / "analysis-config.json"
         ),
+        "upstream_trajectory_mode": config.get("execution", {}).get("trajectory_mode", "continuous"),
         "upstream_execution_plan_sha256": sha256_file(
             source / "local-execution-plan.json"
         ),
@@ -379,6 +380,11 @@ def apply_main_report_reuse(
     """Remove validated main tasks and retain their reports as immutable inputs."""
 
     upstream_root = Path(str(contract["upstream_main_campaign"]))
+    config = load_json(extension_root / "analysis-config.json")
+    if config.get("execution", {}).get("trajectory_mode", "continuous") != contract.get("upstream_trajectory_mode", "continuous"):
+        raise ExperimentalExtensionError(
+            "experimental extension trajectory_mode differs from the accepted main campaign"
+        )
     rows = contract.get("reusable_reports")
     if not isinstance(rows, list):
         raise ExperimentalExtensionError("extension contract has no report inventory")
