@@ -21,6 +21,7 @@ from .chemical_identity import (
     ION_RESIDUES, NUCLEIC_RESIDUES, PROTEIN_RESIDUES, WATER_RESIDUES,
 )
 from .context import compile_project_context_file
+from .static_ensemble import static_ensemble_enabled, temporal_output_policy
 from .coordinates import CoordinateReadError, iter_coordinate_frames
 from .frame_sampling import (
     frame_selected, normalize_frame_selection, plan_frame_selection,
@@ -277,6 +278,9 @@ def _runs(
 ) -> List[Dict[str, object]]:
     """Return true-state runs without crossing a declared segment boundary."""
 
+    if static_ensemble_enabled():
+        return []
+
     result: List[Dict[str, object]] = []
     start = 0
     while start < len(rows):
@@ -312,6 +316,8 @@ def _runs(
 
 
 def _run_summary(runs: Sequence[Mapping[str, object]]) -> Dict[str, object]:
+    if static_ensemble_enabled():
+        return {"status": "not_applicable", "reason": "discontinuous static ensemble"}
     complete = [
         row for row in runs
         if not row["left_boundary_censored"] and not row["right_boundary_censored"]
@@ -858,6 +864,7 @@ def _multivalent_molecular_bridges_project_serial(
             "pairwise edges are projections and do not replace the retained hyperedge"
         ),
         "residence_contract": (
+            temporal_output_policy() if static_ensemble_enabled() else
             "consecutive bridge-positive selected observations within one declared "
             "trajectory segment; boundary-censored events remain labeled"
         ),

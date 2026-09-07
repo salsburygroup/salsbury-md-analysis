@@ -1,5 +1,60 @@
 # Configuration and final reporting
 
+## Discontinuous or filtered ensembles
+
+For trajectories containing selected frames with breaks in physical time, set:
+
+```json
+{
+  "config_schema": "salsbury-analysis-config-v1",
+  "execution": {"trajectory_mode": "static_ensemble"}
+}
+```
+
+Pass this file through `--config` when preparing the workflow. The resolved
+configuration disables convergence/ESS analysis, information dynamics, MSMs,
+scalar-threshold kinetics, tICA, and time-block grouped ML. Clustering uses
+common PCA. Histograms, populations, geometry, RMSF, and correlations remain
+available. Residence runs, early/late summaries, and temporal block outputs
+are suppressed; sample-index axes do not imply elapsed time. Filtered frames
+and pooled oligomer members do not become independent simulation replicas.
+
+On experimental, this mode also disables random-feature Koopman models,
+reactive-path ensembles, interaction persistence, and spatial-interaction
+ensembles. The latter currently requires time-block support checks, which are
+not meaningful for filtered frames. Multivalent-bridge occupancy and geometry
+remain available; bridge residence summaries are marked not applicable.
+
+Each frame is made whole using connectivity without carrying an unwrapping
+history across discarded intervals. A static cache cannot be reused by a
+continuous workflow, or vice versa. The mode is written into local, Slurm, and
+custom-worker scripts and the launcher contract. The default `continuous`
+keeps ordinary trajectory behavior. The older `SALSBURY_STATIC_ENSEMBLE`
+environment switch remains usable for direct module calls; prepared workflows
+set it from the configuration, overriding an inherited value.
+
+## Matching clustering methods across comparison views
+
+`clustering.comparison_method_policy` defaults to `consistent`. At each
+planning iteration, matching shared and per-system views keep the same
+runnable alternative-clustering methods. If a full-fit-only method such as
+Ward or quality threshold cannot cover the pooled observations, it is also
+skipped in the matching per-system views. Other view families are unaffected.
+The resource plan records these decisions in
+`comparison_clustering_consistency_skips`, and each affected fit has a reason.
+Set the policy to `independent` only when different method sets are intended.
+Neither policy permits a sampled full-fit-only method to claim all-frame
+coverage.
+
+## Short source trajectories
+
+The planning report separates inadequate retained sampling from limited
+source data. `source_exhausted` means every supplied frame was selected despite
+the source being shorter than a declared count. `source_limited` means the
+scientific sampling validator allows the retained set but flags the input
+limitation. `below_floor` remains a failed sampling requirement. These labels
+do not change the sampling policy or establish scientific adequacy.
+
 `prepare-analysis` writes a complete `analysis-config.json`. Its versioned
 schema is `salsbury-analysis-config-v1`, and its default is
 `all_applicable`: every applicable scientific analysis and high-detail

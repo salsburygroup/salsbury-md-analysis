@@ -143,6 +143,11 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "comparison_method_policy": {
+          "enum": ["consistent", "independent"],
+          "default": "consistent",
+          "description": "Keep matching shared and per-system views on the same runnable alternative-clustering methods, or explicitly allow independent method sets."
+        },
         "feature_space": {
           "enum": ["tica", "common_pca"],
           "default": "tica",
@@ -225,6 +230,11 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "trajectory_mode": {
+          "enum": ["continuous", "static_ensemble"],
+          "default": "continuous",
+          "description": "Static ensembles have discontinuous frames: disable kinetic modules and temporal summaries, make each frame whole independently, and label axes by sample index."
+        },
         "maximum_parallel_cpus": {"type": "integer", "minimum": 1, "default": 16},
         "maximum_hours_per_cpu": {"type": "number", "exclusiveMinimum": 0, "default": 24.0},
         "maximum_total_cpu_hours": {

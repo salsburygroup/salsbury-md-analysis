@@ -1,6 +1,7 @@
 """Replica-aware, streaming atomic root-mean-square fluctuation analysis."""
 
 from __future__ import annotations
+from .static_ensemble import static_ensemble_enabled
 
 import math
 from pathlib import Path
@@ -206,7 +207,7 @@ def _pooled_rmsf_project_serial(
     assert isinstance(selections, dict)
     assert isinstance(units, dict)
     coordinate_unit = str(units["coordinates"])
-    time_unit = str(units["time"])
+    time_unit = "sample" if static_ensemble_enabled() else str(units["time"])
     periodic_policy = require_periodic_policy(
         contract.get("periodic_coordinate_policy")
     )
@@ -416,6 +417,8 @@ def _pooled_rmsf_project_serial(
                             transform,
                         )
                         replica_state.update(aligned_analysis)
+                        if static_ensemble_enabled():
+                            continue
                         if block_state.count == 0:
                             block_start = frame.frame_index
                             block_start_time = current_time

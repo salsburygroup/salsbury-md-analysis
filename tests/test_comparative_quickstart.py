@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from salsbury_md_analysis.comparative_quickstart import (
@@ -182,7 +183,8 @@ class ComparativeQuickstartTests(unittest.TestCase):
             energetic_availability["availability_reason"],
             "not applicable: protein residues are absent from control, variant",
         )
-    def test_comparison_resource_fit_preserves_protected_core(self):
+    @patch("salsbury_md_analysis.comparative_quickstart._discover_dssp_executable", return_value=None)
+    def test_comparison_resource_fit_preserves_protected_core(self, _dssp):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             pdb, psf, trajectories = _write_oligomer_inputs(root)
@@ -448,7 +450,8 @@ class ComparativeQuickstartTests(unittest.TestCase):
                 },
             )
 
-    def test_preparation_accepts_wt_plus_twenty_variant_panel(self):
+    @patch("salsbury_md_analysis.comparative_quickstart._discover_dssp_executable", return_value=None)
+    def test_preparation_accepts_wt_plus_twenty_variant_panel(self, _dssp):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             pdb, psf, trajectories = _write_inputs(root)
