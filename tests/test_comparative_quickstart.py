@@ -2,6 +2,7 @@ import json
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from salsbury_md_analysis.comparative_quickstart import (
@@ -15,7 +16,8 @@ from tests.test_quickstart import _write_dcd, _write_inputs, _write_oligomer_inp
 
 
 class ComparativeQuickstartTests(unittest.TestCase):
-    def test_comparison_resource_fit_preserves_protected_core(self):
+    @patch("salsbury_md_analysis.quickstart._discover_dssp_executable", return_value=None)
+    def test_comparison_resource_fit_preserves_protected_core(self, _dssp):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             pdb, psf, trajectories = _write_oligomer_inputs(root)
@@ -258,7 +260,8 @@ class ComparativeQuickstartTests(unittest.TestCase):
                 project["reference_connectivity"], str(connectivity.resolve())
             )
 
-    def test_preparation_accepts_wt_plus_twenty_variant_panel(self):
+    @patch("salsbury_md_analysis.quickstart._discover_dssp_executable", return_value=None)
+    def test_preparation_accepts_wt_plus_twenty_variant_panel(self, _dssp):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             pdb, psf, trajectories = _write_inputs(root)

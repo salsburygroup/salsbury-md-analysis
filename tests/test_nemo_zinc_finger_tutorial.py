@@ -2,6 +2,7 @@ import hashlib
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from salsbury_md_analysis.preflight import (
@@ -42,7 +43,8 @@ class NemoZincFingerTutorialTests(unittest.TestCase):
         self.assertEqual(dcd["atom_count"], 423)
         self.assertEqual(dcd["declared_frame_count"], 1000)
 
-    def test_generic_preparation_recognizes_protein_and_zinc(self):
+    @patch("salsbury_md_analysis.quickstart._discover_dssp_executable", return_value=None)
+    def test_generic_preparation_recognizes_protein_and_zinc(self, _dssp):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "tutorial-run"
             report = prepare_standard_analysis(
