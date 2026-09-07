@@ -14,6 +14,11 @@
 
 ## Unreleased
 
+- Export complete FES grids at every retained smoothing level and full
+  per-system DCCM and DCCM-difference matrices as CSV. Preserve numerical
+  precision, missing-value status, units, and source hashes without rerunning
+  analysis. Keep per-system conformational-view artifacts in separate paths.
+
 ## 0.1.2 - 2026-09-03
 
 - Balance headline and secondary findings across scientific categories and

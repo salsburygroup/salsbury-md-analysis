@@ -12,7 +12,7 @@ exact_files = (
     "accepted_artifacts.py", "execution_measurement.py", "execution_resources.py",
     "resource_calibrations.py", "memory_policy.py", "convergence.py",
     "rmsd_rg.py", "dccm.py", "coordinate_cache.py", "replica_execution.py",
-    "user_workflow.py", "clustering_presentation.py",
+    "user_workflow.py", "clustering_presentation.py", "numerical_tables.py",
 )
 # These are additive differences, not permission for arbitrary changes elsewhere.
 function_exceptions = {
