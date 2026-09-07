@@ -1,6 +1,7 @@
 """Replica-resolved intrinsic nucleic-acid ring and stacking geometry."""
 
 from __future__ import annotations
+from .static_ensemble import static_ensemble_enabled, temporal_output_policy
 
 import math
 from pathlib import Path
@@ -452,9 +453,10 @@ def nucleic_acid_geometry_project(
                 metric: float(
                     np.mean([row["metrics"][metric] for row in late])
                     - np.mean([row["metrics"][metric] for row in early])
-                ) for metric in metric_ids
+                ) for metric in ([] if static_ensemble_enabled() else metric_ids)
             },
-            "blocks": _block_reports(rows, int(settings["block_count"])),
+            "blocks": ([] if static_ensemble_enabled() else _block_reports(rows, int(settings["block_count"]))),
+            "temporal_output_policy": temporal_output_policy(),
         })
     distributions = _distribution_reports(segment_rows, metric_ids, settings)
     return {

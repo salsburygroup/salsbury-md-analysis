@@ -1,6 +1,7 @@
 """Replica-resolved RMSD and mass-weighted radius-of-gyration analysis."""
 
 from __future__ import annotations
+from .static_ensemble import static_ensemble_enabled
 
 import math
 from pathlib import Path
@@ -247,7 +248,7 @@ def _replica_rmsd_rg_project_serial(
     assert isinstance(selections, dict)
     assert isinstance(units, dict)
     coordinate_unit = str(units["coordinates"])
-    time_unit = str(units["time"])
+    time_unit = "sample" if static_ensemble_enabled() else str(units["time"])
     periodic_policy = require_periodic_policy(
         contract.get("periodic_coordinate_policy")
     )

@@ -6,6 +6,7 @@ from coordinate distances.
 """
 
 from __future__ import annotations
+from .static_ensemble import static_ensemble_enabled
 
 import hashlib
 import json
@@ -521,6 +522,7 @@ class PeriodicFrameProcessor:
         *,
         independent_frames: bool = False,
     ) -> "PeriodicFrameProcessor":
+        independent_frames = independent_frames or static_ensemble_enabled()
         declared_policy = str(project.get("periodic_coordinate_policy"))
         settings = reconstruction_settings(project, declared_policy)
         policy = (

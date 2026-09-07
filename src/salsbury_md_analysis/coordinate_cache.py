@@ -1,6 +1,7 @@
 """Reusable connectivity-aware solute coordinate caches for large campaigns."""
 
 from __future__ import annotations
+from .static_ensemble import static_ensemble_enabled, temporal_output_policy
 
 import hashlib
 import json
@@ -281,7 +282,11 @@ def _write_cache_metadata(
         "cached_system_manifest": "system-cache.json",
         "cached_system_manifest_sha256": sha256_file(manifest_path),
         "cached_per_system_manifests": per_system_manifests,
-        "coordinate_representation": "continuous_unwrap_unaligned_strided",
+        "coordinate_representation": (
+            "independent_make_whole_unaligned_strided" if static_ensemble_enabled()
+            else "continuous_unwrap_unaligned_strided"
+        ),
+        "temporal_output_policy": temporal_output_policy(),
         "selection": "molecular_payload",
         "bulk_solvent_included": False,
         "maximum_workers_used": maximum_workers,
@@ -300,8 +305,9 @@ def _write_cache_metadata(
             "The cache is a computational representation, not scientific validation.",
             "Water-dependent analyses must use the original solvated trajectories.",
             "Alignment is intentionally deferred to each downstream analysis view.",
-            "Every source frame updates the continuous-unwrapping state even when "
-            "only a strided subset is materialized.",
+            ("Each retained-source frame is reconstructed independently; no continuity is inferred."
+             if static_ensemble_enabled() else
+             "Every source frame updates the continuous-unwrapping state even when only a strided subset is materialized."),
         ],
     }
     report_path = temporary / "coordinate-cache-report.json"
@@ -526,9 +532,13 @@ def _build_coordinate_cache_parallel(
                 "system_id": system_id,
                 "metadata": {
                     **deepcopy(raw_system.get("metadata", {})),
-                    "coordinate_cache": "continuous_unwrap_strided_molecular_payload_v2",
+                    "coordinate_cache": ("independent_make_whole_molecular_payload_v1"
+                                         if static_ensemble_enabled() else
+                                         "continuous_unwrap_strided_molecular_payload_v2"),
                     "source_system_manifest": str(source),
-                    "source_frame_scan": "all_frames_continuous_unwrap",
+                    "source_frame_scan": ("all_frames_independent_make_whole"
+                                          if static_ensemble_enabled() else
+                                          "all_frames_continuous_unwrap"),
                     "cache_stride": cache_stride,
                 },
                 "replicas": replicas_by_system[system_id],
@@ -866,9 +876,13 @@ def build_coordinate_cache(
                 "system_id": system_id,
                 "metadata": {
                     **deepcopy(raw_system.get("metadata", {})),
-                    "coordinate_cache": "continuous_unwrap_strided_molecular_payload_v2",
+                    "coordinate_cache": ("independent_make_whole_molecular_payload_v1"
+                                         if static_ensemble_enabled() else
+                                         "continuous_unwrap_strided_molecular_payload_v2"),
                     "source_system_manifest": str(source),
-                    "source_frame_scan": "all_frames_continuous_unwrap",
+                    "source_frame_scan": ("all_frames_independent_make_whole"
+                                          if static_ensemble_enabled() else
+                                          "all_frames_continuous_unwrap"),
                     "cache_stride": cache_stride,
                 },
                 "replicas": cached_replicas,
@@ -939,6 +953,9 @@ def validate_reusable_coordinate_cache(
     original = load_json(source)
     if not isinstance(report, dict) or report.get("technical_status") != "complete":
         raise CoordinateCacheError("reusable coordinate cache report is incomplete")
+    expected_static = report.get("coordinate_representation") == "independent_make_whole_unaligned_strided"
+    if expected_static != static_ensemble_enabled():
+        raise CoordinateCacheError("cache static/continuous ensemble policy differs from execution")
     cache_stride = report.get("cache_stride")
     if (
         isinstance(cache_stride, bool)

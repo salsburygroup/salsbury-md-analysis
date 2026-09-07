@@ -1,6 +1,7 @@
 """Histogram and segment-safe residence analysis for reusable scalar features."""
 
 from __future__ import annotations
+from .static_ensemble import static_ensemble_enabled, temporal_output_policy
 
 import math
 import os
@@ -243,6 +244,8 @@ def analyze_scalar_distribution(
         return max(0, min(selected_bin_count - 1, int((value - lower) / width)))
 
     counts = [0] * selected_bin_count
+    static = static_ensemble_enabled()
+    retain_residence_runs = retain_residence_runs and not static
     assignments = []
     runs = []
     run_lengths_by_bin = [[] for _ in range(selected_bin_count)]
@@ -280,6 +283,8 @@ def analyze_scalar_distribution(
             counts[bin_id] += 1
             if retain_assignments:
                 assignments.append({**identity, **row, "bin_id": bin_id + 1})
+            if static:
+                continue
             frame_index = row["source_frame_index"]
             if run_bin is None:
                 run_bin = bin_id
@@ -293,6 +298,8 @@ def analyze_scalar_distribution(
                 run_start_frame = frame_index
                 run_length = 1
             run_last_frame = frame_index
+        if static:
+            continue
         if run_bin is None:
             raise ScalarDistributionError(
                 "scalar distribution contains an empty trajectory segment"
@@ -310,7 +317,7 @@ def analyze_scalar_distribution(
         for index, count in enumerate(counts)
     ]
     residence = []
-    for bin_id in range(1, selected_bin_count + 1):
+    for bin_id in ([] if static else range(1, selected_bin_count + 1)):
         lengths = run_lengths_by_bin[bin_id - 1]
         complete_lengths = complete_run_lengths_by_bin[bin_id - 1]
         residence.append({
@@ -338,6 +345,7 @@ def analyze_scalar_distribution(
         "residence_runs": runs if retain_residence_runs else None,
         "residence_runs_retained": retain_residence_runs,
         "residence_by_bin": residence,
+        "temporal_output_policy": temporal_output_policy(),
     }
 
 
@@ -472,6 +480,8 @@ def scalar_feature_distributions_project(
                         )
                     values.append(value)
                     bins.append(bin_id + 1)
+                    if static_ensemble_enabled():
+                        continue
                     if active_bin is None:
                         active_bin = bin_id
                         active_start = frame
@@ -490,16 +500,17 @@ def scalar_feature_distributions_project(
                         active_start = frame
                         active_length = 1
                     active_last = frame
-                if active_bin is None:
+                if active_bin is None and not static_ensemble_enabled():
                     raise ScalarDistributionError(
                         "scalar distribution contains an empty trajectory segment"
                     )
-                run_bins.append(active_bin + 1)
-                run_starts.append(active_start)
-                run_ends.append(active_last)
-                run_lengths.append(active_length)
-                run_left.append(run_ordinal == 0)
-                run_right.append(True)
+                if not static_ensemble_enabled():
+                    run_bins.append(active_bin + 1)
+                    run_starts.append(active_start)
+                    run_ends.append(active_last)
+                    run_lengths.append(active_length)
+                    run_left.append(run_ordinal == 0)
+                    run_right.append(True)
                 prefix = (
                     f"distribution-{request_ordinal:04d}/"
                     f"segment-{segment_ordinal:05d}"
@@ -528,6 +539,8 @@ def scalar_feature_distributions_project(
                     constants=constants,
                     provenance=provenance,
                 ))
+                if static_ensemble_enabled():
+                    continue
                 residence_artifacts.append(artifact_bundle.write_table(
                     f"{prefix}/residence-runs",
                     {
@@ -557,7 +570,7 @@ def scalar_feature_distributions_project(
                 "assignments_inline": False,
                 "assignment_artifacts": assignment_artifacts,
                 "residence_runs": None,
-                "residence_runs_retained": True,
+                "residence_runs_retained": not static_ensemble_enabled(),
                 "residence_runs_inline": False,
                 "residence_run_artifacts": residence_artifacts,
             })
