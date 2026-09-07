@@ -15,6 +15,49 @@ from salsbury_md_analysis.presentation_artifacts import (
 
 
 class PresentationArtifactContractTests(unittest.TestCase):
+    def test_explicit_unavailable_result_has_no_numeric_substitute(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = root / "results" / "unknown" / "report.json"
+            report.parent.mkdir(parents=True)
+            report.write_text(json.dumps({"module_id": "unknown_scientific_module",
+                "technical_status": "complete", "availability_status": "not_available",
+                "availability_reason": "Required scientific input is absent."}))
+            manifest = generate_presentation_artifacts(root)
+            self.assertEqual(manifest["unadapted_report_count"], 0)
+            self.assertEqual(manifest["reviewed_reports"][0]["presentation_adapter"],
+                             "unavailable_with_explanation")
+            self.assertTrue(all(not item["primary_human_output"] for item in manifest["artifacts"]))
+
+    def test_generic_index_cannot_pass_scientific_figure_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = root / "results" / "unknown" / "report.json"
+            report.parent.mkdir(parents=True)
+            report.write_text(json.dumps({"module_id": "unknown_scientific_module",
+                "technical_status": "complete", "rows": [{"index": 1}, {"index": 2}]}))
+            with self.assertRaises(PresentationArtifactError):
+                generate_presentation_artifacts(root)
+            manifest = json.loads((root / "presentation-artifacts/presentation-manifest.json").read_text())
+            self.assertEqual(manifest["technical_status"], "failed")
+            self.assertEqual(manifest["unadapted_report_count"], 1)
+
+    def test_every_optional_adapter_plots_only_its_named_result_quantity(self):
+        from salsbury_md_analysis.experimental_presentation import SPECIFICATIONS
+        for module, fields in SPECIFICATIONS.items():
+            with self.subTest(module=module), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                report = root / "results" / module / "report.json"
+                report.parent.mkdir(parents=True)
+                quantity = next(iter(fields))
+                report.write_text(json.dumps({"module_id": module, "technical_status": "complete",
+                    "settings": {quantity: 999}, "results": [{"system_id": "fixture", quantity: .25}]}))
+                manifest = generate_presentation_artifacts(root)
+                table = next(row for row in manifest['artifacts'] if row['artifact_type'] == 'table')
+                text = (root / 'presentation-artifacts' / table['relative_path']).read_text()
+                self.assertIn('0.25', text)
+                self.assertNotIn('999', text)
+
     def test_stable_ids_include_context_without_exposing_internal_paths(self):
         context = {"left_system_id": "A", "right_system_id": "B", "state_id": 1}
         first = stable_artifact_id(
@@ -237,15 +280,15 @@ class PresentationArtifactContractTests(unittest.TestCase):
                 "pockets": {
                     "module_id": "ensemble_pocket_dynamics",
                     "systems": [
-                        {"system_id": "sample", "pocket_count": 2},
-                        {"system_id": "variant", "pocket_count": 3},
+                        {"system_id": "sample", "occupancy_fraction": 0.2},
+                        {"system_id": "variant", "occupancy_fraction": 0.3},
                     ],
                 },
                 "hydration": {
                     "module_id": "hydration_density_channels",
                     "systems": [
-                        {"system_id": "sample", "channel_count": 1},
-                        {"system_id": "variant", "channel_count": 2},
+                        {"system_id": "sample", "mean_voxel_frame_occupancy": 0.1},
+                        {"system_id": "variant", "mean_voxel_frame_occupancy": 0.2},
                     ],
                 },
                 "koopman": {
@@ -254,6 +297,8 @@ class PresentationArtifactContractTests(unittest.TestCase):
                         "random_feature_count": 128,
                         "selection_score": 0.4,
                     },
+                    "components": [{"component_index": 1, "eigenvalue": 0.7,
+                                    "implied_timescale": 4.0, "time_unit": "ps"}],
                 },
             }
             for directory, payload in reports.items():

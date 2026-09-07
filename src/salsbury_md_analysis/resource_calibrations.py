@@ -102,6 +102,8 @@ def _entry_from_sidecar(path: Path) -> Dict[str, object]:
         "computer_hostname": resources.get("computer_hostname"),
         "platform": resources.get("platform"),
         "measurement_scope": resources.get("measurement_scope"),
+        "memory_measurement_scope": resources.get("memory_measurement_scope"),
+        "memory_replacement_qualified": resources.get("memory_replacement_qualified") is True,
         "requested_cpu_count": resources.get("requested_cpu_count"),
         **workload_fields,
     }
@@ -634,7 +636,11 @@ def load_resource_calibration_catalog(
             if int(row.get("maximum_spatial_endpoint_count_per_system", 0)) > 0
         ]
         memory_replacement_qualified = (
-            len(completed_memories)
+            sum(
+                row.get("memory_replacement_qualified") is True
+                and row.get("maximum_resident_memory_mib") is not None
+                for row in complete_rows
+            )
             >= MEMORY_REPLACEMENT_MIN_COMPLETE_MEASUREMENTS
         )
         measurement_scopes = sorted({

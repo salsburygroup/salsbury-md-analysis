@@ -17,7 +17,7 @@ from typing import Dict, Mapping, Sequence, Tuple
 
 import numpy as np
 
-from .manifests import ManifestValidationError, load_json
+from .manifests import ManifestValidationError, load_json, sha256_file
 from .tica import (
     TICAAnalysisError,
     fit_tica,
@@ -700,7 +700,8 @@ def random_feature_koopman_project(
             None if availability == "available" else "no_stable_hyperparameter_candidate"
         ),
         "project_manifest_path": str(source),
-        "project_manifest_sha256": tica_report["project_manifest_sha256"],
+        "project_manifest_sha256": sha256_file(source),
+        "upstream_project_manifest_sha256": tica_report["project_manifest_sha256"],
         "system_manifest_path": tica_report["system_manifest_path"],
         "system_manifest_sha256": tica_report["system_manifest_sha256"],
         "input_content_signature_sha256": tica_report.get(

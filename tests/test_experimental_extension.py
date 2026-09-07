@@ -21,6 +21,10 @@ _REBUILT_REPORTS = {"integrated_comparison", "rmsf_permutation_inference"}
 
 def _write_complete_report(path: Path, project_path: Path, module_id: str) -> None:
     project = load_json(project_path)
+    if module_id == "structural_integrity_qc":
+        # This contract-only fixture represents raw-input QC, not cache-backed QC.
+        project["definitions"]["structural_qc"]["parallel_execution"] = {"enabled": False}
+        project_path.write_text(json.dumps(project))
     system_path = resolve_manifest_path(project["system_manifest"], project_path)
     payload = {
         "module_id": module_id,
@@ -41,6 +45,11 @@ def _write_complete_report(path: Path, project_path: Path, module_id: str) -> No
     except ValueError:
         pass
     path.parent.mkdir(parents=True, exist_ok=True)
+    if module_id == "state_coordinate_exports":
+        structure = path.parent / "representative.pdb"
+        structure.write_text("END\n")
+        payload["export_directory"] = str(path.parent)
+        payload["outputs"] = [{"path": structure.name, "sha256": sha256_file(structure)}]
     encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     path.write_text(encoded, encoding="utf-8")
     summary = {

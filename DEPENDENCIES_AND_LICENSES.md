@@ -23,16 +23,20 @@ own license.
 | Python | 3.10 or newer | Runs the package and command-line interface. | Python Software Foundation License Version 2, with separately licensed components documented by Python. |
 | NumPy | `>=2.0,<3` | Arrays, linear algebra, coordinate calculations, and numerical summaries. | The main project is BSD-3-Clause. Installed distributions also identify separately licensed 0BSD, MIT, Zlib, and CC0 components; binary builds can include additional runtime libraries and their notices. |
 | SciPy | `>=1.12,<2` | Statistics, spatial searches, filtering, optimization, and scientific numerical routines. | BSD-3-Clause. Binary builds can depend on separately licensed numerical runtime libraries. |
+| scikit-learn | `>=1.6,<2` | Default clustering and common geometric evaluation. | BSD-3-Clause. |
+| psutil | `>=5.9,<8` | Process-tree resource measurements. | BSD-3-Clause. |
+| ijson | `>=3.2,<4` | Read large report summaries without loading frame assignments into memory. | BSD-3-Clause; compiled wheels may include the separately licensed ISC YAJL parser. |
 
 Official license sources: [Python](https://github.com/python/cpython/blob/main/LICENSE),
 [NumPy](https://github.com/numpy/numpy/blob/main/pyproject.toml), and
-[SciPy](https://github.com/scipy/scipy/blob/main/LICENSE.txt).
+[SciPy](https://github.com/scipy/scipy/blob/main/LICENSE.txt),
+[psutil](https://github.com/giampaolo/psutil/blob/master/LICENSE), and
+[ijson](https://github.com/ICRAR/ijson/blob/master/LICENSE.txt).
 
 ## Full-workflow and optional scientific dependencies
 
 | Dependency | Supported/reviewed version | When it is needed | License and redistribution boundary |
 | --- | --- | --- | --- |
-| scikit-learn | `>=1.6,<2`; reviewed at 1.9.0 | Clustering and other modules implemented through scikit-learn. | BSD-3-Clause; installed dependency, not copied into this repository. |
 | HDBSCAN | `>=0.8.44,<0.9`; reviewed at 0.8.44 | The optional HDBSCAN clustering method. HDBSCAN is off by default and can be enabled explicitly. | BSD-3-Clause; installed dependency, not copied into this repository. |
 | DSSP (`mkdssp`) | reviewed at 4.6.1 | Protein secondary-structure assignment when that module is enabled. | BSD-2-Clause; separately installed executable. |
 | OpenMM | `>=8.5,<8.6`; optional | Connectivity preparation when no reviewed PSF, PRMTOP/PARM7, or portable bond JSON is available. Later analysis does not require OpenMM once the bond graph has been prepared. | OpenMM contains components under MIT, LGPL, and other licenses described in its license inventory. It is not bundled here. |

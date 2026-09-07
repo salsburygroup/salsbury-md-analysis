@@ -8,6 +8,8 @@ dependencies:
   - scikit-learn=1.9.0
   - hdbscan=0.8.44
   - dssp=4.6.1
+  - psutil>=5.9,<8
+  - ijson>=3.2,<4
   - pip
   - setuptools
   - wheel

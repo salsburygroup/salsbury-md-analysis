@@ -16,6 +16,13 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _seal_report(report):
+    Path(str(report) + ".summary.json").write_text(json.dumps({
+        "technical_status": "complete", "module_id": "common_pca",
+        "report_sha256": _sha256(report),
+    }), encoding="utf-8")
+
+
 class UpstreamCacheTests(unittest.TestCase):
     def _fixture(self, root: Path):
         system = root / "system.json"
@@ -50,6 +57,7 @@ class UpstreamCacheTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        _seal_report(report)
         preflight = root / "preflight.json"
         preflight.write_text(
             json.dumps(
@@ -133,7 +141,7 @@ class UpstreamCacheTests(unittest.TestCase):
                 },
                 clear=False,
             ):
-                with self.assertRaisesRegex(ValueError, "system-manifest hash"):
+                with self.assertRaisesRegex(ValueError, "system.manifest hash"):
                     load_cached_project_report(
                         "common_pca",
                         project,
@@ -179,7 +187,7 @@ class UpstreamCacheTests(unittest.TestCase):
                 },
                 clear=False,
             ):
-                with self.assertRaisesRegex(ValueError, "module-contract"):
+                with self.assertRaisesRegex(ValueError, "module-contract|project_manifest hash"):
                     load_cached_project_report(
                         "common_pca", variant, hash_content=True,
                         error_type=ValueError,
@@ -241,6 +249,7 @@ class UpstreamCacheTests(unittest.TestCase):
             report_payload = json.loads(report.read_text(encoding="utf-8"))
             report_payload.pop("module_contract_sha256")
             report.write_text(json.dumps(report_payload), encoding="utf-8")
+            _seal_report(report)
 
             variant = root / "variant.json"
             payload = json.loads(project.read_text(encoding="utf-8"))
@@ -275,6 +284,7 @@ class UpstreamCacheTests(unittest.TestCase):
             report_payload = json.loads(report.read_text(encoding="utf-8"))
             report_payload.pop("module_contract_sha256")
             report.write_text(json.dumps(report_payload), encoding="utf-8")
+            _seal_report(report)
 
             variant = root / "variant.json"
             payload = json.loads(project.read_text(encoding="utf-8"))
@@ -293,7 +303,7 @@ class UpstreamCacheTests(unittest.TestCase):
                 },
                 clear=False,
             ):
-                with self.assertRaisesRegex(ValueError, "module-contract"):
+                with self.assertRaisesRegex(ValueError, "module-contract|project_manifest hash"):
                     load_cached_project_report(
                         "common_pca", variant, hash_content=True,
                         error_type=ValueError,

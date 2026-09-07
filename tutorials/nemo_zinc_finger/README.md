@@ -112,8 +112,11 @@ to keep the exercise small. Representative structures remain enabled.
 The value in `execution.maximum_memory_gib` is the maximum memory that all
 concurrently running tasks may reserve. It is not the planner's prediction and
 it is not a requirement to have that much installed memory. Read the individual
-task estimates in `campaign-resource-plan.json`; the local or Slurm adapter adds
-its documented scheduling safety margin when it builds the final requests.
+task estimates and final reservations in `campaign-resource-plan.json`.
+The planner applies the configured memory margin once and accounts for the
+per-node reserve. The local and Slurm adapters use those reservations without
+applying the memory multiplier again. Local reservations limit concurrent
+dispatch; they are not an operating-system RSS limit on an individual process.
 
 If an enabled task cannot meet its technical minimum under your ceiling,
 preparation fails before launching work. The failure states the largest

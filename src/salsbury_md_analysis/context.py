@@ -126,7 +126,8 @@ def _system_identity(
                     if replica.get("connectivity") is not None
                     else None
                 ),
-                "force_field_parameters": normalized_force_field_parameters,
+                **({"force_field_parameters": normalized_force_field_parameters}
+                   if normalized_force_field_parameters is not None else {}),
                 "segments": segments_out,
             })
         systems_out.append({

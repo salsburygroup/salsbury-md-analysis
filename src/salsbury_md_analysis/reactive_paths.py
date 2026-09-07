@@ -17,7 +17,7 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 
 from .clustering import ClusteringAnalysisError, clustering_kmeans_project
-from .manifests import ManifestValidationError, load_json
+from .manifests import ManifestValidationError, load_json, sha256_file
 from .upstream_cache import load_cached_project_report
 from .validation import positive_integer
 
@@ -999,7 +999,8 @@ def reactive_path_ensembles_project(
         "scientific_status": "not evaluated",
         "transition_sufficiency_status": status,
         "project_manifest_path": str(source),
-        "project_manifest_sha256": clustering["project_manifest_sha256"],
+        "project_manifest_sha256": sha256_file(source),
+        "upstream_project_manifest_sha256": clustering["project_manifest_sha256"],
         "system_manifest_path": clustering["system_manifest_path"],
         "system_manifest_sha256": clustering["system_manifest_sha256"],
         "input_content_signature_sha256": clustering["input_content_signature_sha256"],

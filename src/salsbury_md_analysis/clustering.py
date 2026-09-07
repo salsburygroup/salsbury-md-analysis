@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .clustering_presentation import evaluate_partition
+
 import importlib
 from importlib import metadata as importlib_metadata
 import hashlib
@@ -918,6 +920,7 @@ def clustering_kmeans_project(
         "selected_model": {
             "k": selected["k"],
             "initialization_method": best_run["initialization_method"],
+            "presentation_evaluation": evaluate_partition(vectors, metadata, assignments, feature_definition=settings),
             "initialization": best_run["initialization"],
             "seed": best_run["seed"],
             "iteration_count": best_run["iteration_count"],
@@ -1532,6 +1535,7 @@ def clustering_imwkmeans_project(
         "selected_model": {
             "k": selected["k"],
             "p": selected["p"],
+            "presentation_evaluation": evaluate_partition(vectors, metadata, assignments, feature_definition=settings),
             "initialization_rank": run["initialization_rank"],
             "iteration_count": run["iteration_count"],
             "objective": run["objective"],
@@ -1788,7 +1792,8 @@ def clustering_hdbscan_project(
                 "minimum_cluster_size", "minimum_samples", "cluster_count", "cluster_sizes",
                 "retained_count", "noise_count", "retained_fraction", "retained_only_silhouette",
             )
-        } | {"silhouette_evaluation": selected["silhouette_evaluation"]},
+        } | {"silhouette_evaluation": selected["silhouette_evaluation"],
+             "presentation_evaluation": evaluate_partition(vectors, metadata, labels, feature_definition=settings)},
         "assignments": assignment_rows,
         "state_population_comparison": summarize_state_populations(
             assignment_rows, "cluster_id"

@@ -1,5 +1,7 @@
 import json
 import subprocess
+import shlex
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +19,17 @@ from salsbury_md_analysis.execution_adapters import (
     load_slurm_profile,
     run_local_workflow,
 )
+
+
+def _valid_report_command():
+    code = (
+        "import pathlib,json,hashlib; p=pathlib.Path('report.json'); "
+        "p.write_text(json.dumps({'technical_status':'complete','module_id':'fixture'})); "
+        "pathlib.Path('report.json.summary.json').write_text(json.dumps({"
+        "'technical_status':'complete','module_id':'fixture',"
+        "'report_sha256':hashlib.sha256(p.read_bytes()).hexdigest()}))"
+    )
+    return shlex.quote(sys.executable) + " -c " + shlex.quote(code) + "\n"
 
 
 class ExecutionAdapterTests(unittest.TestCase):
@@ -1659,7 +1672,7 @@ class ExecutionAdapterTests(unittest.TestCase):
             worker.write_text(
                 "#!/usr/bin/env bash\n"
                 "if [[ ! -f first-attempt ]]; then touch first-attempt; exit 0; fi\n"
-                "printf '{\"technical_status\":\"complete\"}\\n' > report.json\n",
+                + _valid_report_command(),
                 encoding="utf-8",
             )
             plan = {
@@ -1767,7 +1780,7 @@ class ExecutionAdapterTests(unittest.TestCase):
             worker.write_text(
                 "#!/usr/bin/env bash\n"
                 "if [[ ! -f once ]]; then touch once; exit 0; fi\n"
-                "printf '{\"technical_status\":\"complete\"}\\n' > report.json\n",
+                + _valid_report_command(),
                 encoding="utf-8",
             )
             runner.write_text(_render_task_recovery_runner(

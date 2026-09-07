@@ -755,7 +755,8 @@ def preflight_system(
                     "replica_id": replica_id,
                     "topology": topology_probe,
                     "connectivity": connectivity_probe,
-                    "force_field_parameters": force_field_parameter_probe,
+                    **({"force_field_parameters": force_field_parameter_probe}
+                       if force_field_parameter_probe is not None else {}),
                     "segments": segment_reports,
                 }
             )

@@ -422,7 +422,7 @@ def default_analysis_config(
             "finalization_headroom_fraction": 0.05,
             "time_safety_factor": 1.5,
             "well_calibrated_memory_uncertainty_factor": 1.0,
-            "poorly_calibrated_memory_uncertainty_factor": 1.25,
+            "poorly_calibrated_memory_uncertainty_factor": 1.0,
             "censored_timeout_safety_factor": 1.5,
             "fail_if_minimum_coverage_unaffordable": True,
             "submission_adapter": "local",
@@ -632,7 +632,7 @@ def load_analysis_config(
     ):
         raise AnalysisConfigError(
             "reporting.maximum_findings must be 50 so the highlighted report "
-            "contains 10-12 headlines and 38-40 secondary findings"
+            "retains up to 50 highlighted findings, with up to 12 qualified headlines"
         )
     if (
         isinstance(reporting["headline_findings"], bool)

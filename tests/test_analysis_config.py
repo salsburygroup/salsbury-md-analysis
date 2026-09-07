@@ -177,7 +177,7 @@ class AnalysisConfigTests(unittest.TestCase):
         )
         self.assertEqual(
             config["execution"]["poorly_calibrated_memory_uncertainty_factor"],
-            1.25,
+            1.0,
         )
         self.assertEqual(
             config["execution"]["censored_timeout_safety_factor"], 1.5

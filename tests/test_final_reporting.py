@@ -13,6 +13,24 @@ from salsbury_md_analysis.finding_picker import FindingPickerError, prioritize_f
 
 
 class FinalReportingTests(unittest.TestCase):
+    def test_sealed_candidate_replay_requires_hash_and_preserves_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source"
+            destination = Path(temporary) / "replay"
+            source.mkdir(); destination.mkdir()
+            first = prioritize_findings(source)
+            path = source / "prioritized_findings.json"
+            original = path.read_bytes()
+            digest = hashlib.sha256(original).hexdigest()
+            with self.assertRaisesRegex(FindingPickerError, "SHA-256"):
+                prioritize_findings(destination, candidate_snapshot=path)
+            replay = prioritize_findings(destination, candidate_snapshot=path, expected_snapshot_sha256=digest)
+            self.assertEqual(replay["candidate_count"], first["candidate_count"])
+            self.assertEqual(replay["candidate_snapshot_provenance"]["sha256"], digest)
+            self.assertEqual(path.read_bytes(), original)
+            with self.assertRaisesRegex(FindingPickerError, "different output"):
+                prioritize_findings(source, candidate_snapshot=path, expected_snapshot_sha256=digest)
+
     def test_resource_table_excludes_uninstrumented_integrated_reporting_artifact(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -99,7 +117,7 @@ class FinalReportingTests(unittest.TestCase):
             self.assertEqual(report["silent_omission_count"], 0)
             self.assertEqual(
                 accounting["alternative_clustering"]["disposition"],
-                "ranked_candidates",
+                "supporting_context",
             )
             self.assertEqual(
                 accounting["structural_integrity_qc"]["disposition"],
@@ -114,7 +132,7 @@ class FinalReportingTests(unittest.TestCase):
                 "reviewed_no_automatic_highlight",
             )
             self.assertEqual(report["quality_control_record_count"], 1)
-            self.assertEqual(report["headline_count"], 1)
+            self.assertEqual(report["headline_count"], 0)
             self.assertEqual(report["secondary_count"], 0)
             self.assertEqual(report["searchable_candidate_count"], 1)
             self.assertEqual(
@@ -167,7 +185,7 @@ class FinalReportingTests(unittest.TestCase):
                 standard_report["presentation_contract"][
                     "headline_selection"
                 ],
-                "bh_significance_at_boundary",
+                "effect_eligibility_with_bh_boundary",
             )
             self.assertEqual(len(standard_report["all_candidates"]), 210)
             persisted = json.loads(

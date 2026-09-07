@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .clustering_presentation import evaluate_partition
+
 import importlib
 import itertools
 import json
@@ -1283,6 +1285,7 @@ def _run_sampled_sweep(
                         )
                     )
                 if emit_full_records:
+                    selected["presentation_evaluation"] = evaluate_partition(transformed, metadata, full_labels, feature_definition=settings)
                     frame_assignments = []
                     for record, vector, label in zip(metadata, transformed, full_labels):
                         distance = None

@@ -724,13 +724,22 @@ def _reduce_dccm_replica_reports(
 def dccm_project(project_path: Path, hash_content: bool = False) -> Dict[str, object]:
     """Scan replicas independently and merge exact displacement covariance."""
 
-    project = load_json(Path(project_path).expanduser().resolve(strict=False))
+    source = Path(project_path).expanduser().resolve(strict=False)
+    cached = load_cached_project_report(
+        "dccm",
+        source,
+        hash_content=hash_content,
+        error_type=DCCMError,
+    )
+    if cached is not None:
+        return cached
+    project = load_json(source)
     settings = _settings(project)
     selection = settings.get("frame_selection")
     if isinstance(selection, dict) and selection.get("mode") == "auto_resource_budget_v1":
         return _dccm_project_serial(project_path, hash_content=hash_content)
     return execute_replica_final_module(
-        project_path,
+        source,
         runner_id="dccm",
         hash_content=hash_content,
         reducer=_reduce_dccm_replica_reports,

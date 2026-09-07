@@ -15,7 +15,7 @@ from .hydrogen_bond_discovery import (
     HydrogenBondDiscoveryError, hydrogen_bond_discovery_project,
 )
 from .hydrogen_bond_sparse import dense_primary_values
-from .manifests import ManifestValidationError, load_json
+from .manifests import ManifestValidationError, load_json, sha256_file
 from .validation import positive_integer
 
 
@@ -402,7 +402,8 @@ def grouped_regularized_classification_project(
         "module_id": "grouped_regularized_classification",
         "technical_status": "complete", "scientific_status": "not evaluated",
         "project_manifest_path": str(source),
-        "project_manifest_sha256": discovery["project_manifest_sha256"],
+        "project_manifest_sha256": sha256_file(source),
+        "upstream_project_manifest_sha256": discovery["project_manifest_sha256"],
         "system_manifest_path": discovery["system_manifest_path"],
         "system_manifest_sha256": discovery["system_manifest_sha256"],
         "input_content_signature_sha256": discovery["input_content_signature_sha256"],
