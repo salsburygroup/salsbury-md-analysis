@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .clustering import ClusteringAnalysisError, clustering_kmeans_project
-from .manifests import ManifestValidationError, load_json
+from .manifests import ManifestValidationError, load_json, sha256_file
 from .pca import PCAAnalysisError
 
 
@@ -263,7 +263,8 @@ def grouped_ml_project(project_path: Path, hash_content: bool = False) -> Dict[s
     return {
         "module_id": "grouped_ml", "technical_status": "complete",
         "scientific_status": "not evaluated", "project_manifest_path": str(source),
-        "project_manifest_sha256": clustering["project_manifest_sha256"],
+        "project_manifest_sha256": sha256_file(source),
+        "upstream_project_manifest_sha256": clustering["project_manifest_sha256"],
         "system_manifest_path": clustering["system_manifest_path"],
         "system_manifest_sha256": clustering["system_manifest_sha256"],
         "input_content_signature_sha256": clustering["input_content_signature_sha256"],

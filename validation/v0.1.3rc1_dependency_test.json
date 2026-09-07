@@ -1,0 +1,22 @@
+{
+  "candidate_version": "0.1.3rc1",
+  "technical_acceptance": "macos_installed_candidate_complete_linux_and_wsl2_pending",
+  "scientific_status": "not evaluated",
+  "release_status": "unreleased",
+  "required_runtime": ["numpy>=2.0,<3", "scipy>=1.12,<2", "scikit-learn>=1.6,<2", "psutil>=5.9,<8", "ijson>=3.2,<4"],
+  "platforms_requiring_independent_acceptance": ["Linux", "WSL2"],
+  "macos_installed_validation": {
+    "dependency_check": "no_broken_requirements",
+    "fixture": "NEMO protein-zinc 100 frames",
+    "tasks_complete": 31,
+    "analysis_reports_complete": 28,
+    "source_inputs_unchanged": true,
+    "plan_only_did_not_execute": true,
+    "completed_resume_preserved_hashes_and_timestamps": true,
+    "new_scientific_observations": false
+  },
+  "source_suite": {"tests": 735, "skipped": 0, "failed": 0},
+  "shared_contracts_checked": 150,
+  "public_release_authorized": false,
+  "remaining": ["fresh Linux and new-wrapper Slurm validation", "WSL2 host test", "unfamiliar-person tutorial trial"]
+}

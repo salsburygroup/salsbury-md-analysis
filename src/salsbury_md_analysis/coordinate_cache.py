@@ -963,6 +963,10 @@ def validate_reusable_coordinate_cache(
         (str(row.get("system_id")), str(row.get("replica_id"))): row
         for row in report_rows if isinstance(row, dict)
     }
+    cached_replicas = {
+        (str(system["system_id"]), str(replica["replica_id"])): replica
+        for system in cached["systems"] for replica in system["replicas"]
+    }
     expected_keys = set()
     for system in original["systems"]:
         assert isinstance(system, dict)
@@ -975,6 +979,13 @@ def validate_reusable_coordinate_cache(
                 raise CoordinateCacheError(
                     f"reusable cache is missing {key[0]}/{key[1]}"
                 )
+            cached_replica = cached_replicas.get(key)
+            if cached_replica is None:
+                raise CoordinateCacheError(f"cached manifest is missing {key}")
+            for name in ("topology", "connectivity"):
+                target = resolve_manifest_path(str(cached_replica[name]), manifest_path)
+                if row.get(name + "_sha256") != sha256_file(target):
+                    raise CoordinateCacheError(f"cached {name} content hash changed or is missing")
             topology = resolve_manifest_path(str(replica["topology"]), source)
             _validate_source_identity(
                 row.get("source_topology"), topology, "topology"
@@ -1013,6 +1024,13 @@ def validate_reusable_coordinate_cache(
                 )
                 decoded = int(cached_segment.get("decoded_frame_count", -1))
                 retained = int(cached_segment.get("retained_frame_count", -1))
+                cache_file = cached_segment.get("cache")
+                if retained > 0:
+                    if not isinstance(cache_file, dict) or not isinstance(cache_file.get("path"), str):
+                        raise CoordinateCacheError("cached segment lacks its file identity")
+                    target = (root / cache_file["path"]).resolve(strict=True)
+                    if root not in target.parents or cache_file.get("sha256") != sha256_file(target):
+                        raise CoordinateCacheError("cached trajectory content hash changed or is missing")
                 if decoded <= 0 or retained < 0:
                     raise CoordinateCacheError(
                         "reusable cache retained-frame count is inconsistent with "

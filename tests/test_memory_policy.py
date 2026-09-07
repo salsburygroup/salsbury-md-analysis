@@ -40,7 +40,7 @@ class MemoryPolicyTests(unittest.TestCase):
         task = {"estimated_peak_memory_gib": 4.0}
         apply_memory_calibration_uncertainty([task], policy)
         apply_memory_calibration_uncertainty([task], policy)
-        self.assertEqual(task["estimated_peak_memory_gib"], 5.0)
+        self.assertEqual(task["estimated_peak_memory_gib"], 4.0)
 
     def test_deac_adjustment_follows_uncertainty_and_is_final(self):
         task = {
@@ -69,11 +69,11 @@ class MemoryPolicyTests(unittest.TestCase):
         )
         row = plan["tasks"][0]
         self.assertEqual(
-            row["estimated_peak_memory_gib_at_selected_observations"], 10.0
+            row["estimated_peak_memory_gib_at_selected_observations"], 8.0
         )
         self.assertEqual(
             row["estimated_scheduler_memory_gib_at_selected_observations"],
-            16.0,
+            12.0,
         )
 
 

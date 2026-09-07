@@ -32,6 +32,10 @@ Histogramming does not make correlated trajectory frames independent.
 
 ## Result order
 
+This order organizes analysis tabs and the full report. The opening findings
+page uses effect-aware ranking without category quotas; see
+[finding selection](FINDING_PICKER.md).
+
 1. Free-energy surfaces for unbiased equilibrium MD, or explicitly labeled
    occupancy landscapes when thermodynamic FES is not justified. Matched
    systems use one shared PCA basis and grid.
@@ -80,3 +84,12 @@ trajectories and reports that association as part of the scientific result.
 Without independent kinetic and sampling evidence, the labels describe
 ensemble/preparation separation rather than validated metastable or kinetic
 states.
+
+## Primary quantities
+
+PCA figures show explained and cumulative variance. tICA figures show
+eigenvalues and implied timescales with physical units. Convergence presents
+ESS and split-mean differences separately. Scalar feature distributions use
+Scott-rule histograms. Generic numeric summaries remain diagnostic and do not
+satisfy scientific presentation coverage. Missing primary quantities produce
+an explicit presentation error rather than a plot of an index or setting.

@@ -202,6 +202,8 @@ class ResourceCalibrationTests(unittest.TestCase):
                             "total_cpu_seconds": float(index * 10),
                             "wall_seconds": float(index * 11),
                             "maximum_resident_memory_mib": memory,
+                            "memory_measurement_scope": "validated_simultaneous_peak",
+                            "memory_replacement_qualified": True,
                         },
                     },
                 }), encoding="utf-8")

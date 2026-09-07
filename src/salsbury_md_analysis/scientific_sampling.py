@@ -530,7 +530,7 @@ def required_frames_per_replica(
             )
             spacing_floor = (
                 count + 1 if maximum_integer_stride <= 0 else
-                math.ceil(count / maximum_integer_stride)
+                count // maximum_integer_stride
             )
             required = max(required, spacing_floor)
     return required

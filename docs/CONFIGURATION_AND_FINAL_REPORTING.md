@@ -161,18 +161,18 @@ the local and Slurm execution reports; the analysis result schema does not
 change when a compatible retry succeeds.
 `well_calibrated_memory_uncertainty_factor` defaults to `1.0` for models backed
 by repeated completed evidence. `poorly_calibrated_memory_uncertainty_factor`
-defaults to `1.25` for weak, single-run, censored-only, or unmeasured models.
+also defaults to `1.0`. A user may explicitly raise it for weak or unmeasured
+models; no additional uncertainty multiplier is active by default.
 The former analysis-config `memory_safety_factor` remains a deprecated alias for
 the latter and cannot be supplied with it. These named factors are part of the
 task working-set model, not a cluster adjustment.
 
-The planner applies the selected cluster profile's memory adjustment once after
-the task model is complete. On DEAC the final reservation is
-`ceil(1.5 × uncertainty-adjusted working set per node + 1 GiB)` for every
-allocated node. The scheduler and custom-launcher adapters consume that
-per-node value without changing it. There is no additional unnamed or
-scheduler-side memory padding. All terms are recorded in
-`resource_safety_margins`.
+The planner applies the selected site adjustment once. On DEAC, a task requests
+`ceil(1.5 × modeled working set per node)` GiB. A separate 1-GiB reserve is
+held once per potentially occupied node. The execution adapters retain these
+values. Their printed resource-token policy states the reserved node-count
+upper bound and aggregate reserve; it may conservatively exceed the nodes
+occupied at a particular instant. See [execution adapters](EXECUTION_ADAPTERS.md).
 The default 1.5 time factor is applied to modeled task costs before frame
 allocation. The planner then uses only the configured utilization fraction
 (normally 0.85) and removes pilot and finalization reserves. The shipped Slurm
@@ -479,14 +479,12 @@ are also written as hash-bound numeric columns rather than rebuilt as large
 lists of dictionaries. Legacy inline trajectory-feature reports remain
 readable.
 
-The finding picker interleaves FES, structural representatives, clustering,
-coupled interactions, RMSF, and other physical measurements. It rotates among
-method-specific comparison families inside each category, preventing a large
-set of state populations from filling the opening page. Inferential status and
-effect magnitude order results only within one compatible family. The picker
-does not compare unlike units or calculate a composite score. Report pointers,
-evidence classes, effects, and corrected p-values remain visible for scientific
-review.
+The finding picker orders effects within compatible method families and uses
+within-family percentiles and available statistical support across families.
+There are no category quotas or cross-unit raw-effect comparisons. Each
+headline carries a ranking explanation. The opening section can contain fewer
+than ten findings when fewer qualify; all candidates remain searchable.
+See [finding selection](FINDING_PICKER.md) for the eligibility rules.
 
 Failed kinetic validations, PCA or tICA basis summaries, grouped-ML
 diagnostics, and coordinate-export records stay searchable as supporting

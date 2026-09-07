@@ -575,7 +575,7 @@ class QuickstartTests(unittest.TestCase):
             self.assertEqual(safety["modeled_task_time_factor"], 1.5)
             uncertainty = safety["memory_calibration_uncertainty"]
             self.assertEqual(uncertainty["well_calibrated_factor"], 1.0)
-            self.assertEqual(uncertainty["poorly_calibrated_factor"], 1.25)
+            self.assertEqual(uncertainty["poorly_calibrated_factor"], 1.0)
             self.assertEqual(safety["scheduler_memory_safety_factor"], 1.0)
             self.assertEqual(safety["scheduler_memory_overhead_gib"], 0.0)
             self.assertTrue((output / "submit.sh").stat().st_mode & 0o100)

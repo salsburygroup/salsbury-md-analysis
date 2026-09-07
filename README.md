@@ -9,7 +9,7 @@ write local and Slurm launchers. It will not modify the simulation inputs.
 
 ## Status
 
-Version 0.1.2 is an **experimental toolkit release**. It contains
+Version 0.1.3rc1 is an **unreleased candidate**. It contains
 45 registered MD, core, and reporting modules. Every registered module has an
 implementation and automated tests, but none is yet marked `supported` for
 unreviewed production or publication use. Technical completion and scientific
@@ -68,44 +68,43 @@ The complete module-to-method reference map is in
 
 ## Install
 
-The base package requires Python 3.10 or newer, NumPy, and SciPy:
+The unreleased 0.1.3rc1 candidate adds the terminal workflow below. Existing
+release tags are unchanged. From this candidate's source checkout:
 
 ```bash
-python -m venv .venv
-./.venv/bin/python -m pip install \
-  "salsbury-md-analysis @ git+https://github.com/salsburygroup/salsbury-md-analysis.git@v0.1.2"
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install .
+salsbury-md-analysis doctor
 ```
 
-That command installs the immutable `v0.1.2` release. Contributors working
-from a source checkout can instead run
-`./.venv/bin/python -m pip install -e .` from the repository root.
+The default Python dependencies are installed together. Protein secondary
+structure also requires DSSP; `environment.yml` provides a reviewed Conda
+environment. X3DNA-DSSR is separately licensed and is not bundled. HDBSCAN
+and OpenMM connectivity preparation remain optional.
 
-For the reviewed Python stack plus HDBSCAN and DSSP, clone the `v0.1.2` release
-and use its Conda environment:
+Follow [the terminal guide](docs/TERMINAL_WORKFLOW.md) for Linux, macOS,
+WSL2, local execution, and site-neutral Slurm setup. It explains the required
+inputs, generated config, plan review, status, recovery, and results.
+[Dependencies and licenses](DEPENDENCIES_AND_LICENSES.md) lists every runtime
+and optional dependency. Keep a pinned wheel and resolved dependency list with
+an accepted campaign; do not use a moving branch as its version record.
+
+## Terminal workflow
 
 ```bash
-git clone --branch v0.1.2 --depth 1 \
-  https://github.com/salsburygroup/salsbury-md-analysis.git
-cd salsbury-md-analysis
-micromamba create --prefix ./.venv --file environment.yml \
-  --override-channels --channel conda-forge --strict-channel-priority
-./.venv/bin/python -m pip install --no-deps --no-build-isolation -e .
+salsbury-md-analysis init my-study --interactive --cpus 8 --memory-gib 32 --hours 24
+salsbury-md-analysis doctor my-study/study.json
+salsbury-md-analysis plan my-study/study.json
+# Review the printed strides, disabled methods, and padded resource request.
+salsbury-md-analysis run my-study/analysis
+salsbury-md-analysis status my-study/analysis
 ```
 
-Platform locks and their validation limits are documented in
-[`environments/README.md`](environments/README.md).
-Required, optional, external, build-only, and validation-only dependencies,
-together with their license and redistribution boundaries, are consolidated in
-[`DEPENDENCIES_AND_LICENSES.md`](DEPENDENCIES_AND_LICENSES.md).
-The x3dna-dssr adapter requires a separately obtained executable; it is not
-redistributed by this repository.
-The quick-start initializer discovers `mkdssp`/`dssp` either on `PATH` or next
-to the active Python interpreter, which covers the reviewed Conda environment
-without requiring a separate executable argument.
-
-The bundled NEMO tutorial trajectory and group-generated topology are licensed
-separately under CC BY 4.0; the starting PDB retains its PDB provenance. See
-[`LICENSE-DATA.md`](LICENSE-DATA.md) and the fixture's recorded provenance.
+`init`, `doctor`, and `plan` do not run analyses. The picker shows physical
+findings first; clustering-method scores remain diagnostics. One comparable
+partition per view is primary, with all alternatives retained. See
+[clustering presentation](docs/CLUSTERING_PRESENTATION.md).
 
 ## Use
 

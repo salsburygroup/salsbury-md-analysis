@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Mapping, Sequence, Tuple
 
-from .manifests import ManifestValidationError, load_json
+from .manifests import ManifestValidationError, load_json, sha256_file
 from .moments import sample_summary
 from .pca_fes import PCAFESAnalysisError
 from .trajectory_features import (
@@ -581,7 +581,8 @@ def scalar_feature_distributions_project(
         "technical_status": "complete",
         "scientific_status": "not evaluated",
         "project_manifest_path": str(source),
-        "project_manifest_sha256": upstream["project_manifest_sha256"],
+        "project_manifest_sha256": sha256_file(source),
+        "upstream_project_manifest_sha256": upstream["project_manifest_sha256"],
         "system_manifest_path": upstream["system_manifest_path"],
         "system_manifest_sha256": upstream["system_manifest_sha256"],
         "input_content_signature_sha256": upstream["input_content_signature_sha256"],

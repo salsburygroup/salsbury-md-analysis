@@ -40,13 +40,17 @@ that disposition does not imply that the systems are equivalent.
 
 ## Selecting the opening results
 
-The picker builds separate queues for free-energy surfaces, structural
-representatives, clustering, coupled interactions, RMSF, and other physical
-measurements. It interleaves those queues so that a large family of FES state
-populations cannot fill the opening section. It also rotates among comparison
-families inside each category. Effect magnitudes are compared only within the
-same method-specific family, where the values have the same units and meaning.
-The picker does not combine unlike effects into a score.
+The picker ranks absolute effects within each method-specific comparison
+family, where the measurements have the same units. Cross-family order uses
+that within-family percentile, statistical support where available, and
+deterministic scope and identity tie breaks. There are no category quotas and
+no comparison of raw effects measured in unlike units.
+
+Each candidate records its within-family rank and `ranking_explanation`.
+A nonzero effect can enter the opening section if it has corrected statistical
+support, or if it has no p-value and lies in its family's upper effect quartile.
+These are triage rules, not evidence of biological importance. An untested
+single-candidate family can qualify; review its physical scale and uncertainty.
 
 Entries carry a `ranking_role`. Scientific findings are presentation-eligible.
 Failed kinetic-model validations, PCA or tICA basis descriptions, grouped-ML
@@ -63,13 +67,11 @@ Single-system extrema, state populations, silhouettes, correlations,
 information measures, and threshold-state occupancies are normally descriptive
 or exploratory.
 
-The opening section contains 10, 11, or 12 findings. The first 10 are always
-shown. Ranks 11 and 12 extend the opening section only when a finding at that
-boundary is statistically significant after Benjamini-Hochberg correction.
-The highlighted report always contains 50 findings when at least 50 candidates
-exist, so the secondary section contains 40, 39, or 38 findings respectively.
-The JSON records the selected count, any boundary promotions, and the selection
-reason. A smaller campaign is marked
+The target is 10 headline findings, with up to two additional statistically
+supported findings at the boundary. Fewer headlines are shown when fewer
+candidates qualify, including none when no candidate qualifies. Secondary
+findings fill the remaining positions up to 50 presentation-eligible results.
+The JSON records the selected count, boundary promotions, and selection reason. A smaller campaign is marked
 `candidate_limited` and presents every available candidate without inventing
 entries. Every candidate beyond the first 50 remains searchable in the
 interactive report and is written to the JSON and CSV outputs. The output
@@ -132,9 +134,9 @@ The picker is enabled by default:
 Turning the picker off does not disable the underlying analyses or remove their
 reports. It only suppresses the consolidated prioritized-finding outputs.
 
-`minimum_headline_findings` and `headline_findings` set the allowed range. Both
+`minimum_headline_findings` and `headline_findings` set the target range. Both
 must be from 10 through 12, and the minimum cannot exceed the maximum. The
-defaults let the evidence choose among 10, 11, and 12. `maximum_findings` is
+defaults target 10–12 without forcing weak results into the opening section. `maximum_findings` is
 fixed at 50 in campaign configuration. The command-line headline override fixes
 the count only for bounded diagnostics and compatibility testing; reports
 created with an override identify the presentation-contract status as

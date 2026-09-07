@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .clustering_presentation import report_models, load_report_models, select_primary_partitions, apply_primary_findings
+
 import csv
 import hashlib
 import itertools
@@ -311,26 +313,37 @@ def _alternative_clustering_candidates(
     ]
     if not scored:
         return []
-    silhouette, selected = max(scored, key=lambda item: (item[0], str(item[1].get("algorithm"))))
-    cluster_sizes = selected.get("full_cluster_sizes", selected.get("cluster_sizes"))
-    cluster_count = len(cluster_sizes) if isinstance(cluster_sizes, list) else None
-    return [_candidate(
+    findings = []
+    for silhouette, selected in scored:
+        algorithm = selected.get("requested_algorithm", selected.get("algorithm"))
+        cluster_sizes = selected.get("full_cluster_sizes", selected.get("cluster_sizes"))
+        cluster_count = len(cluster_sizes) if isinstance(cluster_sizes, list) else None
+        diagnostic = _candidate(
         module_id="alternative_clustering", category="clustering",
         statement=(
-            f"Best alternative-clustering result is {selected.get('algorithm')}"
+            f"{algorithm} reports its method-specific fit"
             f" with silhouette {silhouette:.3f}"
             f"{f' and {cluster_count} clusters' if cluster_count is not None else ''}."
         ),
         report_path=path, effect_value=silhouette,
         evidence_level="geometric validation",
+        ranking_role="method_diagnostic",
         family="alternative_clustering:model_selection",
         presentation_target=finding_target(
             module_id="alternative_clustering", purpose="model_selection",
             context=_target_context(
-                path, highlight_algorithm=selected.get("algorithm")
+                path, highlight_algorithm=algorithm
             ),
         ),
-    )]
+        )
+        diagnostic["clustering_algorithm"] = algorithm
+        findings.append(diagnostic)
+        for row in _state_differences(selected, "alternative_clustering", path):
+            row["clustering_algorithm"] = algorithm
+            row["statement"] = f"{algorithm}: " + row["statement"]
+            row["presentation_target"]["context"]["highlight_algorithm"] = algorithm
+            findings.append(row)
+    return findings
 
 
 def _pca_context_candidates(
@@ -1768,6 +1781,7 @@ def finding_sidecar_evidence(
         "module_id": module_id,
         "report_path": str(path),
         "candidates": candidates,
+        "clustering_models": report_models(report, path),
         "cross_report_summary": _compact_cross_report(report, module_id),
         "module_review": _module_review_record(
             module_id, path, len(candidates), len(quality_control)
@@ -2007,15 +2021,27 @@ def _report_candidates(path: Path, report: Mapping[str, object]) -> List[Dict[st
     if module_id.startswith("clustering_") and isinstance(selected, dict):
         silhouette = selected.get("silhouette")
         if isinstance(silhouette, (int, float)) and not isinstance(silhouette, bool):
+            evaluation = selected.get("silhouette_evaluation")
+            stability = report.get("silhouette_selection_stability")
+            silhouette_label = "silhouette"
+            stability_text = ""
+            if isinstance(evaluation, dict):
+                if evaluation.get("estimated") is True:
+                    silhouette_label = "mean sampled silhouette"
+                    if isinstance(stability, dict):
+                        stability_text = f" Winner stability: {stability.get('status')}."
+                elif evaluation.get("estimated") is False:
+                    silhouette_label = "exact silhouette"
             findings.append(_candidate(
                 module_id=module_id, category="clustering",
                 statement=(
                     f"Selected {module_id.replace('clustering_', '').replace('_', ' ')} partition has "
                     f"{selected.get('k', selected.get('cluster_count'))} "
-                    f"states and silhouette {float(silhouette):.3f}."
+                    f"states and {silhouette_label} {float(silhouette):.3f}.{stability_text}"
                 ),
                 report_path=path, effect_value=float(silhouette),
                 family=f"{module_id}:model_selection",
+                ranking_role="method_diagnostic",
                 presentation_target=finding_target(
                     module_id=module_id, purpose="model_selection",
                     context=_target_context(path),
@@ -2351,6 +2377,24 @@ def _path_context(row: Mapping[str, object]) -> tuple[str | None, str | None]:
     return system_id, view_id
 
 
+def _human_evidence_links(root: Path, row: Mapping[str, object]) -> str:
+    from urllib.parse import quote
+    links = []
+    for artifact in row.get("presentation_artifacts", []):
+        raw = artifact.get("path", artifact.get("relative_path"))
+        if not raw:
+            continue
+        path = Path(str(raw))
+        path = path if path.is_absolute() else root / "presentation-artifacts" / path
+        try:
+            relative = path.resolve().relative_to(root.resolve())
+        except ValueError:
+            continue
+        if path.is_file():
+            links.append(f"[{artifact.get('artifact_type', 'evidence')}]({quote(relative.as_posix())})")
+    return " " + " · ".join(dict.fromkeys(links)) if links else ""
+
+
 def _normalize_candidate(row: Mapping[str, object]) -> Dict[str, object]:
     normalized = dict(row)
     module_id = str(normalized.get("module_id", ""))
@@ -2403,6 +2447,8 @@ def _normalize_candidate(row: Mapping[str, object]) -> Dict[str, object]:
     normalized["statement"] = statement
 
     role = normalized.get("ranking_role")
+    if "model_selection" in str(normalized.get("comparison_family", "")):
+        role = "method_diagnostic"
     if not isinstance(role, str) or not role:
         if module_id == "state_coordinate_exports":
             role = "companion_artifact"
@@ -2636,33 +2682,51 @@ def _category_queue(rows: Sequence[Dict[str, object]]) -> List[Dict[str, object]
 def _balanced_scientific_order(
     rows: Sequence[Dict[str, object]],
 ) -> List[Dict[str, object]]:
-    by_category: Dict[str, List[Dict[str, object]]] = {}
+    """Rank effects without quotas or comparisons between incompatible units.
+
+    Within-family percentiles are relative to the available candidates, not
+    calibrated biological importance. Statistical support breaks comparable
+    effect ranks; raw p values are never treated as effect sizes.
+    """
+    families: Dict[str, List[Dict[str, object]]] = {}
     for row in rows:
-        by_category.setdefault(str(row.get("category", "other_physical")), []).append(row)
-    queues = {
-        category: _category_queue(category_rows)
-        for category, category_rows in by_category.items()
-    }
-    positions = {category: 0 for category in queues}
-    declared = list(dict.fromkeys(_PRESENTATION_CATEGORY_CYCLE))
-    extra = sorted(
-        set(queues).difference(declared),
-        key=lambda value: (_PRIORITY.get(value, 99), value),
-    )
-    cycle = [*_PRESENTATION_CATEGORY_CYCLE, *extra]
-    ordered = []
-    while True:
-        advanced = False
-        for category in cycle:
-            queue = queues.get(category, [])
-            position = positions.get(category, 0)
-            if position >= len(queue):
-                continue
-            ordered.append(queue[position])
-            positions[category] = position + 1
-            advanced = True
-        if not advanced:
-            return ordered
+        family = str(row.get("comparison_family", row.get("module_id", "unspecified")))
+        families.setdefault(family, []).append(row)
+    for family_rows in families.values():
+        effects = [_numeric(row.get("absolute_effect_value")) for row in family_rows]
+        numeric = [value for value in effects if value is not None]
+        ordered = sorted(family_rows, key=lambda row: (
+            -(_numeric(row.get("absolute_effect_value")) or 0), _within_family_key(row)
+        ))
+        for index, row in enumerate(ordered, 1):
+            effect = _numeric(row.get("absolute_effect_value"))
+            percentile = (sum(value <= effect for value in numeric) / len(numeric)
+                          if numeric and effect is not None else 0.0)
+            row["within_family_rank"] = index
+            row["within_family_candidate_count"] = len(family_rows)
+            row["within_family_effect_percentile"] = percentile
+            row["headline_eligible"] = (
+                effect is not None and effect > 0
+                and (row.get("statistically_significant") is True
+                     or (row.get("statistically_significant") is None and percentile >= .75))
+            )
+            row["ranking_explanation"] = {
+                "policy": "effect_percentile_then_statistical_support_v1",
+                "effect_percentile_within_family": percentile,
+                "statistical_support": row.get("statistically_significant"),
+                "raw_effects_compared_between_families": False,
+                "category_quota": False,
+                "biological_importance_inferred": False,
+            }
+    return sorted(rows, key=lambda row: (
+        0 if row.get("headline_eligible") else 1,
+        -float(row["within_family_effect_percentile"]),
+        0 if row.get("statistically_significant") is True else 1,
+        _within_family_key(row)[:3],
+        str(row.get("comparison_family", "")),
+        str(row.get("statement", "")),
+        str(row.get("report_path", "")),
+    ))
 
 
 def _attach_companion_artifacts(rows: Sequence[Dict[str, object]]) -> None:
@@ -2676,7 +2740,7 @@ def _attach_companion_artifacts(rows: Sequence[Dict[str, object]]) -> None:
             str(value) for value in row.get("report_paths", [])
         )
     for row in rows:
-        if row.get("category") not in {"free_energy_surface", "clustering"}:
+        if row.get("category") not in {"free_energy_surface", "clustering", "free_energy_conformation", "clustering_conformation"}:
             continue
         systems = tuple(sorted(map(str, row.get("system_ids", []))))
         views = tuple(sorted(map(str, row.get("view_ids", []))))
@@ -2764,6 +2828,8 @@ def prioritize_findings(
     root: Path, *, maximum_findings: int | None = None,
     headline_findings: int | None = None,
     write_outputs: bool = True,
+    candidate_snapshot: Path | None = None,
+    expected_snapshot_sha256: str | None = None,
 ) -> Dict[str, object]:
     analysis_root = Path(root).expanduser().resolve(strict=True)
     config_path = analysis_root / "analysis-config.json"
@@ -2838,19 +2904,47 @@ def prioritize_findings(
     reference = comparison_config.get("reference_system_id")
     findings = []
     complete_records = []
+    clustering_models = []
     module_reviews = []
     quality_control_records = []
     integrated_path = (
         analysis_root / "results" / "integrated-comparison" / "report.json"
     )
-    integrated_present = integrated_path.is_file()
-    if integrated_present:
+    snapshot_provenance = None
+    if candidate_snapshot is not None:
+        # Presentation-only replay of a sealed candidate index, not another
+        # scientific analysis or a claim that all original reports are local.
+        candidate_snapshot = Path(candidate_snapshot).resolve(strict=True)
+        digest = _sha256_file(candidate_snapshot)
+        if not expected_snapshot_sha256 or digest != expected_snapshot_sha256:
+            raise FindingPickerError("Candidate snapshot requires its matching SHA-256.")
+        if write_outputs and candidate_snapshot == analysis_root / "prioritized_findings.json":
+            raise FindingPickerError("Replay needs a different output directory; preserve the source index.")
+        previous = load_json(candidate_snapshot)
+        if previous.get("technical_status") != "complete" or previous.get("finding_schema") != "salsbury-prioritized-findings-v2":
+            raise FindingPickerError("Candidate snapshot is not a complete supported index.")
+        findings = previous.get("all_candidates")
+        if not isinstance(findings, list) or len(findings) != previous.get("candidate_count") or not all(isinstance(row, dict) for row in findings):
+            raise FindingPickerError("Candidate snapshot count or records are invalid.")
+        quality_control_records = previous.get("quality_control_records", [])
+        for module in previous.get("module_accounting", []):
+            for index, report_path in enumerate(module.get("report_paths", [])):
+                module_reviews.append(_module_review_record(module["module_id"], Path(report_path),
+                    module.get("candidate_count", 0) if index == 0 else 0,
+                    module.get("quality_control_record_count", 0) if index == 0 else 0))
+        clustering_models = [row for group in previous.get("clustering_selection", {}).get("groups", [])
+                             for row in group.get("candidates", [])]
+        snapshot_provenance = {"path": str(candidate_snapshot), "sha256": digest,
+            "purpose": "presentation-only replay; no trajectory execution or new scientific evaluation",
+            "original_report_count": previous.get("reviewed_report_count")}
+    integrated_present = candidate_snapshot is not None or integrated_path.is_file()
+    if integrated_present and candidate_snapshot is None:
         integrated_report = load_json(integrated_path)
         if integrated_report.get("technical_status") != "complete":
             raise FindingPickerError(
                 "integrated comparison exists but is not technically complete"
             )
-    for path in sorted((analysis_root / "results").glob("**/report.json")):
+    for path in ([] if candidate_snapshot is not None else sorted((analysis_root / "results").glob("**/report.json"))):
         sidecar_path = Path(str(path) + ".summary.json")
         if sidecar_path.is_file():
             sidecar = load_json(sidecar_path)
@@ -2868,6 +2962,11 @@ def prioritize_findings(
             report_candidates = [
                 row for row in evidence["candidates"] if isinstance(row, dict)
             ]
+            model_records = evidence.get("clustering_models", [])
+            if isinstance(model_records, list):
+                clustering_models.extend(row for row in model_records if isinstance(row, dict))
+            if not model_records:
+                clustering_models.extend(load_report_models(path, str(sidecar.get("module_id", ""))))
             compact = evidence.get("cross_report_summary")
             if (
                 not integrated_present
@@ -2903,6 +3002,7 @@ def prioritize_findings(
             continue
         report = load_json(path)
         if report.get("technical_status") == "complete":
+            clustering_models.extend(report_models(report, path))
             module_id = str(report.get("module_id", path.parent.name))
             if module_id in _CROSS_REPORT_ROWS:
                 compact = _compact_cross_report(report, module_id)
@@ -2925,6 +3025,8 @@ def prioritize_findings(
     findings = _deduplicate_candidates(
         [_normalize_candidate(row) for row in findings]
     )
+    clustering_selection = select_primary_partitions(clustering_models)
+    findings = apply_primary_findings(findings, clustering_selection)
     if mode == "reference_vs_all" and reference:
         findings = [
             row for row in findings
@@ -2959,35 +3061,18 @@ def prioritize_findings(
             "A direct diagnostic override fixed the headline count."
         )
     else:
-        selected_headline_count = min(
-            minimum_headline_findings, len(selected)
-        )
-        for rank in range(
-            minimum_headline_findings + 1,
-            min(headline_findings, len(selected)) + 1,
-        ):
+        eligible = sum(row.get("headline_eligible") is True for row in selected)
+        selected_headline_count = min(minimum_headline_findings, eligible)
+        for rank in range(minimum_headline_findings + 1, min(headline_findings, eligible) + 1):
             row = selected[rank - 1]
             if row.get("statistically_significant") is True:
                 selected_headline_count = rank
-                boundary_promotions.append({
-                    "rank": rank,
-                    "finding_id": f"finding-{rank:06d}",
-                    "adjusted_p_value": row.get("adjusted_p_value"),
-                    "comparison_family": row.get("comparison_family"),
-                })
-        if minimum_headline_findings == headline_findings:
-            headline_selection_reason = (
-                f"The configured presentation range fixes the opening section "
-                f"at {minimum_headline_findings} findings."
-            )
-        else:
-            headline_selection_reason = (
-                f"The first {minimum_headline_findings} ranked findings are "
-                f"always headlines. Ranks {minimum_headline_findings + 1} "
-                f"through {headline_findings} extend the opening section only "
-                "when a boundary finding is statistically significant after "
-                "Benjamini-Hochberg correction."
-            )
+                boundary_promotions.append({"rank": rank, "adjusted_p_value": row.get("adjusted_p_value")})
+        headline_selection_reason = (
+            "Headlines require a nonzero effect and either statistical support "
+            "or an untested effect in its family's upper quartile. The configured "
+            "minimum is a presentation target, never a quota. Other candidates remain searchable."
+        )
     for index, row in enumerate(findings, start=1):
         row["finding_id"] = f"finding-{index:06d}"
         row["presentation_tier"] = (
@@ -3018,6 +3103,8 @@ def prioritize_findings(
     evidence_bundles = _evidence_bundles(presentation_eligible)
     output = {
         "finding_schema": "salsbury-prioritized-findings-v2",
+        "candidate_snapshot_provenance": snapshot_provenance,
+        "clustering_selection": clustering_selection,
         "technical_status": "complete",
         "scientific_status": "not evaluated",
         "candidate_count": len(findings),
@@ -3047,12 +3134,13 @@ def prioritize_findings(
         "presentation_contract": {
             "contract_id": "headline-secondary-50-v1",
             "headline_count_range": [
-                MINIMUM_HEADLINE_FINDINGS, MAXIMUM_HEADLINE_FINDINGS,
+                0, MAXIMUM_HEADLINE_FINDINGS,
             ],
+            "target_headline_count_range": [MINIMUM_HEADLINE_FINDINGS, MAXIMUM_HEADLINE_FINDINGS],
             "highlighted_findings_total": HIGHLIGHTED_FINDINGS_TOTAL,
             "secondary_count_range": [
                 HIGHLIGHTED_FINDINGS_TOTAL - MAXIMUM_HEADLINE_FINDINGS,
-                HIGHLIGHTED_FINDINGS_TOTAL - MINIMUM_HEADLINE_FINDINGS,
+                HIGHLIGHTED_FINDINGS_TOTAL,
             ],
             "configured_headline_count": headline_findings,
             "configured_minimum_headline_count": minimum_headline_findings,
@@ -3060,16 +3148,15 @@ def prioritize_findings(
             "configured_highlighted_total": maximum_findings,
             "status": presentation_contract_status,
             "candidate_limited": candidate_limited,
-            "headline_selection": "bh_significance_at_boundary",
+            "headline_selection": "effect_eligibility_with_bh_boundary",
             "boundary_promotions": boundary_promotions,
             "selection_reason": headline_selection_reason,
         },
         "module_accounting": module_accounting,
         "quality_control_records": quality_control_records,
         "ranking_contract": (
-            "presentation-eligible scientific findings are interleaved across declared "
-            "scientific categories and comparison families; inferential significance and "
-            "effect magnitude order candidates only within one method-specific family. "
+            "Findings are ordered by within-family effect percentile and statistical "
+            "support, with no category quotas or cross-unit raw-effect comparisons. "
             "Validation context, technical diagnostics, and companion artifacts remain "
             "searchable but cannot displace scientific findings. No opaque composite score "
             "or cross-unit effect comparison is used"
@@ -3120,7 +3207,6 @@ def prioritize_findings(
     markdown_path = analysis_root / "prioritized_findings.md"
     lines = [
         "# Prioritized findings", "",
-        "Technical status is complete; scientific status is not evaluated.", "",
         (
             f"The report presents {len(headlines)} headline findings first and "
             f"{len(secondary)} secondary findings afterward. The searchable outputs retain "
@@ -3134,7 +3220,7 @@ def prioritize_findings(
             if row["statistically_significant"] is True else
             str(row["evidence_level"])
         )
-        lines.append(f"{rank}. {row['statement']} ({qualifier}; `{row['module_id']}`)")
+        lines.append(f"{rank}. {row['statement']} ({qualifier}; `{row['module_id']}`)" + _human_evidence_links(analysis_root, row))
     lines.extend(["", "## Secondary findings", ""])
     if secondary:
         for rank, row in enumerate(secondary, start=len(headlines) + 1):
@@ -3144,10 +3230,19 @@ def prioritize_findings(
                 str(row["evidence_level"])
             )
             lines.append(
-                f"{rank}. {row['statement']} ({qualifier}; `{row['module_id']}`)"
+                f"{rank}. {row['statement']} ({qualifier}; `{row['module_id']}`)" + _human_evidence_links(analysis_root, row)
             )
     else:
         lines.append("No secondary findings were selected.")
+    lines.extend(["", "## Primary clustering by view", "",
+                  "Geometric scores select a presentation partition; they are not physical findings. FES and kinetic model selection remain separate.", "",
+                  "| Scope | Primary method | Selection | Comparable silhouette |", "|---|---|---|---:|"])
+    for group in clustering_selection["groups"]:
+        primary = next((row for row in group["candidates"] if row["presentation_role"] == "primary"), None)
+        score = f"{primary['evaluation']['score']:.4f}" if primary else "—"
+        lines.append(f"| {group['scope']} | {primary['algorithm'] if primary else 'Not ranked'} | {group['status']} | {score} |")
+    for group in clustering_selection["groups"]:
+        lines.extend(["", f"{group['scope']}: {group['reason']}", ""])
     lines.extend(["", "## Evidence bundles", ""])
     if evidence_bundles:
         for bundle in evidence_bundles[:20]:
@@ -3201,4 +3296,12 @@ def prioritize_findings(
         "csv_path": str(csv_path),
         "markdown_path": str(markdown_path),
         "qc_markdown_path": str(qc_markdown_path),
+        "json_sha256": _sha256_file(json_path),
+        "csv_sha256": _sha256_file(csv_path),
+        "markdown_sha256": _sha256_file(markdown_path),
+        "qc_markdown_sha256": _sha256_file(qc_markdown_path),
+        "source_report_records": [
+            {"path": str(path.resolve()), "sha256": _sha256_file(path)}
+            for path in sorted((analysis_root / "results").glob("**/report.json"))
+        ],
     }

@@ -9,7 +9,7 @@ from typing import Dict, List, Mapping, Sequence
 import numpy as np
 
 from .geometry import GeometryError
-from .manifests import ManifestValidationError, load_json
+from .manifests import ManifestValidationError, load_json, sha256_file
 from .moments import sample_summary
 from .rmsd_rg import RMSDRGError, replica_rmsd_rg_project
 
@@ -554,7 +554,8 @@ def convergence_uncertainty_project(
         "scientific_interpretation_status": "human_review_required",
         "scientific_conclusion_emitted": False,
         "project_manifest_path": str(source),
-        "project_manifest_sha256": upstream["project_manifest_sha256"],
+        "project_manifest_sha256": sha256_file(source),
+        "upstream_project_manifest_sha256": upstream["project_manifest_sha256"],
         "system_manifest_path": upstream["system_manifest_path"],
         "system_manifest_sha256": upstream["system_manifest_sha256"],
         "input_content_signature_sha256": upstream["input_content_signature_sha256"],

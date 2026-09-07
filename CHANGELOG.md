@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.3rc1 - unreleased
+
+- Add terminal setup, diagnostics, plan-only preparation, status, and reviewed
+  run/resume commands around the existing analysis and resource planner.
+- Preserve accepted work during recovery and record partial Slurm submissions.
+- Select one primary clustering partition per comparable view on common
+  geometric evaluation evidence; retain every alternative.
+- Keep partition-quality scores out of physical finding headlines.
+- Add a hash-checked presentation-only replay for existing candidate indexes.
+- Declare the default Python runtime dependencies and document local/site
+  configuration without requiring an AI assistant.
+
 ## Unreleased
 
 ## 0.1.2 - 2026-09-03
