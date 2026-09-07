@@ -1,9 +1,19 @@
-"""Explicit campaign-local static-ensemble execution policy.
-
-The frozen site profile exports this flag only for discontinuous retained-frame
-inputs. It changes neither frame selection nor static estimators.
-"""
+"""Execution policy for explicitly configured discontinuous ensembles."""
 import os
+
+
+STATIC_DISABLED_MODULES = frozenset({
+    "convergence_uncertainty", "information_dynamics", "markov_state_models",
+    "scalar_threshold_states", "time_lagged_independent_component_analysis",
+    "grouped_ml", "random_feature_koopman", "reactive_path_ensembles",
+    "interaction_persistence",
+})
+
+
+def validate_trajectory_mode(value: object) -> str:
+    if not isinstance(value, str) or value not in {"continuous", "static_ensemble"}:
+        raise ValueError("execution.trajectory_mode must be continuous or static_ensemble")
+    return value
 
 
 def static_ensemble_enabled() -> bool:

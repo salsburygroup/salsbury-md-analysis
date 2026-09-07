@@ -2387,6 +2387,7 @@ def _apply_view_allocation(
     source_counts: Sequence[int],
     *,
     target_wall_hours: float,
+    consistency_skips: Mapping[str, str] | None = None,
 ) -> Dict[str, object]:
     project = load_json(project_path)
     assert isinstance(project, dict)
@@ -2447,7 +2448,8 @@ def _apply_view_allocation(
             if algorithm_allocation is None:
                 algorithm_plans[algorithm] = {
                     "execution": "skip",
-                    "skip_reason": (
+                    "skip_reason": (consistency_skips or {}).get(
+                        f"view:{view_id}:alternative_clustering:{algorithm}",
                         "full-observation fit exceeds the full-fit-only "
                         "resource screen"
                     ),
@@ -2539,6 +2541,44 @@ def _apply_view_allocation(
             if isinstance(alternative, dict) else None
         ),
     }
+
+
+def _consistent_comparison_clustering_tasks(
+    tasks: Sequence[Dict[str, object]], view_paths: Sequence[Path],
+) -> tuple[list[Dict[str, object]], Dict[str, str]]:
+    """Keep the same runnable alternative methods in matching comparison views.
+
+    Generated per-system view IDs are system_<id>__<view>. Recheck the live
+    task set on every planning iteration; never carry a stale projection fit.
+    Single-system views and views without a shared counterpart stay unchanged.
+    """
+    groups: Dict[str, Dict[str, set[str]]] = {}
+    for path in view_paths:
+        view_id = path.name[len("project-"):-len(".json")]
+        family = view_id.split("__", 1)[-1] if view_id.startswith("system_") else view_id
+        project = load_json(path)
+        alternative = project.get("definitions", {}).get("alternative_clustering", {})
+        if "alternative_clustering" not in project.get("requested_modules", []):
+            continue
+        groups.setdefault(family, {})[view_id] = set(alternative.get("algorithms", []))
+    runnable_ids = {str(row["task_id"]) for row in tasks}
+    skips: Dict[str, str] = {}
+    for family, views in groups.items():
+        if family not in views or len(views) < 2:
+            continue
+        algorithms = set().union(*views.values())
+        for algorithm in sorted(algorithms):
+            missing = [view for view, declared in views.items() if algorithm not in declared or
+                       f"view:{view}:alternative_clustering:{algorithm}" not in runnable_ids]
+            if missing:
+                reason = (
+                    "comparison method consistency: unavailable in matching view(s) "
+                    + ", ".join(sorted(missing))
+                    + "; no partial pooled/per-system method set is scheduled"
+                )
+                for view in views:
+                    skips[f"view:{view}:alternative_clustering:{algorithm}"] = reason
+    return [row for row in tasks if str(row["task_id"]) not in skips], skips
 
 
 def plan_and_apply_complete_campaign(
@@ -2974,6 +3014,9 @@ def plan_and_apply_complete_campaign(
     maximum_iterations = 8
     for planning_iteration in range(1, maximum_iterations + 1):
         tasks, base_project = build_tasks()
+        consistency_skips: Dict[str, str] = {}
+        if analysis_config.get("clustering", {}).get("comparison_method_policy", "consistent") == "consistent":
+            tasks, consistency_skips = _consistent_comparison_clustering_tasks(tasks, view_paths)
         if not tasks:
             raise CampaignPlanningError(
                 "the prepared campaign contains no executable tasks"
@@ -3031,6 +3074,7 @@ def plan_and_apply_complete_campaign(
                 plan = plan_campaign_resource_budget(tasks, **planning_kwargs)
         except ResourcePlanningError as exc:
             raise CampaignPlanningError(str(exc)) from exc
+        plan["comparison_clustering_consistency_skips"] = consistency_skips
         annotate_plan_minimum_request(plan)
         if (
             plan["feasibility_status"] != "feasible"
@@ -3159,6 +3203,7 @@ def plan_and_apply_complete_campaign(
                 task_rows,
                 view_source_counts,
                 target_wall_hours=float(execution["maximum_hours_per_cpu"]),
+                consistency_skips=consistency_skips,
             ))
         plan["applied_view_allocations"] = applied_views
         applied_contexts = []

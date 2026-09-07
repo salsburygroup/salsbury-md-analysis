@@ -3543,7 +3543,8 @@ def prepare_standard_analysis(
     if coordinate_cache_input is not None:
         try:
             cache_reuse = validate_reusable_coordinate_cache(
-                Path(str(coordinate_cache_input)), system_path
+                Path(str(coordinate_cache_input)), system_path,
+                trajectory_mode=str(execution_config.get("trajectory_mode", "continuous")),
             )
         except (OSError, ValueError) as exc:
             raise QuickstartError(str(exc)) from exc

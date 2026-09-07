@@ -1,7 +1,7 @@
 """Reusable connectivity-aware solute coordinate caches for large campaigns."""
 
 from __future__ import annotations
-from .static_ensemble import static_ensemble_enabled, temporal_output_policy
+from .static_ensemble import static_ensemble_enabled, temporal_output_policy, validate_trajectory_mode
 
 import hashlib
 import json
@@ -934,7 +934,7 @@ def build_coordinate_cache_safe(
 
 
 def validate_reusable_coordinate_cache(
-    cache_directory: Path, source_system_manifest: Path
+    cache_directory: Path, source_system_manifest: Path, *, trajectory_mode: str | None = None
 ) -> Dict[str, object]:
     """Validate a reusable all-frame-scanned cache against source inputs.
 
@@ -954,7 +954,11 @@ def validate_reusable_coordinate_cache(
     if not isinstance(report, dict) or report.get("technical_status") != "complete":
         raise CoordinateCacheError("reusable coordinate cache report is incomplete")
     expected_static = report.get("coordinate_representation") == "independent_make_whole_unaligned_strided"
-    if expected_static != static_ensemble_enabled():
+    requested_static = (
+        static_ensemble_enabled() if trajectory_mode is None
+        else validate_trajectory_mode(trajectory_mode) == "static_ensemble"
+    )
+    if expected_static != requested_static:
         raise CoordinateCacheError("cache static/continuous ensemble policy differs from execution")
     cache_stride = report.get("cache_stride")
     if (

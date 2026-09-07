@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence
 
 from .analysis_config import COMMAND_MODULES
+from .static_ensemble import validate_trajectory_mode
 from .accepted_artifacts import reports_complete
 from .ensemble_parallelism import annotate_task_parallelism
 from .manifests import load_json
@@ -3334,6 +3335,8 @@ def prepare_execution_artifacts(
     assert isinstance(execution, Mapping)
     assert isinstance(reporting, Mapping)
     adapter = str(execution.get("submission_adapter", "local"))
+    trajectory_mode = validate_trajectory_mode(execution.get("trajectory_mode", "continuous"))
+    static_flag = "1" if trajectory_mode == "static_ensemble" else "0"
     if adapter == "unspecified":
         adapter = "local"
     profile = None
@@ -3364,6 +3367,7 @@ def prepare_execution_artifacts(
             wall_minutes = float(task.get("requested_wall_minutes", 30.0))
             array_task_id = task.get("array_task_id")
             environment = {
+                "SALSBURY_STATIC_ENSEMBLE": static_flag,
                 "SLURM_CPUS_PER_TASK": str(cpu_slots),
                 "SLURM_MEM_PER_NODE": str(int(math.ceil(memory_gib * 1024.0))),
                 "SLURM_TIMELIMIT": str(max(1, int(math.ceil(wall_minutes)))),
@@ -3516,7 +3520,26 @@ exec "$LAUNCHER" "$CONTRACT"
             "scheduler-resource-requests.json",
             "slurm-submission-preview.json",
         ])
+    # Put the policy in each worker, after the site setup and before execution.
+    # This covers direct Slurm submission, local execution, custom launchers,
+    # and nested replica subprocesses; an ambient flag cannot change the plan.
+    for worker in sorted(set(root.glob("*.slurm")) | set(root.glob("run-*.sh"))):
+        text = worker.read_text(encoding="utf-8")
+        marker = "set -euo pipefail\n"
+        if marker not in text and "set -uo pipefail\n" in text:
+            marker = "set -uo pipefail\n"
+        if marker not in text:
+            raise ExecutionAdapterError(f"worker lacks a policy insertion point: {worker.name}")
+        text = re.sub(r"^export SALSBURY_STATIC_ENSEMBLE=[01]\n", "", text, flags=re.MULTILINE)
+        preamble = _profile_preamble(profile, root / "slurm-profile.json") if profile else ""
+        position = (
+            text.index(preamble) + len(preamble) + 1
+            if preamble and preamble in text else text.index(marker) + len(marker)
+        )
+        text = text[:position] + f"export SALSBURY_STATIC_ENSEMBLE={static_flag}\n" + text[position:]
+        worker.write_text(text, encoding="utf-8")
     metadata = {
+        "trajectory_mode": trajectory_mode,
         "execution_adapter_schema": "salsbury-execution-adapter-v1",
         "active_adapter": adapter,
         "slurm_profile_id": profile_id,

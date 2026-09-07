@@ -36,6 +36,7 @@ from .automatic_sampling import (
     automatic_sampling_plan,
 )
 from .analysis_config import COMMAND_MODULES
+from .static_ensemble import STATIC_DISABLED_MODULES, static_ensemble_enabled
 from .correlation_networks import correlation_networks_project_safe
 from .dccm import dccm_project_safe
 from .dihedrals import dihedral_distributions_project_safe
@@ -2283,6 +2284,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    analysis_command = getattr(args, "analysis_command", args.command)
+    if COMMAND_MODULES.get(analysis_command) in STATIC_DISABLED_MODULES and static_ensemble_enabled():
+        print(json.dumps({
+            "technical_status": "failed",
+            "issues": [{"severity": "error", "code": "STATIC_ENSEMBLE_REQUIRES_NO_KINETICS",
+                        "message": f"{analysis_command} requires an ordered trajectory and cannot run in static_ensemble mode"}],
+        }))
+        return 2
     from .user_workflow import COMMANDS, run_command
     if args.command in COMMANDS:
         return run_command(args)
