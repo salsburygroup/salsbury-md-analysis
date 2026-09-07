@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .manifests import load_json, sha256_file
+from .numerical_tables import validate_dccm_matrix, write_dccm_matrix, write_fes_grid
 
 
 PRESENTATION_MANIFEST_SCHEMA = "salsbury-presentation-artifacts-v1"
@@ -794,6 +795,19 @@ def _source(path: Path) -> Tuple[List[str], List[str]]:
     return [str(path)], [sha256_file(path)]
 
 
+def _system_path_token(system_id: object) -> str:
+    # Distinguish identifiers that have the same display slug (e.g. A/B and A B).
+    digest = hashlib.sha256(str(system_id).encode("utf-8")).hexdigest()[:12]
+    return f"{_slug(system_id)}-{digest}"
+
+
+def _view_artifact_directory(output_root: Path, module_id: str, context: Mapping[str, object]) -> Path:
+    directory = output_root / _slug(module_id)
+    if context.get("system_id") is not None:
+        directory = directory / "per-system" / _system_path_token(context["system_id"])
+    return directory / _slug(context.get("view_id", "all"))
+
+
 def _add_state_population_artifacts(
     output_root: Path,
     path: Path,
@@ -806,7 +820,7 @@ def _add_state_population_artifacts(
     if not rows:
         return
     context = _report_context(path, report)
-    directory = output_root / _slug(module_id) / _slug(context.get("view_id", "all"))
+    directory = _view_artifact_directory(output_root, module_id, context)
     table_path = directory / "state-populations.csv"
     figure_path = directory / "state-populations.svg"
     _write_csv(table_path, (
@@ -840,13 +854,85 @@ def _add_state_population_artifacts(
     ))
 
 
+def _fes_grid_artifacts(output_root: Path, path: Path, report: Mapping[str, object],
+                        artifacts: List[Dict[str, object]]) -> None:
+    """Export retained grids; do not recalculate smoothing or energy offsets."""
+    view = _report_context(path, report)
+    directory = _view_artifact_directory(output_root, "pca_fes_basins", view)
+    sources, hashes = _source(path)
+    primary_sigma = report.get("primary_smoothing_sigma_bins")
+    basis = report.get("pca_basis") or {}
+    seen = {}
+
+    def add(landscape, sigma, system=None):
+        if not isinstance(landscape, dict):
+            return
+        system_id = system.get("system_id") if system is not None else None
+        key = (system is not None, system_id, sigma)
+        if key in seen:
+            if seen[key] != landscape:
+                raise PresentationArtifactError("conflicting FES grids for the same system and smoothing level")
+            return
+        seen[key] = landscape
+        primary = system is None and sigma == primary_sigma
+        normalization = (system.get("normalization_scope", "within_system") if system is not None
+                         else "within_system" if "system_id" in view else "pooled")
+        context = {**view, "smoothing_sigma_bins": sigma}
+        if system is not None:
+            context.update(system_id=system_id, normalization_scope=normalization)
+        metadata = {
+            "view_id": view.get("view_id"),
+            "analysis_scope": view.get("analysis_scope"),
+            "system_id": system_id if system is not None else view.get("system_id"),
+            "normalization_scope": normalization,
+            "common_grid_with_pooled_landscape": system.get("common_grid_with_pooled_landscape")
+            if system is not None else None,
+            "landscape_kind": report.get("landscape_kind"),
+            "temperature_kelvin": report.get("temperature_kelvin"),
+            "x_pca_component": basis.get("x_component"),
+            "y_pca_component": basis.get("y_component"),
+            "basis_weighting": basis.get("basis_weighting"),
+            "smoothing_sigma_bins": sigma,
+            "is_primary_smoothing": sigma == primary_sigma,
+        }
+        owner = _system_path_token(system_id) if system is not None else "pooled"
+        table_path = (directory / "primary-fes.csv" if primary else
+                      directory / "grids" / f"{owner}-smoothing-{_slug(sigma)}.csv")
+        cell_count = write_fes_grid(table_path, landscape, metadata)
+        purpose = ("primary_fes" if primary else "per_system_fes_grid" if system is not None
+                   else "smoothing_fes_grid")
+        record = artifact_record(
+            artifact_type="table", module_id="pca_fes_basins", purpose=purpose,
+            title=f"PCA landscape grid: {human_label(system_id) if system is not None else 'pooled observations'}, smoothing {sigma}",
+            relative_path=str(table_path.relative_to(output_root)),
+            source_report_paths=sources, source_report_sha256=hashes,
+            context=context, media_type="text/csv", primary_human_output=primary,
+        )
+        record["numerical_row_count"] = cell_count
+        artifacts.append(record)
+
+    def add_systems(rows, sigma):
+        for system in rows or []:
+            if isinstance(system, dict) and system.get("technical_status") == "complete":
+                add(system.get("landscape"), sigma, system)
+
+    add(report.get("landscape"), primary_sigma)
+    add_systems(report.get("per_system_landscapes"), primary_sigma)
+    for item in report.get("smoothing_landscapes") or []:
+        if isinstance(item, dict):
+            sigma = item.get("smoothing_sigma_bins")
+            add(item.get("landscape"), sigma)
+            add_systems(item.get("per_system_landscapes"), sigma)
+
+
 def _pca_fes_artifacts(output_root: Path, path: Path, report: Mapping[str, object], artifacts: List[Dict[str, object]]) -> None:
     view = _report_context(path, report)
     view_label = human_label(view.get("view_id", "Whole complex"))
     sigma = report.get("primary_smoothing_sigma_bins")
     landscape = report.get("landscape")
     sources, hashes = _source(path)
-    directory = output_root / "pca-fes-basins" / _slug(view.get("view_id", "all"))
+    directory = _view_artifact_directory(output_root, "pca_fes_basins", view)
+    _fes_grid_artifacts(output_root, path, report, artifacts)
     if isinstance(landscape, dict):
         figure_path = directory / "primary-fes.svg"
         basis = report.get("pca_basis")
@@ -900,7 +986,7 @@ def _clustering_artifacts(output_root: Path, path: Path, report: Mapping[str, ob
         if not rows:
             rows = [dict(model)]
         fields = sorted({str(key) for row in rows for key, value in row.items() if not isinstance(value, (dict, list))})
-        directory = output_root / _slug(module_id) / _slug(view.get("view_id", "all"))
+        directory = _view_artifact_directory(output_root, module_id, view)
         table_path = directory / "model-selection.csv"
         _write_csv(table_path, fields, rows)
         sources, hashes = _source(path)
@@ -992,35 +1078,49 @@ def _dccm_artifacts(output_root: Path, path: Path, report: Mapping[str, object],
     atom_rows = atoms if isinstance(atoms, list) else []
     sources, hashes = _source(path)
     matrices: Dict[str, List[List[object]]] = {}
-    directory = output_root / "dccm"
+    view = _report_context(path, report)
+    directory = _view_artifact_directory(output_root, "dccm", view) if view else output_root / "dccm"
+    system_ids = [str(system.get("system_id")) for system in systems]
+    if len(system_ids) != len(set(system_ids)):
+        raise PresentationArtifactError("duplicate DCCM system identifier")
+    tokens = {sid: _slug(sid) for sid in system_ids}
+    if len(set(tokens.values())) != len(tokens):
+        tokens = {sid: _system_path_token(sid) for sid in system_ids}
     for system in systems:
         system_id = str(system.get("system_id"))
         pooled = system.get("frame_pooled_dccm")
         matrix = pooled.get("matrix") if isinstance(pooled, dict) else None
         if not isinstance(matrix, list):
             continue
+        validate_dccm_matrix(matrix, atom_rows)
         matrices[system_id] = matrix
-        figure_path = directory / f"{_slug(system_id)}.svg"
+        figure_path = directory / f"{tokens[system_id]}.svg"
+        table_path = directory / f"{tokens[system_id]}.csv"
+        write_dccm_matrix(table_path, matrix, atom_rows, system_id)
         title = f"{human_label(system_id)} dynamic cross-correlation"
         width, height, body = _matrix_svg(matrix, title, "Correlation", difference=False)
         _write_svg(figure_path, width, height, body, title)
-        artifacts.append(artifact_record(
-            artifact_type="figure", module_id="dccm", purpose="system_matrix",
-            title=title, relative_path=str(figure_path.relative_to(output_root)),
-            source_report_paths=sources, source_report_sha256=hashes,
-            context={"system_id": system_id}, media_type="image/svg+xml",
-        ))
+        for artifact_type, artifact_path, media_type in (
+            ("figure", figure_path, "image/svg+xml"), ("table", table_path, "text/csv"),
+        ):
+            artifacts.append(artifact_record(
+                artifact_type=artifact_type, module_id="dccm", purpose="system_matrix",
+                title=title, relative_path=str(artifact_path.relative_to(output_root)),
+                source_report_paths=sources, source_report_sha256=hashes,
+                context={**view, "system_id": system_id}, media_type=media_type,
+            ))
     for left, right in itertools.combinations(sorted(matrices), 2):
         left_matrix, right_matrix = matrices[left], matrices[right]
-        size = min(len(left_matrix), len(right_matrix))
+        if len(left_matrix) != len(right_matrix):
+            raise PresentationArtifactError("DCCM difference matrices have different dimensions")
+        size = len(left_matrix)
         difference: List[List[Optional[float]]] = []
         values = []
         for row_index in range(size):
             row = []
             left_row = left_matrix[row_index]
             right_row = right_matrix[row_index]
-            width = min(len(left_row), len(right_row), size)
-            for column_index in range(width):
+            for column_index in range(size):
                 left_value = _finite(left_row[column_index])
                 right_value = _finite(right_row[column_index])
                 value = left_value - right_value if left_value is not None and right_value is not None else None
@@ -1030,11 +1130,14 @@ def _dccm_artifacts(output_root: Path, path: Path, report: Mapping[str, object],
             difference.append(row)
         values.sort(reverse=True)
         top = values[:50]
-        pair_context = {"left_system_id": left, "right_system_id": right}
+        pair_context = {**view, "left_system_id": left, "right_system_id": right}
         if top:
             pair_context.update({"atom_i": top[0][2], "atom_j": top[0][3]})
-        figure_path = directory / "comparisons" / f"{_slug(left)}-minus-{_slug(right)}.svg"
-        table_path = directory / "comparisons" / f"{_slug(left)}-minus-{_slug(right)}.csv"
+        figure_path = directory / "comparisons" / f"{tokens[left]}-minus-{tokens[right]}.svg"
+        table_path = directory / "comparisons" / f"{tokens[left]}-minus-{tokens[right]}.csv"
+        full_table_path = table_path.with_name(table_path.stem + "-matrix.csv")
+        write_dccm_matrix(full_table_path, left_matrix, atom_rows, left,
+                          right_matrix=right_matrix, right_system_id=right)
         title = f"Dynamic cross-correlation difference: {human_label(left)} minus {human_label(right)}"
         width, height, body = _matrix_svg(difference, title, "Correlation difference", difference=True)
         _write_svg(figure_path, width, height, body, title)
@@ -1058,6 +1161,7 @@ def _dccm_artifacts(output_root: Path, path: Path, report: Mapping[str, object],
         for artifact_type, purpose, artifact_path, media_type in (
             ("figure", "pairwise_difference", figure_path, "image/svg+xml"),
             ("table", "pairwise_difference", table_path, "text/csv"),
+            ("table", "pairwise_difference_matrix", full_table_path, "text/csv"),
         ):
             artifacts.append(artifact_record(
                 artifact_type=artifact_type, module_id="dccm", purpose=purpose,
