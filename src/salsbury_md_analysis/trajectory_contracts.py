@@ -1,6 +1,7 @@
 """Shared frame-axis and periodic-coordinate execution contracts."""
 
 from __future__ import annotations
+from .static_ensemble import static_ensemble_enabled
 
 import math
 from typing import Dict, Mapping, Optional, Union
@@ -25,6 +26,9 @@ def normalize_segment_timing(
 ) -> Dict[str, object]:
     """Normalize one validated segment timing declaration to ``output_unit``."""
 
+    if static_ensemble_enabled():
+        return {"first_frame_time": 0.0, "frame_interval": 1.0,
+                "unit": "sample", "declared_unit": "sample"}
     timing = segment.get("timing")
     if not isinstance(timing, dict):
         raise TrajectoryContractError("segment timing is required")
@@ -93,6 +97,9 @@ def normalize_segment_axis(
 ) -> Dict[str, object]:
     """Normalize exactly one physical-time or sample-index frame axis."""
 
+    if static_ensemble_enabled():
+        return {"kind": "sample_index",
+                "sample_axis": {"first_sample_index": 0, "sample_interval": 1, "unit": "sample"}}
     has_timing = segment.get("timing") is not None
     has_samples = segment.get("sample_axis") is not None
     if has_timing == has_samples:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .static_ensemble import static_ensemble_enabled, temporal_output_policy
+
 import math
 from collections import Counter, defaultdict
 from itertools import permutations
@@ -603,7 +605,7 @@ def _ion_coordination_geometry_project_serial(
                 metric: sample_summary([float(row["metrics"][metric]) for row in rows])
                 for metric in metric_ids
             },
-            "late_minus_early_metric_means": {
+            "late_minus_early_metric_means": {} if static_ensemble_enabled() else {
                 metric: float(
                     np.mean([row["metrics"][metric] for row in rows[-midpoint:]])
                     - np.mean([row["metrics"][metric] for row in rows[:midpoint]])
@@ -619,7 +621,7 @@ def _ion_coordination_geometry_project_serial(
                 "evaluated_frame_count": len(values),
                 "rms_pair_angle_deviation_degrees": sample_summary(values),
             } for key, values in sorted(geometry_values.items())],
-            "blocks": [{
+            "blocks": [] if static_ensemble_enabled() else [{
                 "block_id": block_id,
                 "frame_count": len(indices),
                 "first_source_frame_index": rows[int(indices[0])]["source_frame_index"],
@@ -632,6 +634,7 @@ def _ion_coordination_geometry_project_serial(
         })
     return {
         "module_id": "ion_coordination_geometry",
+        "temporal_output_policy": temporal_output_policy(),
         "technical_status": "complete", "scientific_status": "not evaluated",
         "project_manifest_path": str(source),
         "project_manifest_sha256": context["project_manifest_sha256"],

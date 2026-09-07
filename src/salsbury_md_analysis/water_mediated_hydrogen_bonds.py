@@ -6,6 +6,7 @@ forming the solute-by-water Cartesian product, and stores only observed paths.
 """
 
 from __future__ import annotations
+from .static_ensemble import static_ensemble_enabled, temporal_output_policy
 
 import math
 from collections import defaultdict
@@ -575,6 +576,8 @@ def _residence_runs(
 ) -> Tuple[List[Dict[str, object]], List[Dict[str, object]]]:
     any_water_runs: List[Dict[str, object]] = []
     same_water_runs: List[Dict[str, object]] = []
+    if static_ensemble_enabled():
+        return any_water_runs, same_water_runs
     grouped: Dict[Tuple[str, str, str], List[Mapping[str, object]]] = defaultdict(list)
     for frame in frame_records:
         grouped[(
@@ -965,6 +968,7 @@ def _water_mediated_hydrogen_bond_networks_project_serial(
         "bridge_occupancies": occupancies,
         "any_water_bridge_residence_runs": any_water_runs,
         "same_water_bridge_residence_runs": same_water_runs,
+        "temporal_output_policy": temporal_output_policy(),
         "network_nodes": [
             {"system_id": key[0], "replica_id": key[1], "segment_id": key[2],
              "endpoint_atom_index": key[3], **values}
