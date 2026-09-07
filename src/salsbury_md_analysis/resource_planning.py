@@ -1685,6 +1685,11 @@ def plan_campaign_resource_budget(
             retained = [
                 integer_stride_selected_count(value, stride) for value in source
             ]
+            # A trial stride may exceed the length of a nonempty source.
+            # Reject that candidate before invoking the scientific validator;
+            # it expects positive selected counts, not trial zero-coverage rows.
+            if any(count <= 0 for count in retained):
+                return False
             embedded_contract = row.get("scientific_sampling_requirements")
             profile = (
                 profile_from_contract(embedded_contract)
@@ -1810,9 +1815,27 @@ def plan_campaign_resource_budget(
             # Replicas are indivisible work units, submitted in source order.
             # Serial setup/reduction is never divided by worker concurrency.
             serial_hours = min(cpu_hours, float(row["fixed_cpu_hours"]))
+            cache_source = row.get("coordinate_cache_raw_source_frames_per_replica")
+            cache_scan = row.get("coordinate_cache_full_scan_fraction")
+            if row.get("module_id") == "coordinate_cache" and cache_source is not None:
+                # Full-stream scanning is fixed with respect to the retained
+                # stride, but is still parallel work across original replicas.
+                serial_hours = min(cpu_hours, float(
+                    row.get("coordinate_cache_original_fixed_cpu_hours", 0.0)
+                ))
             worker_hours = max(0.0, cpu_hours - serial_hours)
             workers = int(layout["declared_worker_count"])
             weights = list(counts) if len(counts) == workers else [1] * workers
+            if (
+                row.get("module_id") == "coordinate_cache"
+                and isinstance(cache_source, list)
+                and len(cache_source) == workers == len(counts)
+                and isinstance(cache_scan, (int, float))
+            ):
+                weights = [
+                    float(cache_scan) * source + (1.0 - float(cache_scan)) * kept
+                    for source, kept in zip(cache_source, counts)
+                ]
             total_weight = sum(weights)
             lanes = [0.0] * current_slots
             for weight in weights:

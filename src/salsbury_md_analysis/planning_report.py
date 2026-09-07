@@ -164,7 +164,21 @@ def _sampling_row(task: Mapping[str, object]) -> Dict[str, object]:
     retained_intervals = [value * effective_stride for value in raw_intervals]
     minimum_frames = _integer_or_none(task.get("minimum_frames_per_replica"))
     minimum_total = _integer_or_none(task.get("minimum_selected_physical_frame_count"))
-    below_floor = bool(task.get("source_limited_below_declared_minimum", False))
+    assessment = _mapping(task.get("scientific_sampling_assessment"))
+    source_limited = bool(task.get("source_limited_below_declared_minimum", False))
+    source_limited = source_limited or assessment.get("raw_coverage_status") == "source_limited_below_standard"
+    all_available = bool(source) and selected == source
+    if "keep_enabled" in assessment:
+        below_floor = assessment["keep_enabled"] is not True
+    else:
+        # Legacy/preprocessing rows have no estimator assessment. Exhausting
+        # a short input is distinct from discarding data below a declared floor.
+        below_floor = source_limited and not all_available
+    floor_status = (
+        "below_floor" if below_floor else
+        "source_exhausted" if source_limited and all_available else
+        "source_limited" if source_limited else "met_or_source_exhausted"
+    )
     return {
         "task_id": task_id,
         "module_id": module_id,
@@ -197,7 +211,9 @@ def _sampling_row(task: Mapping[str, object]) -> Dict[str, object]:
         "retained_frame_spacing_summary": _range_summary(retained_intervals),
         "minimum_frames_per_replica": minimum_frames,
         "minimum_selected_physical_frame_count": minimum_total,
-        "sampling_floor_status": "below_floor" if below_floor else "met_or_source_exhausted",
+        "sampling_floor_status": floor_status,
+        "all_available_source_frames_selected": all_available,
+        "source_limited_below_declared_minimum": source_limited,
         "minimum_frame_scope": task.get("minimum_frame_scope"),
     }
 
@@ -491,6 +507,12 @@ def build_planning_report(root: Path) -> Dict[str, object]:
         raise PlanningReportError("planning report inputs must be JSON objects")
 
     rows = [_sampling_row(_mapping(task)) for task in _sequence(resources.get("tasks"))]
+    trajectory_mode = _mapping(config.get("execution")).get("trajectory_mode", "continuous")
+    if trajectory_mode == "static_ensemble":
+        for row in rows:
+            row["raw_frame_interval_ns_per_replica"] = []
+            row["retained_frame_spacing_ns_per_replica"] = []
+            row["retained_frame_spacing_summary"] = "not applicable (discontinuous frames)"
     rows.sort(key=lambda row: (
         row["dependency_stage"] if row["dependency_stage"] is not None else 10**9,
         row["task_id"],
@@ -504,6 +526,7 @@ def build_planning_report(root: Path) -> Dict[str, object]:
     ]
     family_summaries = _family_summaries(rows, disabled, deferred, automatic)
     below = [row for row in rows if row["sampling_floor_status"] == "below_floor"]
+    source_limited = [row for row in rows if row["source_limited_below_declared_minimum"]]
     return {
         "planning_report_schema": "salsbury-user-planning-report-v1",
         "technical_status": resources.get("technical_status"),
@@ -537,11 +560,14 @@ def build_planning_report(root: Path) -> Dict[str, object]:
         "sampling": {
             "task_count": len(rows),
             "below_floor_task_count": len(below),
+            "source_limited_task_count": len(source_limited),
+            "source_limited_task_ids": [row["task_id"] for row in source_limited],
             "coordinate_cache": resources.get("coordinate_cache_coupling"),
             "analysis_families": family_summaries,
             "tasks": rows,
         },
         "features": {
+            "comparison_method_omissions": resources.get("comparison_clustering_consistency_skips", {}),
             "explicitly_disabled": disabled,
             "deferred_or_inapplicable": deferred,
             "automatic_module_count": sum(
@@ -605,6 +631,7 @@ def render_planning_report_markdown(report: Mapping[str, object]) -> str:
         f"- Campaign wall-time cap: `{envelope.get('maximum_wall_hours')} hours`",
         f"- Planned sampling tasks: `{sampling.get('task_count')}`",
         f"- Tasks below a declared sampling floor: `{sampling.get('below_floor_task_count')}`",
+        f"- Source-limited tasks: `{sampling.get('source_limited_task_count', 0)}`. Short supplied inputs are reported separately; using all available frames does not establish adequate scientific sampling.",
         "",
         "## How to read the strides",
         "",
@@ -687,6 +714,10 @@ def render_planning_report_markdown(report: Mapping[str, object]) -> str:
             ((row.get("id"), row.get("category"), row.get("reason")) for row in disabled),
         ) if disabled else "Nothing was explicitly disabled."
     )
+    omissions = _mapping(features.get("comparison_method_omissions"))
+    if omissions:
+        lines.extend(["", "## Comparison methods omitted", "",
+                      _markdown_table(("Task", "Reason"), sorted(omissions.items()))])
     lines.extend(["", "## Deferred, inapplicable, or optional utilities", ""])
     deferred = [
         _mapping(value) for value in _sequence(features.get("deferred_or_inapplicable"))

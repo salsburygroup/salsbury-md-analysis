@@ -1,6 +1,7 @@
 """Deterministic PCA occupancy landscapes, thermodynamic FES, and basins."""
 
 from __future__ import annotations
+from .static_ensemble import static_ensemble_enabled
 
 import math
 from pathlib import Path
@@ -596,6 +597,8 @@ def _population_tables(
         })
 
     block_populations: List[Dict[str, object]] = []
+    if static_ensemble_enabled():
+        return replica_populations, block_populations
     segment_keys = sorted({
         (
             str(row["system_id"]), str(row["replica_id"]),

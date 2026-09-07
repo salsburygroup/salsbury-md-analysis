@@ -7,6 +7,12 @@ connectivity, removes water, and writes an unaligned `molecular_payload` DCD.
 The payload retains protein, nucleic acid, hydrogens, ligands, cofactors, and
 ions in their original atom order.
 
+For filtered, discontinuous frames, prepare the workflow with
+`execution.trajectory_mode: "static_ensemble"` in the analysis configuration.
+Each frame is then made whole independently. The cache records this policy and
+cannot be reused as a continuously unwrapped trajectory. See
+[the configuration guide](CONFIGURATION_AND_FINAL_REPORTING.md#discontinuous-or-filtered-ensembles).
+
 ```bash
 PYTHONPATH=src python -m salsbury_md_analysis build-coordinate-cache \
   path/to/system.json --output path/to/new-cache

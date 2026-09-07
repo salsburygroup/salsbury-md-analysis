@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, Mapping, Sequence
 
 from .manifests import load_json
+from .static_ensemble import STATIC_DISABLED_MODULES, validate_trajectory_mode
 
 
 class AnalysisConfigError(ValueError):
@@ -313,6 +314,7 @@ def default_analysis_config(
         },
         "clustering": {
             "feature_space": "tica",
+            "comparison_method_policy": "consistent",
             "methods": {
                 method: {"enabled": method != "hdbscan"}
                 for method in CLUSTERING_METHODS
@@ -354,6 +356,7 @@ def default_analysis_config(
             },
         },
         "execution": {
+            "trajectory_mode": "continuous",
             "maximum_parallel_cpus": 16,
             "maximum_hours_per_cpu": 24.0,
             "maximum_memory_gib": 128.0,
@@ -620,11 +623,15 @@ def load_analysis_config(
     raw_clustering = supplied.get("clustering", {})
     if (
         not isinstance(raw_clustering, dict)
-        or set(raw_clustering).difference({"feature_space", "methods"})
+        or set(raw_clustering).difference({"feature_space", "methods", "comparison_method_policy"})
     ):
         raise AnalysisConfigError("clustering configuration is invalid")
     clustering = config["clustering"]
     assert isinstance(clustering, dict)
+    method_policy = raw_clustering.get("comparison_method_policy", "consistent")
+    if method_policy not in {"consistent", "independent"}:
+        raise AnalysisConfigError("clustering.comparison_method_policy must be consistent or independent")
+    clustering["comparison_method_policy"] = method_policy
     if "feature_space" in raw_clustering:
         clustering["feature_space"] = raw_clustering["feature_space"]
     if clustering["feature_space"] not in {"tica", "common_pca"}:
@@ -820,13 +827,17 @@ def load_analysis_config(
         "coordinate_cache_materialization",
         "coordinate_cache_full_scan_fraction", "overall_stride_candidates",
         "resource_calibration_catalog", "maximum_total_cpu_hours",
-        "autorecovery", "maximum_task_attempts",
+        "autorecovery", "maximum_task_attempts", "trajectory_mode",
     }
     if not isinstance(raw_execution, dict) or set(raw_execution).difference(allowed_execution):
         raise AnalysisConfigError("execution configuration is invalid")
     execution = config["execution"]
     assert isinstance(execution, dict)
     execution.update(deepcopy(raw_execution))
+    try:
+        validate_trajectory_mode(execution["trajectory_mode"])
+    except ValueError as exc:
+        raise AnalysisConfigError(str(exc)) from exc
     maximum_cpus = execution["maximum_parallel_cpus"]
     if isinstance(maximum_cpus, bool) or not isinstance(maximum_cpus, int) or maximum_cpus <= 0:
         raise AnalysisConfigError("execution.maximum_parallel_cpus must be a positive integer")
@@ -994,6 +1005,21 @@ def load_analysis_config(
     execution["maximum_total_cpu_hours"] = (
         int(maximum_cpus) * float(execution["maximum_hours_per_cpu"])
     )
+    if execution["trajectory_mode"] == "static_ensemble":
+        for module_id in STATIC_DISABLED_MODULES:
+            if module_id in config["modules"]:
+                config["modules"][module_id]["enabled"] = False
+        config["clustering"]["feature_space"] = "common_pca"
+        config["community_analysis"]["pald"]["community_msm_enabled"] = False
+        config["sampling"]["b_vs_2b_sensitivity"] = False
+        config["sampling"]["optional_replica_diagnostics"] = False
+        resolved_rows, _ = _module_configuration_metadata(
+            module_ids, clustering_feature_space="common_pca",
+            protected_modules=sorted(protected_modules),
+        )
+        for module_id, row in config["modules"].items():
+            for field in ("depends_on", "turning_off_also_disables"):
+                row[field] = resolved_rows[module_id][field]
     config = _apply_planning_modes(
         config,
         protected_modules=protected_modules,

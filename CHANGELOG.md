@@ -14,6 +14,15 @@
 
 ## Unreleased
 
+- Add explicit static-ensemble configuration for discontinuous frames, with
+  independent make-whole coordinates, sample-index axes, and kinetic methods
+  disabled. Keep static and continuous cache reuse separate.
+- Reject zero-coverage stride candidates, cost full cache scans across replica
+  workers, and resolve context-array completion reports for recovery.
+- Recheck alternative-clustering method consistency across matching comparison
+  views after replanning. Separate source-limited inputs from sampling failures
+  in the human planning report.
+
 - Export complete FES grids at every retained smoothing level and full
   per-system DCCM and DCCM-difference matrices as CSV. Preserve numerical
   precision, missing-value status, units, and source hashes without rerunning
