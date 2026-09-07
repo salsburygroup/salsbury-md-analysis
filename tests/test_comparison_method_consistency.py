@@ -11,7 +11,7 @@ class ComparisonConsistencyTests(unittest.TestCase):
     def test_rechecks_current_projection_tasks_and_preserves_unmatched_views(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            views = ["global_common_heavy", "system_A__global_common_heavy", "system_B__global_common_heavy", "system_A__protein_dna_interface"]
+            views = ["global_common_heavy", "system_A__global_common_heavy", "system_B__variant__global_common_heavy", "system_A__protein_dna_interface"]
             paths = []
             for view in views:
                 path = root / f"project-{view}.json"

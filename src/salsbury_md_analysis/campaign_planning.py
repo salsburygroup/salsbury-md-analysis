@@ -2068,7 +2068,7 @@ def _consistent_comparison_clustering_tasks(
     groups: Dict[str, Dict[str, set[str]]] = {}
     for path in view_paths:
         view_id = path.name[len("project-"):-len(".json")]
-        family = view_id.split("__", 1)[-1] if view_id.startswith("system_") else view_id
+        family = view_id.rsplit("__", 1)[-1] if view_id.startswith("system_") else view_id
         project = load_json(path)
         alternative = project.get("definitions", {}).get("alternative_clustering", {})
         if "alternative_clustering" not in project.get("requested_modules", []):
