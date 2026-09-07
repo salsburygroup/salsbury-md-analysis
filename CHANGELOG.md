@@ -14,6 +14,11 @@
 
 ## Unreleased
 
+- Export complete FES grids at every retained smoothing level and full
+  per-system DCCM and DCCM-difference matrices as CSV. Preserve numerical
+  precision, missing-value status, units, and source hashes without rerunning
+  analysis. Keep per-system conformational-view artifacts in separate paths.
+
 - Let node sweeps compute either a node-count/wall-time/information Pareto
   front or a wall-time/information front within an explicit node constraint.
   Reports record the selected objective mode and the applied node ceiling.

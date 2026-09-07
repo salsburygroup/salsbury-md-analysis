@@ -26,13 +26,14 @@ files from immutable results.
 ## What the primary figures show
 
 - Free-energy surfaces use the configured primary smoothing level, labeled PCA
-  axes, and a relative-free-energy legend. Separate tables retain smoothing
-  sensitivity and basin definitions.
+  axes, and a relative-free-energy legend. CSV tables retain the full grids at
+  every saved smoothing level, plus smoothing sensitivity and basin populations.
 - FES basins and clustering states include per-system population tables and
   stacked bar charts. Clustering model tables identify the method, feature
   source, state count, and silhouette value.
 - DCCM reports include system matrices and pairwise difference matrices with
-  the mapped atom labels retained in CSV tables.
+  the mapped atom labels retained in full-matrix CSV tables. A separate table
+  lists the 50 largest off-diagonal differences.
 - RMSD remains a replica-resolved time series. Radius of gyration is presented
   first as a Scott-rule histogram, with its time series kept as a secondary
   view.
@@ -45,6 +46,66 @@ files from immutable results.
 - A module without a specialized adapter receives a labeled numerical summary
   and table. If no truthful numerical presentation can be made, the reporting
   stage fails instead of inventing a plot.
+
+## Replotting FES and DCCM results
+
+The following files are ordinary UTF-8, comma-separated text. Import them into
+Origin, Excel, R, Python, or another plotting program; no JSON reader or
+interactive viewer is required.
+
+| Result | File under `presentation-artifacts/` | Contents |
+| --- | --- | --- |
+| Primary pooled FES | `pca-fes-basins/<view>/primary-fes.csv` | Every grid cell at the primary smoothing level |
+| Other pooled FES smoothing levels | `pca-fes-basins/<view>/grids/pooled-smoothing-<sigma>.csv` | Every grid cell at each saved alternative level |
+| Per-system FES on the shared basis | `pca-fes-basins/<view>/grids/<system-token>-smoothing-<sigma>.csv` | Each system's separately normalized grid at every saved level |
+| Individual-system DCCM | `dccm/<system>.csv` | All N × N entries, including the diagonal and both triangles |
+| Full DCCM difference | `dccm/comparisons/<left>-minus-<right>-matrix.csv` | Both source correlations and left minus right for every matrix entry |
+| Largest DCCM differences | `dccm/comparisons/<left>-minus-<right>.csv` | The existing top-50 off-diagonal summary, not the full matrix |
+
+Paths for separately run per-system conformational views include an additional
+`per-system/<system-token>/` directory. Tokens include a short hash where needed
+to distinguish system names that would otherwise produce the same filename.
+The presentation manifest records the exact path and original system identifier.
+
+FES tables identify the system, PCA components, smoothing level, normalization
+scope, and temperature when those are recorded in the source report. Coordinates,
+bin widths, and grid bounds are in ångströms. Energy is in kcal/mol and probability
+density is in Å⁻². Each row retains the raw count and probability, smoothed count
+and probability, basin ID, and reported energy or occupancy score. Use the
+zero-based `x_bin` and `y_bin` columns, or the labeled bin centers, to reconstruct
+the grid; do not assume it is square.
+
+For nonthermodynamic results, the occupancy-score column is populated instead
+of inventing an energy. Missing or nonfinite energy, score, or correlation values
+are blank, with status columns distinguishing missing, NaN, positive infinity,
+negative infinity, and values not reported. A measured zero remains zero.
+Missing legacy metadata is left blank. The exporter does not interpolate,
+renormalize, resmooth, round, or refit the results.
+
+Per-system FES grids use their own normalization and energy zero. Their common
+PCA basis and grid support distribution comparisons, not comparisons of absolute
+free energies. Basin IDs from independently constructed surfaces need not refer
+to the same conformation.
+
+DCCM tables are in long form: `atom_i` is the zero-based matrix row and
+`atom_j` is the zero-based column. Correlations and their differences are
+dimensionless. Atom labels include chain, residue, insertion code, and atom
+name when supplied; older reports without identities retain matrix indices.
+Reconstruct the square array from these indices to make a heat map. Full
+matrices can create large CSV files; rows are written incrementally without
+building a second tabular copy in memory.
+
+To add these tables to an older completed analysis, rebuild only its
+presentation files in a new directory:
+
+```bash
+salsbury-md-analysis build-presentation-artifacts /path/to/completed-analysis \
+  --output /path/to/new-presentation-files
+```
+
+This reads the saved reports without rerunning trajectories or changing accepted
+results. It exports only grids and matrices present in those reports. Each new
+CSV is registered with its content hash and source-report hash.
 
 ## Findings and exact links
 
