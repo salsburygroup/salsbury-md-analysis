@@ -55,7 +55,7 @@ jobs:
           artifact-venv/bin/python -m pip install scikit-learn hdbscan
           artifact-venv/bin/python -m pip check
           cd "$RUNNER_TEMP"
-          "$GITHUB_WORKSPACE/artifact-venv/bin/python" -m unittest discover -s "$GITHUB_WORKSPACE/tests" -t "$GITHUB_WORKSPACE"
+          PYTHONPATH="$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/artifact-venv/bin/python" -m unittest discover -s "$GITHUB_WORKSPACE/tests"
       - name: Record artifact hashes
         run: sha256sum dist/*
       - uses: actions/upload-artifact@v7

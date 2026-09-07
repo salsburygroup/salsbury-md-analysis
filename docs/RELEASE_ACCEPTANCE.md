@@ -15,14 +15,24 @@ system or biomolecular setup has passed a fresh end-to-end test.
 | Plan-only and recovery | Planning launched no analysis; completed resume preserved report hashes and timestamps |
 | Offline viewer | Chrome navigation, images, packaged links, and no-network checks passed |
 | TBA presentation replay | Preserved the 706 candidates in the current source index; no trajectory analysis rerun |
-| Fresh Linux candidate test | Pending: transfer of the new candidate to the validation host was blocked |
-| Windows WSL2 | Pending a real Windows-host test |
+| Fresh Linux wheel installs and suites | Main: 735 run, one OpenMM skip; experimental: 830 run, one OpenMM skip; no failures |
+| Installed Linux terminal workflow | Each branch completed 31 tasks and 28 reports; accepted resume preserved outputs |
+| Fresh candidate two-node Slurm test | Each branch completed 13 jobs, 10 analysis reports, and 4 supporting artifacts |
+| Windows WSL2 | Deferred: no Windows test host is available; WSL2 is not validated |
 | Unfamiliar-person tutorial trial | Pending; automated execution is not a substitute |
 
-The earlier multi-node Slurm acceptance tested the preceding candidate. Keep
-that evidence, but do not label it a live test of the new submission wrapper.
-The current source tests exercise its dependency, resource, ledger, active-job,
-and recovery contracts.
+The fresh Slurm trials tested main `3185cda` and experimental `acfbe3f`.
+They ran sequentially, each within two physical hosts, four allocated CPUs,
+and 12 GiB of requested memory. Each used three identical copies of a
+100-frame fixture, with all strides set to 1. These copies test dispatch and
+pooling, not independent replicas. Report, input, cache, and companion hashes
+passed; accepted resume submitted no new work.
+
+The validation launcher explicitly restricted physical hosts. Logical node
+slots alone do not bind separate Slurm jobs to a fixed set of hosts. A site
+requiring that restriction must provide a placement policy or shared
+allocation. Node-loss, OOM, and long checkpoint recovery were not injected in
+these live trials.
 
 The NEMO run is a software fixture, not an assessment of its molecular
 ensemble. The source suites cover other chemistry, oligomer, ion, planner,
@@ -31,8 +41,10 @@ of system.
 
 ## Before a public release
 
-1. Repeat the installed test on Linux, including the reviewed Slurm wrapper.
-2. Run the tutorial inside WSL2; do not advertise native Windows execution.
+1. Retain the accepted macOS, Linux, and Slurm evidence with the tested revisions.
+   Repeat affected checks if executable code or dependencies change.
+2. Keep WSL2 outside the validated-platform claim until a Windows-host test
+   is available. Native Windows execution is unsupported.
 3. Have someone who did not develop the package follow the tutorial without
    an AI assistant. Record every undocumented input or manual repair.
 4. Review the opening findings against the complete figures and tables.
@@ -41,6 +53,8 @@ of system.
    external-executable versions. Tag that candidate only after review.
 
 ## Human trial checklist
+
+Use the [review worksheet](USER_TRIAL.md) to record the result.
 
 Start with a clean machine or environment. Record the OS and Python version.
 Use the tutorial to install, create a study, change its resource envelope,
