@@ -564,9 +564,11 @@ class PeriodicFrameProcessor:
                 raise PeriodicReconstructionError(
                     "preprocessed coordinate cache report is not technically complete"
                 )
-            if report.get("coordinate_representation") != (
-                "continuous_unwrap_unaligned_strided"
-            ):
+            expected_representation = (
+                "independent_make_whole_unaligned_strided" if static_ensemble_enabled()
+                else "continuous_unwrap_unaligned_strided"
+            )
+            if report.get("coordinate_representation") != expected_representation:
                 raise PeriodicReconstructionError(
                     "preprocessed coordinate cache report has the wrong representation"
                 )
