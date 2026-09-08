@@ -736,7 +736,7 @@ def _sklearn_partition(
             n_components=k, covariance_type="tied", n_init=3, random_state=seed
         )
         raw = model.fit_predict(values)
-        centers = model.means_[sorted(set(raw.tolist()))]
+        centers = model.means_
         lower_bound = np.asarray(model.lower_bound_, dtype=float).reshape(-1)
         if lower_bound.size != 1:
             raise AlternativeClusteringError(
@@ -761,9 +761,19 @@ def _sklearn_partition(
     else:  # pragma: no cover - guarded by settings
         raise AlternativeClusteringError(f"unknown scikit-learn algorithm: {algorithm}")
     raw_labels = [int(value) for value in raw]
-    unique = sorted(set(raw_labels))
+    # A fitted mixture component can have no winning training observations
+    # and still win posterior assignment for an out-of-sample observation.
+    # Keep its model identity and actual center; do not invent a new cluster
+    # or substitute a nearest-center assignment for posterior prediction.
+    predicted = (
+        [int(value) for value in model.predict(assignment_values)]
+        if assignment_values is not None else []
+    )
+    unique = sorted(set(raw_labels) | set(predicted))
+    if any(label < 0 or label >= len(centers) for label in unique):
+        raise AlternativeClusteringError(f"{algorithm} returned an invalid model label")
     remap = {label: index for index, label in enumerate(unique)}
-    center_vectors = [tuple(float(x) for x in centers[index]) for index in range(len(unique))]
+    center_vectors = [tuple(float(x) for x in centers[label]) for label in unique]
     order = sorted(range(len(center_vectors)), key=lambda index: center_vectors[index])
     canonical = {old: new for new, old in enumerate(order)}
     labels = [canonical[remap[label]] for label in raw_labels]
@@ -779,14 +789,12 @@ def _sklearn_partition(
         **diagnostics,
     }
     if assignment_values is not None:
-        predicted = [int(value) for value in model.predict(assignment_values)]
-        if any(label not in remap for label in predicted):
-            raise AlternativeClusteringError(
-                f"{algorithm} predicted a cluster absent from its fitted partition"
-            )
         result["_full_assignments"] = [
             canonical[remap[label]] for label in predicted
         ]
+        result["assignment_only_model_component_count"] = len(
+            set(predicted) - set(raw_labels)
+        )
     return result
 
 

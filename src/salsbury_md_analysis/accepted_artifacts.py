@@ -102,6 +102,13 @@ def validate_complete_report(path: Path, *, expected_module=None, expected_proje
             raise ArtifactValidationError("report/summary hash mismatch")
         if summary.get("module_id", module) != module:
             raise ArtifactValidationError("report/summary module mismatch")
+        if summary.get("sidecar_schema") == "salsbury-derived-report-sidecar-v1":
+            for record in summary.get("source_report_records", []) + summary.get("input_records", []):
+                source = Path(record["path"]).resolve(strict=True)
+                if sha256_file(source) != record["sha256"]:
+                    raise ArtifactValidationError("derived report source hash mismatch")
+            for record in summary.get("source_report_records", []):
+                validate_complete_report(Path(record["path"]), _seen=ancestors)
     # Artifact records have explicit file identity. Arbitrary textual paths
     # without a checksum are not evidence of a required companion.
     artifact_base = path.parent

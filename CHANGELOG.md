@@ -14,6 +14,14 @@
 
 ## Unreleased
 
+- Accept independently reconstructed caches in static-ensemble structural QC,
+  while keeping continuous-trajectory cache validation separate.
+- Preserve Gaussian-mixture component identities when projected observations
+  occupy a component with no winning labels in the fitting sample.
+- Publish checksum companions for RMSF inference and integrated comparisons;
+  validate their source hashes without counting upstream computation twice.
+- Export RMSF permutation effects and p-values as labeled figures and CSV tables.
+
 - Add explicit static-ensemble configuration for discontinuous frames, with
   independent make-whole coordinates, sample-index axes, and kinetic methods
   disabled. Keep static and continuous cache reuse separate.
