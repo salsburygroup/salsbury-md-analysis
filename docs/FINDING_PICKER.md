@@ -166,8 +166,23 @@ context is never transferred to another finding. IDs can change after a new
 picker run, so review this mapping when regenerating the candidate set.
 
 Structural panels must use actual coordinates and match the stated system,
-state, and selection rule. An author-supplied mapping records that association;
-the renderer checks file hashes, not the scientific correctness of the view.
+state, and selection rule. Their manifest record has purpose `structural_figure`
+or `representative_structure_figure` and a `molecular_evidence` object containing
+`finding_signature_sha256`, `coordinate_artifacts` (artifact IDs and SHA-256s),
+`saved_view_artifact_id`, and `saved_view_sha256`. Generate the signature with
+`salsbury_md_analysis.molecular_evidence.finding_signature(finding)`; it binds
+the scientific statement, module, systems, view, and target rather than rank.
+The coordinate records must be verified `structure` artifacts. The saved view
+must be a verified `table` artifact with purpose `molecular_saved_view`.
+
+The optional companion renderer is documented in
+[Molecular panels](https://github.com/salsburygroup/salsbury-md-analysis-interactive/blob/main/docs/MOLECULAR_PANELS.md).
+It accepts explicitly selected, already-aligned sampled PDBs and records the
+frame identities, selection rules, and common camera. VMD or other molecular
+renderers may supply the same manifest contract. A missing or mismatched panel
+stays in the review list; an ordinary plot cannot clear that review item by
+being named in `structural_artifact_ids`. The checks establish file identity,
+not the scientific correctness of the view.
 Keep captions, counts, units, and uncertainty consistent with the source table.
 
 Keep these reports alongside `presentation-artifacts` and the original analysis

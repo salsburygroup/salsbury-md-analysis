@@ -1901,6 +1901,13 @@ def _export_inventory_artifacts(
     output_root: Path, path: Path, report: Mapping[str, object], module_id: str,
     artifacts: List[Dict[str, object]],
 ) -> None:
+    export_context = {
+        **_report_context(path, report),
+        "export_id": report.get("settings", {}).get("export_id"),
+        "source_module_id": report.get("source_module_id"),
+        "export_source_key": hashlib.sha256(str(path).encode()).hexdigest()[:20],
+    }
+    export_directory_key = hashlib.sha256(json.dumps(export_context, sort_keys=True).encode()).hexdigest()[:20]
     if module_id == "representative_frames":
         source_rows = [row for row in report.get("representatives", []) if isinstance(row, dict)]
         rows = [{
@@ -1931,10 +1938,10 @@ def _export_inventory_artifacts(
     _register_pair(
         output_root, path, artifacts, module_id=module_id, purpose=purpose,
         title=title,
-        directory=output_root / _slug(module_id) / _slug(_report_context(path, report).get("view_id", "all")),
+        directory=output_root / _slug(module_id) / export_directory_key,
         rows=rows, fieldnames=sorted({str(key) for row in rows for key in row}),
         svg=_bar_svg(rows, title, "state", value_key, "Output frame count" if value_key != "count" else "Representative count"),
-        context=_report_context(path, report),
+        context=export_context,
     )
     if module_id != "state_coordinate_exports":
         return
@@ -1964,11 +1971,11 @@ def _export_inventory_artifacts(
                 output_root, path, artifacts,
                 module_id="state_conditioned_ion_stability",
                 purpose="state_ion_sites", title=title,
-                directory=output_root / "state-conditioned-ion-stability",
+                directory=output_root / "state-conditioned-ion-stability" / export_directory_key,
                 rows=site_rows,
                 fieldnames=("site", "system_id", "state_id", "element", "site_id", "occupancy_fraction", "positional_rmsf_angstrom", "stable_for_default_state_view"),
                 svg=_bar_svg(site_rows, title, "site", "occupancy_fraction", "State-conditioned occupancy fraction", maximum_rows=60),
-                context=_report_context(path, report),
+                context=export_context,
             )
     export_root_raw = report.get("export_directory")
     export_root = Path(str(export_root_raw)) if export_root_raw else None
@@ -1988,7 +1995,19 @@ def _export_inventory_artifacts(
             system_id = str(output.get("system_id", representative.get("system_id", "all")))
             state_id = output.get("state_id", representative.get("state_id"))
             rank = representative.get("representative_rank", 1)
-            relative = Path("state-structures") / _slug(system_id) / f"state-{state_id}" / f"representative-{rank}.pdb"
+            coordinate_hash = sha256_file(candidate)
+            if representative.get("sha256") and representative["sha256"] != coordinate_hash:
+                raise PresentationArtifactError(f"Representative coordinate hash mismatch: {candidate}")
+            # State numbers are local to a particular export/model, not global
+            # identities. Include the source and coordinates to prevent a later
+            # per-system or alternative-state export overwriting this PDB.
+            identity = {"report": str(path), "export_directory": str(export_root),
+                        "source_module_id": report.get("source_module_id"),
+                        "export_id": report.get("settings", {}).get("export_id"),
+                        "system_id": system_id, "state_id": state_id, "rank": rank,
+                        "coordinate_sha256": coordinate_hash}
+            export_key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:20]
+            relative = Path("state-structures") / export_key / _slug(system_id) / f"state-{state_id}" / f"representative-{rank}.pdb"
             copied = output_root / relative
             copied.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(candidate, copied)
@@ -1999,8 +2018,14 @@ def _export_inventory_artifacts(
                 relative_path=str(relative), source_report_paths=sources,
                 source_report_sha256=hashes,
                 context={
-                    **_report_context(path, report), "system_id": system_id,
+                    **export_context, "system_id": system_id,
                     "state_id": state_id, "representative_rank": rank,
+                    "source_module_id": report.get("source_module_id"),
+                    "export_id": report.get("settings", {}).get("export_id"),
+                    "coordinate_sha256": coordinate_hash,
+                    **{key: representative[key] for key in (
+                        "replica_id", "segment_id", "source_frame_index",
+                        "state_conditioned_stable_ion_ids") if key in representative},
                     "state_conditioned_stable_ion_count": representative.get("state_conditioned_stable_ion_count", 0),
                 },
                 media_type="chemical/x-pdb",
