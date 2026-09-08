@@ -12,6 +12,7 @@ from salsbury_md_analysis.finding_report import (
 from salsbury_md_analysis.finding_picker import prioritize_findings
 from salsbury_md_analysis.finding_picker import _presentation_context_matches
 from salsbury_md_analysis.analysis_config import load_analysis_config, AnalysisConfigError
+from salsbury_md_analysis.molecular_evidence import finding_signature
 
 
 class FindingReaderReportTests(unittest.TestCase):
@@ -165,6 +166,21 @@ class FindingReaderReportTests(unittest.TestCase):
             review = (root / "finding_reader_review.md").read_text()
             self.assertIn("structural claim needs a coordinate-derived panel", review)
             context["finding_context"]["0"]["structural_artifact_ids"] = ["a0", "a2"]
+            # A population plot plus a PDB is insufficient: the figure must
+            # explicitly bind the exact finding, coordinates, and saved view.
+            write_finding_reader_reports(root, output, context)
+            self.assertIn("structural claim needs", (root / "finding_reader_review.md").read_text())
+            manifest_path = root / "presentation-artifacts/presentation-manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            panel, view, structure = manifest["artifacts"][:3]
+            view["purpose"] = "molecular_saved_view"
+            panel["purpose"] = "structural_figure"
+            panel["molecular_evidence"] = {
+                "finding_signature_sha256": finding_signature(output["headline_findings"][0]),
+                "coordinate_artifacts": [{"artifact_id": "a2", "sha256": structure["artifact_sha256"]}],
+                "saved_view_artifact_id": "a1", "saved_view_sha256": view["artifact_sha256"],
+            }
+            manifest_path.write_text(json.dumps(manifest))
             result = write_finding_reader_reports(root, output, context)
             checks = json.loads(Path(result["reader_report_checks_path"]).read_text())
             self.assertFalse(any(gap.get("finding_id") == "0" and "structural claim" in gap["issue"]

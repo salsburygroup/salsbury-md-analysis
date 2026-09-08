@@ -10,6 +10,8 @@ import re
 from pathlib import Path
 from urllib.parse import quote
 
+from .molecular_evidence import panel_matches_finding
+
 
 CONTEXT_FIELDS = {"title", "question", "systems", "comparisons", "population",
                   "weighting", "primary_selection", "methods", "figure_captions", "finding_context"}
@@ -200,9 +202,9 @@ def write_finding_reader_reports(root: Path, findings: dict, context=None):
 
     figure_numbers, table_numbers = {}, {}
 
-    def artifact_links(row):
+    def artifact_links(row, refs=None):
         links = []
-        for ref in row.get("presentation_artifacts", []):
+        for ref in refs if refs is not None else row.get("presentation_artifacts", []):
             aid = ref.get("artifact_id")
             if aid in verified:
                 artifact = by_id[aid]
@@ -253,9 +255,7 @@ def write_finding_reader_reports(root: Path, findings: dict, context=None):
                                       or row.get("module_id") in {"pca_fes_basins", "clustering_kmeans", "dccm", "pooled_rmsf"})
                 if requires_structure:
                     has_coordinates = any(a.get("artifact_type") == "structure" for a in structures)
-                    has_panel = any(a.get("artifact_type") == "figure" and
-                                    (a["artifact_id"] in structural_ids or
-                                     a.get("purpose") in {"structural_figure", "representative_structure_figure"})
+                    has_panel = any(panel_matches_finding(a, row, by_id, verified)
                                     for a in structures)
                     if not has_coordinates or not has_panel:
                         gaps.append({"finding_id": fid, "issue": "structural claim needs a coordinate-derived panel and its sampled structure",
@@ -275,6 +275,10 @@ def write_finding_reader_reports(root: Path, findings: dict, context=None):
                         # Legacy scalar-effect bars add no distribution or spatial
                         # information. Show the numbers; keep the figure in the index.
                         continue
+                if artifact.get("purpose") in {"structural_figure", "representative_structure_figure"} and not panel_matches_finding(artifact, row, by_id, verified):
+                    gaps.append({"finding_id": fid, "artifact_id": aid,
+                                 "issue": "molecular panel does not match this finding, its coordinates, or its saved view"})
+                    continue
                 if shown >= 2:
                     break
                 if aid in figure_numbers:
