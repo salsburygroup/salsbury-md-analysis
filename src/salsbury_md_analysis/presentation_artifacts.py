@@ -371,7 +371,10 @@ def _state_population_svg(rows: Sequence[Mapping[str, object]], title: str) -> T
     top = 92
     left = 190
     plot_width = 720
-    height = top + row_height * len(systems) + 94
+    legend_slot = max(90, 60 + 7 * max((len(str(state)) for state in states), default=1))
+    legend_columns = max(1, plot_width // legend_slot)
+    legend_rows = max(1, math.ceil(len(states) / legend_columns))
+    height = top + row_height * len(systems) + 94 + 24 * (legend_rows - 1)
     values = {
         (str(row["system_id"]), int(row["state_id"])): float(
             row["fraction_of_all_evaluated"]
@@ -382,6 +385,24 @@ def _state_population_svg(rows: Sequence[Mapping[str, object]], title: str) -> T
         f'<text class="title" x="24" y="30">{html.escape(title)}</text>',
         '<text class="subtitle" x="24" y="52">Fractions use every evaluated observation; unassigned observations remain visible as unused bar length.</text>',
     ]
+    fills = []
+    for index in range(len(states)):
+        color = _WFU_COLORS[index % len(_WFU_COLORS)]
+        group = index // len(_WFU_COLORS)
+        if not group:
+            fills.append(color)
+            continue
+        pattern_id = f"state-fill-{index}"
+        spacing = 5 + 3 * group
+        angle = 45 if group % 2 else -45
+        body.append(
+            f'<defs><pattern id="{pattern_id}" width="{spacing}" height="{spacing}" '
+            f'patternUnits="userSpaceOnUse" patternTransform="rotate({angle})">'
+            f'<rect width="{spacing}" height="{spacing}" fill="{color}"/>'
+            f'<path d="M 0 0 L 0 {spacing}" stroke="#FFFFFF" stroke-width="2" '
+            'stroke-opacity=".65"/></pattern></defs>'
+        )
+        fills.append(f"url(#{pattern_id})")
     for tick in range(0, 101, 20):
         x = left + plot_width * tick / 100.0
         body.append(f'<line class="grid" x1="{x:.1f}" y1="{top-12}" x2="{x:.1f}" y2="{top+row_height*len(systems)}"/>')
@@ -399,7 +420,7 @@ def _state_population_svg(rows: Sequence[Mapping[str, object]], title: str) -> T
             color = _WFU_COLORS[color_index % len(_WFU_COLORS)]
             body.append(
                 f'<rect x="{x:.2f}" y="{y}" width="{segment:.2f}" height="24" '
-                f'fill="{color}" data-system="{html.escape(system_id)}" data-state="{state_id}"/>'
+                f'fill="{fills[color_index]}" data-system="{html.escape(system_id)}" data-state="{state_id}"/>'
             )
             if segment >= 42:
                 foreground = "#FFFFFF" if color not in {"#CEB888", "#D7C89B"} else "#000000"
@@ -412,10 +433,11 @@ def _state_population_svg(rows: Sequence[Mapping[str, object]], title: str) -> T
     legend_y = top + row_height * len(systems) + 52
     cursor = left
     for color_index, state_id in enumerate(states):
+        cursor = left + (color_index % legend_columns) * legend_slot
+        current_y = legend_y + (color_index // legend_columns) * 24
         color = _WFU_COLORS[color_index % len(_WFU_COLORS)]
-        body.append(f'<rect x="{cursor}" y="{legend_y-12}" width="14" height="14" fill="{color}"/>')
-        body.append(f'<text class="small" x="{cursor+20}" y="{legend_y}">State {state_id}</text>')
-        cursor += 78
+        body.append(f'<rect x="{cursor}" y="{current_y-12}" width="14" height="14" fill="{fills[color_index]}"/>')
+        body.append(f'<text class="small" x="{cursor+20}" y="{current_y}">State {state_id}</text>')
     return width, height, "".join(body)
 
 
@@ -548,6 +570,12 @@ def _matrix_svg(matrix: Sequence[Sequence[object]], title: str, legend_label: st
             y = top + row_index * cell
             body.append(f'<rect x="{x:.2f}" y="{y:.2f}" width="{cell+.2:.2f}" height="{cell+.2:.2f}" fill="{fill}"/>')
     body.append(f'<rect x="{left}" y="{top}" width="{side}" height="{side}" fill="none" stroke="#000"/>')
+    ticks = sorted({round(i * (size - 1) / max(1, min(size, 8) - 1)) for i in range(min(size, 8))})
+    for tick in ticks:
+        x, y = left + (tick + .5) * cell, top + (tick + .5) * cell
+        label = tick * stride
+        body.append(f'<text class="small" x="{x:.1f}" y="{top+side+18}" text-anchor="middle">{label}</text>')
+        body.append(f'<text class="small" x="{left-10}" y="{y+4:.1f}" text-anchor="end">{label}</text>')
     body.append(f'<text class="label" x="{left+side/2}" y="{top+side+40}" text-anchor="middle">Atom or residue index</text>')
     body.append(f'<text class="label" transform="translate(26 {top+side/2}) rotate(-90)" text-anchor="middle">Atom or residue index</text>')
     legend_x = left + side + 55
