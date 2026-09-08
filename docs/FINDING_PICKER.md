@@ -116,7 +116,92 @@ Older compact hydrogen-bond sidecars are supported. The picker reconstructs
 pairwise occupancy comparisons from their stored occupancy evidence without
 rerunning trajectory analysis or modifying the completed report.
 
-## Configuration
+## Reading the findings
+
+Open `prioritized_findings.html` in a browser, or read
+`prioritized_findings.md`. The summary defines the systems when descriptions
+are supplied, then presents the ranked findings with their supporting figures,
+compact tables, and structure links. Secondary findings have a separate page.
+The same figure is shown once and referenced from related findings. A table
+preview shows up to eight rows; its download contains every row.
+Legacy scalar-effect bar charts remain linked in the evidence index; the
+summary presents their numbers as tables. Compact previews omit bookkeeping
+columns and retain each row's state or molecular identity. Numerical precision
+is shortened for reading; the downloadable values are unchanged.
+
+The summary does not change the ranking or analysis. Every candidate remains
+in `prioritized_findings.csv` and `prioritized_findings.json`, including
+alternative clustering results. `finding_evidence.html` and
+`finding_evidence.csv` index every artifact in the presentation manifest,
+including figures and tables that support no headline. All original analysis
+data, numerical exports, structures, and provenance remain in place. The
+interactive dashboard continues to receive the complete candidate set.
+
+QC stays in `prioritized_findings_qc.md`. Method-selection diagnostics, evidence
+bundles, and complete module accounting are retained in
+`prioritized_findings_details.md`. The short report does not repeat operational
+history or generic interpretation warnings. Specific statistical evidence and
+claim-relevant qualifications remain available with the findings and sources.
+
+Only exact finding-to-artifact matches are embedded as evidence for a claim.
+Broader report-level matches are linked for inspection. The renderer verifies
+artifact paths and content hashes; missing or changed files receive no live
+evidence link. `finding_reader_report_checks.json` lists missing descriptions,
+detailed captions, and evidence links for review. Writing a reader report does
+not resolve these gaps or declare the campaign accepted.
+
+Keep these reports alongside `presentation-artifacts` and the original analysis
+outputs when copying or zipping a workflow. Moving the whole directory keeps
+the relative links working. Copying the HTML alone does not copy its evidence.
+
+## Scientific context
+
+The code cannot infer the scientific question, the role of each control, or
+the interpretation of a modified site from a system ID. These optional fields
+describe the reader report without changing selections, weighting, or methods:
+
+```json
+{
+  "reporting": {
+    "scientific_context": {
+      "title": "Control and variant ensembles",
+      "question": "How do the conformational populations differ?",
+      "systems": {
+        "control": {"label": "Control", "description": "Unmodified protein in solution"},
+        "variant": {"label": "Variant", "description": "The same protein with the specified substitution"}
+      },
+      "comparisons": ["Compare the variant with the control on the shared conformational basis."],
+      "population": "All analyzed observations; per-method frame counts are in the evidence tables.",
+      "weighting": "Describe the weighting used by this campaign.",
+      "primary_selection": "Describe any conditional subset and its primary selection criterion.",
+      "methods": ["Describe the scientific methods and parameters needed to read the figures."],
+      "figure_captions": {}
+    }
+  }
+}
+```
+
+Replace example text with the campaign's definitions, or omit unused fields.
+`figure_captions` maps exact artifact IDs from `finding_evidence.csv` to captions.
+Describe the quantity, units, systems, subset, denominator, selection rule,
+colors, and uncertainty where relevant. Captions and context are author-supplied
+text; they do not configure or verify the underlying calculations. Without
+them, the renderer uses source titles and records what needs review rather
+than inventing a control, denominator, or chemical interpretation.
+
+For conditional ensembles, distinguish the fraction satisfying the condition
+from distributions *within* that condition. Present distributions on matched
+axes with consistent bins and normalization. Preserve extreme observations and
+their source identities. Structural illustrations must come from identified
+sampled coordinates, with a stated selection rule and reopenable structures.
+Do not replace a distribution with its mean in the short report.
+
+The reader report uses gold, black, gray, and restrained red accents. Existing
+figures are displayed unchanged, including their labels, scales, and scientific
+color conventions. No new plotting or trajectory calculation occurs in the
+reader renderer.
+
+## Picker configuration
 
 The picker is enabled by default:
 

@@ -2,6 +2,16 @@
   "profile_id": "reporting_standard_v1",
   "profile_version": "1.0.0-draft",
   "status": "experimental",
+  "reader_summary_policy": {
+    "structure": ["scientific_question", "systems_and_comparisons", "ranked_findings_with_evidence", "scientific_methods"],
+    "ranking_changed_by_presentation": false,
+    "preserve_all_candidates": true,
+    "preserve_all_figures_tables_numerical_data_and_structures": true,
+    "qc_and_operational_details": "separate_supporting_records",
+    "figure_links": "exact_target_verified_relative_paths",
+    "context_source": "optional_reporting.scientific_context",
+    "missing_context": "record_for_review_without_inventing_scientific_claims"
+  },
   "time_series_policy": {
     "default_primary_presentation": "histogram",
     "default_histogram_rule": "scott",

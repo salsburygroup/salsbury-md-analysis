@@ -1,5 +1,11 @@
 # Configuration and final reporting
 
+The significance finder writes `prioritized_findings.html` and Markdown for
+readers, plus a complete figure/table index and the full candidate CSV/JSON.
+Optional `reporting.scientific_context` defines systems, questions, population
+and selection details, methods, and captions. These fields affect presentation
+only. See [reader reports](FINDING_PICKER.md#reading-the-findings).
+
 ## Discontinuous or filtered ensembles
 
 For trajectories containing selected frames with breaks in physical time, set:
