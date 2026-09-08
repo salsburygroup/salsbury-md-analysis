@@ -1348,6 +1348,41 @@ def _rmsf_artifacts(
         )
 
 
+def _rmsf_inference_artifacts(output_root, path, report, artifacts):
+    """Show replica-level effect sizes and both reported permutation p-values."""
+    for comparison in report.get("comparisons", []):
+        result = comparison.get("result", {})
+        left, right = comparison.get("system_a"), comparison.get("system_b")
+        differences = result.get("observed_mean_difference", [])
+        pointwise = result.get("two_sided_pointwise_p_values", [])
+        familywise = result.get("max_t_familywise_p_values", [])
+        if not differences:
+            continue
+        if not (len(differences) == len(pointwise) == len(familywise)):
+            raise PresentationArtifactError("RMSF inference arrays have different lengths")
+        rows = [{"common_atom_index": index, "system_a": left, "system_b": right,
+                 "mean_rmsf_difference_angstrom": value,
+                 "pointwise_p_value": pointwise[index],
+                 "max_t_familywise_p_value": familywise[index]}
+                for index, value in enumerate(differences)]
+        title = f"Replica RMSF difference: {human_label(left)} minus {human_label(right)}"
+        directory = output_root / "rmsf-permutation-inference" / f"{_slug(left)}-and-{_slug(right)}"
+        context = {"system_ids": [left, right], "left_system_id": left, "right_system_id": right}
+        _register_pair(output_root, path, artifacts, module_id="rmsf_permutation_inference",
+            purpose="pairwise_comparison", title=title, directory=directory,
+            rows=rows, fieldnames=tuple(rows[0]),
+            svg=_line_svg([("Mean RMSF difference", list(range(len(rows))), differences)],
+                          title, "Common atom index (zero-based)", "RMSF difference (Å)"),
+            context=context)
+        _register_pair(output_root, path, artifacts, module_id="rmsf_permutation_inference",
+            purpose="permutation_p_values", title=f"Permutation p-values: {human_label(left)} versus {human_label(right)}",
+            directory=directory / "p-values", rows=rows, fieldnames=tuple(rows[0]),
+            svg=_line_svg([("Pointwise", list(range(len(rows))), pointwise),
+                           ("Max-T familywise", list(range(len(rows))), familywise)],
+                          "Replica-level RMSF permutation p-values", "Common atom index (zero-based)", "p-value"),
+            context=context)
+
+
 def _convergence_artifacts(
     output_root: Path, path: Path, report: Mapping[str, object], artifacts: List[Dict[str, object]]
 ) -> None:
@@ -2231,6 +2266,8 @@ def generate_presentation_artifacts(
             _rmsd_rg_artifacts(destination, path, report, artifacts)
         elif module_id == "pooled_rmsf":
             _rmsf_artifacts(destination, path, report, artifacts)
+        elif module_id == "rmsf_permutation_inference":
+            _rmsf_inference_artifacts(destination, path, report, artifacts)
         elif module_id == "convergence_uncertainty":
             _convergence_artifacts(destination, path, report, artifacts)
         elif module_id == "structural_integrity_qc":
