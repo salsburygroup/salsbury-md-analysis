@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from salsbury_md_analysis.finding_picker import prioritize_findings
+from salsbury_md_analysis.derived_report_publication import write_derived_report_sidecar
 from salsbury_md_analysis.integrated import (
     IntegratedAnalysisError,
     integrated_comparison_results,
@@ -80,6 +81,13 @@ class IntegratedTests(unittest.TestCase):
                 accounting["integrated_comparison"]["disposition"],
                 "interpretive_context",
             )
+            original = integrated_path.read_bytes()
+            write_derived_report_sidecar(integrated_path, [report_path])
+            with_sidecar = prioritize_findings(root, maximum_findings=50)
+            # Fast checksum-summary ingestion must preserve the same comparisons
+            # and avoid counting module-owned cross-system candidates twice.
+            self.assertEqual(with_sidecar["all_candidates"], selected["all_candidates"])
+            self.assertEqual(integrated_path.read_bytes(), original)
 
 
 if __name__ == "__main__":
