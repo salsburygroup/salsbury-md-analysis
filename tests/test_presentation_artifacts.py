@@ -15,6 +15,17 @@ from salsbury_md_analysis.presentation_artifacts import (
 
 
 class PresentationArtifactContractTests(unittest.TestCase):
+    def test_many_state_legend_stays_inside_canvas(self):
+        import xml.etree.ElementTree as ET
+        from salsbury_md_analysis.presentation_artifacts import _state_population_svg
+        rows = [{"system_id": "a", "state_id": i, "fraction_of_all_evaluated": 1/40} for i in range(40)]
+        width,height,body = _state_population_svg(rows,"Forty states")
+        nodes = ET.fromstring('<svg>'+body+'</svg>')
+        labels = [node for node in nodes.findall('text') if (node.text or '').startswith('State ')]
+        self.assertEqual(len(labels),40)
+        self.assertGreater(len({node.get('y') for node in labels}),1)
+        self.assertTrue(all(float(node.get('x'))+60 < width and float(node.get('y')) < height for node in labels))
+
     def test_alternative_populations_and_model_tables_do_not_overwrite_scopes(self):
         from salsbury_md_analysis.presentation_artifacts import _alternative_clustering_artifacts
         with tempfile.TemporaryDirectory() as temporary:
