@@ -742,6 +742,8 @@ def summarize_execution_resources(root: Path) -> Dict[str, object]:
                 raise ExecutionResourceError(f"analysis sidecar report size mismatch: {sidecar_path}")
             if sidecar.get("report_sha256") != _sha256_file(path):
                 raise ExecutionResourceError(f"analysis sidecar report hash mismatch: {sidecar_path}")
+            if sidecar.get("module_id") in _REPORTING_ONLY_MODULES:
+                continue
             evidence = sidecar.get("resource_evidence")
             if not isinstance(evidence, dict):
                 raise ExecutionResourceError(f"analysis sidecar lacks resource evidence: {sidecar_path}")

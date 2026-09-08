@@ -3025,6 +3025,8 @@ if report.get('technical_status') != 'complete':
 PY
 ln "$RMSF_INFERENCE_TMP" "$RMSF_INFERENCE_FINAL"
 rm "$RMSF_INFERENCE_TMP"
+"$PYTHON" -m salsbury_md_analysis.derived_report_publication "$RMSF_INFERENCE_FINAL" \\
+  "$ROOT/results/rmsf/report.json" "$ROOT/analysis-config.json"
 """))
     if integrated_comparison_enabled:
         reporting_commands.append(("integrated_comparison", """INTEGRATED_DIR="$ROOT/results/integrated-comparison"
@@ -3050,6 +3052,15 @@ if contract.get('all_completed_reports_reviewed') is not True:
 PY
 ln "$INTEGRATED_TMP" "$INTEGRATED_FINAL"
 rm "$INTEGRATED_TMP"
+"$PYTHON" - "$ROOT" "$INTEGRATED_FINAL" <<'PY'
+import json, sys
+from pathlib import Path
+from salsbury_md_analysis.derived_report_publication import write_derived_report_sidecar
+root, final = Path(sys.argv[1]), Path(sys.argv[2])
+sources = [path for path in (root / 'results').rglob('report.json')
+           if path != final and json.loads(path.read_text()).get('technical_status') == 'complete']
+write_derived_report_sidecar(final, sources + [root / 'analysis-config.json'])
+PY
 """))
     if resource_table_enabled:
         reporting_commands.append(("resource_summary", """RESOURCE_TMP="$ROOT/final-resource-summary.json.tmp.$SLURM_JOB_ID"
