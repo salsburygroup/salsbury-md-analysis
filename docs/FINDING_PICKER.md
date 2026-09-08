@@ -150,6 +150,26 @@ evidence link. `finding_reader_report_checks.json` lists missing descriptions,
 detailed captions, and evidence links for review. Writing a reader report does
 not resolve these gaps or declare the campaign accepted.
 
+`finding_reader_review.md` provides the same review list in readable text,
+separate from the scientific narrative. It flags missing context, unresolved
+evidence links, and structural findings without both a coordinate-derived
+panel and its sampled structure. A population chart alone is not a structural
+panel. These checks never delete or demote a candidate.
+
+For method-specific denominators, use `scientific_context.finding_context`,
+keyed by exact finding IDs from the current candidate CSV. Each entry accepts
+`population`, `weighting`, `primary_selection`, and `uncertainty` text, plus a
+`structural_artifact_ids` list naming the relevant structural figures and
+coordinate files in the artifact manifest. The text appears next to that
+finding. Unknown finding IDs and missing artifacts enter the review list;
+context is never transferred to another finding. IDs can change after a new
+picker run, so review this mapping when regenerating the candidate set.
+
+Structural panels must use actual coordinates and match the stated system,
+state, and selection rule. An author-supplied mapping records that association;
+the renderer checks file hashes, not the scientific correctness of the view.
+Keep captions, counts, units, and uncertainty consistent with the source table.
+
 Keep these reports alongside `presentation-artifacts` and the original analysis
 outputs when copying or zipping a workflow. Moving the whole directory keeps
 the relative links working. Copying the HTML alone does not copy its evidence.

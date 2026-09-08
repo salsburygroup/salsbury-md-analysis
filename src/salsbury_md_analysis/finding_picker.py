@@ -3246,7 +3246,7 @@ def prioritize_findings(
                 report_candidates.extend(
                     _hydrogen_bond_candidates(compact, path)
                 )
-            if integrated_present:
+            if integrated_present and sidecar.get("module_id") != "integrated_comparison":
                 report_candidates = [
                     row for row in report_candidates
                     if len(set(map(str, row.get("system_ids", [])))) < 2

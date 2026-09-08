@@ -117,7 +117,9 @@ class FindingReaderReportTests(unittest.TestCase):
 
     def test_context_validation_and_html_escaping(self):
         for invalid in ({"other": 1}, {"systems": []}, {"weighting": 1},
-                        {"systems": {"a": {"unknown": "x"}}}, {"methods": [3]}):
+                        {"systems": {"a": {"unknown": "x"}}}, {"methods": [3]},
+                        {"finding_context": {"0": {"structural_artifact_ids": "a0"}}},
+                        {"finding_context": {"0": {"poolng": "x"}}}):
             with self.assertRaises(ValueError):
                 validate_scientific_context(invalid)
         with tempfile.TemporaryDirectory() as temp:
@@ -127,6 +129,42 @@ class FindingReaderReportTests(unittest.TestCase):
             text = (root / "prioritized_findings.html").read_text()
             self.assertNotIn('<script>alert', text)
             self.assertIn('&lt;script&gt;', text)
+
+    def test_finding_context_and_structural_evidence_review_preserve_archive(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output = self.fixture(root)
+            output["headline_findings"][0]["module_id"] = "pca_fes_basins"
+            original = copy.deepcopy(output)
+            context = {"finding_context": {"0": {
+                "population": "2,000 retained observations from four source replicas.",
+                "weighting": "Each retained frame has equal weight within its system.",
+                "primary_selection": "One common state definition for both conditions.",
+                "uncertainty": "Intervals were not calculated for this population table.",
+            }}}
+            result = write_finding_reader_reports(root, output, context)
+            text = Path(result["html_path"]).read_text()
+            self.assertIn("2,000 retained observations", text)
+            self.assertNotIn("structural claim needs", text)
+            review = (root / "finding_reader_review.md").read_text()
+            self.assertIn("structural claim needs a coordinate-derived panel", review)
+            context["finding_context"]["0"]["structural_artifact_ids"] = ["a0", "a2"]
+            result = write_finding_reader_reports(root, output, context)
+            checks = json.loads(Path(result["reader_report_checks_path"]).read_text())
+            self.assertFalse(any(gap.get("finding_id") == "0" and "structural claim" in gap["issue"]
+                                 for gap in checks["review_items"]))
+            self.assertEqual(checks["artifact_count"], 4)
+            self.assertEqual(checks["archive_policy"], "selective_opening_complete_supporting_archive")
+            self.assertEqual(output, original)
+
+    def test_unknown_finding_context_is_reported_not_applied_to_another_finding(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output = self.fixture(root)
+            write_finding_reader_reports(root, output, {
+                "finding_context": {"missing-id": {"population": "Do not apply to another finding"}}})
+            self.assertNotIn("Do not apply to another finding", (root / "prioritized_findings.html").read_text())
+            self.assertIn("absent from this snapshot", (root / "finding_reader_review.md").read_text())
 
     def test_analysis_configuration_accepts_context_and_rejects_mistyped_fields(self):
         with tempfile.TemporaryDirectory() as temp:

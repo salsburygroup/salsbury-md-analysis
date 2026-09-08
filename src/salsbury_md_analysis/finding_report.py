@@ -12,14 +12,16 @@ from urllib.parse import quote
 
 
 CONTEXT_FIELDS = {"title", "question", "systems", "comparisons", "population",
-                  "weighting", "primary_selection", "methods", "figure_captions"}
+                  "weighting", "primary_selection", "methods", "figure_captions", "finding_context"}
+FINDING_CONTEXT_FIELDS = {"population", "weighting", "primary_selection", "uncertainty",
+                          "structural_artifact_ids"}
 
 
 def validate_scientific_context(context):
     """Validate author-supplied descriptions without guessing chemistry or controls."""
     if not isinstance(context, dict) or set(context) - CONTEXT_FIELDS:
         raise ValueError("reporting.scientific_context has unknown fields or is not an object")
-    for key in CONTEXT_FIELDS - {"systems", "comparisons", "methods", "figure_captions"}:
+    for key in CONTEXT_FIELDS - {"systems", "comparisons", "methods", "figure_captions", "finding_context"}:
         if key in context and not isinstance(context[key], str):
             raise ValueError(f"scientific_context.{key} must be text")
     for key in ("comparisons", "methods"):
@@ -39,6 +41,19 @@ def validate_scientific_context(context):
         isinstance(key, str) and isinstance(value, str) for key, value in captions.items()
     ):
         raise ValueError("scientific_context.figure_captions must map artifact IDs to text")
+    notes = context.get("finding_context", {})
+    if not isinstance(notes, dict):
+        raise ValueError("scientific_context.finding_context must map finding IDs to objects")
+    for fid, note in notes.items():
+        if (not isinstance(fid, str) or not isinstance(note, dict)
+                or set(note) - FINDING_CONTEXT_FIELDS):
+            raise ValueError("invalid scientific_context.finding_context entry")
+        for key, value in note.items():
+            if key == "structural_artifact_ids":
+                if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                    raise ValueError("structural_artifact_ids must be a list of artifact IDs")
+            elif not isinstance(value, str):
+                raise ValueError(f"finding_context.{fid}.{key} must be text")
     return context
 
 
@@ -140,6 +155,13 @@ def write_finding_reader_reports(root: Path, findings: dict, context=None):
                            if isinstance(item, dict) and item.get("system_id"))
     labels = {sid: context.get("systems", {}).get(sid, {}).get("label", _name(sid))
               for sid in systems}
+    candidate_ids = {str(row.get("finding_id")) for row in findings.get("all_candidates", [])}
+    for fid in context.get("finding_context", {}):
+        if fid not in candidate_ids:
+            gaps.append({"finding_id": fid, "issue": "context refers to a finding absent from this snapshot"})
+    for key in ("question", "population", "weighting", "primary_selection"):
+        if not context.get(key):
+            gaps.append({"context_field": key, "issue": "report context was not supplied; no value was inferred"})
     title = context.get("title") or "Molecular ensemble findings"
     nav = ('<nav aria-label="Report sections"><a href="prioritized_findings.html">Key findings</a>'
            '<a href="prioritized_findings_secondary.html">Secondary findings</a>'
@@ -193,6 +215,7 @@ def write_finding_reader_reports(root: Path, findings: dict, context=None):
         for rank, row in enumerate(rows, start=start):
             statement = _statement(row, labels)
             fid = str(row.get("finding_id", rank))
+            note = context.get("finding_context", {}).get(fid, {})
             anchor = "finding-" + quote(fid, safe="")
             cards.append(f'<article id="{escape(anchor)}"><h2><span class="finding-number">{rank}.</span> {escape(statement)}</h2>')
             prose.extend([f"### {rank}. {_md(statement)}", ""])
@@ -203,15 +226,47 @@ def write_finding_reader_reports(root: Path, findings: dict, context=None):
             if isinstance(p, (int, float)):
                 text = f"Benjamini–Hochberg adjusted p = {p:.4g}."
                 cards.append(f'<p>{text}</p>'); prose.extend([text, ""])
+            for key, label in (("population", "Population"), ("weighting", "Pooling"),
+                               ("primary_selection", "Selection"), ("uncertainty", "Uncertainty")):
+                if note.get(key):
+                    cards.append(f'<p><strong>{label}:</strong> {escape(note[key])}</p>')
+                    prose.extend([f"{label}: {note[key]}", ""])
             # Only exact finding-target matches can appear as claim-supporting
             # panels. Broad report-level matches remain available as links.
-            refs = row.get("presentation_artifacts", [])
+            refs = list(row.get("presentation_artifacts", []))
+            structural_ids = note.get("structural_artifact_ids", [])
+            for aid in structural_ids:
+                if aid not in verified:
+                    gaps.append({"finding_id": fid, "artifact_id": aid,
+                                 "issue": "requested structural evidence is not a verified artifact"})
+                elif aid not in {ref.get("artifact_id") for ref in refs}:
+                    refs.append({"artifact_id": aid})
             exact = row.get("presentation_artifact_match") == "exact_target"
+            if inline:
+                # A statistical plot is not a structural image. Explicit IDs or
+                # manifest purpose identify coordinate-derived panels; never
+                # infer that role from a caption mentioning a molecule.
+                structures = [by_id[ref["artifact_id"]] for ref in refs
+                              if ref.get("artifact_id") in verified and
+                              (exact or ref.get("artifact_id") in structural_ids)]
+                requires_structure = (row.get("category") in {"fes", "clustering", "conformation", "coupled_interaction"}
+                                      or row.get("module_id") in {"pca_fes_basins", "clustering_kmeans", "dccm", "pooled_rmsf"})
+                if requires_structure:
+                    has_coordinates = any(a.get("artifact_type") == "structure" for a in structures)
+                    has_panel = any(a.get("artifact_type") == "figure" and
+                                    (a["artifact_id"] in structural_ids or
+                                     a.get("purpose") in {"structural_figure", "representative_structure_figure"})
+                                    for a in structures)
+                    if not has_coordinates or not has_panel:
+                        gaps.append({"finding_id": fid, "issue": "structural claim needs a coordinate-derived panel and its sampled structure",
+                                     "coordinates_linked": has_coordinates, "structural_panel_linked": has_panel})
+                if not structures:
+                    gaps.append({"finding_id": fid, "issue": "no exact finding-target evidence was verified"})
             shown = 0
             for ref in refs:
                 aid = ref.get("artifact_id")
                 artifact = by_id.get(aid, {})
-                if not inline or not exact or aid not in verified or artifact.get("artifact_type") != "figure":
+                if not inline or not (exact or aid in structural_ids) or aid not in verified or artifact.get("artifact_type") != "figure":
                     continue
                 if Path(artifact["relative_path"]).suffix.lower() == ".svg":
                     with (root / "presentation-artifacts" / artifact["relative_path"]).open(encoding="utf-8") as handle:
@@ -307,7 +362,7 @@ def write_finding_reader_reports(root: Path, findings: dict, context=None):
                         cards.append(f'<p>First 8 rows shown. <a href="{verified[aid]}">Download the complete table</a>.</p>')
                     prose.extend([f"[{_md(caption)}]({verified[aid]})", ""])
                     break
-            links = artifact_links(row)
+            links = artifact_links({"presentation_artifacts": refs})
             if links:
                 cards.append('<p>' + ' · '.join(f'<a href="{href}">{escape(label)}</a>' for label, href in links) + '</p>')
                 prose.extend([' · '.join(f'[{_md(label)}]({href})' for label, href in links), ""])
@@ -354,6 +409,15 @@ def write_finding_reader_reports(root: Path, findings: dict, context=None):
         '<p><a href="prioritized_findings.csv">Every candidate (CSV)</a> · <a href="prioritized_findings.json">Every candidate and provenance (JSON)</a> · <a href="finding_evidence.csv">Artifact index (CSV)</a></p>' +
         '<p>Analysis files remain in their original locations. The summary does not remove figures, tables, numerical data, structures, alternative methods, or candidate findings.</p>' +
         '<div class="table-scroll"><table><tr><th>Analysis class</th><th>Type</th><th>Evidence</th></tr>' + "".join(index_rows) + '</table></div>')
+    review = ["# Reader report review", "",
+              "These checks identify missing reporting evidence. They do not change results, ranks, or the supporting archive.", "",
+              "| Finding, artifact, or field | Required review |", "|---|---|"]
+    for gap in gaps:
+        identity = " / ".join(str(gap[key]) for key in ("finding_id", "artifact_id", "system_id", "context_field") if gap.get(key))
+        review.append(f"| {_md(identity)} | {_md(gap['issue'])} |")
+    if not gaps:
+        review = review[:4] + ["No automated evidence-link or supplied-context gaps were found. Visual and scientific review remain separate checks.", ""]
+    files["finding_reader_review.md"] = "\n".join(review) + "\n"
     for name, content in files.items():
         (root / name).write_text(content, encoding="utf-8")
     fields = ["artifact_id", "analysis_class", "artifact_type", "title", "relative_path", "sha256", "verified", "source_reports"]
@@ -363,6 +427,8 @@ def write_finding_reader_reports(root: Path, findings: dict, context=None):
     checks = {"report_schema": "evidence-first-reader-report-v1", "artifact_count": len(artifacts),
               "verified_artifact_count": len(verified), "candidate_count": len(findings.get("all_candidates", [])),
               "source_data_modified": False, "ranking_modified": False, "review_items": gaps,
+              "human_review_path": "finding_reader_review.md",
+              "archive_policy": "selective_opening_complete_supporting_archive",
               "scientific_context": context,
               "source_manifest_sha256": _sha(manifest_path) if manifest_path.is_file() else None,
               "generated_files": {name: _sha(root / name) for name in [*files, "finding_evidence.csv"]}}
