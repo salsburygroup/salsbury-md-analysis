@@ -1,0 +1,42 @@
+{
+  "technical_status": "passed",
+  "scientific_status": "not evaluated",
+  "implementation_commit": "6c6cbefbc45f5ee070858381c516c189d693b2cf",
+  "branch": "codex/observable-validation-tupper",
+  "full_suite": {
+    "command": "PYTHONPATH=src:. python -m unittest discover -s tests",
+    "tests": 799,
+    "failures": 0,
+    "errors": 0,
+    "skips": 0,
+    "new_regression_tests": 27,
+    "log_sha256": "6a3e27ebfa2e72dc44b189a1dc2d9252a2cd9582e4711fe0ddd1e50ef70b5995"
+  },
+  "environment": {
+    "python": "3.12.14",
+    "dependencies": {
+      "numpy": "2.5.2",
+      "scipy": "1.18.1",
+      "scikit-learn": "1.9.0",
+      "psutil": "7.2.2",
+      "ijson": "3.5.1"
+    }
+  },
+  "source_signature": {
+    "scope": "src/salsbury_md_analysis/*.py and tests/*.py",
+    "file_count": 225,
+    "algorithm": "SHA256 of sorted relative path, NUL, file SHA256, newline",
+    "sha256": "0dc67fd5357a9b9db1d7b36a2c408602673820b61522cd844ca4e70a3d8b9c15"
+  },
+  "additional_checks": [
+    "Four JSON schemas independently validated with Draft202012Validator",
+    "Runnable synthetic inputs satisfy the observable and comparison schemas",
+    "Generated documentation matches sources",
+    "Synthetic equal-population series retain distinct switching evidence"
+  ],
+  "production_simulations_rerun": false,
+  "limitations": [
+    "Synthetic and software checks do not establish adequacy of molecular sampling or project-specific scientific validity.",
+    "Numerical sensitivity remains unassessed without a compatible declared protocol comparison."
+  ]
+}

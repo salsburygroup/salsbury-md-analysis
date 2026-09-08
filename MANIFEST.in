@@ -47,3 +47,4 @@ recursive-include scripts *.py
 recursive-include tests *.py
 prune validation/resource-evidence
 global-exclude __pycache__ *.py[cod] .DS_Store
+include validation/public/observable_validation_acceptance.json
