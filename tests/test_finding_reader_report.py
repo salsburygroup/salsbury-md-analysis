@@ -10,10 +10,26 @@ from salsbury_md_analysis.finding_report import (
     validate_scientific_context, write_finding_reader_reports,
 )
 from salsbury_md_analysis.finding_picker import prioritize_findings
+from salsbury_md_analysis.finding_picker import _presentation_context_matches
 from salsbury_md_analysis.analysis_config import load_analysis_config, AnalysisConfigError
 
 
 class FindingReaderReportTests(unittest.TestCase):
+    def test_symmetric_dccm_links_keep_system_direction_and_atom_identity(self):
+        target = {"atom_i": 3, "atom_j": 12, "left_system_id": "a", "right_system_id": "b"}
+        artifact = {"module_id": "dccm", "context": {**target, "atom_i": 12, "atom_j": 3}}
+        self.assertTrue(_presentation_context_matches(target, artifact))
+        artifact["context"]["left_system_id"] = "b"
+        self.assertFalse(_presentation_context_matches(target, artifact))
+        artifact["context"] = {**target, "atom_i": 4}
+        self.assertFalse(_presentation_context_matches(target, artifact))
+
+    def test_algorithm_population_target_does_not_link_a_different_partition(self):
+        target = {"highlight_algorithm": "pam"}
+        artifact = {"module_id": "alternative_clustering", "purpose": "state_populations", "context": {"algorithm": "gaussian_mixture"}}
+        self.assertFalse(_presentation_context_matches(target, artifact))
+        artifact["context"]["algorithm"] = "pam"
+        self.assertTrue(_presentation_context_matches(target, artifact))
     def fixture(self, root):
         directory = root / "presentation-artifacts"
         directory.mkdir()

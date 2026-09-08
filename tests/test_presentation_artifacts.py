@@ -15,6 +15,29 @@ from salsbury_md_analysis.presentation_artifacts import (
 
 
 class PresentationArtifactContractTests(unittest.TestCase):
+    def test_alternative_populations_and_model_tables_do_not_overwrite_scopes(self):
+        from salsbury_md_analysis.presentation_artifacts import _alternative_clustering_artifacts
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifacts = []
+            for sid in ("control", "variant"):
+                path = root / "results/per-system" / sid / "conformational-views/common/alternative/report.json"
+                path.parent.mkdir(parents=True)
+                path.write_text('{}')
+                methods = []
+                for algorithm, fraction in (("pam", .7), ("gaussian_mixture", .4)):
+                    methods.append({"algorithm": algorithm, "silhouette": fraction,
+                                    "state_population_comparison": {"system_populations": [{
+                                        "system_id": sid, "evaluated_count": 100,
+                                        "state_populations": [{"state_id": 1, "count": int(100*fraction),
+                                                               "fraction_of_all_evaluated": fraction}]}]}})
+                _alternative_clustering_artifacts(root / "artifacts", path, {"algorithm_results": methods}, artifacts)
+            self.assertEqual(len(artifacts), 12)
+            self.assertEqual(len({a["relative_path"] for a in artifacts}), 12)
+            populations = [a for a in artifacts if a["purpose"] == "state_populations"]
+            self.assertEqual({a["context"]["algorithm"] for a in populations}, {"pam", "gaussian_mixture"})
+            self.assertTrue(all((root / "artifacts" / a["relative_path"]).is_file() for a in artifacts))
+
     def test_explicit_unavailable_result_has_no_numeric_substitute(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
