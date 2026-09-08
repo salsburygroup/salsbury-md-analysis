@@ -14,6 +14,16 @@
 
 ## Unreleased
 
+- Link either triangle of a symmetric DCCM difference to the same ordered-system
+  comparison. Export algorithm-specific clustering population plots and tables,
+  with separate paths for each system and partition.
+
+- Preserve integrated cross-system findings when reading checksum sidecars;
+  the sidecar and full-report paths now produce identical candidate sets.
+- Add readable reporting-review notes and per-finding population, pooling,
+  selection, uncertainty, and structural-evidence context. Missing structural
+  panels are recorded separately; every original artifact remains available.
+
 - Add evidence-first HTML and Markdown finding summaries, with exact-match
   figures, compact table previews, and optional scientific context.
 - Keep every candidate and artifact in the complete evidence index; retain
