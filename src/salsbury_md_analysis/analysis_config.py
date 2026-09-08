@@ -355,6 +355,7 @@ def default_analysis_config(
             "minimum_headline_findings": MINIMUM_HEADLINE_FINDINGS,
             "headline_findings": MAXIMUM_HEADLINE_FINDINGS,
             "maximum_findings": HIGHLIGHTED_FINDINGS_TOTAL,
+            "scientific_context": {},
         },
         "comparisons": {
             "mode": "all_pairs",
@@ -607,7 +608,7 @@ def load_analysis_config(
         ("reporting", {
             "resource_table_enabled", "finding_picker_enabled",
             "minimum_headline_findings", "headline_findings",
-            "maximum_findings",
+            "maximum_findings", "scientific_context",
         }),
         ("comparisons", {
             "mode", "reference_system_id", "multiple_testing", "alpha",
@@ -621,6 +622,11 @@ def load_analysis_config(
     reporting = config["reporting"]
     comparisons = config["comparisons"]
     assert isinstance(reporting, dict) and isinstance(comparisons, dict)
+    from .finding_report import validate_scientific_context
+    try:
+        validate_scientific_context(reporting["scientific_context"])
+    except ValueError as exc:
+        raise AnalysisConfigError(str(exc)) from exc
     if not all(
         isinstance(reporting[key], bool)
         for key in (
