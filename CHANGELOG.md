@@ -14,6 +14,12 @@
 
 ## Unreleased
 
+- Add evidence-first HTML and Markdown finding summaries, with exact-match
+  figures, compact table previews, and optional scientific context.
+- Keep every candidate and artifact in the complete evidence index; retain
+  QC and detailed accounting separately. Reader reports do not rerun analyses
+  or change scientific ranking, data, figures, or structures.
+
 - Accept independently reconstructed caches in static-ensemble structural QC,
   while keeping continuous-trajectory cache validation separate.
 - Preserve Gaussian-mixture component identities when projected observations

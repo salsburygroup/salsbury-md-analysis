@@ -2832,6 +2832,7 @@ def _attach_presentation_artifacts(
     for row in findings:
         target = row.get("presentation_target")
         matches = []
+        exact_match = False
         if isinstance(target, dict):
             context = target.get("context") if isinstance(target.get("context"), dict) else {}
             matches = [
@@ -2840,6 +2841,7 @@ def _attach_presentation_artifacts(
                 and artifact.get("purpose") == target.get("purpose")
                 and _presentation_context_matches(context, artifact)
             ]
+            exact_match = bool(matches)
         if not matches:
             report_paths = set(map(str, row.get("report_paths", [])))
             systems = set(map(str, row.get("system_ids", [])))
@@ -2884,6 +2886,9 @@ def _attach_presentation_artifacts(
         ]
         row["presentation_artifact_resolution"] = (
             "resolved" if matches else "unresolved"
+        )
+        row["presentation_artifact_match"] = (
+            "exact_target" if exact_match else "source_report" if matches else "unresolved"
         )
 
 
@@ -3550,9 +3555,16 @@ def prioritize_findings(
         f"{len(quality_control_records)} records are retained in "
         "`prioritized_findings_qc.md`, the JSON output, and the interactive report.",
     ])
-    markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    details_path = analysis_root / "prioritized_findings_details.md"
+    details_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    from .finding_report import write_finding_reader_reports
+    reader_reports = write_finding_reader_reports(
+        analysis_root, output,
+        reporting_config.get("scientific_context", {}) if isinstance(reporting_config, dict) else {},
+    )
     return {
         **output,
+        **reader_reports,
         "json_path": str(json_path),
         "csv_path": str(csv_path),
         "markdown_path": str(markdown_path),
@@ -3560,6 +3572,8 @@ def prioritize_findings(
         "json_sha256": _sha256_file(json_path),
         "csv_sha256": _sha256_file(csv_path),
         "markdown_sha256": _sha256_file(markdown_path),
+        "details_path": str(details_path),
+        "details_sha256": _sha256_file(details_path),
         "qc_markdown_sha256": _sha256_file(qc_markdown_path),
         "source_report_records": [
             {"path": str(path.resolve()), "sha256": _sha256_file(path)}

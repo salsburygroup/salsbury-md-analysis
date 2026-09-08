@@ -5,6 +5,13 @@ The machine-readable policy is
 It is a presentation contract, not a claim that a displayed difference is
 statistically, mechanistically, or biologically important.
 
+The significance-finder summary follows a question–systems–findings structure,
+with figures and compact tables beside the observations they support. Detailed
+accounting and QC have separate supporting records. This is a presentation
+change only: every figure, table, numerical dataset, representative structure,
+and candidate finding is retained. See [reader reports and scientific
+context](FINDING_PICKER.md#reading-the-findings) for outputs and configuration.
+
 ## Scalar time-series rule
 
 Every finite scalar time-series result except RMSD is presented first as a
