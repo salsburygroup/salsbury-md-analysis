@@ -25,6 +25,18 @@ class PresentationArtifactContractTests(unittest.TestCase):
         self.assertEqual(len(labels),40)
         self.assertGreater(len({node.get('y') for node in labels}),1)
         self.assertTrue(all(float(node.get('x'))+60 < width and float(node.get('y')) < height for node in labels))
+        segments = [node for node in nodes.findall('rect') if node.get('data-state') is not None]
+        self.assertEqual(len({node.get('fill') for node in segments}), 40)
+
+    def test_matrix_has_numeric_source_index_ticks(self):
+        import xml.etree.ElementTree as ET
+        from salsbury_md_analysis.presentation_artifacts import _matrix_svg
+        matrix = [[float(i == j) for i in range(15)] for j in range(15)]
+        _, _, body = _matrix_svg(matrix, "Correlation", "Correlation", difference=False)
+        nodes = ET.fromstring('<svg>' + body + '</svg>')
+        labels = [node.text for node in nodes.findall('text')]
+        self.assertIn('0', labels)
+        self.assertIn('14', labels)
 
     def test_alternative_populations_and_model_tables_do_not_overwrite_scopes(self):
         from salsbury_md_analysis.presentation_artifacts import _alternative_clustering_artifacts
