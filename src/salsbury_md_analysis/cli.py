@@ -23,6 +23,7 @@ from .cache_routing import (
     materialize_cache_backed_base_project,
 )
 from .convergence import convergence_uncertainty_project_safe
+from .numerical_sensitivity import compare_numerical_protocols_file_safe
 from .clustering import (
     clustering_hdbscan_project_safe,
     clustering_imwkmeans_project_safe,
@@ -1432,6 +1433,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also stream SHA-256 hashes for every declared input file.",
     )
 
+    numerical_parser = subparsers.add_parser(
+        "compare-numerical-protocols", help="Compare declared integration steps for specific observables.")
+    numerical_parser.add_argument("path", type=Path, help="Numerical comparison JSON path.")
     convergence_parser = subparsers.add_parser(
         "convergence",
         help="Evaluate block, ESS, split-mean, and optional exploratory replica diagnostics.",
@@ -2214,6 +2218,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _observable_command(args.path, args.hash_content)
     if args.command == "sasa":
         return _sasa_command(args.path, args.hash_content)
+    if args.command == "compare-numerical-protocols":
+        report = compare_numerical_protocols_file_safe(args.path)
+        print(json.dumps(report, indent=2, sort_keys=True, allow_nan=False))
+        return 0 if report["technical_status"] == "complete" else 2
     if args.command == "convergence":
         return _convergence_command(args.path, args.hash_content)
     if args.command == "grouped-ml":

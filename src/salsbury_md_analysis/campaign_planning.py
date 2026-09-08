@@ -1732,7 +1732,11 @@ def _apply_direct_project_sampling(
 
     convergence = definitions.get("convergence_uncertainty")
     rmsd_row = rows.get("replica_rmsd_rg")
-    if isinstance(convergence, dict) and isinstance(rmsd_row, Mapping):
+    if (
+        isinstance(convergence, dict)
+        and convergence.get("source_module", "replica_rmsd_rg") == "replica_rmsd_rg"
+        and isinstance(rmsd_row, Mapping)
+    ):
         allocation = rmsd_row.get("campaign_resource_allocation")
         selected_by_replica = (
             allocation.get("selected_physical_frames_per_replica")

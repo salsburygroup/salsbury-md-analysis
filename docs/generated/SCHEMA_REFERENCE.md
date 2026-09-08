@@ -66,6 +66,33 @@ Source: `schemas/hydrogen-bond-comparison-request.schema.json`
 | `homolog_mappings` | no | `array` |
 | `top_n` | no | `integer` |
 
+## Numerical Protocol Comparison
+
+Source: `schemas/numerical-comparison.schema.json`
+
+| Field | Required | Type or constraint |
+|---|---|---|
+| `reference_file` | yes | `string` |
+| `candidate_file` | yes | `string` |
+| `comparisons` | yes | `array` |
+| `bootstrap_repeats` | no | `integer` |
+| `block_length_frames` | no | `integer` |
+| `confidence_level` | no | `number` |
+| `random_seed` | no | `integer` |
+
+## Observable Timeseries Input
+
+Source: `schemas/observable-timeseries.schema.json`
+
+| Field | Required | Type or constraint |
+|---|---|---|
+| `schema_version` | yes | `structured` |
+| `source_provenance` | yes | `object` |
+| `weighting` | yes | `['frame', 'replica_equal']` |
+| `observables` | yes | `array` |
+| `segments` | yes | `array` |
+| `joint_observables` | no | `array` |
+
 ## Analysis Output Manifest
 
 Source: `schemas/output-manifest.schema.json`

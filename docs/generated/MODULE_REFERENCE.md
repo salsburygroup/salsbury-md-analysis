@@ -1086,7 +1086,7 @@ Scientific limits:
 - Category: `md`
 - Status: **experimental**
 
-Report declared RMSD/Rg block summaries, split-mean differences, overlap-normalized autocorrelation sequences, initial-positive-sequence effective sample sizes, and autocorrelation-adjusted mean uncertainty. Configured ESS and split-difference values are references for quantitative reporting, not software-assigned scientific gates.
+Report declared RMSD/Rg or externally supplied observable block summaries, split-mean differences, overlap-normalized autocorrelation sequences, initial-positive-sequence effective sample sizes, and autocorrelation-adjusted mean uncertainty. Configured ESS and split-difference values are references for quantitative reporting, not software-assigned scientific gates.
 
 Required inputs:
 
@@ -1101,6 +1101,7 @@ Declared outputs:
 - effective-sample-size-adjusted uncertainty
 - counts and distributions relative to configured references
 - per-metric and per-system diagnostic summaries
+- observable distributions, conditioning fractions and segment-safe lag evidence
 - optional exploratory between-replica summaries
 
 Scientific limits:

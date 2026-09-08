@@ -1,0 +1,21 @@
+{
+  "reference_file": "fast.json",
+  "candidate_file": "slow.json",
+  "bootstrap_repeats": 100,
+  "block_length_frames": 10,
+  "confidence_level": 0.95,
+  "random_seed": 2026,
+  "comparisons": [
+    {
+      "observable_id": "contact",
+      "statistic": "mean",
+      "tolerance": 0.2
+    },
+    {
+      "observable_id": "contact",
+      "statistic": "switch_probability",
+      "lag_frames": 1,
+      "tolerance": 0.05
+    }
+  ]
+}

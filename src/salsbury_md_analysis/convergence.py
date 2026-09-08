@@ -11,6 +11,7 @@ import numpy as np
 from .geometry import GeometryError
 from .manifests import ManifestValidationError, load_json, sha256_file
 from .moments import sample_summary
+from .simulation_protocol import SimulationProtocolError
 from .rmsd_rg import RMSDRGError, replica_rmsd_rg_project
 
 
@@ -249,6 +250,8 @@ def _settings(project: Mapping[str, object]) -> Dict[str, object]:
         "replica_diagnostics",
         "minimum_replicas_for_exploratory_diagnostic",
         "minimum_replicas_for_population_validity",
+        "timeseries_file",
+        "lag_frames",
     }
     reference_fields = canonical_references | legacy_references
     unknown = sorted(set(raw).difference(required | optional | reference_fields))
@@ -256,12 +259,40 @@ def _settings(project: Mapping[str, object]) -> Dict[str, object]:
         raise ConvergenceAnalysisError("convergence settings missing: " + ", ".join(missing))
     if unknown:
         raise ConvergenceAnalysisError("convergence settings contain unknown fields: " + ", ".join(unknown))
-    if raw["source_module"] != "replica_rmsd_rg":
-        raise ConvergenceAnalysisError("source_module currently supports only replica_rmsd_rg")
+    source_module = raw["source_module"]
+    if source_module not in ("replica_rmsd_rg", "observable_timeseries"):
+        raise ConvergenceAnalysisError(
+            "source_module must be replica_rmsd_rg or observable_timeseries"
+        )
     metrics = raw["metrics"]
-    allowed = {"alignment_rmsd_angstrom", "rmsd_angstrom", "radius_of_gyration_angstrom"}
-    if not isinstance(metrics, list) or not metrics or any(value not in allowed for value in metrics) or len(set(metrics)) != len(metrics):
-        raise ConvergenceAnalysisError("metrics must contain unique RMSD/Rg metric names")
+    if (
+        not isinstance(metrics, list)
+        or not metrics
+        or any(not isinstance(value, str) or not value.strip() for value in metrics)
+        or len(set(metrics)) != len(metrics)
+    ):
+        raise ConvergenceAnalysisError(
+            "metrics must contain unique nonempty observable names"
+        )
+    if source_module == "replica_rmsd_rg":
+        allowed = {
+            "alignment_rmsd_angstrom",
+            "rmsd_angstrom",
+            "radius_of_gyration_angstrom",
+        }
+        if any(value not in allowed for value in metrics):
+            raise ConvergenceAnalysisError(
+                "metrics must contain unique RMSD/Rg metric names"
+            )
+        if "timeseries_file" in raw or "lag_frames" in raw:
+            raise ConvergenceAnalysisError(
+                "timeseries_file and lag_frames apply only to observable_timeseries"
+            )
+    elif (
+        not isinstance(raw.get("timeseries_file"), str)
+        or not raw["timeseries_file"].strip()
+    ):
+        raise ConvergenceAnalysisError("observable_timeseries requires timeseries_file")
     for label in ("block_size_frames", "minimum_blocks"):
         value = raw[label]
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -304,7 +335,16 @@ def _settings(project: Mapping[str, object]) -> Dict[str, object]:
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)) or float(value) <= 0.0:
             raise ConvergenceAnalysisError(f"{label} must be finite and positive")
     return {
-        "source_module": "replica_rmsd_rg", "metrics": list(metrics),
+        "source_module": source_module,
+        "metrics": list(metrics),
+        **(
+            {
+                "timeseries_file": raw["timeseries_file"],
+                "lag_frames": raw.get("lag_frames", [1]),
+            }
+            if source_module == "observable_timeseries"
+            else {}
+        ),
         "block_size_frames": raw["block_size_frames"],
         "include_partial_final_block": raw["include_partial_final_block"],
         "minimum_blocks": raw["minimum_blocks"],
@@ -486,6 +526,10 @@ def convergence_uncertainty_project(
     source = Path(project_path).expanduser().resolve(strict=False)
     project = load_json(source)
     settings = _settings(project)
+    if settings["source_module"] == "observable_timeseries":
+        from .observable_diagnostics import observable_convergence_project
+
+        return observable_convergence_project(source, project, settings)
     upstream = replica_rmsd_rg_project(source, hash_content=hash_content)
     observation_accounting = _exact_observation_accounting(
         upstream, len(settings["metrics"])
@@ -587,7 +631,14 @@ def convergence_uncertainty_project_safe(
 ) -> Dict[str, object]:
     try:
         return convergence_uncertainty_project(project_path, hash_content=hash_content)
-    except (ManifestValidationError, ConvergenceAnalysisError, RMSDRGError, GeometryError, OSError) as exc:
+    except (
+        ManifestValidationError,
+        ConvergenceAnalysisError,
+        SimulationProtocolError,
+        RMSDRGError,
+        GeometryError,
+        OSError,
+    ) as exc:
         messages = list(exc.issues) if isinstance(exc, ManifestValidationError) else [str(exc)]
         return {
             "module_id": "convergence_uncertainty", "technical_status": "failed",

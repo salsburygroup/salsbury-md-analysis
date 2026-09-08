@@ -1,0 +1,21 @@
+{
+  "definitions": {
+    "convergence_uncertainty": {
+      "source_module": "observable_timeseries",
+      "timeseries_file": "fast.json",
+      "metrics": [
+        "contact"
+      ],
+      "block_size_frames": 10,
+      "minimum_blocks": 2,
+      "include_partial_final_block": false,
+      "effective_sample_size_reference": 20.0,
+      "split_mean_difference_reference_in_sd": 1.0,
+      "lag_frames": [
+        1,
+        2,
+        5
+      ]
+    }
+  }
+}

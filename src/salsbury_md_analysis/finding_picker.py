@@ -2150,11 +2150,12 @@ def _quality_control_records(
                         f"{metric_summary.get('series_count', 0)} above reference"
                     )
             metric_text = "; ".join(metric_parts)
+            series_kind = str(summary.get("series_kind", "RMSD/Rg series"))
             statement = (
-                f"ESS reference {reference:g}: {above}/{total} RMSD/Rg series are above "
+                f"ESS reference {reference:g}: {above}/{total} {series_kind} are above "
                 f"the reference"
                 if isinstance(reference, (int, float))
-                else f"ESS diagnostics are available for {total} RMSD/Rg series"
+                else f"ESS diagnostics are available for {total} {series_kind}"
             )
             if metric_text:
                 statement += f" ({metric_text})"

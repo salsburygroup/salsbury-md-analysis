@@ -1,0 +1,610 @@
+{
+  "schema_version": "observable_timeseries_v1",
+  "source_provenance": {
+    "description": "Synthetic counterexample; literal values in fast-values.txt. Protocol labels are illustrative, not simulation evidence.",
+    "sha256": "73c5188c050751e8ad315077b3d18c4db3771186fe6e8a6d4b1cf51bd7925d8a"
+  },
+  "weighting": "frame",
+  "observables": [
+    {
+      "observable_id": "contact",
+      "unit": "dimensionless",
+      "definition": "Synthetic two-state indicator",
+      "kind": "indicator",
+      "histogram_edges": [
+        -0.5,
+        0.5,
+        1.5
+      ]
+    }
+  ],
+  "segments": [
+    {
+      "system_id": "synthetic",
+      "replica_id": "r1",
+      "segment_id": "seg1",
+      "frame_interval": 1.0,
+      "time_unit": "ps",
+      "source_frame_stride": 1,
+      "simulation_protocol": {
+        "protocol_id": "synthetic-step-2.0",
+        "integration_step_fs": 2.0,
+        "integrator": "velocity-verlet",
+        "thermostat": {
+          "name": "none",
+          "parameters": {}
+        },
+        "constraints": {
+          "name": "none",
+          "parameters": {}
+        },
+        "hamiltonian_sha256": "3e19f250494701908954a96d2daf1ee2f87b6f67fce6fd3be78cddce3a10e875",
+        "ensemble": "NVE",
+        "temperature_kelvin": 300.0,
+        "initial_ensemble_id": "synthetic-equal-populations"
+      },
+      "rows": [
+        {
+          "source_frame_index": 0,
+          "time": 0.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 1,
+          "time": 1.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 2,
+          "time": 2.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 3,
+          "time": 3.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 4,
+          "time": 4.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 5,
+          "time": 5.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 6,
+          "time": 6.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 7,
+          "time": 7.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 8,
+          "time": 8.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 9,
+          "time": 9.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 10,
+          "time": 10.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 11,
+          "time": 11.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 12,
+          "time": 12.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 13,
+          "time": 13.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 14,
+          "time": 14.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 15,
+          "time": 15.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 16,
+          "time": 16.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 17,
+          "time": 17.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 18,
+          "time": 18.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 19,
+          "time": 19.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 20,
+          "time": 20.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 21,
+          "time": 21.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 22,
+          "time": 22.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 23,
+          "time": 23.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 24,
+          "time": 24.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 25,
+          "time": 25.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 26,
+          "time": 26.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 27,
+          "time": 27.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 28,
+          "time": 28.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 29,
+          "time": 29.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 30,
+          "time": 30.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 31,
+          "time": 31.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 32,
+          "time": 32.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 33,
+          "time": 33.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 34,
+          "time": 34.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 35,
+          "time": 35.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 36,
+          "time": 36.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 37,
+          "time": 37.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 38,
+          "time": 38.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 39,
+          "time": 39.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 40,
+          "time": 40.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 41,
+          "time": 41.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 42,
+          "time": 42.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 43,
+          "time": 43.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 44,
+          "time": 44.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 45,
+          "time": 45.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 46,
+          "time": 46.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 47,
+          "time": 47.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 48,
+          "time": 48.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 49,
+          "time": 49.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 50,
+          "time": 50.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 51,
+          "time": 51.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 52,
+          "time": 52.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 53,
+          "time": 53.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 54,
+          "time": 54.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 55,
+          "time": 55.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 56,
+          "time": 56.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 57,
+          "time": 57.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 58,
+          "time": 58.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 59,
+          "time": 59.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 60,
+          "time": 60.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 61,
+          "time": 61.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 62,
+          "time": 62.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 63,
+          "time": 63.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 64,
+          "time": 64.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 65,
+          "time": 65.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 66,
+          "time": 66.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 67,
+          "time": 67.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 68,
+          "time": 68.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 69,
+          "time": 69.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 70,
+          "time": 70.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 71,
+          "time": 71.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 72,
+          "time": 72.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 73,
+          "time": 73.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 74,
+          "time": 74.0,
+          "values": {
+            "contact": 0
+          }
+        },
+        {
+          "source_frame_index": 75,
+          "time": 75.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 76,
+          "time": 76.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 77,
+          "time": 77.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 78,
+          "time": 78.0,
+          "values": {
+            "contact": 1
+          }
+        },
+        {
+          "source_frame_index": 79,
+          "time": 79.0,
+          "values": {
+            "contact": 1
+          }
+        }
+      ]
+    }
+  ]
+}

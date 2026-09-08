@@ -534,7 +534,16 @@ def validate_system(
                 if replica is None:
                     continue
                 _unknown_fields(
-                    replica, {"replica_id", "topology", "connectivity", "segments"}, replica_prefix, issues
+                    replica,
+                    {
+                        "replica_id",
+                        "topology",
+                        "connectivity",
+                        "segments",
+                        "simulation_protocol",
+                    },
+                    replica_prefix,
+                    issues,
                 )
                 _required(replica, {"replica_id", "topology", "segments"}, issues)
                 replica_id = _require_string(
@@ -554,6 +563,16 @@ def validate_system(
                         source_path,
                         check_paths,
                     )
+                if "simulation_protocol" in replica:
+                    from .simulation_protocol import (
+                        SimulationProtocolError,
+                        validate_simulation_protocol,
+                    )
+
+                    try:
+                        validate_simulation_protocol(replica["simulation_protocol"])
+                    except SimulationProtocolError as exc:
+                        issues.append(f"{replica_prefix}.simulation_protocol: {exc}")
                 segments = _require_list(
                     replica.get("segments"), f"{replica_prefix}.segments", issues
                 )

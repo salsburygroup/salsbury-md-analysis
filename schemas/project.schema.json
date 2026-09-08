@@ -977,6 +977,8 @@
             },
             "maximum_ck_rmse": {"type": "number", "exclusiveMinimum": 0},
             "vamp_cross_validation_folds": {"type": "integer", "minimum": 2},
+            "vamp_temporal_buffer_frames": {"type": "integer", "minimum": 0, "default": 0},
+            "minimum_heldout_vamp_e": {"type": ["number", "null"]},
             "vamp_regularization": {"type": "number", "exclusiveMinimum": 0},
             "maximum_implied_timescale_relative_range": {
               "type": "number", "exclusiveMinimum": 0
@@ -1328,6 +1330,14 @@
         "convergence_uncertainty": {
           "type": "object",
           "additionalProperties": false,
+          "allOf": [{
+            "if": {"properties": {"source_module": {"const": "observable_timeseries"}}},
+            "then": {"required": ["timeseries_file"]},
+            "else": {
+              "not": {"anyOf": [{"required": ["timeseries_file"]}, {"required": ["lag_frames"]}]},
+              "properties": {"metrics": {"items": {"enum": ["alignment_rmsd_angstrom", "rmsd_angstrom", "radius_of_gyration_angstrom"]}}}
+            }
+          }],
           "required": [
             "source_module", "metrics", "block_size_frames", "include_partial_final_block",
             "minimum_blocks"
@@ -1347,10 +1357,12 @@
             }
           ],
           "properties": {
-            "source_module": {"const": "replica_rmsd_rg"},
+            "source_module": {"enum": ["replica_rmsd_rg", "observable_timeseries"]},
+            "timeseries_file": {"type": "string", "minLength": 1},
+            "lag_frames": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "integer", "minimum": 1}},
             "metrics": {
               "type": "array", "minItems": 1, "uniqueItems": true,
-              "items": {"enum": ["alignment_rmsd_angstrom", "rmsd_angstrom", "radius_of_gyration_angstrom"]}
+              "items": {"type": "string", "minLength": 1}
             },
             "block_size_frames": {"type": "integer", "minimum": 1},
             "include_partial_final_block": {"type": "boolean"},

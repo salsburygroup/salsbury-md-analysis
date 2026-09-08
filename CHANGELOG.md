@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased: observable-specific validation branch
+
+- Add opt-in convergence diagnostics for declared observable series, preserving
+  units, source identities, conditional mixture weights, and continuous runs.
+- Purge VAMP fold boundaries and support a temporal buffer. Rename score
+  availability separately from a declared predictive criterion; kinetic status
+  can now be `not assessed`. Old input configurations remain accepted.
+- Add validated simulation-protocol metadata, bounded integration-step
+  comparisons, and a callback API for complete-pipeline outer replica holdouts.
+- Include synthetic counterexamples and runnable terminal examples. These
+  changes do not establish project-specific scientific validity.
+
 ## 0.1.3rc1 - unreleased
 
 - Add terminal setup, diagnostics, plan-only preparation, status, and reviewed

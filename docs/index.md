@@ -77,3 +77,5 @@ they still agree with the source.
 - [Secondary structure](SECONDARY_STRUCTURE.md)
 - [Scientific validation scope](SCIENTIFIC_VALIDATION.md)
 - [Hash-pinned regressions](REGRESSIONS.md)
+
+- [Observable-specific validation and numerical protocol comparisons](OBSERVABLE_VALIDATION.md)

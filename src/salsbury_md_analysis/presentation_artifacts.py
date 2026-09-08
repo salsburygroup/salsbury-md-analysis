@@ -1387,7 +1387,7 @@ def _convergence_artifacts(
     output_root: Path, path: Path, report: Mapping[str, object], artifacts: List[Dict[str, object]]
 ) -> None:
     rows = []
-    for item in report.get("series_diagnostics", []):
+    for item in report.get("diagnostic_series", report.get("series_diagnostics", [])):
         if not isinstance(item, dict):
             continue
         ess = item.get("effective_sample_size")

@@ -120,3 +120,8 @@ monthly MCP allowance was exhausted until 2026-10-01, and the alternate
 signed-in browser route was denied by an administrator-enforced browser policy.
 This is an open documentation gate. Do not describe the reference list as
 Scite-checked until that audit is rerun successfully.
+
+Observable-specific validation and its limits are described in
+[Observable-specific validation](OBSERVABLE_VALIDATION.md), including Tupper
+(2009), the distinction between population and path statistics, and the scope
+of purged VAMP scores and exploratory block-bootstrap comparisons.

@@ -27,6 +27,85 @@
                 "replica_id": {"type": "string", "minLength": 1},
                 "topology": {"type": "string", "minLength": 1},
                 "connectivity": {"type": ["string", "null"], "minLength": 1},
+                "simulation_protocol": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "constraints": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "name": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "parameters": {
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "parameters"
+                      ],
+                      "type": "object"
+                    },
+                    "ensemble": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "hamiltonian_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string"
+                    },
+                    "initial_ensemble_id": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "integration_step_fs": {
+                      "exclusiveMinimum": 0,
+                      "type": "number"
+                    },
+                    "integrator": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "protocol_id": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "temperature_kelvin": {
+                      "exclusiveMinimum": 0,
+                      "type": "number"
+                    },
+                    "thermostat": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "name": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "parameters": {
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "parameters"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "protocol_id",
+                    "integration_step_fs",
+                    "integrator",
+                    "thermostat",
+                    "constraints",
+                    "hamiltonian_sha256",
+                    "ensemble",
+                    "temperature_kelvin",
+                    "initial_ensemble_id"
+                  ],
+                  "type": "object"
+                },
                 "segments": {
                   "type": "array",
                   "minItems": 1,

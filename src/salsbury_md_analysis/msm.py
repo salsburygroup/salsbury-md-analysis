@@ -52,10 +52,17 @@ def _settings(project: Mapping[str, object]) -> Dict[str, object]:
     }
     missing = sorted(required.difference(raw))
     optional = {
-        "assignment_source", "assignment_sources", "vamp_cross_validation_folds",
-        "vamp_regularization", "maximum_implied_timescale_relative_range",
-        "bootstrap_repeats", "bootstrap_block_length_frames",
-        "bootstrap_confidence_level", "random_seed",
+        "assignment_source",
+        "assignment_sources",
+        "vamp_cross_validation_folds",
+        "vamp_regularization",
+        "maximum_implied_timescale_relative_range",
+        "bootstrap_repeats",
+        "bootstrap_block_length_frames",
+        "bootstrap_confidence_level",
+        "random_seed",
+        "vamp_temporal_buffer_frames",
+        "minimum_heldout_vamp_e",
     }
     unknown = sorted(set(raw).difference(required | optional))
     if missing:
@@ -123,6 +130,22 @@ def _settings(project: Mapping[str, object]) -> Dict[str, object]:
         raise MSMAnalysisError(
             "vamp_cross_validation_folds must be an integer of at least 2"
         )
+    buffer_frames = raw.get("vamp_temporal_buffer_frames", 0)
+    if (
+        isinstance(buffer_frames, bool)
+        or not isinstance(buffer_frames, int)
+        or buffer_frames < 0
+    ):
+        raise MSMAnalysisError(
+            "vamp_temporal_buffer_frames must be a nonnegative integer"
+        )
+    minimum_vamp = raw.get("minimum_heldout_vamp_e")
+    if minimum_vamp is not None and (
+        isinstance(minimum_vamp, bool)
+        or not isinstance(minimum_vamp, (int, float))
+        or not math.isfinite(float(minimum_vamp))
+    ):
+        raise MSMAnalysisError("minimum_heldout_vamp_e must be finite or null")
     vamp_regularization = raw.get("vamp_regularization", 1.0e-8)
     if (
         isinstance(vamp_regularization, bool)
@@ -173,7 +196,8 @@ def _settings(project: Mapping[str, object]) -> Dict[str, object]:
     return {
         **(
             {"assignment_source": raw["assignment_source"]}
-            if has_single else {"assignment_sources": list(assignment_sources)}
+            if has_single
+            else {"assignment_sources": list(assignment_sources)}
         ),
         "lag_frames": sorted(lag_frames),
         "estimators": list(estimators),
@@ -184,6 +208,8 @@ def _settings(project: Mapping[str, object]) -> Dict[str, object]:
         "ck_multiples": sorted(multiples),
         "maximum_ck_rmse": float(maximum_ck_rmse),
         "vamp_cross_validation_folds": folds,
+        "vamp_temporal_buffer_frames": buffer_frames,
+        "minimum_heldout_vamp_e": minimum_vamp,
         "vamp_regularization": float(vamp_regularization),
         "maximum_implied_timescale_relative_range": float(maximum_its_range),
         "bootstrap_repeats": bootstrap_repeats,
@@ -411,36 +437,141 @@ def _inverse_sqrt(matrix: np.ndarray, regularization: float) -> np.ndarray:
     return (vectors * inverse) @ vectors.T
 
 
+def _vamp_fold_pair_indices(lengths, lag_frames, fold_count, fold, buffer_frames=0):
+    """Partition complete lag windows; no training window touches the test block.
+
+    Indices refer to frames within each declared continuous segment. The buffer
+    expands the excluded training interval beyond the held-out frame block.
+    """
+    training, testing = [], []
+    for trajectory_index, length in enumerate(lengths):
+        start, stop = length * fold // fold_count, length * (fold + 1) // fold_count
+        for index in range(max(0, length - lag_frames)):
+            pair = (trajectory_index, index, index + lag_frames)
+            if start <= index and index + lag_frames < stop:
+                testing.append(pair)
+            elif (
+                index + lag_frames < start - buffer_frames
+                or index >= stop + buffer_frames
+            ):
+                training.append(pair)
+    return training, testing
+
+
+def _vamp_predictive_assessment(reports, minimum_score):
+    """Assess only the declared score criterion, never physical correctness."""
+    available = bool(reports) and all(
+        row.get("status") == "complete" for row in reports
+    )
+    if minimum_score is None:
+        status, passed = "not assessed", None
+        reason = "No predictive score criterion was declared."
+    elif not available:
+        status, passed = "not calculable", None
+        reason = "One or more lagged validation scores are unavailable after purging."
+    else:
+        passed = all(
+            float(row["mean_heldout_vamp_e"]) >= minimum_score for row in reports
+        )
+        status = "passed declared criterion" if passed else "failed declared criterion"
+        reason = (
+            "Every requested lag must meet the declared mean held-out VAMP-E reference."
+        )
+    return {
+        "status": status,
+        "passes_declared_criterion": passed,
+        "minimum_heldout_vamp_e": minimum_score,
+        "reason": reason,
+        "scope": "fixed supplied state assignments; no validation of upstream representation fitting",
+        "scientific_validity_established": False,
+    }
+
+
+def _kinetic_validation_status(diagnostics_passed, assessment):
+    if not diagnostics_passed or assessment["passes_declared_criterion"] is False:
+        return "not passed"
+    return (
+        "passed" if assessment["passes_declared_criterion"] is True else "not assessed"
+    )
+
+
 def cross_validated_vamp_report(
     trajectories: Sequence[Sequence[int]],
     state_count: int,
     lag_frames: int,
     fold_count: int,
     regularization: float,
+    temporal_buffer_frames: int = 0,
 ) -> Dict[str, object]:
-    """Calculate time-blocked VAMP-2 training and held-out VAMP-E scores."""
-
-    all_pairs: List[Tuple[int, int, int, int]] = []
-    for trajectory_index, trajectory in enumerate(trajectories):
-        count = max(0, len(trajectory) - lag_frames)
-        for index in range(count):
-            fold = min(fold_count - 1, (index * fold_count) // max(1, count))
-            all_pairs.append(
-                (fold, trajectory_index, trajectory[index], trajectory[index + lag_frames])
-            )
-    if len(all_pairs) < fold_count * 2:
-        return {
-            "status": "not_calculable",
-            "reason": "fewer than two transition pairs per requested fold",
-            "lag_frames": lag_frames,
-            "fold_count": fold_count,
-            "transition_pair_count": len(all_pairs),
-        }
+    """Calculate VAMP scores using disjoint, purged within-segment frame blocks."""
+    if (
+        isinstance(lag_frames, bool)
+        or not isinstance(lag_frames, int)
+        or lag_frames < 1
+    ):
+        raise MSMAnalysisError("lag_frames must be a positive integer")
+    if (
+        isinstance(fold_count, bool)
+        or not isinstance(fold_count, int)
+        or fold_count < 2
+    ):
+        raise MSMAnalysisError("fold_count must be at least two")
+    if (
+        isinstance(temporal_buffer_frames, bool)
+        or not isinstance(temporal_buffer_frames, int)
+        or temporal_buffer_frames < 0
+    ):
+        raise MSMAnalysisError("temporal_buffer_frames must be a nonnegative integer")
+    if not math.isfinite(regularization) or regularization <= 0:
+        raise MSMAnalysisError("regularization must be finite and positive")
+    if (
+        isinstance(state_count, bool)
+        or not isinstance(state_count, int)
+        or state_count < 1
+    ):
+        raise MSMAnalysisError("state_count must be a positive integer")
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, np.integer))
+        or value < 0
+        or value >= state_count
+        for trajectory in trajectories
+        for value in trajectory
+    ):
+        raise MSMAnalysisError(
+            "state labels must be integer indices within state_count"
+        )
+    lengths = [len(trajectory) for trajectory in trajectories]
+    pair_count = sum(max(0, length - lag_frames) for length in lengths)
+    common = {
+        "lag_frames": lag_frames,
+        "fold_count": fold_count,
+        "transition_pair_count": pair_count,
+        "temporal_buffer_frames": temporal_buffer_frames,
+        "validation_scope": "fixed_state_assignments_within_segment",
+        "upstream_representation_refitted": False,
+        "predictive_quality_status": "not assessed",
+    }
     folds = []
     for fold in range(fold_count):
-        training = [row[1:] for row in all_pairs if row[0] != fold]
-        testing = [row[1:] for row in all_pairs if row[0] == fold]
-        if not training or not testing:
+        train_indices, test_indices = _vamp_fold_pair_indices(
+            lengths, lag_frames, fold_count, fold, temporal_buffer_frames
+        )
+        training = [
+            (t, trajectories[t][a], trajectories[t][b]) for t, a, b in train_indices
+        ]
+        testing = [
+            (t, trajectories[t][a], trajectories[t][b]) for t, a, b in test_indices
+        ]
+        accounting = {
+            "fold": fold,
+            "training_transition_pair_count": len(training),
+            "testing_transition_pair_count": len(testing),
+            "excluded_transition_pair_count": pair_count - len(training) - len(testing),
+            "shared_training_testing_frame_count": 0,
+        }
+        if len(training) < 2 or len(testing) < 2:
+            folds.append({**accounting, "status": "not calculable"})
             continue
         c00, c01, c11 = _vamp_covariances(training, state_count)
         left_whitener = _inverse_sqrt(c00, regularization)
@@ -463,31 +594,28 @@ def cross_validated_vamp_report(
         vamp_2 = float(np.sum(singular_values ** 2))
         if not math.isfinite(vamp_e) or not math.isfinite(vamp_2):
             raise MSMAnalysisError("VAMP cross-validation produced a non-finite score")
-        folds.append({
-            "fold": fold,
-            "training_transition_pair_count": len(training),
-            "testing_transition_pair_count": len(testing),
-            "training_vamp2": vamp_2,
-            "heldout_vamp_e": vamp_e,
-        })
-    if len(folds) != fold_count:
+        folds.append(
+            {
+                **accounting,
+                "status": "complete",
+                "training_vamp2": vamp_2,
+                "heldout_vamp_e": vamp_e,
+            }
+        )
+    if any(row["status"] != "complete" for row in folds):
         return {
             "status": "not_calculable",
-            "reason": "one or more time-blocked folds were empty",
-            "lag_frames": lag_frames,
-            "fold_count": fold_count,
-            "transition_pair_count": len(all_pairs),
+            "reason": "fewer than two training or testing pairs after boundary purging and buffering",
+            **common,
             "folds": folds,
         }
     vamp_e_values = [float(row["heldout_vamp_e"]) for row in folds]
     vamp_2_values = [float(row["training_vamp2"]) for row in folds]
     return {
         "status": "complete",
-        "lag_frames": lag_frames,
-        "fold_count": fold_count,
-        "transition_pair_count": len(all_pairs),
+        **common,
         "fold_assignment": (
-            "contiguous time blocks within every trajectory segment; folds are pooled "
+            "purged contiguous frame blocks within every trajectory segment; folds are pooled "
             "across replicas without leaving out an entire replica"
         ),
         "mean_training_vamp2": float(np.mean(vamp_2_values)),
@@ -796,9 +924,12 @@ def _evaluate_state_definition(
     )
     vamp = [
         cross_validated_vamp_report(
-            trajectories, state_count, int(lag),
+            trajectories,
+            state_count,
+            int(lag),
             int(settings["vamp_cross_validation_folds"]),
             float(settings["vamp_regularization"]),
+            int(settings["vamp_temporal_buffer_frames"]),
         )
         for lag in settings["lag_frames"]  # type: ignore[union-attr]
     ]
@@ -833,7 +964,10 @@ def _evaluate_state_definition(
     )
     vamp_gate = bool(vamp) and all(row.get("status") == "complete" for row in vamp)
     implied_gate = implied_stability.get("passes_declared_gate") is True
-    validation_passed = model_gate and ck_gate and vamp_gate and implied_gate
+    assessment = _vamp_predictive_assessment(vamp, settings["minimum_heldout_vamp_e"])
+    validation_status = _kinetic_validation_status(
+        model_gate and ck_gate and vamp_gate and implied_gate, assessment
+    )
     physical_frames = {
         (
             str(row["system_id"]), str(row["replica_id"]),
@@ -846,12 +980,14 @@ def _evaluate_state_definition(
         "family": family,
         "geometric_score": geometric_score,
         "geometric_coverage_fraction": geometric_coverage,
-        "kinetic_validation_status": "passed" if validation_passed else "not passed",
+        "kinetic_validation_status": validation_status,
+        "predictive_quality_assessment": assessment,
         "validation_gates": {
             "models_estimable_connected_and_counted": model_gate,
             "chapman_kolmogorov": ck_gate,
             "implied_timescale_stability": implied_gate,
-            "cross_validated_vamp": vamp_gate,
+            "vamp_scores_available": vamp_gate,
+            "declared_predictive_score": assessment["passes_declared_criterion"],
         },
         "state_count": state_count,
         "observation_count": sum(len(values) for values in trajectories),
@@ -1413,7 +1549,15 @@ def _multi_state_markov_project(
             "passed"
             if best_clustering["kinetic_validation_status"] == "passed"
             and fes_model["kinetic_validation_status"] == "passed"
-            else "not passed"
+            else (
+                "not passed"
+                if "not passed"
+                in (
+                    best_clustering["kinetic_validation_status"],
+                    fes_model["kinetic_validation_status"],
+                )
+                else "not assessed"
+            )
         ),
         "project_manifest_path": str(source),
         "project_manifest_sha256": sha256_file(source),
@@ -1427,16 +1571,23 @@ def _multi_state_markov_project(
         "observation_accounting": {
             "source_physical_frame_count": physical_frame_count,
             "symmetry_expanded_observation_count": len(normalized_fes),
-            "member_observations_are_independent_replicas": False
-            if any("member_id" in row for row in normalized_fes) else None,
+            "member_observations_are_independent_replicas": (
+                False if any("member_id" in row for row in normalized_fes) else None
+            ),
         },
         "clustering_feature_space": clustering_feature_space,
         "fes_feature_space": "common_pca",
         "best_geometric_clustering": {
-            key: best_geometric.get(key) for key in (
-                "candidate_id", "geometric_score", "coverage_fraction",
-                "msm_eligible", "primary_msm_selection_eligible", "msm_role",
-                "msm_exclusion_reason", "primary_msm_exclusion_reason",
+            key: best_geometric.get(key)
+            for key in (
+                "candidate_id",
+                "geometric_score",
+                "coverage_fraction",
+                "msm_eligible",
+                "primary_msm_selection_eligible",
+                "msm_role",
+                "msm_exclusion_reason",
+                "primary_msm_exclusion_reason",
             )
         },
         "best_clustering_state_model": _selection_summary(best_clustering),
@@ -1446,29 +1597,38 @@ def _multi_state_markov_project(
         "clustering_state_model_comparison": [
             _selection_summary(report)
             for report in sorted(
-                primary_clustering_models,
-                key=_state_model_selection_key, reverse=True
+                primary_clustering_models, key=_state_model_selection_key, reverse=True
             )
         ],
         "sampled_clustering_state_model_sensitivities": [
             _selection_summary(report)
             for report in sorted(
                 sampled_sensitivity_models,
-                key=_state_model_selection_key, reverse=True,
+                key=_state_model_selection_key,
+                reverse=True,
             )
         ],
         "sampled_clustering_state_model_sensitivity_details": sorted(
             sampled_sensitivity_models,
-            key=_state_model_selection_key, reverse=True,
+            key=_state_model_selection_key,
+            reverse=True,
         ),
         "clustering_method_inventory": [
             {
-                key: candidate.get(key) for key in (
-                    "candidate_id", "geometric_score", "coverage_fraction",
-                    "msm_assignment_scope", "msm_observation_count",
-                    "msm_coverage_fraction", "msm_assignment_diagnostics",
-                    "msm_eligible", "primary_msm_selection_eligible", "msm_role",
-                    "msm_exclusion_reason", "primary_msm_exclusion_reason",
+                key: candidate.get(key)
+                for key in (
+                    "candidate_id",
+                    "geometric_score",
+                    "coverage_fraction",
+                    "msm_assignment_scope",
+                    "msm_observation_count",
+                    "msm_coverage_fraction",
+                    "msm_assignment_diagnostics",
+                    "msm_eligible",
+                    "primary_msm_selection_eligible",
+                    "msm_role",
+                    "msm_exclusion_reason",
+                    "primary_msm_exclusion_reason",
                 )
             }
             for candidate in candidates
@@ -1490,7 +1650,7 @@ def _multi_state_markov_project(
             "The selected clustering MSM and FES-basin model are separate state definitions and both remain reportable.",
             "Silhouette selects geometric partitions only; it does not establish metastability or kinetics.",
             "FES basins are thermodynamic or occupancy catchments and are not assumed Markovian.",
-            "VAMP-E cross-validation uses contiguous within-segment time folds and never leaves out an entire replica.",
+            "VAMP-E uses purged within-segment frame blocks with a declared temporal buffer; upstream state definitions are fixed, and complete-pipeline generalization is not assessed.",
             "Time-block bootstrap intervals quantify finite-trajectory sensitivity but do not create independent replicas.",
             "HDBSCAN dense-core models split every noise gap and are conditional on retained core observations; they cannot recover full-trajectory stationary populations, residence, or kinetics.",
             "Ward and quality-threshold are omitted when they cannot provide a complete exact assignment over every observation.",
@@ -1611,11 +1771,33 @@ def markov_state_models_project(
         and model["stationary_iteration_converged"]
         for model in models
     ) and bool(ck_tests) and all(test["passes_declared_gate"] for test in ck_tests)
+    vamp = [
+        cross_validated_vamp_report(
+            trajectories,
+            state_count,
+            lag,
+            int(settings["vamp_cross_validation_folds"]),
+            float(settings["vamp_regularization"]),
+            int(settings["vamp_temporal_buffer_frames"]),
+        )
+        for lag in settings["lag_frames"]
+    ]
+    scores_available = all(row["status"] == "complete" for row in vamp)
+    assessment = _vamp_predictive_assessment(vamp, settings["minimum_heldout_vamp_e"])
     return {
         "module_id": "markov_state_models",
         "technical_status": "complete",
         "scientific_status": "not evaluated",
-        "kinetic_validation_status": "passed" if validation_passed else "not passed",
+        "kinetic_validation_status": _kinetic_validation_status(
+            validation_passed and scores_available, assessment
+        ),
+        "vamp_cross_validation": vamp,
+        "predictive_quality_assessment": assessment,
+        "validation_gates": {
+            "model_and_ck_diagnostics": validation_passed,
+            "vamp_scores_available": scores_available,
+            "declared_predictive_score": assessment["passes_declared_criterion"],
+        },
         "project_manifest_path": str(source),
         "project_manifest_sha256": sha256_file(source),
         "upstream_project_manifest_sha256": clustering["project_manifest_sha256"],
@@ -1631,8 +1813,9 @@ def markov_state_models_project(
             "source_physical_frame_count": physical_frame_count,
             "symmetry_expanded_observation_count": len(rows),
             "kinetic_trajectory_count": len(trajectories),
-            "member_observations_are_independent_replicas": False
-            if any("member_id" in row for row in rows) else None,
+            "member_observations_are_independent_replicas": (
+                False if any("member_id" in row for row in rows) else None
+            ),
         },
         "state_count": state_count,
         "frame_interval": interval,
