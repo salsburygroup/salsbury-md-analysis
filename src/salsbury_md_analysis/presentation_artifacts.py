@@ -371,7 +371,10 @@ def _state_population_svg(rows: Sequence[Mapping[str, object]], title: str) -> T
     top = 92
     left = 190
     plot_width = 720
-    height = top + row_height * len(systems) + 94
+    legend_slot = max(90, 60 + 7 * max((len(str(state)) for state in states), default=1))
+    legend_columns = max(1, plot_width // legend_slot)
+    legend_rows = max(1, math.ceil(len(states) / legend_columns))
+    height = top + row_height * len(systems) + 94 + 24 * (legend_rows - 1)
     values = {
         (str(row["system_id"]), int(row["state_id"])): float(
             row["fraction_of_all_evaluated"]
@@ -412,10 +415,11 @@ def _state_population_svg(rows: Sequence[Mapping[str, object]], title: str) -> T
     legend_y = top + row_height * len(systems) + 52
     cursor = left
     for color_index, state_id in enumerate(states):
+        cursor = left + (color_index % legend_columns) * legend_slot
+        current_y = legend_y + (color_index // legend_columns) * 24
         color = _WFU_COLORS[color_index % len(_WFU_COLORS)]
-        body.append(f'<rect x="{cursor}" y="{legend_y-12}" width="14" height="14" fill="{color}"/>')
-        body.append(f'<text class="small" x="{cursor+20}" y="{legend_y}">State {state_id}</text>')
-        cursor += 78
+        body.append(f'<rect x="{cursor}" y="{current_y-12}" width="14" height="14" fill="{color}"/>')
+        body.append(f'<text class="small" x="{cursor+20}" y="{current_y}">State {state_id}</text>')
     return width, height, "".join(body)
 
 
@@ -479,6 +483,12 @@ def _fes_svg(landscape: Mapping[str, object], title: str, x_component: int, y_co
             y = top + (bins_y - y_index - 1) * cell_y
             body.append(f'<rect x="{x:.2f}" y="{y:.2f}" width="{cell_x+.2:.2f}" height="{cell_y+.2:.2f}" fill="{fill}"/>')
     body.append(f'<rect x="{left}" y="{top}" width="{side}" height="{side}" fill="none" stroke="#000"/>')
+    ticks = sorted({round(i * (size - 1) / max(1, min(size, 8) - 1)) for i in range(min(size, 8))})
+    for tick in ticks:
+        x, y = left + (tick + .5) * cell, top + (tick + .5) * cell
+        label = tick * stride
+        body.append(f'<text class="small" x="{x:.1f}" y="{top+side+18}" text-anchor="middle">{label}</text>')
+        body.append(f'<text class="small" x="{left-10}" y="{y+4:.1f}" text-anchor="end">{label}</text>')
     basins = [row for row in landscape.get("basins", []) if isinstance(row, dict)]
     for basin in basins:
         x = left + (float(basin.get("root_x_bin", 0)) + 0.5) * cell_x
