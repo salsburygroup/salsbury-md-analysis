@@ -815,12 +815,16 @@ def _add_state_population_artifacts(
     module_id: str,
     title_prefix: str,
     artifacts: List[Dict[str, object]],
+    algorithm: Optional[str] = None,
 ) -> None:
     rows = _state_population_rows(report.get("state_population_comparison"))
     if not rows:
         return
     context = _report_context(path, report)
     directory = _view_artifact_directory(output_root, module_id, context)
+    if algorithm is not None:
+        context["algorithm"] = algorithm
+        directory = directory / _system_path_token(algorithm)
     table_path = directory / "state-populations.csv"
     figure_path = directory / "state-populations.svg"
     _write_csv(table_path, (
@@ -1035,6 +1039,10 @@ def _alternative_clustering_artifacts(
     for item in report.get("algorithm_results", []):
         if not isinstance(item, dict):
             continue
+        algorithm = str(item.get("algorithm", "unknown"))
+        _add_state_population_artifacts(output_root, path, item,
+                                        "alternative_clustering", f"{human_label(algorithm)} cluster",
+                                        artifacts, algorithm=algorithm)
         silhouette = _finite(item.get("silhouette"))
         if silhouette is None:
             continue
@@ -1054,7 +1062,7 @@ def _alternative_clustering_artifacts(
     _register_pair(
         output_root, path, artifacts, module_id="alternative_clustering",
         purpose="model_selection", title=title,
-        directory=output_root / "alternative-clustering" / _slug(_report_context(path, report).get("view_id", "all")),
+        directory=_view_artifact_directory(output_root, "alternative_clustering", _report_context(path, report)),
         rows=rows,
         fieldnames=("algorithm", "silhouette", "cluster_count", "fit_observation_count", "assignment_observation_count", "assignment_coverage_fraction"),
         svg=_bar_svg(rows, title, "algorithm", "silhouette", "Silhouette score"),

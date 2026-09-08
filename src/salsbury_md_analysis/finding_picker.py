@@ -2793,6 +2793,17 @@ def _presentation_context_matches(
     artifact_context = artifact.get("context")
     if not isinstance(artifact_context, dict):
         artifact_context = {}
+    if artifact.get("module_id") == "dccm" and all(key in target and key in artifact_context for key in ("atom_i", "atom_j")):
+        # DCCM is symmetric in atom indices, but the system subtraction remains
+        # ordered. Either matrix triangle identifies the same atom pair.
+        if {target["atom_i"], target["atom_j"]} != {artifact_context["atom_i"], artifact_context["atom_j"]}:
+            return False
+        target = {key: value for key, value in target.items() if key not in {"atom_i", "atom_j"}}
+    if (artifact.get("module_id") == "alternative_clustering"
+            and artifact.get("purpose") == "state_populations"
+            and target.get("highlight_algorithm") is not None
+            and target["highlight_algorithm"] != artifact_context.get("algorithm")):
+        return False
     for key, value in target.items():
         if str(key).startswith("highlight_") or value is None:
             continue
