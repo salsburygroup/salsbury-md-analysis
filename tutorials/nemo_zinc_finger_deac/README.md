@@ -290,6 +290,10 @@ changed outputs fail closed and are not overwritten.
 
 ## 9. Build the interactive report after completion
 
+The companion repository's
+[NEMO DEAC interactive tutorial](https://github.com/salsburygroup/salsbury-md-analysis-interactive/blob/main/tutorials/nemo_zinc_finger_deac/README.md)
+covers the report build, archive, download, and review in one place.
+
 Wait until `status` reports every scheduled task complete. Then run the viewer
 on the DEAC login node; it reads the accepted core reports and does not rerun
 the trajectory analysis.

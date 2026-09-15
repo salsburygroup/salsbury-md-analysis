@@ -95,6 +95,10 @@ class GeneratedDocumentationTests(unittest.TestCase):
 
     def test_terminal_tutorial_and_bounded_fixture_acceptance(self):
         tutorial_index = (ROOT / "tutorials" / "README.md").read_text()
+        self.assertIn(
+            "salsbury-md-analysis-interactive/blob/main/tutorials/README.md",
+            tutorial_index,
+        )
         for path in (
             "nemo_zinc_finger_workstation/README.md",
             "nemo_zinc_finger_cluster/README.md",
@@ -106,6 +110,20 @@ class GeneratedDocumentationTests(unittest.TestCase):
             self.assertTrue((ROOT / "tutorials" / path).is_file())
         self.assertFalse((ROOT / "tutorials" / "nemo_zinc_finger").exists())
         self.assertFalse((ROOT / "tutorials" / "local_and_cluster").exists())
+
+        interactive_base = (
+            "https://github.com/salsburygroup/"
+            "salsbury-md-analysis-interactive/blob/main/tutorials/"
+        )
+        for path in (
+            "nemo_zinc_finger_workstation",
+            "nemo_zinc_finger_cluster",
+            "nemo_zinc_finger_deac",
+            "workstation",
+            "cluster",
+        ):
+            tutorial = (ROOT / "tutorials" / path / "README.md").read_text()
+            self.assertIn(f"{interactive_base}{path}/README.md", tutorial)
 
         workstation = (
             ROOT / "tutorials" / "workstation" / "README.md"

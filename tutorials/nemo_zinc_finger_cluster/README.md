@@ -257,6 +257,9 @@ is preserved.
 
 ## 9. Build the interactive report
 
+For the complete build, transfer, and review sequence, use the companion
+[NEMO cluster interactive tutorial](https://github.com/salsburygroup/salsbury-md-analysis-interactive/blob/main/tutorials/nemo_zinc_finger_cluster/README.md).
+
 After `status` reports every scheduled task complete:
 
 ```bash
