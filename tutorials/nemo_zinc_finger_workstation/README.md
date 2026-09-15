@@ -1,7 +1,8 @@
 # Analyze a zinc-finger trajectory on a workstation
 
-For the same fixture using the current core and interactive `main` branches on
-WFU DEAC, follow the [DEAC walkthrough](../nemo_zinc_finger_deac/README.md).
+For the same fixture through Slurm, use the
+[generic cluster tutorial](../nemo_zinc_finger_cluster/README.md) or the
+[WFU DEAC tutorial](../nemo_zinc_finger_deac/README.md).
 
 This tutorial takes you from three simulation files to a planned and executed
 analysis. The example is a real 1,000-frame subset of a published
@@ -70,12 +71,12 @@ Still at the repository root, choose a new output directory and run:
 
 ```bash
 salsbury-md-analysis prepare-analysis \
-  --pdb tutorials/nemo_zinc_finger/data/nemo_zinc_finger.pdb \
-  --psf tutorials/nemo_zinc_finger/data/nemo_zinc_finger.psf \
-  --trajectory tutorials/nemo_zinc_finger/data/nemo_zinc_finger_1000_frames.dcd \
+  --pdb tutorials/nemo_zinc_finger_workstation/data/nemo_zinc_finger.pdb \
+  --psf tutorials/nemo_zinc_finger_workstation/data/nemo_zinc_finger.psf \
+  --trajectory tutorials/nemo_zinc_finger_workstation/data/nemo_zinc_finger_1000_frames.dcd \
   --frame-interval-ps 0.2 \
   --project-id nemo-zinc-finger-tutorial \
-  --config tutorials/nemo_zinc_finger/analysis-config.json \
+  --config tutorials/nemo_zinc_finger_workstation/analysis-config.json \
   --output nemo-zinc-finger-tutorial-run
 ```
 
@@ -184,6 +185,9 @@ tutorial's `scientific_status` remains `not evaluated`: 1,000 early frames from
 one trajectory cannot establish convergence, equilibrium populations,
 metastability, kinetics, zinc affinity, or a biological binding mechanism.
 
+To browse a completed campaign offline, continue with the companion viewer's
+[NEMO workstation tutorial](https://github.com/salsburygroup/salsbury-md-analysis-interactive/blob/main/tutorials/nemo_zinc_finger_workstation/README.md).
+
 ### Reference acceptance run
 
 The tutorial was exercised from a clean wheel installation on an Apple silicon
@@ -203,6 +207,9 @@ and previews the Slurm plan without submitting it. Its record is
 [`validation/release_candidate_20260902.json`](../../validation/release_candidate_20260902.json).
 
 ## 6. Use your own trajectory
+
+For a task-focused checklist, use the
+[workstation how-to guide](../workstation/README.md).
 
 Replace the PDB, PSF/connectivity file, DCD paths, and frame interval in the
 preparation command. Repeat `--trajectory` once per independent replica. Keep

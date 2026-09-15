@@ -14,7 +14,7 @@ from salsbury_md_analysis.quickstart import prepare_standard_analysis
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TUTORIAL = ROOT / "tutorials" / "nemo_zinc_finger"
+TUTORIAL = ROOT / "tutorials" / "nemo_zinc_finger_workstation"
 DATA = TUTORIAL / "data"
 
 

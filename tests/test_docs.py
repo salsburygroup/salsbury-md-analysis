@@ -94,11 +94,51 @@ class GeneratedDocumentationTests(unittest.TestCase):
         self.assertIn("does not require every saved frame", execution)
 
     def test_terminal_tutorial_and_bounded_fixture_acceptance(self):
-        tutorial = (ROOT / "tutorials" / "local_and_cluster" / "README.md").read_text()
-        self.assertIn("--plan-only", tutorial)
-        self.assertIn("execution.autorecovery", tutorial)
-        self.assertIn("./submit.sh --preview", tutorial)
-        self.assertIn("scientific validity", tutorial.lower())
+        tutorial_index = (ROOT / "tutorials" / "README.md").read_text()
+        for path in (
+            "nemo_zinc_finger_workstation/README.md",
+            "nemo_zinc_finger_cluster/README.md",
+            "nemo_zinc_finger_deac/README.md",
+            "workstation/README.md",
+            "cluster/README.md",
+        ):
+            self.assertIn(path, tutorial_index)
+            self.assertTrue((ROOT / "tutorials" / path).is_file())
+        self.assertFalse((ROOT / "tutorials" / "nemo_zinc_finger").exists())
+        self.assertFalse((ROOT / "tutorials" / "local_and_cluster").exists())
+
+        workstation = (
+            ROOT / "tutorials" / "workstation" / "README.md"
+        ).read_text()
+        self.assertIn("execution.autorecovery", workstation)
+        self.assertIn("salsbury-md-analysis init", workstation)
+        self.assertNotIn("--adapter slurm", workstation)
+
+        cluster = (ROOT / "tutorials" / "cluster" / "README.md").read_text()
+        self.assertIn("--adapter slurm", cluster)
+        self.assertIn("./submit.sh --preview", cluster)
+        self.assertIn("Scientific conclusions", cluster)
+
+        nemo_cluster = (
+            ROOT / "tutorials" / "nemo_zinc_finger_cluster" / "README.md"
+        ).read_text()
+        for required in (
+            "profiles/slurm/generic-template.json",
+            "salsbury-md-analysis.git core",
+            "salsbury-md-analysis-interactive.git interactive",
+            "git -C core rev-parse HEAD",
+            "git -C interactive rev-parse HEAD",
+            "./submit.sh --preview",
+            '"$CORE_CMD" run',
+            '"$CORE_CMD" status',
+            "salsbury-md-analysis-interactive",
+            "technical_status: complete",
+            "scientific_status` remains",
+        ):
+            self.assertIn(required, nemo_cluster)
+        self.assertIn("submits the reviewed jobs", nemo_cluster)
+        self.assertIn("Submission is not\ncompletion", nemo_cluster)
+
         acceptance = json.loads(
             (ROOT / "validation" / "trex_thrombin_technical_fixture_acceptance.json").read_text()
         )

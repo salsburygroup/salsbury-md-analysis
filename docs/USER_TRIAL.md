@@ -2,7 +2,8 @@
 
 Ask someone who did not develop the package to follow the
 [terminal guide](TERMINAL_WORKFLOW.md) and
-[NEMO tutorial](../tutorials/nemo_zinc_finger/README.md) without an AI assistant.
+[NEMO workstation tutorial](../tutorials/nemo_zinc_finger_workstation/README.md)
+without an AI assistant.
 Record obstacles before offering help. An automated replay does not complete
 this review.
 
