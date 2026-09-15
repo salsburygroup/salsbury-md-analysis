@@ -123,6 +123,28 @@ class GeneratedDocumentationTests(unittest.TestCase):
                 1e-10,
             )
 
+    def test_deac_main_tutorial_covers_both_packages_and_submission_boundary(self):
+        tutorial = (
+            ROOT / "tutorials" / "nemo_zinc_finger_deac" / "README.md"
+        ).read_text(encoding="utf-8")
+        for required in (
+            "salsbury-md-analysis.git core",
+            "salsbury-md-analysis-interactive.git interactive",
+            "git -C core rev-parse HEAD",
+            "git -C interactive rev-parse HEAD",
+            "/deac/phy/salsburyGrp",
+            "deac-current-main.json",
+            "./submit.sh --preview",
+            '"$CORE_CMD" run',
+            '"$CORE_CMD" status',
+            "salsbury-md-analysis-interactive",
+            "technical_status: complete",
+            "scientific_status` remains `not evaluated",
+        ):
+            self.assertIn(required, tutorial)
+        self.assertIn("submits Slurm jobs", tutorial)
+        self.assertIn("not a completed analysis", tutorial)
+
     def test_handwritten_validation_docs_preserve_current_scientific_boundaries(self):
         validation = (ROOT / "docs" / "SCIENTIFIC_VALIDATION.md").read_text(
             encoding="utf-8"

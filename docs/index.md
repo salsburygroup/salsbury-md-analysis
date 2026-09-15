@@ -22,6 +22,9 @@ need scientific review.
 
 - Follow the [NEMO zinc-finger tutorial](../tutorials/nemo_zinc_finger/README.md)
   for a complete workstation example using a real published-simulation subset.
+- Follow [current main on WFU DEAC](../tutorials/nemo_zinc_finger_deac/README.md)
+  to install both repositories, review and submit the Slurm plan, and build the
+  offline interactive report on the cluster.
 - Use the [local and cluster workflow](../tutorials/local_and_cluster/README.md)
   when preparing your own system or moving the same plan to Slurm.
 - Start with [general biomolecular systems](GENERAL_BIOMOLECULAR_SYSTEMS.md) to
