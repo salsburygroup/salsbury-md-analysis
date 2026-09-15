@@ -1,5 +1,8 @@
 # Analyze a zinc-finger trajectory on a workstation
 
+For the same fixture using the current core and interactive `main` branches on
+WFU DEAC, follow the [DEAC walkthrough](../nemo_zinc_finger_deac/README.md).
+
 This tutorial takes you from three simulation files to a planned and executed
 analysis. The example is a real 1,000-frame subset of a published
 Salsbury-group simulation of the 28-residue zinc-finger domain of human NEMO.

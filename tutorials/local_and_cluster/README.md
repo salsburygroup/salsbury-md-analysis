@@ -72,7 +72,11 @@ For Slurm, create a site profile from
 your cluster's settings, and pass `--adapter slurm --slurm-profile /path/site.json`
 to `init`. Plan on the submission host. Review the scheduler preview before
 `run` submits anything. Each successful submission is recorded in a task/job
-ledger. Use the DEAC profile only for that cluster.
+ledger. Use the DEAC profile only for that cluster. Salsbury-group users running
+the current core and viewer `main` branches should follow the
+[DEAC NEMO walkthrough](../nemo_zinc_finger_deac/README.md), which copies the
+site profile and binds it to the new environment without changing the validated
+shared `v76` environment.
 
 ## Read and share
 

@@ -116,6 +116,10 @@ interpretation without requiring access to the cluster archive.
 The companion [local and cluster workflow](tutorials/local_and_cluster/README.md)
 covers installation, plan review, automatic recovery, Slurm setup, and final
 acceptance for a new system.
+Salsbury-group users can follow the dedicated
+[current-main DEAC tutorial](tutorials/nemo_zinc_finger_deac/README.md) to install
+the core and interactive checkouts together, bind a copied DEAC profile to that
+environment, submit the reviewed NEMO plan, and download the offline report.
 
 The command line is `salsbury-md-analysis`. During development it can also be
 run directly from the source tree:
