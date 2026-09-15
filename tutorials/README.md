@@ -21,4 +21,6 @@ Use the task-focused how-to guides for your own simulation files:
 
 A tutorial supplies the example and expected checkpoints. A how-to guide starts
 with your files and helps you complete one task. Command and configuration
-details live in the [documentation index](../docs/index.md).
+details live in the [documentation index](../docs/index.md). Each page links to
+its matching companion page; the complete set is in the
+[interactive tutorial index](https://github.com/salsburygroup/salsbury-md-analysis-interactive/blob/main/tutorials/README.md).

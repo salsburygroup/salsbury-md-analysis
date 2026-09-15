@@ -132,6 +132,10 @@ preserves failed evidence.
 
 ## Build the interactive report
 
+Use the companion's
+[cluster interactive guide](https://github.com/salsburygroup/salsbury-md-analysis-interactive/blob/main/tutorials/cluster/README.md)
+for the completion check, report build, archive, transfer, and review steps.
+
 After `status` reports all scheduled tasks complete:
 
 ```bash

@@ -106,7 +106,9 @@ Start with `prioritized_findings.md`, `planning-report.md`,
 states, distributions, interactions, or representative structures.
 
 After the core campaign is complete, the optional companion package can build
-an offline browser:
+an offline browser. The companion's
+[workstation interactive guide](https://github.com/salsburygroup/salsbury-md-analysis-interactive/blob/main/tutorials/workstation/README.md)
+covers completion checks, immutable rebuilds, review, and sharing.
 
 ```bash
 salsbury-md-analysis-interactive my-study/analysis
