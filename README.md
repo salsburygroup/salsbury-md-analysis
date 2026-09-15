@@ -108,18 +108,18 @@ partition per view is primary, with all alternatives retained. See
 
 ## Use
 
-New users can begin with the
-[`NEMO zinc-finger tutorial`](tutorials/nemo_zinc_finger/README.md). It uses a
-small, hash-recorded piece of a published Salsbury-group protein–zinc
-simulation to demonstrate preparation, planning, local execution, and careful
-interpretation without requiring access to the cluster archive.
-The companion [local and cluster workflow](tutorials/local_and_cluster/README.md)
-covers installation, plan review, automatic recovery, Slurm setup, and final
-acceptance for a new system.
-Salsbury-group users can follow the dedicated
-[current-main DEAC tutorial](tutorials/nemo_zinc_finger_deac/README.md) to install
-the core and interactive checkouts together, bind a copied DEAC profile to that
-environment, submit the reviewed NEMO plan, and download the offline report.
+New users can learn the complete workflow with the NEMO zinc-finger fixture on
+a [workstation](tutorials/nemo_zinc_finger_workstation/README.md), a
+[generic Slurm cluster](tutorials/nemo_zinc_finger_cluster/README.md), or
+[WFU DEAC](tutorials/nemo_zinc_finger_deac/README.md). The tutorials use the
+same small, hash-recorded piece of a published Salsbury-group protein–zinc
+simulation, so the execution environment changes while the scientific input
+does not.
+
+Use the separate [workstation](tutorials/workstation/README.md) and
+[Slurm cluster](tutorials/cluster/README.md) how-to guides when analyzing your
+own trajectories. The [tutorial index](tutorials/README.md) explains the
+difference between the example-driven tutorials and the task-driven guides.
 
 The command line is `salsbury-md-analysis`. During development it can also be
 run directly from the source tree:

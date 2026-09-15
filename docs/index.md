@@ -20,13 +20,13 @@ need scientific review.
 - [Terminal setup, diagnostics, planning, status, and recovery](TERMINAL_WORKFLOW.md)
 - [Primary clustering and retained alternatives](CLUSTERING_PRESENTATION.md)
 
-- Follow the [NEMO zinc-finger tutorial](../tutorials/nemo_zinc_finger/README.md)
-  for a complete workstation example using a real published-simulation subset.
-- Follow [current main on WFU DEAC](../tutorials/nemo_zinc_finger_deac/README.md)
-  to install both repositories, review and submit the Slurm plan, and build the
-  offline interactive report on the cluster.
-- Use the [local and cluster workflow](../tutorials/local_and_cluster/README.md)
-  when preparing your own system or moving the same plan to Slurm.
+- Learn with the NEMO fixture on a
+  [workstation](../tutorials/nemo_zinc_finger_workstation/README.md), a
+  [generic Slurm cluster](../tutorials/nemo_zinc_finger_cluster/README.md), or
+  [WFU DEAC](../tutorials/nemo_zinc_finger_deac/README.md).
+- Use the [workstation](../tutorials/workstation/README.md) or
+  [Slurm cluster](../tutorials/cluster/README.md) how-to guide for your own
+  trajectories.
 - Start with [general biomolecular systems](GENERAL_BIOMOLECULAR_SYSTEMS.md) to
   see which inputs and chemical compositions the automatic workflow handles.
 - Read [local and Slurm execution](EXECUTION_ADAPTERS.md) before choosing a

@@ -4,8 +4,8 @@ The Salsbury group grants permission to use the following group-generated NEMO
 zinc-finger tutorial files under the Creative Commons Attribution 4.0
 International license (CC BY 4.0):
 
-- `tutorials/nemo_zinc_finger/data/nemo_zinc_finger.psf`
-- `tutorials/nemo_zinc_finger/data/nemo_zinc_finger_1000_frames.dcd`
+- `tutorials/nemo_zinc_finger_workstation/data/nemo_zinc_finger.psf`
+- `tutorials/nemo_zinc_finger_workstation/data/nemo_zinc_finger_1000_frames.dcd`
 
 The license terms are available at:
 

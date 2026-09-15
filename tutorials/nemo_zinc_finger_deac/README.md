@@ -11,8 +11,12 @@ cluster workflow. It tests software behavior; it does not establish convergence,
 equilibrium populations, rare-state sampling, zinc affinity, or a biological
 mechanism.
 
-Use the [workstation NEMO tutorial](../nemo_zinc_finger/README.md) for the input
-provenance and a local run. This page covers the DEAC-specific differences:
+Use the
+[workstation NEMO tutorial](../nemo_zinc_finger_workstation/README.md) for the
+input provenance and a local run. The
+[generic cluster tutorial](../nemo_zinc_finger_cluster/README.md) covers Slurm
+without DEAC account names, paths, and partitions. This page covers the
+DEAC-specific differences:
 installing both current checkouts in one environment, binding the Slurm profile
 to that environment, reviewing a scheduler preview, submitting, checking
 status, and downloading the complete browser.
@@ -149,9 +153,9 @@ export NEMO_STUDY="$DEAC_WORK/nemo-zinc-finger-deac"
 export CORE_CMD="$DEAC_WORK/.venv/bin/salsbury-md-analysis"
 
 "$CORE_CMD" init "$NEMO_STUDY" \
-  --pdb "$DEAC_WORK/core/tutorials/nemo_zinc_finger/data/nemo_zinc_finger.pdb" \
-  --connectivity "$DEAC_WORK/core/tutorials/nemo_zinc_finger/data/nemo_zinc_finger.psf" \
-  --trajectory "$DEAC_WORK/core/tutorials/nemo_zinc_finger/data/nemo_zinc_finger_1000_frames.dcd" \
+  --pdb "$DEAC_WORK/core/tutorials/nemo_zinc_finger_workstation/data/nemo_zinc_finger.pdb" \
+  --connectivity "$DEAC_WORK/core/tutorials/nemo_zinc_finger_workstation/data/nemo_zinc_finger.psf" \
+  --trajectory "$DEAC_WORK/core/tutorials/nemo_zinc_finger_workstation/data/nemo_zinc_finger_1000_frames.dcd" \
   --frame-interval-ps 0.2 \
   --cpus 2 \
   --memory-gib 32 \
@@ -327,4 +331,3 @@ NEMO fixture's `scientific_status` remains `not evaluated`. Keep the two commit
 files, Conda environment, copied Slurm profile, study/configuration files,
 planning records, submission ledger, logs, reports, and the complete interactive
 report with any accepted use of the run.
-
