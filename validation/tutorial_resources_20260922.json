@@ -1,0 +1,234 @@
+{
+  "validation_kind": "preparation and scheduler preview only",
+  "date": "2026-09-22",
+  "jobs_submitted": 0,
+  "scientific_status": "not evaluated",
+  "core_base": "5b15931d913c8026a59a865d91de3651a32db22b",
+  "interactive_base": "1813df6f0f032a0af6aa01373b052301b489e72e",
+  "environment": "Existing DEAC Python 3.12 environment with mkdssp 4.6.1; isolated source snapshots via PYTHONPATH. No environment or dependency changes.",
+  "accepted_cases": [
+    {
+      "case": "workstation",
+      "returncode": 0,
+      "seconds": 2.5715858805924654,
+      "bash_blocks": 1,
+      "output": "/deac/phy/salsburyGrp/salsbufr/nemo-tutorial-validation-20260922/tutorial-settings-r1/workstation-plan",
+      "plan": {
+        "feasibility_status": "feasible",
+        "execution_authorized": true,
+        "estimated_selected_cpu_hours": 1.1206470495471617,
+        "estimated_selected_wall_hours_lower_bound": 0.7685506675208524,
+        "science_budget_wall_hours": 1.4999999999999998,
+        "infeasibility_reasons": []
+      },
+      "recommendation": {
+        "aggregate_memory_gib": 6.0,
+        "parallel_cpus": 2,
+        "wall_hours": 2
+      }
+    },
+    {
+      "case": "interactive-workstation",
+      "returncode": 0,
+      "seconds": 1.2695748079568148,
+      "bash_blocks": 1,
+      "output": "/deac/phy/salsburyGrp/salsbufr/nemo-tutorial-validation-20260922/tutorial-settings-r1/interactive-workstation-plan",
+      "plan": {
+        "feasibility_status": "feasible",
+        "execution_authorized": true,
+        "estimated_selected_cpu_hours": 1.1206470495471617,
+        "estimated_selected_wall_hours_lower_bound": 0.7685506675208524,
+        "science_budget_wall_hours": 1.4999999999999998,
+        "infeasibility_reasons": []
+      },
+      "recommendation": {
+        "aggregate_memory_gib": 6.0,
+        "parallel_cpus": 2,
+        "wall_hours": 2
+      }
+    },
+    {
+      "case": "deac",
+      "returncode": 0,
+      "seconds": 2.972897619009018,
+      "bash_blocks": 3,
+      "output": "/deac/phy/salsburyGrp/salsbufr/nemo-tutorial-validation-20260922/tutorial-settings-r1/nemo-zinc-finger-deac/analysis",
+      "plan": {
+        "feasibility_status": "feasible",
+        "execution_authorized": true,
+        "estimated_selected_cpu_hours": 10.493397643048516,
+        "estimated_selected_wall_hours_lower_bound": 11.671805624116184,
+        "science_budget_wall_hours": 11.999999999999998,
+        "infeasibility_reasons": []
+      },
+      "recommendation": {
+        "aggregate_memory_gib": 32.0,
+        "nodes": 16,
+        "parallel_cpus": 2,
+        "wall_hours": 16
+      },
+      "preview": {
+        "generated_schedule_feasibility_status": "feasible",
+        "submission_permitted": true,
+        "planner_estimated_dependency_critical_path_hours": 13.471150138630502,
+        "scheduler_time_limit_reservation_critical_path_hours": 322.5,
+        "maximum_parallel_cpus_in_generated_waves": 2,
+        "maximum_parallel_memory_gib_in_generated_waves": 8.0,
+        "walltime_allocation": {
+          "campaign_wall_limit_hours": 16.0,
+          "contract": "full_campaign_limit_per_planner_backed_job",
+          "interpretation": "Every planner-backed Slurm job requests the configured campaign wall limit as timeout headroom. Submission feasibility uses the planner's expected dependency-chain runtime; serialized job kill limits are not treated as elapsed runtime.",
+          "minimum_scheduler_reservation_critical_path_hours": null,
+          "preferred_padding_scale_applied": 1.0,
+          "preferred_scheduler_reservation_critical_path_hours": 322.5,
+          "selected_scheduler_reservation_critical_path_hours": 322.5,
+          "status": "full_campaign_limit_per_planned_task",
+          "submission_time_feasible": true,
+          "walltime_allocation_schema": "salsbury-walltime-allocation-v2"
+        }
+      }
+    },
+    {
+      "case": "generic-slurm",
+      "returncode": 0,
+      "seconds": 4.625941192731261,
+      "bash_blocks": 3,
+      "output": "/deac/phy/salsburyGrp/salsbufr/nemo-tutorial-validation-20260922/tutorial-settings-r2/nemo-zinc-finger-cluster/analysis",
+      "plan": {
+        "feasibility_status": "feasible",
+        "execution_authorized": true,
+        "estimated_selected_cpu_hours": 1.1206470495471617,
+        "estimated_selected_wall_hours_lower_bound": 0.7685506675208524,
+        "science_budget_wall_hours": 8.999999999999998,
+        "infeasibility_reasons": []
+      },
+      "recommendation": {
+        "aggregate_memory_gib": 32.0,
+        "nodes": 16,
+        "parallel_cpus": 2,
+        "wall_hours": 2
+      },
+      "preview": {
+        "generated_schedule_feasibility_status": "feasible",
+        "submission_permitted": true,
+        "planner_estimated_dependency_critical_path_hours": 3.0604937301932846,
+        "scheduler_time_limit_reservation_critical_path_hours": 11.183333333333334,
+        "maximum_parallel_cpus_in_generated_waves": 2,
+        "maximum_parallel_memory_gib_in_generated_waves": 8.0,
+        "walltime_allocation": {
+          "campaign_wall_limit_hours": 12.0,
+          "contract": "padded_end_to_end_campaign_ceiling",
+          "interpretation": "Planner estimates already include modeled task-time uncertainty. Profile timeout padding is retained only to the extent that the serialized scheduler kill-limit path remains inside the requested padded end-to-end campaign wall limit.",
+          "minimum_scheduler_reservation_critical_path_hours": 11.0,
+          "preferred_padding_scale_applied": 1.0,
+          "preferred_scheduler_reservation_critical_path_hours": 11.183333333333334,
+          "selected_scheduler_reservation_critical_path_hours": 11.183333333333334,
+          "status": "preferred_padding_fits",
+          "submission_time_feasible": true,
+          "walltime_allocation_schema": "salsbury-walltime-allocation-v1"
+        }
+      }
+    }
+  ],
+  "rejected_generic_4h": {
+    "case": "generic-slurm",
+    "returncode": 0,
+    "seconds": 3.122053338214755,
+    "bash_blocks": 3,
+    "output": "/deac/phy/salsburyGrp/salsbufr/nemo-tutorial-validation-20260922/tutorial-settings-r1/nemo-zinc-finger-cluster/analysis",
+    "plan": {
+      "feasibility_status": "feasible",
+      "execution_authorized": true,
+      "estimated_selected_cpu_hours": 1.1206470495471617,
+      "estimated_selected_wall_hours_lower_bound": 0.7685506675208524,
+      "science_budget_wall_hours": 2.9999999999999996,
+      "infeasibility_reasons": []
+    },
+    "recommendation": {
+      "aggregate_memory_gib": 32.0,
+      "nodes": 16,
+      "parallel_cpus": 2,
+      "wall_hours": 2
+    },
+    "preview": {
+      "generated_schedule_feasibility_status": "infeasible",
+      "submission_permitted": false,
+      "planner_estimated_dependency_critical_path_hours": 3.0604937301932846,
+      "scheduler_time_limit_reservation_critical_path_hours": 11.0,
+      "maximum_parallel_cpus_in_generated_waves": 2,
+      "maximum_parallel_memory_gib_in_generated_waves": 8.0,
+      "walltime_allocation": {
+        "campaign_wall_limit_hours": 4.0,
+        "contract": "padded_end_to_end_campaign_ceiling",
+        "interpretation": "Planner estimates already include modeled task-time uncertainty. Profile timeout padding is retained only to the extent that the serialized scheduler kill-limit path remains inside the requested padded end-to-end campaign wall limit.",
+        "minimum_scheduler_reservation_critical_path_hours": 11.0,
+        "preferred_padding_scale_applied": 0.0,
+        "preferred_scheduler_reservation_critical_path_hours": 11.183333333333334,
+        "selected_scheduler_reservation_critical_path_hours": 11.0,
+        "status": "minimum_time_limits_exceed_campaign",
+        "submission_time_feasible": false,
+        "walltime_allocation_schema": "salsbury-walltime-allocation-v1"
+      }
+    }
+  },
+  "recovery": {
+    "returncode": 0,
+    "backup_exact": true,
+    "hours": 12,
+    "total_cpu_hours": 24,
+    "preview_feasible": true,
+    "jobs_submitted": 0
+  },
+  "tests": [
+    {
+      "repository": "core",
+      "pattern": "test_docs.py",
+      "returncode": 0
+    },
+    {
+      "repository": "core",
+      "pattern": "test_tutorial_resources.py",
+      "returncode": 0
+    },
+    {
+      "repository": "core",
+      "pattern": "test_resource_calibrations.py",
+      "returncode": 0
+    },
+    {
+      "repository": "interactive",
+      "pattern": "test_tutorial*.py",
+      "returncode": 0
+    }
+  ],
+  "test_counts": {
+    "core_documentation": 14,
+    "core_tutorial_resources": 3,
+    "core_calibrations": 11,
+    "interactive_tutorials": 7
+  },
+  "validation_attempt_note": "Initial documentation tests encountered AppleDouble metadata introduced by macOS tar. Preserved that attempt; clean metadata-free source snapshot passed all 35 tests. No source defect was suppressed.",
+  "file_hashes": {
+    "core": {
+      "tests/test_tutorial_resources.py": "02bfde9706a50c0529095d0689b66b40ef483870ebf99444ce5a63e498bb5dba",
+      "tutorials/README.md": "d323125695960a6616749ddc627df1e1257db64a4ae02062141a6b24215f6327",
+      "tutorials/RESOURCE_PLANNING.md": "f7c64b20f405b622d10e9f43250e6be73e4f7560823ad228fb5ad6e7192d65c3",
+      "tutorials/cluster/README.md": "8ffc6bbd90c8c89d905d56133cce56b24c1b5987c9e870da615c39c61750a8e7",
+      "tutorials/nemo_zinc_finger_cluster/README.md": "8590de2443fb1b72153ff1c186057dd6497293d2020d1d752638803f6ec5a3f4",
+      "tutorials/nemo_zinc_finger_deac/README.md": "e79ce1771840c08097e2f6020991394d81bcc04095b6e817fcbb1c6537076f7e",
+      "tutorials/nemo_zinc_finger_workstation/README.md": "9cfb5eb5ed31571a7c99565176c8df5df6e79bdcfe26f778941b425188677317",
+      "tutorials/nemo_zinc_finger_workstation/analysis-config.json": "b5af8e1099dd16060a62bc7275b2c94f5ba8ba99b8d421c1dafd66cd530926fe",
+      "tutorials/workstation/README.md": "7a5cd655b61dae9d65464942287e1951b9534d29cd81d7700ff54d45a4bbb46c"
+    },
+    "interactive": {
+      "tests/test_tutorial_resources.py": "146621f904605578e30bae3cf4ec94cedbd12cf75c26a5c784a1a7bc425dc553",
+      "tutorials/README.md": "25ac6d0ea7ddf9ecb9237e21d19fba163d707a35059e22eb949e68eceff8ed9c",
+      "tutorials/REPORT_RESOURCES.md": "097738b1256bdac1ac82538b1107c79764bee250193b1ce2d20287192ed035d6",
+      "tutorials/cluster/README.md": "e687743debf977f74b165f57d941f98a935996d930ebc83ce20aa9996dcf1bb7",
+      "tutorials/nemo_zinc_finger_cluster/README.md": "194f8e986348ff31b6d4546df541bf1dc02d31685c1692f4b5a27687f66a416c",
+      "tutorials/nemo_zinc_finger_deac/README.md": "53f19c44c2049a8c3a164ce71deaf2a94d8b731f86ebac10f81181f4cec4a57f",
+      "tutorials/nemo_zinc_finger_workstation/README.md": "b93fc25011781f5e184b9f8c1419a39e85f4a00f177faf259f5a60cbc13e9651",
+      "tutorials/workstation/README.md": "0c4e1ea4d06621c867af978a832e4a6111d373dab98aeb827780e1d14649f8eb"
+    }
+  }
+}

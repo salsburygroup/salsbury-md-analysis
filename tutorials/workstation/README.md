@@ -1,5 +1,8 @@
 # Analyze your own trajectories on a workstation
 
+Read [Resource settings and planning limits](../RESOURCE_PLANNING.md) before
+choosing a budget or interpreting planner and scheduler estimates.
+
 This is a how-to guide for a local analysis. It assumes that you have installed
 a reviewed Salsbury MD Analysis version or recorded source commit and that the
 `salsbury-md-analysis` command is available. Use the
@@ -37,6 +40,13 @@ salsbury-md-analysis init my-study \
   --memory-gib 16 \
   --hours 8
 ```
+
+The numbers above are illustrative campaign ceilings, not calibrated requests
+for your files. Use a workload- and hardware-matched catalog when available,
+review the generated estimates, and require successful planning before
+execution. Follow the [budget-recovery recipe](../RESOURCE_PLANNING.md#if-planning-rejects-the-budget)
+when a limit is insufficient; retain the scientific scope unless you explicitly
+choose a different analysis.
 
 For several systems or conditions, use `init my-study --interactive` with the
 same resource flags. The terminal wizard asks for each system and its separate

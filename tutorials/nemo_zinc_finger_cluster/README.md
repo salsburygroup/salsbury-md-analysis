@@ -1,5 +1,8 @@
 # Analyze the NEMO zinc-finger fixture on a Slurm cluster
 
+Read [Resource settings and planning limits](../RESOURCE_PLANNING.md) before
+choosing a budget or interpreting planner and scheduler estimates.
+
 This tutorial runs the supplied NEMO zinc-finger example with the current
 `main` branches of Salsbury MD Analysis and its interactive viewer. It uses a
 Slurm profile that you fill in for your own cluster. WFU users should follow
@@ -137,13 +140,23 @@ export CORE_CMD="$CLUSTER_WORK/.venv/bin/salsbury-md-analysis"
   --frame-interval-ps 0.2 \
   --cpus 2 \
   --memory-gib 32 \
-  --hours 1 \
+  --hours 10 \
   --adapter slurm \
   --slurm-profile "$CLUSTER_WORK/my-cluster.json"
 ```
 
 `init` creates editable study and analysis configuration files. It does not
 read the trajectory, run analysis, or submit jobs.
+
+This example allows two CPUs, ten elapsed hours, and 32 GiB aggregate memory.
+The ten-hour budget accommodates the generic profile's minimum per-job
+timeouts along the dependency path (9.5 hours in the checked DSSP-enabled example).
+It is a starting ceiling,
+not a measured runtime or a guarantee for another cluster. This generic example
+uses built-in planner models. If you have a validated calibration catalog for
+your workload and hardware, set `execution.resource_calibration_catalog` in
+the generated config before planning and reassess the budget. Do not copy the
+DEAC catalog to unrelated hardware.
 
 Apply the bounded settings used by the workstation example:
 
@@ -183,14 +196,15 @@ Run these commands on the login or submission host:
 
 ```bash
 "$CORE_CMD" doctor "$NEMO_STUDY/study.json"
-"$CORE_CMD" plan "$NEMO_STUDY/study.json"
+export NEMO_ANALYSIS="$NEMO_STUDY/analysis"
+"$CORE_CMD" plan "$NEMO_STUDY/study.json" --output "$NEMO_ANALYSIS"
 ```
 
 `doctor` checks the software, scheduler commands, file headers, and matching
 atom counts. It cannot validate the chemistry, replica grouping, or scientific
 question.
 
-`plan` reads the inputs and writes `$NEMO_STUDY/analysis`; it submits nothing.
+`plan` reads the inputs and writes `$NEMO_ANALYSIS`; it submits nothing.
 Review:
 
 - `planning-report.md` for methods, frames, effective raw strides, and resource
@@ -204,35 +218,45 @@ Review:
 
 The fixture should contain one protein and one zinc ion. Water and nucleic-acid
 modules should be inapplicable because those atoms are absent. Resolve an
-infeasible plan before submission.
+infeasible plan before submission. Require both a successful command and a
+feasible plan. Follow the [budget-recovery recipe](../RESOURCE_PLANNING.md#if-planning-rejects-the-budget)
+to update both time limits and plan into a new directory. Keep `NEMO_ANALYSIS`
+pointed at the successful attempt for every command below and in the companion
+tutorial.
 
 ## 7. Preview without submitting
 
 ```bash
-cd "$NEMO_STUDY/analysis"
+cd "$NEMO_ANALYSIS"
 ./submit.sh --preview
 less slurm-submission-preview.json
 ```
 
-The preview must report a feasible generated schedule. Check dependencies,
+Read `generated_schedule_feasibility_status` and `submission_permitted` in
+the preview JSON: they must be `feasible` and `true`. A zero preview exit code
+alone does not establish feasibility. Check dependencies,
 partitions, CPUs, memory, nodes, time, and the number of jobs. This preview
 submits no jobs and does not reserve capacity.
 
 If supported by your site, add a read-only capacity check:
 
 ```bash
-"$CORE_CMD" advise-slurm-capacity "$NEMO_STUDY/analysis" \
-  --wall-hours 1 \
+"$CORE_CMD" advise-slurm-capacity "$NEMO_ANALYSIS" \
+  --wall-hours 10 \
   --cpu-ceiling 2 \
   --format markdown
 ```
+
+Use the accepted configuration's wall and CPU ceilings in the capacity check
+if you changed the example. Configuration edits do not update a prepared plan;
+generate a new attempt and require its preview to pass.
 
 ## 8. Submit and monitor
 
 The following command submits the reviewed jobs to Slurm:
 
 ```bash
-"$CORE_CMD" run "$NEMO_STUDY/analysis"
+"$CORE_CMD" run "$NEMO_ANALYSIS"
 ```
 
 Returned job IDs are stored in `submission-ledgers/`. Submission is not
@@ -240,15 +264,15 @@ completion. Check both scheduler activity and accepted outputs:
 
 ```bash
 squeue --me
-"$CORE_CMD" status "$NEMO_STUDY/analysis"
-"$CORE_CMD" status "$NEMO_STUDY/analysis" --json
+"$CORE_CMD" status "$NEMO_ANALYSIS"
+"$CORE_CMD" status "$NEMO_ANALYSIS" --json
 ```
 
 Do not submit a duplicate campaign while jobs are active. If work stops, review
 the named logs, scheduler state, and proposed recovery:
 
 ```bash
-"$CORE_CMD" resume "$NEMO_STUDY/analysis"
+"$CORE_CMD" resume "$NEMO_ANALYSIS"
 ```
 
 Add `--execute` only after confirming that no earlier job remains active and
@@ -260,11 +284,13 @@ is preserved.
 For the complete build, transfer, and review sequence, use the companion
 [NEMO cluster interactive tutorial](https://github.com/salsburygroup/salsbury-md-analysis-interactive/blob/main/tutorials/nemo_zinc_finger_cluster/README.md).
 
-After `status` reports every scheduled task complete:
+After `status` reports every scheduled task complete, build on an approved
+compute allocation or a suitable workstation. The separate viewer build is
+not covered by the core campaign budget; follow site policy for login-node use:
 
 ```bash
 "$CLUSTER_WORK/.venv/bin/salsbury-md-analysis-interactive" \
-  "$NEMO_STUDY/analysis"
+  "$NEMO_ANALYSIS"
 ```
 
 Transfer the whole `interactive-report/` directory to your workstation and
