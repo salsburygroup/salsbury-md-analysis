@@ -26,7 +26,8 @@ class TutorialResourceTests(unittest.TestCase):
             self.assertIn("../RESOURCE_PLANNING.md", text)
         guide = (ROOT / "tutorials/RESOURCE_PLANNING.md").read_text()
         for value in ("maximum_total_cpu_hours", "request_replay_policy",
-                      "not job-specific calibrations", "new `--output`", "open(\"xb\")"):
+                      "job-specific calibrations", "new `--output`", "open(\"xb\")",
+                      "Required execution overhead", "tutorial_orchestration_20260922.md"):
             self.assertIn(value, guide)
 
     def test_nemo_budgets_and_recovery_paths(self):
@@ -34,7 +35,7 @@ class TutorialResourceTests(unittest.TestCase):
         self.assertEqual(config["execution"]["maximum_hours_per_cpu"], 2.0)
         self.assertEqual(config["execution"]["maximum_parallel_cpus"], 2)
         self.assertEqual(config["default_module_policy"], "all_applicable")
-        for page, hours in (("nemo_zinc_finger_cluster", 12), ("nemo_zinc_finger_deac", 16)):
+        for page, hours in (("nemo_zinc_finger_cluster", 10), ("nemo_zinc_finger_deac", 16)):
             text = (ROOT / "tutorials" / page / "README.md").read_text()
             self.assertRegex(text, rf"--hours {hours}\s")
             self.assertRegex(text, rf"--wall-hours {hours}\s")

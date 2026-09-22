@@ -1,0 +1,190 @@
+{
+  "validation_kind": "Planning and scheduler preview only",
+  "core_main_commit": "5ce1b3ea38684fd33b610f2eb2715951fd65ab07",
+  "source_snapshot_sha256": "d6b598262c2a90f685ddeb81d1d4cd7288b1a21f0820d31435120b08acf6e5ad",
+  "environment": "Existing Apollo Python 3.12 environment with DSSP 4.6.1; workstation and generic routes omit the Apollo catalog; DEAC uses catalog v5. No jobs or scientific analyses executed.",
+  "recommendations": {
+    "workstation": 2,
+    "generic_slurm": 10,
+    "deac": 16,
+    "parallel_cpus": 2,
+    "aggregate_memory_gib": 32
+  },
+  "cases": [
+    {
+      "route": "workstation",
+      "campaign_hours": 2,
+      "scientific_execution_performed": false,
+      "jobs_submitted": false,
+      "feasibility_status": "feasible",
+      "estimated_cpu_hours": 1.4703065845193228,
+      "estimated_wall_hours": 1.1182102024930134,
+      "generated_job_count": 32,
+      "unmapped_scripts": [],
+      "overhead": [
+        {
+          "script": "run_preflight.slurm",
+          "minutes": 1.7019701410084962,
+          "requested_memory_gib": 1,
+          "timeout_minutes": 30
+        },
+        {
+          "script": "run_view_preflight_0.slurm",
+          "minutes": 1.7026019573211668,
+          "requested_memory_gib": 1,
+          "timeout_minutes": 30
+        },
+        {
+          "script": "run_finalize_reporting.slurm",
+          "minutes": 17.575,
+          "requested_memory_gib": 2,
+          "timeout_minutes": 30
+        }
+      ]
+    },
+    {
+      "route": "generic",
+      "campaign_hours": 10,
+      "scientific_execution_performed": false,
+      "jobs_submitted": false,
+      "feasibility_status": "feasible",
+      "estimated_cpu_hours": 1.4703065845193228,
+      "estimated_wall_hours": 1.1182102024930134,
+      "generated_job_count": 32,
+      "unmapped_scripts": [],
+      "overhead": [
+        {
+          "script": "run_preflight.slurm",
+          "minutes": 1.7019701410084962,
+          "requested_memory_gib": 2,
+          "timeout_minutes": 30
+        },
+        {
+          "script": "run_view_preflight_0.slurm",
+          "minutes": 1.7026019573211668,
+          "requested_memory_gib": 2,
+          "timeout_minutes": 30
+        },
+        {
+          "script": "run_finalize_reporting.slurm",
+          "minutes": 17.575,
+          "requested_memory_gib": 3,
+          "timeout_minutes": 33
+        }
+      ],
+      "preview": {
+        "generated_schedule_feasibility_status": "feasible",
+        "submission_permitted": true,
+        "planner_estimated_dependency_critical_path_hours": 0.8817870961486374,
+        "walltime_allocation": {
+          "campaign_wall_limit_hours": 10,
+          "contract": "padded_end_to_end_campaign_ceiling",
+          "interpretation": "Planner estimates already include modeled task-time uncertainty. Profile timeout padding is retained only to the extent that the serialized scheduler kill-limit path remains inside the requested padded end-to-end campaign wall limit.",
+          "minimum_scheduler_reservation_critical_path_hours": 9.5,
+          "preferred_padding_scale_applied": 1,
+          "preferred_scheduler_reservation_critical_path_hours": 9.733333333333334,
+          "selected_scheduler_reservation_critical_path_hours": 9.733333333333334,
+          "status": "preferred_padding_fits",
+          "submission_time_feasible": true,
+          "walltime_allocation_schema": "salsbury-walltime-allocation-v1"
+        }
+      }
+    },
+    {
+      "route": "generic",
+      "campaign_hours": 8,
+      "scientific_execution_performed": false,
+      "jobs_submitted": false,
+      "feasibility_status": "feasible",
+      "estimated_cpu_hours": 1.4703065845193228,
+      "estimated_wall_hours": 1.1182102024930134,
+      "generated_job_count": 32,
+      "unmapped_scripts": [],
+      "overhead": [
+        {
+          "script": "run_preflight.slurm",
+          "minutes": 1.7019701410084962,
+          "requested_memory_gib": 2,
+          "timeout_minutes": 30
+        },
+        {
+          "script": "run_view_preflight_0.slurm",
+          "minutes": 1.7026019573211668,
+          "requested_memory_gib": 2,
+          "timeout_minutes": 30
+        },
+        {
+          "script": "run_finalize_reporting.slurm",
+          "minutes": 17.575,
+          "requested_memory_gib": 3,
+          "timeout_minutes": 30
+        }
+      ],
+      "preview": {
+        "generated_schedule_feasibility_status": "infeasible",
+        "submission_permitted": false,
+        "planner_estimated_dependency_critical_path_hours": 0.8817870961486374,
+        "walltime_allocation": {
+          "campaign_wall_limit_hours": 8,
+          "contract": "padded_end_to_end_campaign_ceiling",
+          "interpretation": "Planner estimates already include modeled task-time uncertainty. Profile timeout padding is retained only to the extent that the serialized scheduler kill-limit path remains inside the requested padded end-to-end campaign wall limit.",
+          "minimum_scheduler_reservation_critical_path_hours": 9.5,
+          "preferred_padding_scale_applied": 0,
+          "preferred_scheduler_reservation_critical_path_hours": 9.733333333333334,
+          "selected_scheduler_reservation_critical_path_hours": 9.5,
+          "status": "minimum_time_limits_exceed_campaign",
+          "submission_time_feasible": false,
+          "walltime_allocation_schema": "salsbury-walltime-allocation-v1"
+        }
+      }
+    },
+    {
+      "route": "deac",
+      "campaign_hours": 16,
+      "scientific_execution_performed": false,
+      "jobs_submitted": false,
+      "feasibility_status": "feasible",
+      "estimated_cpu_hours": 10.784034261354009,
+      "estimated_wall_hours": 11.97386099242168,
+      "generated_job_count": 32,
+      "unmapped_scripts": [],
+      "overhead": [
+        {
+          "script": "run_preflight.slurm",
+          "minutes": 1.7019701410084962,
+          "requested_memory_gib": 1,
+          "timeout_minutes": 960
+        },
+        {
+          "script": "run_view_preflight_0.slurm",
+          "minutes": 1.7026019573211668,
+          "requested_memory_gib": 1,
+          "timeout_minutes": 960
+        },
+        {
+          "script": "run_finalize_reporting.slurm",
+          "minutes": 17.575,
+          "requested_memory_gib": 3,
+          "timeout_minutes": 960
+        }
+      ],
+      "preview": {
+        "generated_schedule_feasibility_status": "feasible",
+        "submission_permitted": true,
+        "planner_estimated_dependency_critical_path_hours": 11.2631528308344,
+        "walltime_allocation": {
+          "campaign_wall_limit_hours": 16,
+          "contract": "full_campaign_limit_per_planner_backed_job",
+          "interpretation": "Every planner-backed Slurm job requests the configured campaign wall limit as timeout headroom. Submission feasibility uses the planner's expected dependency-chain runtime; serialized job kill limits are not treated as elapsed runtime.",
+          "minimum_scheduler_reservation_critical_path_hours": null,
+          "preferred_padding_scale_applied": 1,
+          "preferred_scheduler_reservation_critical_path_hours": 288,
+          "selected_scheduler_reservation_critical_path_hours": 288,
+          "status": "full_campaign_limit_per_planned_task",
+          "submission_time_feasible": true,
+          "walltime_allocation_schema": "salsbury-walltime-allocation-v2"
+        }
+      }
+    }
+  ]
+}

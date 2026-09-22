@@ -10,14 +10,15 @@ hardware, or calibration data change.
 | Route | Concurrent CPU ceiling | Aggregate memory ceiling | Campaign elapsed-time ceiling | Model source |
 | --- | ---: | ---: | ---: | --- |
 | Workstation | 2 | 32 GiB | 2 hours | Built-in planner models |
-| Generic Slurm | 2 | 32 GiB | 12 hours | Built-in models plus site scheduler policy |
+| Generic Slurm | 2 | 32 GiB | 10 hours | Built-in models plus site scheduler policy |
 | WFU DEAC | 2 | 32 GiB | 16 hours | Apollo measured calibration catalog v5 plus DEAC policy |
 
 These settings retain the enabled analyses and their frame minima. The generic
-Slurm allowance accommodates the generic profile's per-job timeout floors,
-including preflight and reporting, along the dependency path. It must still pass the preview for your site. The DEAC allowance
-includes conservative fitted overheads and censored timing floors; it is not a
-measurement that the small fixture needs 16 hours. The two own-data tutorials
+Slurm allowance accommodates the generic profile's per-job timeout floors
+along the dependency path. It must still pass the preview for your site. The
+DEAC allowance includes calibrated analysis costs, censored timing floors, and
+provisional preflight/reporting estimates; it is not a measurement that the
+small fixture needs 16 hours. The two own-data tutorials
 use illustrative budgets only. None of these examples sets a universal budget
 for another job.
 
@@ -35,34 +36,38 @@ Slurm, and the generated scripts. Require successful preparation and a feasible
 plan. On Slurm, inspect `slurm-submission-preview.json` after
 `submit.sh --preview`: `generated_schedule_feasibility_status` must be
 `feasible` and `submission_permitted` must be `true`. The preview command can
-exit zero while reporting an infeasible schedule. The preview includes setup and reporting tasks
-that need not appear in the analysis planner's critical path. Queue waiting is
-separate. A sum of scheduler time limits is not a runtime forecast. Check
+exit zero while reporting an infeasible schedule. New plans explicitly budget
+setup and reporting under **Required execution overhead** in `planning-report.md`.
+Queue waiting is separate. A sum of scheduler time limits is not a runtime forecast. Check
 `walltime_allocation.contract`: the generic profile enforces a padded
 end-to-end reservation ceiling, whereas the current DEAC profile grants the
 full campaign limit to each planner-backed job and checks the estimated
 dependency-chain duration. Their feasibility rules therefore differ. For the
-tested generic profile, a four-hour campaign passed analysis planning but
-failed preview because its minimum serialized timeout path was eleven hours;
-the twelve-hour example passes. Do not infer feasibility from the analysis
-planner's two-hour recommendation alone.
+tested generic profile with DSSP available, an eight-hour campaign passed
+analysis planning but failed preview because its minimum serialized timeout path was 9.5 hours;
+the ten-hour example passes, including the preferred 9.73-hour timeout path.
+Do not infer feasibility from the analysis planner's two-hour recommendation alone.
 
-There is a remaining core limitation: ordinary preflight scripts start from
-fixed requests of one CPU, 4 GiB, and two hours; ordinary final reporting starts
-from one CPU, 2 GiB, and 30 minutes. Profile policies and adapter enrichment can
-alter the final requests, and a finalizer containing permutation inference has
-a different planner match. These defaults are not job-specific calibrations.
-For unmatched tasks, the current adapter uses the script time limit as a
-planned duration. Inspect them for each workload; increasing a tutorial budget
-does not calibrate those stages. Do not describe every generated job as
-measurement-calibrated or replace these defaults with guessed universal values.
+Preflight estimates now depend on input bytes, file reads, replicas, and topology
+size. Reporting estimates depend on report bundles, views, system size, and
+enabled output components. These are conservative workload models, not fitted
+job-specific calibrations. The scheduler uses the planner's reservations;
+its timeout is not a runtime estimate. The configured time and memory factors
+are applied once, with the separate per-node memory reserve retained.
+See [the overhead model](../docs/ORCHESTRATION_RESOURCE_ESTIMATES.md).
 
 Use `execution.resource_calibration_catalog` for an appropriate validated
-catalog. Installing a catalog does not automatically supply estimates for
-stages absent from the planner's task matching. Larger preflight inputs or
-report collections require separate measurement and core support for those
-stage estimates. If existing requests cannot support your workload, stop and
-resolve that limitation before submission.
+catalog. Record observed overhead costs to refine these provisional models.
+New-format plans reject missing preflight or final-reporting task mappings.
+Previously prepared directories retain their legacy requests: prepare into a
+new directory after upgrading rather than editing old scripts.
+
+Planning-only checks with DSSP available mapped all 32 jobs. The workstation
+model estimated 1.12 elapsed hours within its two-hour ceiling; the DEAC model
+estimated 11.97 hours within a 16-hour ceiling. The latter is close to its
+12-hour working allowance after campaign reserves, so replan after any change
+in enabled tools or outputs. Neither figure is a measured runtime. See
+[the validation record](../validation/tutorial_orchestration_20260922.md).
 
 ## If planning rejects the budget
 

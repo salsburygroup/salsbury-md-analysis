@@ -140,7 +140,7 @@ export CORE_CMD="$CLUSTER_WORK/.venv/bin/salsbury-md-analysis"
   --frame-interval-ps 0.2 \
   --cpus 2 \
   --memory-gib 32 \
-  --hours 12 \
+  --hours 10 \
   --adapter slurm \
   --slurm-profile "$CLUSTER_WORK/my-cluster.json"
 ```
@@ -148,9 +148,10 @@ export CORE_CMD="$CLUSTER_WORK/.venv/bin/salsbury-md-analysis"
 `init` creates editable study and analysis configuration files. It does not
 read the trajectory, run analysis, or submit jobs.
 
-This example allows two CPUs, twelve elapsed hours, and 32 GiB aggregate memory.
-The twelve-hour budget accommodates the generic profile's minimum per-job
-timeouts along the dependency path, including preflight and reporting. It is a starting ceiling,
+This example allows two CPUs, ten elapsed hours, and 32 GiB aggregate memory.
+The ten-hour budget accommodates the generic profile's minimum per-job
+timeouts along the dependency path (9.5 hours in the checked DSSP-enabled example).
+It is a starting ceiling,
 not a measured runtime or a guarantee for another cluster. This generic example
 uses built-in planner models. If you have a validated calibration catalog for
 your workload and hardware, set `execution.resource_calibration_catalog` in
@@ -241,7 +242,7 @@ If supported by your site, add a read-only capacity check:
 
 ```bash
 "$CORE_CMD" advise-slurm-capacity "$NEMO_ANALYSIS" \
-  --wall-hours 12 \
+  --wall-hours 10 \
   --cpu-ceiling 2 \
   --format markdown
 ```
