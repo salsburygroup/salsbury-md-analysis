@@ -36,6 +36,7 @@ from .resource_planning import (
 from .resource_calibrations import (
     ResourceCalibrationError, load_resource_calibration_catalog,
 )
+from .runtime_applicability import apply_runtime_applicability
 from .scientific_sampling import (
     apply_scientific_minimums_to_tasks,
     load_scientific_minimums,
@@ -367,6 +368,8 @@ def _apply_measured_resource_calibrations(
                 "measured coverage is not a scientific ceiling"
             ),
         }
+
+        apply_runtime_applicability(task, calibration, time_safety_factor=time_safety_factor)
 
 
 def _apply_system_memory_scaling(

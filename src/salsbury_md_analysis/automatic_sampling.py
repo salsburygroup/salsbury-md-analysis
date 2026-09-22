@@ -32,6 +32,7 @@ from .preflight import FileProbeError, probe_topology, probe_trajectory
 from .planner_calibration_models import predict_size_length_cpu_terms
 from .registry import list_modules
 from .resource_planning import plan_campaign_resource_budget
+from .runtime_applicability import apply_runtime_applicability
 from .resource_calibrations import (
     ResourceCalibrationError, load_resource_calibration_catalog,
 )
@@ -741,6 +742,10 @@ def _campaign_direct_resource_plan(
                 int(measured["censored_timeout_count"])
                 if measured is not None else 0
             ),
+            "runtime_baseline_terms": {
+                "fixed_cpu_hours": fixed_overhead_seconds * time_safety_factor / 3600.0,
+                "cpu_seconds_per_physical_frame": seconds_per_frame * workload_multiplier * time_safety_factor,
+            },
             "runtime_workload_scaling": workload_basis,
             "balance_group": f"direct:{module_id}",
             "replica_sampling_mode": (
@@ -748,6 +753,10 @@ def _campaign_direct_resource_plan(
                 if module_id == "replica_rmsd_rg" else "balanced_pooled"
             ),
         })
+    for task in tasks:
+        measured = (measured_calibrations or {}).get(str(task["module_id"]))
+        if measured is not None:
+            apply_runtime_applicability(task, measured, time_safety_factor=time_safety_factor)
     if not tasks:
         raise AutomaticSamplingError(
             "campaign planning requires at least one direct trajectory estimator"
