@@ -36,10 +36,21 @@ class RuntimeApplicabilityTests(unittest.TestCase):
     def test_consistent_work_scale_and_separate_setup(self):
         task = self.task()
         self.assertTrue(apply_runtime_applicability(task, self.calibration(), time_safety_factor=1.5))
-        self.assertAlmostEqual(task["fixed_cpu_hours"], 0.04)
+        self.assertAlmostEqual(task["fixed_cpu_hours"], 0.04 + 100 / 3600)
         self.assertAlmostEqual(task["cpu_seconds_per_physical_frame"], 0.15)
         self.assertAlmostEqual(task["censored_wall_lower_bound_points"][0]["planning_wall_hours_lower_bound"], 0.015)
         self.assertEqual(task["runtime_applicability"]["baseline_setup_cpu_hours"], 0.002)
+
+    def test_source_read_cost_grows_even_when_selected_frames_are_fixed(self):
+        short = self.task(); long = self.task()
+        short["selected_physical_frame_count"] = long["selected_physical_frame_count"] = 100
+        long["source_frames_per_replica"] = [20000]
+        for task in (short, long):
+            apply_runtime_applicability(task, self.calibration(), time_safety_factor=1.5)
+        self.assertAlmostEqual(long["fixed_cpu_hours"] - short["fixed_cpu_hours"],
+                               19000 * 0.1 / 3600)
+        self.assertEqual(short["cpu_seconds_per_physical_frame"],
+                         long["cpu_seconds_per_physical_frame"])
 
     def test_dssp_retains_external_process_cost_per_frame(self):
         task = self.task("secondary_structure")
@@ -97,7 +108,7 @@ class RuntimeApplicabilityTests(unittest.TestCase):
     def test_zero_catalog_intercept_does_not_erase_setup(self):
         task=self.task(); c=self.calibration(); c["conservative_fixed_cpu_seconds"]=0
         apply_runtime_applicability(task,c,time_safety_factor=1.5)
-        self.assertEqual(task["fixed_cpu_hours"],0.002)
+        self.assertEqual(task["fixed_cpu_hours"],0.002 + 100 / 3600)
 
 
 if __name__ == "__main__":

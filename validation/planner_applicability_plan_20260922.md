@@ -52,3 +52,14 @@ It reads existing source data and writes only isolated benchmark outputs.
 Current phase: S4 implementation and holdout execution. Merge readiness: NOT READY
 until the specified evidence is complete. Canonical publication remains pending
 the designated publisher. No recurring task or Goal was created.
+
+## Source-length guard added during review
+
+Before interpreting holdout completion, code review identified that continuous
+reconstruction can decode every source frame at any selected stride. The final
+candidate adds baseline per-frame work times all source frames as a conservative
+source-scan allowance. It is not a measured startup term; it may double-count
+some selected work. This change can only increase the original frozen predictions.
+The original, stricter holdout bounds remain acceptance gates. Benchmark outputs
+remain reusable because scientific kernels and exact selected inputs are unchanged.
+The full suite and planning checks must also pass with this final source guard.

@@ -76,7 +76,14 @@ def apply_runtime_applicability(
             "fixed_cpu_hours", "cpu_seconds_per_physical_frame",
             "censored_wall_lower_bound_points",
         )}
-    task["fixed_cpu_hours"] = max(setup, work_intercept * scale * safety / 3600.0)
+    # Continuous reconstruction may decode the full source even at a sparse
+    # analysis stride. Use the baseline full per-frame work as a conservative
+    # source-read allowance, not as a measured startup coefficient. This can
+    # double-count selected-frame work; it must never disappear at larger stride.
+    source_scan_hours = baseline_rate * sum(counts) / 3600.0
+    task["fixed_cpu_hours"] = (
+        max(setup, work_intercept * scale * safety / 3600.0) + source_scan_hours
+    )
     task["cpu_seconds_per_physical_frame"] = max(baseline_rate, transferred_rate, external_floor)
     task["censored_wall_lower_bound_points"] = [
         {**dict(point), "planning_wall_hours_lower_bound":
@@ -88,6 +95,8 @@ def apply_runtime_applicability(
         "status": "bounded_workload_transfer",
         "workload_multiplier": scale,
         "baseline_setup_cpu_hours": setup,
+        "conservative_source_scan_cpu_hours": source_scan_hours,
+        "source_scan_policy": "baseline per-frame work times all source frames, independent of selected stride",
         "transferred_catalog_work_intercept_cpu_hours": work_intercept * scale * safety / 3600.0,
         "external_process_seconds_per_frame_floor": external_floor,
         "censored_evidence_interpretation": "transferred estimate, not a measured target-workload lower bound",
