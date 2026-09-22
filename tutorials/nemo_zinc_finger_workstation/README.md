@@ -1,5 +1,8 @@
 # Analyze a zinc-finger trajectory on a workstation
 
+Read [Resource settings and planning limits](../RESOURCE_PLANNING.md) before
+choosing a budget or interpreting planner and scheduler estimates.
+
 For the same fixture through Slurm, use the
 [generic cluster tutorial](../nemo_zinc_finger_cluster/README.md) or the
 [WFU DEAC tutorial](../nemo_zinc_finger_deac/README.md).
@@ -24,7 +27,7 @@ You will:
 1. identify the structure, connectivity, trajectory, and physical time input;
 2. let the generic workflow recognize a protein-plus-zinc system;
 3. inspect its automatic module and frame/resource plan before execution;
-4. run applicable analyses locally with a two-CPU, one-hour ceiling; and
+4. run applicable analyses locally with a two-CPU, two-hour ceiling; and
 5. distinguish technical completion from scientific interpretation.
 
 No NEMO-specific analysis code is used. The same `prepare-analysis` command is
@@ -70,6 +73,8 @@ workflow omits that external-tool module and records why.
 Still at the repository root, choose a new output directory and run:
 
 ```bash
+export NEMO_ANALYSIS="$PWD/nemo-zinc-finger-tutorial-run"
+
 salsbury-md-analysis prepare-analysis \
   --pdb tutorials/nemo_zinc_finger_workstation/data/nemo_zinc_finger.pdb \
   --psf tutorials/nemo_zinc_finger_workstation/data/nemo_zinc_finger.psf \
@@ -77,7 +82,7 @@ salsbury-md-analysis prepare-analysis \
   --frame-interval-ps 0.2 \
   --project-id nemo-zinc-finger-tutorial \
   --config tutorials/nemo_zinc_finger_workstation/analysis-config.json \
-  --output nemo-zinc-finger-tutorial-run
+  --output "$NEMO_ANALYSIS"
 ```
 
 Preparation reads the inputs but does not modify them. It writes manifests,
@@ -85,6 +90,15 @@ the inferred chemical context, topology-derived conformational views, integer
 frame strides, a shared campaign resource plan, and local worker scripts into
 the new output directory. It fails instead of silently replacing a nonempty
 output directory.
+
+The bundled config allows two CPUs, two elapsed hours, and 32 GiB aggregate
+memory. These are ceilings, not measured requirements. It uses the built-in
+planner models, without the DEAC calibration catalog. The two-hour allowance
+replaces a one-hour setting that rejected the full fixture during planning.
+Require successful preparation and a feasible plan before running. If time is
+insufficient, use the plan's recommendation with `--target-wall-hours` on the
+same preparation command and choose a new `NEMO_ANALYSIS` directory. Preserve
+the failed attempt; do not disable analyses to make this tutorial fit.
 
 ## 3. Read the plan before running
 
@@ -95,7 +109,7 @@ These are the most useful planning files:
   groups;
 - `sampling-plan.json`: selected source frames and every integer stride;
 - `campaign-resource-plan.json`: estimated CPU time, memory, and the shared
-  two-CPU/one-hour campaign ceiling;
+  two-CPU/two-hour campaign ceiling;
 - `memory-feasibility-report.json`: an exact shortfall and the smallest module
   switches needed only when the requested memory ceiling cannot hold every
   technical minimum;
@@ -152,7 +166,7 @@ requirements.
 ## 4. Run locally
 
 ```bash
-cd nemo-zinc-finger-tutorial-run
+cd "$NEMO_ANALYSIS"
 ./run-local.sh
 ```
 

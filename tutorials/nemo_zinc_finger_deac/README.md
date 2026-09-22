@@ -1,5 +1,8 @@
 # Run the current main code on WFU DEAC
 
+Read [Resource settings and planning limits](../RESOURCE_PLANNING.md) before
+choosing a budget or interpreting planner and scheduler estimates.
+
 This tutorial starts with the NEMO zinc-finger teaching files, runs the current
 `main` branch of Salsbury MD Analysis through DEAC's Slurm scheduler, and builds
 the offline interactive report with the current `main` branch of the companion
@@ -312,7 +315,9 @@ cd "$NEMO_ANALYSIS"
 less slurm-submission-preview.json
 ```
 
-The preview must say the generated schedule is feasible. Check the job count,
+Read `generated_schedule_feasibility_status` and `submission_permitted` in
+the preview JSON: they must be `feasible` and `true`. A zero preview exit code
+alone does not establish feasibility. Check the job count,
 dependencies, partitions, CPU and memory requests, node assignments, and
 critical path. A preview is not a reservation and submits nothing.
 
@@ -369,9 +374,12 @@ The companion repository's
 [NEMO DEAC interactive tutorial](https://github.com/salsburygroup/salsbury-md-analysis-interactive/blob/main/tutorials/nemo_zinc_finger_deac/README.md)
 covers the report build, archive, download, and review in one place.
 
-Wait until `status` reports every scheduled task complete. Then run the viewer
-on the DEAC login node; it reads the accepted core reports and does not rerun
-the trajectory analysis.
+Wait until `status` reports every scheduled task complete. The viewer reads
+accepted core reports without rerunning trajectory analysis. Its separate
+report build has no calibrated request in the core campaign. Use an approved
+compute allocation for unmeasured builds, or transfer the accepted campaign to
+a suitable workstation. Run on a login node only if site policy permits the
+measured workload; do not infer that it is lightweight from the fixture size.
 
 ```bash
 "$DEAC_WORK/.venv/bin/salsbury-md-analysis-interactive" \
