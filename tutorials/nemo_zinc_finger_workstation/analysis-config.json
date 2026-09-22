@@ -17,7 +17,7 @@
   "execution": {
     "submission_adapter": "local",
     "maximum_parallel_cpus": 2,
-    "maximum_hours_per_cpu": 1.0,
+    "maximum_hours_per_cpu": 2.0,
     "maximum_memory_gib": 32.0,
     "maximum_scratch_gib": 8.0,
     "planning_utilization": 0.85,

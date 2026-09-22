@@ -18,6 +18,11 @@ effective integer strides over the original trajectories, while `Off`, `Deferred
 the cache, projection, and method-local stride components; exact per-replica frame
 counts; selected totals; retained time spacing; and sampling-floor status.
 
+Required preflight and final-reporting jobs have their own
+[workload estimates](ORCHESTRATION_RESOURCE_ESTIMATES.md). The planner includes
+their costs in the campaign budget and lists them separately from sampled
+analyses. Their timeout allowances are separate from estimated durations.
+
 To compare several prepared envelopes in the compact matrix form, run:
 
 ```bash

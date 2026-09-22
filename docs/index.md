@@ -1,5 +1,7 @@
 # Salsbury MD Analysis documentation
 
+- [Preflight and reporting resource estimates](ORCHESTRATION_RESOURCE_ESTIMATES.md)
+
 - [Independent-user acceptance and remaining release checks](RELEASE_ACCEPTANCE.md)
 - [First-user review worksheet](USER_TRIAL.md)
 

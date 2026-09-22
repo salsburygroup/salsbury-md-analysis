@@ -506,7 +506,10 @@ def build_planning_report(root: Path) -> Dict[str, object]:
     )):
         raise PlanningReportError("planning report inputs must be JSON objects")
 
-    rows = [_sampling_row(_mapping(task)) for task in _sequence(resources.get("tasks"))]
+    orchestration = [dict(_mapping(task)) for task in _sequence(resources.get("tasks"))
+                     if _mapping(task).get("task_scope") == "orchestration_overhead"]
+    rows = [_sampling_row(_mapping(task)) for task in _sequence(resources.get("tasks"))
+            if _mapping(task).get("task_scope") != "orchestration_overhead"]
     trajectory_mode = _mapping(config.get("execution")).get("trajectory_mode", "continuous")
     if trajectory_mode == "static_ensemble":
         for row in rows:
@@ -533,6 +536,7 @@ def build_planning_report(root: Path) -> Dict[str, object]:
         "scientific_status": resources.get("scientific_status", "planning only"),
         "execution_authorized": resources.get("execution_authorized"),
         "feasibility_status": resources.get("feasibility_status"),
+        "orchestration": {"task_count": len(orchestration), "tasks": orchestration},
         "resource_envelope": {
             "maximum_parallel_cpus": resources.get(
                 "effective_parallel_cpu_cap",
@@ -699,6 +703,23 @@ def render_planning_report_markdown(report: Mapping[str, object]) -> str:
     warnings = [
         _mapping(value) for value in _sequence(envelope.get("resource_warnings"))
     ]
+    overhead = _sequence(_mapping(report.get("orchestration")).get("tasks"))
+    if overhead:
+        position = lines.index("## How to read the strides")
+        lines[position:position] = [
+            "## Required execution overhead", "",
+            "These jobs are included in the resource budget. They have no trajectory "
+            "stride and are not scientific observations. Estimates use provisional "
+            "workload models; job timeout allowances are reported separately by the launcher.",
+            "",
+            _markdown_table(
+                ("Job", "Estimated minutes", "Planned task reservation (GiB)"),
+                ((row.get("execution_script"),
+                  f"{float(row['estimated_wall_hours_at_effective_cpu_cap']) * 60:.2f}",
+                  row.get("estimated_scheduler_memory_gib_per_node_at_selected_observations"))
+                 for row in overhead),
+            ), "",
+        ]
     if warnings:
         warning_position = lines.index("## How to read the strides")
         lines[warning_position:warning_position] = [

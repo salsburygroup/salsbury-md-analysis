@@ -67,7 +67,7 @@ class NemoZincFingerTutorialTests(unittest.TestCase):
                 (output / "analysis-config.json").read_text(encoding="utf-8")
             )
             self.assertEqual(config["execution"]["maximum_parallel_cpus"], 2)
-            self.assertEqual(config["execution"]["maximum_hours_per_cpu"], 1.0)
+            self.assertEqual(config["execution"]["maximum_hours_per_cpu"], 2.0)
             self.assertEqual(config["execution"]["maximum_memory_gib"], 32.0)
             self.assertTrue(config["inference"]["ion_site_classification_enabled"])
             self.assertFalse(

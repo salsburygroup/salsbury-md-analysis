@@ -13,6 +13,7 @@ from .automatic_sampling import (
     _measured_reference_seconds_per_frame,
 )
 from .ensemble_parallelism import annotate_task_parallelism
+from .orchestration_resources import orchestration_tasks
 from .execution_adapters import load_slurm_profile
 from .frame_sampling import (
     integer_stride_for_budget,
@@ -124,7 +125,9 @@ def _campaign_infeasibility_detail(plan: Mapping[str, object]) -> str:
             f"configured memory {configured:.3f} GiB; largest enabled technical "
             f"minimum requires a safety-adjusted {required:.3f} GiB request; "
             f"raise the aggregate campaign limit to at least "
-            f"{recommended:.0f} GiB or disable: {module_text}"
+            f"{recommended:.0f} GiB"
+            + (f" or review these optional switches: {module_text}" if module_text
+               else "; required execution overhead cannot be disabled")
         )
     maximum_wall = float(plan["maximum_wall_hours_input"])
     science_wall = float(plan["science_budget_wall_hours"])
@@ -2147,7 +2150,8 @@ def plan_and_apply_complete_campaign(
         for module_id, module_config in configured_modules.items()
         if isinstance(module_config, Mapping)
         and bool(module_config.get("protected", False))
-    } | {"coordinate_cache"}))
+    } | {"coordinate_cache", "workflow_preflight", "workflow_final_reporting",
+         "workflow_integrated_reporting"}))
     sampling_configuration = analysis_config.get("sampling")
     if not isinstance(sampling_configuration, dict):
         raise CampaignPlanningError("analysis sampling configuration is unavailable")
@@ -2438,6 +2442,25 @@ def plan_and_apply_complete_campaign(
                     view_source_counts
                 )[1],
             ))
+        # Conservative costing levels, not new runtime success dependencies.
+        for task in built:
+            original_stage = int(task.get("science_dependency_stage", task["dependency_stage"]))
+            task["science_dependency_stage"] = original_stage
+            task["dependency_stage"] = (
+                1 if task.get("module_id") == "coordinate_cache"
+                else original_stage + 3
+            )
+        try:
+            built.extend(orchestration_tasks(
+                root, view_paths, built, analysis_config,
+                time_safety_factor=time_safety_factor,
+                maximum_atom_count=int(dimensions["maximum_atom_count"]),
+                coordinate_cache_enabled=coordinate_cache_enabled,
+            ))
+        except (OSError, KeyError, TypeError, ValueError) as exc:
+            raise CampaignPlanningError(
+                f"cannot estimate generated orchestration workload: {exc}"
+            ) from exc
         built = apply_scientific_minimums_to_tasks(
             built, scientific_minimums
         )
