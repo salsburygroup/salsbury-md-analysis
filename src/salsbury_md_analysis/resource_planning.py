@@ -2157,7 +2157,9 @@ def plan_campaign_resource_budget(
         "quality_threshold": "quality_threshold",
     }
 
-    def memory_configuration_switch(row: Mapping[str, object]) -> str:
+    def memory_configuration_switch(row: Mapping[str, object]) -> Optional[str]:
+        if row.get("task_scope") == "orchestration_overhead":
+            return None  # Required execution overhead has no disable switch.
         module_id = str(row.get("module_id", row["task_id"]))
         if module_id == "coordinate_cache":
             return "execution.coordinate_cache"
@@ -2248,9 +2250,11 @@ def plan_campaign_resource_budget(
     ]
     memory_modules_to_disable = sorted({
         str(row["module_id"]) for row in oversized_memory_rows
+        if row["configuration_switch"] is not None
     })
     memory_switches_to_disable = sorted({
         str(row["configuration_switch"]) for row in oversized_memory_rows
+        if row["configuration_switch"] is not None
     })
     if oversized_memory_rows:
         infeasibility_reasons.append(
@@ -3360,7 +3364,8 @@ def _global_plan_information_metrics(
         )
     }
     for raw in rows:
-        if not isinstance(raw, Mapping) or raw.get("module_id") == "coordinate_cache":
+        if (not isinstance(raw, Mapping) or raw.get("module_id") == "coordinate_cache"
+                or raw.get("task_scope") == "orchestration_overhead"):
             continue
         selected = raw.get("selected_physical_frame_count")
         weight = raw.get("priority_weight", 1.0)
@@ -3434,7 +3439,8 @@ def _global_stride_information_upper_bound(
     weighted = 0.0
     total_weight = 0.0
     for row in tasks:
-        if row.get("module_id") == "coordinate_cache":
+        if (row.get("module_id") == "coordinate_cache"
+                or row.get("task_scope") == "orchestration_overhead"):
             continue
         raw = (
             parent_counts.get(str(row.get("workflow_id")))
@@ -3553,6 +3559,9 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
     protected_replica_minima = [declared_minimum]
     for original in tasks:
         row = dict(original)
+        if row.get("task_scope") == "orchestration_overhead":
+            base_tasks.append(row)
+            continue
         if (
             row.get("task_scope") != "conformational_view_algorithm_fit"
             and str(row.get("task_id")) != cache_id
@@ -3657,6 +3666,9 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
         candidate_tasks: list[Dict[str, object]] = []
         for original in base_tasks:
             row = dict(original)
+            if row.get("task_scope") == "orchestration_overhead":
+                candidate_tasks.append(row)
+                continue
             if str(row.get("task_id")) == cache_id:
                 rate = row.get("coordinate_cache_full_rate_seconds_per_frame")
                 if rate is None:
@@ -3793,6 +3805,8 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
         invalid_protected_tasks: list[Dict[str, object]] = []
         invalid_optional_tasks: list[Dict[str, object]] = []
         for row in candidate_tasks:
+            if row.get("task_scope") == "orchestration_overhead":
+                continue
             is_protected = str(row.get("module_id")) in protected_modules
             invalid_rows = (
                 invalid_protected_tasks if is_protected
@@ -4130,6 +4144,8 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
     for row in result["tasks"]:
         if not isinstance(row, dict):
             continue
+        if row.get("task_scope") == "orchestration_overhead":
+            continue
         if (
             row.get("task_scope") != "conformational_view_algorithm_fit"
             and row.get("module_id") != "coordinate_cache"
@@ -4383,7 +4399,8 @@ def recommend_scientifically_valid_task_subset(
     protected = (
         set(str(value) for value in protected_module_ids)
         | set(PROTECTED_MODULES)
-        | {"coordinate_cache"}
+        | {"coordinate_cache", "workflow_preflight", "workflow_final_reporting",
+           "workflow_integrated_reporting"}
     )
     protected_task_ids = {
         str(row["task_id"])

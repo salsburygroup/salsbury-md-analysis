@@ -480,6 +480,18 @@ def _task_planner_rows(
     rows: Sequence[Mapping[str, object]],
 ) -> List[Mapping[str, object]]:
     script = str(task["script"])
+    orchestration = [row for row in rows if row.get("execution_script") == script
+                     and row.get("task_scope") == "orchestration_overhead"]
+    if orchestration:
+        return orchestration
+    if (script in {"run_preflight.slurm", "run_finalize_reporting.slurm"}
+            or script.startswith("run_view_preflight_")) and any(
+                row.get("task_scope") == "orchestration_overhead" for row in rows
+            ):
+        raise ExecutionAdapterError(f"missing orchestration planner row for {script}")
+    reporting_match = re.fullmatch(r"run_reporting_(.+)\.slurm", script)
+    if reporting_match:
+        return [row for row in rows if row.get("module_id") == reporting_match.group(1)]
     if script == "run_coordinate_cache.slurm":
         return [row for row in rows if row.get("task_id") == "preprocessing:coordinate_cache"]
     if script == "run_finalize_reporting.slurm":

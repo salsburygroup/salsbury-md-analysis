@@ -24,7 +24,7 @@ You will:
 1. identify the structure, connectivity, trajectory, and physical time input;
 2. let the generic workflow recognize a protein-plus-zinc system;
 3. inspect its automatic module and frame/resource plan before execution;
-4. run applicable analyses locally with a two-CPU, one-hour ceiling; and
+4. run applicable analyses locally with a two-CPU, two-hour ceiling; and
 5. distinguish technical completion from scientific interpretation.
 
 No NEMO-specific analysis code is used. The same `prepare-analysis` command is
@@ -95,7 +95,7 @@ These are the most useful planning files:
   groups;
 - `sampling-plan.json`: selected source frames and every integer stride;
 - `campaign-resource-plan.json`: estimated CPU time, memory, and the shared
-  two-CPU/one-hour campaign ceiling;
+  two-CPU/two-hour campaign ceiling;
 - `memory-feasibility-report.json`: an exact shortfall and the smallest module
   switches needed only when the requested memory ceiling cannot hold every
   technical minimum;
