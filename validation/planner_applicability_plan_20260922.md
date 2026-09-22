@@ -49,8 +49,9 @@ Hold on any failure; do not tune to the failed holdout and relabel it independen
 The new Slurm batch has at most two concurrent CPUs and 16 GiB aggregate memory.
 It reads existing source data and writes only isolated benchmark outputs.
 
-Current phase: S4 implementation and holdout execution. Merge readiness: NOT READY
-until the specified evidence is complete. Canonical publication remains pending
+Current phase: S5 validation, acceptance gate FAILED. Merge readiness: NOT READY.
+See planner_applicability_results_20260922.md for completed checks, censored
+runtime failures, excluded harness errors, and unrun cases. Canonical publication remains pending
 the designated publisher. No recurring task or Goal was created.
 
 ## Source-length guard added during review
