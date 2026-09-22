@@ -135,6 +135,21 @@ def _frame_pdb_payload(
     if len(template) != len(coordinates) or len(atoms) != len(coordinates):
         raise SecondaryStructureAnalysisError("PDB template and trajectory atom counts differ")
     protein_residues = _protein_residue_keys(atoms)
+    residue_atoms: Dict[Tuple[str, int, str, str], set[str]] = {}
+    for line, atom in zip(template, atoms):
+        key = (atom.chain_id, atom.residue_number, atom.insertion_code, atom.residue_name)
+        if line[:6].strip().upper() == "ATOM" and key in protein_residues:
+            residue_atoms.setdefault(key, set()).add(atom.atom_name.upper())
+    terminal_aliases = {}
+    for key, names in residue_atoms.items():
+        if names.intersection({"OT1", "OT2"}):
+            if not {"OT1", "OT2"}.issubset(names) or names.intersection({"O", "OXT"}):
+                raise SecondaryStructureAnalysisError(
+                    f"ambiguous terminal oxygen aliases for {key}: require OT1/OT2 "
+                    "together without existing O/OXT"
+                )
+            terminal_aliases[key] = {"OT1": "O", "OT2": "OXT"}
+    histidine_aliases = {name: "HIS" for name in ("HSD", "HSE", "HSP", "HID", "HIE", "HIP")}
     residue_numbers: Dict[Tuple[str, int, str, str], int] = {}
     next_residue_by_chain: Dict[str, int] = {}
     residue_mapping: Dict[Tuple[str, str], Dict[str, object]] = {}
@@ -163,20 +178,33 @@ def _frame_pdb_payload(
             raise SecondaryStructureAnalysisError(
                 "DSSP-safe PDB numbering exceeds the classic PDB field width"
             )
-        residue_mapping[(atom.chain_id, str(dssp_residue_number))] = {
+        dssp_residue_name = histidine_aliases.get(atom.residue_name.upper(), atom.residue_name)
+        dssp_atom_name = terminal_aliases.get(residue_key, {}).get(atom.atom_name.upper(), atom.atom_name)
+        original = residue_mapping.setdefault((atom.chain_id, str(dssp_residue_number)), {
             "chain_id": atom.chain_id,
             "residue_number": atom.residue_number,
             "insertion_code": atom.insertion_code,
             "residue_name": atom.residue_name,
             "original_residue_token": f"{atom.residue_number}{atom.insertion_code}",
             "dssp_sequential_residue_number": dssp_residue_number,
-        }
+            "dssp_residue_name": dssp_residue_name,
+            "atom_name_aliases": [],
+        })
+        if dssp_atom_name != atom.atom_name:
+            original["atom_name_aliases"].append({
+                "atom_index": atom.atom_index,
+                "original_atom_name": atom.atom_name,
+                "dssp_atom_name": dssp_atom_name,
+            })
         element = atom.element.strip().upper()
         if not element or len(element) > 2 or not element.isalpha():
             raise SecondaryStructureAnalysisError(
                 f"atom {atom.atom_index} has no DSSP-safe chemical element"
             )
         padded = line.ljust(80)
+        if dssp_atom_name != atom.atom_name:
+            padded = padded[:12] + f" {dssp_atom_name:<3s}" + padded[16:]
+        padded = padded[:17] + f"{dssp_residue_name:>3s}" + padded[20:]
         normalized = (
             padded[:6]
             + f"{serial:5d}"
@@ -196,6 +224,39 @@ def _frame_pdb_payload(
     return "\n".join(output + ["END"]) + "\n", residue_mapping
 
 
+def _validate_dssp_residue_coverage(
+    assignments: Sequence[Mapping[str, object]],
+    residue_mapping: Mapping[Tuple[str, str], Mapping[str, object]],
+) -> None:
+    """Reject missing, duplicate, or unknown residues before accumulating counts."""
+
+    seen = set()
+    for assignment in assignments:
+        key = (str(assignment["chain_id"]), str(assignment["dssp_residue_token"]))
+        if key not in residue_mapping:
+            raise SecondaryStructureAnalysisError(
+                "mkdssp returned a residue identity absent from the reversible input map: "
+                + "/".join(key)
+            )
+        if key in seen:
+            raise SecondaryStructureAnalysisError("mkdssp returned a duplicate residue: " + "/".join(key))
+        seen.add(key)
+    missing = sorted(set(residue_mapping).difference(seen))
+    if missing:
+        identities = [
+            f"{residue_mapping[key]['chain_id']}/"
+            f"{residue_mapping[key]['original_residue_token']}/"
+            f"{residue_mapping[key]['residue_name']}"
+            for key in missing
+        ]
+        raise SecondaryStructureAnalysisError(
+            f"mkdssp omitted {len(missing)} of {len(residue_mapping)} protein residues: "
+            + ", ".join(identities)
+            + "; inspect backbone completeness, residue/atom names, and geometry. "
+            "Partial assignments are not accepted as a complete report."
+        )
+
+
 def _protein_residue_keys(
     atoms: Sequence[AtomRecord],
 ) -> set[Tuple[str, int, str, str]]:
@@ -207,7 +268,10 @@ def _protein_residue_keys(
             atom.residue_name,
         )
         for atom in atoms
+        # The shared chemistry vocabulary includes terminal caps, which are
+        # not amino-acid residues and do not have DSSP assignments.
         if atom.residue_name.upper() in PROTEIN_RESIDUES
+        and atom.residue_name.upper() not in {"ACE", "NME"}
     }
 
 
@@ -350,10 +414,27 @@ def _secondary_structure_project_serial(
                                 for atom in atoms
                             ),
                             "dssp_residue_count": len(residue_mapping),
+                            "excluded_terminal_caps": [
+                                {"chain_id": chain, "residue_number": number,
+                                 "insertion_code": insertion, "residue_name": name,
+                                 "reason": "terminal cap; not a DSSP amino-acid residue"}
+                                for chain, number, insertion, name in sorted({
+                                    (atom.chain_id, atom.residue_number, atom.insertion_code, atom.residue_name)
+                                    for atom in atoms if atom.residue_name.upper() in {"ACE", "NME"}
+                                })
+                            ],
+                            "name_alias_mappings": [
+                                dict(item) for item in residue_mapping.values()
+                                if item["residue_name"] != item["dssp_residue_name"]
+                                or item["atom_name_aliases"]
+                            ],
+                            "residue_coverage_policy": "all_normalized_protein_residues_each_frame",
                             "normalization": (
                                 "HETATM records excluded; ATOM serials and residues were "
                                 "renumbered sequentially within each chain for classic-PDB "
-                                "compatibility; original residue identities were restored in output"
+                                "compatibility; histidine aliases and paired terminal OT1/OT2 "
+                                "were normalized only in DSSP inputs; original residue identities "
+                                "were restored in output"
                             ),
                         }
                         process = subprocess.run(
@@ -369,6 +450,12 @@ def _secondary_structure_project_serial(
                                 + (process.stderr.strip() or f"exit {process.returncode}")
                             )
                         assignments = parse_dssp_text(output_path.read_text(encoding="utf-8", errors="strict"))
+                        try:
+                            _validate_dssp_residue_coverage(assignments, residue_mapping)
+                        except SecondaryStructureAnalysisError as exc:
+                            raise SecondaryStructureAnalysisError(
+                                f"{system_id}/{replica_id}/{segment_id}/frame-{frame.frame_index}: {exc}"
+                            ) from exc
                         axis_value = frame_axis_value(axis, frame.frame_index)
                         for assignment in assignments:
                             mapping_key = (
@@ -398,6 +485,8 @@ def _secondary_structure_project_serial(
                             "segment_id": segment_id, "source_frame_index": frame.frame_index,
                             "axis_kind": axis["kind"], "axis_value": axis_value,
                             "assignment_count": len(assignments),
+                            "expected_residue_count": len(residue_mapping),
+                            "residue_coverage_status": "complete",
                         })
                     if periodic_frames and periodic_policy == "allow_wrapped_diagnostic":
                         issues.append({
