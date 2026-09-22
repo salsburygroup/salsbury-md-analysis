@@ -1,5 +1,8 @@
 # Analyze your own trajectories on a Slurm cluster
 
+Read [Resource settings and planning limits](../RESOURCE_PLANNING.md) before
+choosing a budget or interpreting planner and scheduler estimates.
+
 This is a how-to guide for running your files through a Slurm scheduler. It
 assumes that the core package and optional interactive viewer are installed in
 an environment visible from both the login and compute nodes. Use the
@@ -55,6 +58,13 @@ salsbury-md-analysis init /shared/path/my-study \
   --adapter slurm \
   --slurm-profile /shared/path/config/my-cluster.json
 ```
+
+The numbers above are illustrative campaign ceilings, not calibrated requests
+for your files. Use a workload- and hardware-matched catalog when available,
+review the generated estimates, and require successful planning before
+execution. Follow the [budget-recovery recipe](../RESOURCE_PLANNING.md#if-planning-rejects-the-budget)
+when a limit is insufficient; retain the scientific scope unless you explicitly
+choose a different analysis.
 
 Use `--interactive` for several systems or conditions. Review the resulting
 `study.json` and `analysis-config.json`, including the input paths, replica
@@ -136,7 +146,9 @@ Use the companion's
 [cluster interactive guide](https://github.com/salsburygroup/salsbury-md-analysis-interactive/blob/main/tutorials/cluster/README.md)
 for the completion check, report build, archive, transfer, and review steps.
 
-After `status` reports all scheduled tasks complete:
+After `status` reports all scheduled tasks complete, build on an approved
+compute allocation or a suitable workstation. The separate viewer build is
+not covered by the core campaign budget; follow site policy for login-node use:
 
 ```bash
 salsbury-md-analysis-interactive /shared/path/my-study/analysis
