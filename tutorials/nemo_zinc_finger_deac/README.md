@@ -159,7 +159,7 @@ export CORE_CMD="$DEAC_WORK/.venv/bin/salsbury-md-analysis"
   --frame-interval-ps 0.2 \
   --cpus 2 \
   --memory-gib 32 \
-  --hours 1 \
+  --hours 16 \
   --adapter slurm \
   --slurm-profile "$DEAC_WORK/deac-current-main.json"
 ```
@@ -203,11 +203,22 @@ input paths, the independently recorded `0.2 ps` saved-frame interval, the
 single-replica grouping, the Slurm adapter, the copied profile path, resource
 limits, enabled modules, and disabled multi-frame state exports.
 
+The 16-hour ceiling is a conservative planning allowance for this fixture with
+the attached Apollo v5 calibration catalog. At core revision `72e50ba8`, the
+one-hour settings fail during planning; 16 hours passes planning and the Slurm
+preview. These are preparation checks, not measured NEMO execution times.
+Historical fixed costs and timeout bounds dominate the estimate. Review a new
+plan when changing the inputs, code, or catalog. Keep the two CPUs, enabled
+methods, and sampling rules unchanged when comparing these budget settings.
+The [planning validation](../../validation/nemo_deac_planning_20260922.md) records
+the checks and calibration investigation.
+
 ## 6. Check the environment and make a plan
 
 ```bash
+export NEMO_ANALYSIS="$NEMO_STUDY/analysis"
 "$CORE_CMD" doctor "$NEMO_STUDY/study.json"
-"$CORE_CMD" plan "$NEMO_STUDY/study.json"
+"$CORE_CMD" plan "$NEMO_STUDY/study.json" --output "$NEMO_ANALYSIS"
 ```
 
 `doctor` checks software, scheduler commands, input headers, and matching atom
@@ -215,7 +226,9 @@ counts. It cannot decide whether the chemistry, trajectory grouping, or
 scientific question is correct.
 
 `plan` reads the inputs and writes the prepared campaign at
-`$NEMO_STUDY/analysis`. It does not submit jobs. Review at least:
+`$NEMO_ANALYSIS`. It does not submit jobs. Continue only if it exits successfully
+and `campaign-resource-plan.json` records `feasibility_status: "feasible"`.
+Review at least:
 
 - `planning-report.md` for methods, effective raw strides, selected frames,
   off or deferred work, and resource requests;
@@ -232,10 +245,69 @@ Water and nucleic-acid modules should be inapplicable because those atoms are
 absent. `secondary_structure` should not be deferred when the new environment's
 `mkdssp` is available.
 
+### If planning rejects the resource budget
+
+A failed preparation can leave a partial directory with
+`campaign-resource-plan.json` but no `planning-report.md`, `submit.sh`, or
+submission ledger. Read `infeasibility_reasons` and
+`permissive_minimum_resource_request` in that JSON. The latter's
+`recommended_request.wall_hours` includes the configured planning reserves and
+rounds up to a whole hour. A recommendation still requires a fresh successful
+plan and scheduler preview.
+
+For example, the one-hour NEMO attempt at `72e50ba8` reports a minimum of
+10.40 CPU-hours and an 11.58-hour elapsed-time lower bound. Its recommended
+campaign ceiling is 16 hours. Memory fits. The saved plan's
+`technical_status: "complete"` describes the planning record; its
+`execution_authorized: false` and `feasibility_status: "infeasible"` mean that
+analysis must not start. Passing `doctor` does not override that result.
+The terminal error may suggest `--target-wall-hours 16`; that is an option for
+`prepare-analysis`, not `plan`. With this tutorial, update the study budget
+fields as shown below.
+
+Preserve the partial directory. After reviewing and accepting the proposed
+budget, back up the study configuration and change both time fields. This
+example applies the 16-hour recommendation above; substitute the reviewed
+value for your own plan. It retains the methods and sampling minima.
+
+```bash
+export NEMO_HOURS=16
+NEMO_STUDY="$NEMO_STUDY" NEMO_HOURS="$NEMO_HOURS" \
+  "$DEAC_WORK/.venv/bin/python" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+path = Path(os.environ["NEMO_STUDY"]) / "analysis-config.json"
+original = path.read_bytes()
+config = json.loads(original)
+hours = float(os.environ["NEMO_HOURS"])
+if not 0 < hours < float("inf"):
+    raise ValueError("Choose a finite, positive campaign ceiling")
+with path.with_name("analysis-config.before-budget-change.json").open("xb") as backup:
+    backup.write(original)
+config["execution"]["maximum_hours_per_cpu"] = hours
+config["execution"]["maximum_total_cpu_hours"] = (
+    hours * config["execution"]["maximum_parallel_cpus"]
+)
+path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+PY
+
+export NEMO_ANALYSIS="$NEMO_STUDY/analysis-replanned"
+"$CORE_CMD" plan "$NEMO_STUDY/study.json" --output "$NEMO_ANALYSIS"
+```
+
+The backup and output names must be unused. For another attempt, choose new
+names and retain the earlier evidence. If planning fails again, inspect that
+attempt's reasons before changing anything else. A rejected preparation has no
+jobs to resume; `resume` is for an already prepared campaign. Continue below
+only after the new plan succeeds, keeping `NEMO_ANALYSIS` pointed at that new
+directory. Use that same directory in the companion viewer tutorial.
+
 ## 7. Preview Slurm without submitting
 
 ```bash
-cd "$NEMO_STUDY/analysis"
+cd "$NEMO_ANALYSIS"
 ./submit.sh --preview
 less slurm-submission-preview.json
 ```
@@ -248,13 +320,16 @@ An optional read-only capacity check can add current node fit and queue
 pressure:
 
 ```bash
-"$CORE_CMD" advise-slurm-capacity "$NEMO_STUDY/analysis" \
-  --wall-hours 1 \
+"$CORE_CMD" advise-slurm-capacity "$NEMO_ANALYSIS" \
+  --wall-hours 16 \
   --cpu-ceiling 2 \
   --format markdown
 ```
 
-Queue conditions can change after this check.
+Queue conditions can change after this check. Use the ceiling from the
+accepted configuration if you changed the 16-hour example. Editing the study
+configuration alone does not update an existing plan. The preview must succeed
+for the newly prepared directory.
 
 ## 8. Submit the reviewed plan
 
@@ -262,7 +337,7 @@ The next command submits Slurm jobs. Run it only after reviewing the study,
 configuration, plan, and scheduler preview.
 
 ```bash
-"$CORE_CMD" run "$NEMO_STUDY/analysis"
+"$CORE_CMD" run "$NEMO_ANALYSIS"
 ```
 
 The launcher records returned job IDs in `submission-ledgers/`. A successful
@@ -272,8 +347,8 @@ Check scheduler activity and accepted outputs separately:
 
 ```bash
 /opt/scyld/slurm/bin/squeue --me
-"$CORE_CMD" status "$NEMO_STUDY/analysis"
-"$CORE_CMD" status "$NEMO_STUDY/analysis" --json
+"$CORE_CMD" status "$NEMO_ANALYSIS"
+"$CORE_CMD" status "$NEMO_ANALYSIS" --json
 ```
 
 Do not resubmit because a report is still absent while its job is queued or
@@ -281,7 +356,7 @@ running. If work stops, first run `status` and inspect the named logs. A recover
 review does not execute anything:
 
 ```bash
-"$CORE_CMD" resume "$NEMO_STUDY/analysis"
+"$CORE_CMD" resume "$NEMO_ANALYSIS"
 ```
 
 Only after confirming that no earlier DEAC job remains active should you run
@@ -300,13 +375,13 @@ the trajectory analysis.
 
 ```bash
 "$DEAC_WORK/.venv/bin/salsbury-md-analysis-interactive" \
-  "$NEMO_STUDY/analysis"
+  "$NEMO_ANALYSIS"
 ```
 
 The browser is written to:
 
 ```text
-nemo-zinc-finger-deac/analysis/interactive-report/index.html
+$NEMO_ANALYSIS/interactive-report/index.html
 ```
 
 Keep the entire `interactive-report/` directory because its evidence links are
@@ -314,7 +389,7 @@ relative. To download it through DEAC Open OnDemand or another file-transfer
 client, first make one archive:
 
 ```bash
-tar -C "$NEMO_STUDY/analysis" -czf \
+tar -C "$NEMO_ANALYSIS" -czf \
   "$NEMO_STUDY/nemo-interactive-report.tar.gz" \
   interactive-report
 ```

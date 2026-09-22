@@ -1,0 +1,133 @@
+{
+  "validation_schema": "nemo-deac-planning-validation-v1",
+  "core_commit": "72e50ba8cc5b541abafa9d218f73eba1e5931870",
+  "validation_date": "2026-09-22",
+  "technical_status": "planning_and_documentation_checks_passed",
+  "scientific_status": "not evaluated",
+  "actual_nemo_execution_performed": false,
+  "jobs_submitted": false,
+  "input_sha256": {
+    "nemo_zinc_finger_1000_frames.dcd": "bf7ad649bbb0d7a4bc37d3c2ce5a64140cf7de7b863cc9c6cebb789b80725524",
+    "nemo_zinc_finger.psf": "85a5bf380f42f1c607d85e40ac91c6cbfcf60614e418ad667ea63a1e137a3aa0",
+    "nemo_zinc_finger.pdb": "fca08ab6ff7f2b43fe3e02d3da8fe94aaff3db5cab52fcfbbc02bb5e7cdc8ac4"
+  },
+  "catalog_sha256": "9076cca25e8348ac9688afe735f6aa8d2c7eedfdfada36692f51876a97442aca",
+  "derived_completed_only_catalog_sha256": "6fe52880c40522c576ce226899d5e480766f2ad4417df05b4edaa10c4a4f0e0a",
+  "cases": {
+    "1h": {
+      "plan_sha256": "c082865e16357d55b84a49f9b700b88d96c2e15e4ea569cb76e54a18bf91e923",
+      "feasibility_status": "infeasible",
+      "execution_authorized": false,
+      "minimum_known_cpu_hours": 10.404296080548516,
+      "minimum_wall_hours_lower_bound": 11.578826439229987,
+      "estimated_selected_cpu_hours": 10.404296080548516,
+      "estimated_selected_wall_hours_lower_bound": 11.578826439229987,
+      "recommended_request": {
+        "aggregate_memory_gib": 32.0,
+        "nodes": 16,
+        "parallel_cpus": 2,
+        "wall_hours": 16
+      }
+    },
+    "16h": {
+      "plan_sha256": "45913f64e719a55c56b29d780ee65ea282884fad7f60a1c09a1f7312664bb9a5",
+      "feasibility_status": "feasible",
+      "execution_authorized": true,
+      "minimum_known_cpu_hours": 10.404296080548516,
+      "minimum_wall_hours_lower_bound": 11.578826439229987,
+      "estimated_selected_cpu_hours": 10.493397643048516,
+      "estimated_selected_wall_hours_lower_bound": 11.671805624116184,
+      "recommended_request": {
+        "aggregate_memory_gib": 32.0,
+        "nodes": 16,
+        "parallel_cpus": 2,
+        "wall_hours": 16
+      },
+      "preview": {
+        "generated_schedule_feasibility_status": "feasible",
+        "execution_started": false,
+        "jobs_submitted": false,
+        "planned_node_count": 1,
+        "maximum_parallel_cpus_in_generated_waves": 2,
+        "maximum_parallel_memory_gib_in_generated_waves": 8.0,
+        "sha256": "20568dc664921cf5ed46bd527275759110738c3350ac68042bdcb256ff0cffeb"
+      }
+    },
+    "revised-tutorial": {
+      "plan_sha256": "d784dbcaa71c5e62b8b9fe232091ff51034ce8f3994ad12220008adbeda91081",
+      "feasibility_status": "feasible",
+      "execution_authorized": true,
+      "minimum_known_cpu_hours": 10.404296080548516,
+      "minimum_wall_hours_lower_bound": 11.578826439229987,
+      "estimated_selected_cpu_hours": 10.493397643048516,
+      "estimated_selected_wall_hours_lower_bound": 11.671805624116184,
+      "recommended_request": {
+        "aggregate_memory_gib": 32.0,
+        "nodes": 16,
+        "parallel_cpus": 2,
+        "wall_hours": 16
+      },
+      "preview": {
+        "generated_schedule_feasibility_status": "feasible",
+        "execution_started": false,
+        "jobs_submitted": false,
+        "planned_node_count": 1,
+        "maximum_parallel_cpus_in_generated_waves": 2,
+        "maximum_parallel_memory_gib_in_generated_waves": 8.0,
+        "sha256": "20568dc664921cf5ed46bd527275759110738c3350ac68042bdcb256ff0cffeb"
+      }
+    },
+    "no-catalog": {
+      "plan_sha256": "36b91554934a1aa09c4420987f5a0ea8b24ec2a0f663e9fd4e100e045e48660f",
+      "feasibility_status": "feasible",
+      "execution_authorized": true,
+      "minimum_known_cpu_hours": 0.996175260269199,
+      "minimum_wall_hours_lower_bound": 0.7586452217131161,
+      "estimated_selected_cpu_hours": 1.1206470495471617,
+      "estimated_selected_wall_hours_lower_bound": 0.7685506675208524,
+      "recommended_request": {
+        "aggregate_memory_gib": 32.0,
+        "nodes": 16,
+        "parallel_cpus": 2,
+        "wall_hours": 2
+      }
+    },
+    "completed-only": {
+      "plan_sha256": "0e31f8f86f8846633fb147b45210ac5e6f130d7fe1f60c3b58fa0da320d282dc",
+      "feasibility_status": "feasible",
+      "execution_authorized": true,
+      "minimum_known_cpu_hours": 7.111302895448479,
+      "minimum_wall_hours_lower_bound": 3.915810665097343,
+      "estimated_selected_cpu_hours": 7.127618406753954,
+      "estimated_selected_wall_hours_lower_bound": 3.9220256009148446,
+      "recommended_request": {
+        "aggregate_memory_gib": 32.0,
+        "nodes": 16,
+        "parallel_cpus": 2,
+        "wall_hours": 6
+      }
+    }
+  },
+  "recovery": {
+    "passed": true,
+    "original_failed_plan_preserved": true,
+    "backup_preserves_one_hour_budget": true,
+    "new_plan_sha256": "ac24d88a3c1627dc2feb4c765f605a2f16a100547a230da90f87b7b3ca525f69",
+    "preview_sha256": "20568dc664921cf5ed46bd527275759110738c3350ac68042bdcb256ff0cffeb"
+  },
+  "tests": {
+    "documentation": {
+      "passed": 14,
+      "log_sha256": "23ff66e76f5c6479828ab2d635343cbed7d23770e635896ab1c375fdf104cde3"
+    },
+    "resource_calibrations": {
+      "passed": 11,
+      "log_sha256": "2d9e512afbad0f92a8bc798cefc0f1751eb05f3c82da2e7c66ad4513fb5c180d"
+    }
+  },
+  "limitations": [
+    "Estimates are not observed NEMO runtimes.",
+    "Diagnostic catalog changes were not adopted as execution settings.",
+    "No planner implementation or scientific method changes."
+  ]
+}
