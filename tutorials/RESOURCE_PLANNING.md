@@ -39,11 +39,12 @@ plan. On Slurm, inspect `slurm-submission-preview.json` after
 exit zero while reporting an infeasible schedule. New plans explicitly budget
 setup and reporting under **Required execution overhead** in `planning-report.md`.
 Queue waiting is separate. A sum of scheduler time limits is not a runtime forecast. Check
-`walltime_allocation.contract`: the generic profile enforces a padded
-end-to-end reservation ceiling, whereas the current DEAC profile grants the
-full campaign limit to each planner-backed job and checks the estimated
-dependency-chain duration. Their feasibility rules therefore differ. For the
-tested generic profile with DSSP available, an eight-hour campaign passed
+`walltime_allocation.contract`: both shipped profiles now enforce a padded
+end-to-end reservation ceiling with task-specific timeouts. DEAC's
+`request_campaign_wall_limit_for_planned_tasks` is disabled by default.
+Existing profile copies and prepared scripts retain their previous setting;
+update the profile and prepare a fresh output directory to use this default.
+For the tested generic profile with DSSP available, an eight-hour campaign passed
 analysis planning but failed preview because its minimum serialized timeout path was 9.5 hours;
 the ten-hour example passes, including the preferred 9.73-hour timeout path.
 Do not infer feasibility from the analysis planner's two-hour recommendation alone.
@@ -62,12 +63,14 @@ New-format plans reject missing preflight or final-reporting task mappings.
 Previously prepared directories retain their legacy requests: prepare into a
 new directory after upgrading rather than editing old scripts.
 
-Planning-only checks with DSSP available mapped all 32 jobs. The workstation
+The historical planning-only checks with DSSP available mapped all 32 jobs. The workstation
 model estimated 1.12 elapsed hours within its two-hour ceiling; the DEAC model
 estimated 11.97 hours within a 16-hour ceiling. The latter is close to its
 12-hour working allowance after campaign reserves, so replan after any change
 in enabled tools or outputs. Neither figure is a measured runtime. See
 [the validation record](../validation/tutorial_orchestration_20260922.md).
+That DEAC receipt used full-campaign timeouts. Its preview acceptance must be
+rechecked under the task-specific policy before using the example to submit.
 
 ## If planning rejects the budget
 
