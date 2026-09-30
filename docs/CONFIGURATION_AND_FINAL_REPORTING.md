@@ -48,6 +48,18 @@ coverage.
 
 ## Short source trajectories
 
+Convergence block settings are calculated after frame selection. The current
+diagnostic evaluates each trajectory segment separately, so its generated block
+size uses the shortest selected segment, not the sum over a replica. Cache and
+method strides both enter that count. The configured `minimum_blocks` is
+unchanged. An explicit `block_size_frames` is retained when feasible; otherwise
+preparation stops with the system, replica, segment, available count and minimum
+required count. No launcher is produced for an infeasible block contract.
+
+SASA `surface_selection` and `occluder_selection` must name selections declared
+in the target project. Preparation rejects an unknown name and lists the declared
+choices; it does not guess which atoms the study intended.
+
 The planning report separates inadequate retained sampling from limited
 source data. `source_exhausted` means every supplied frame was selected despite
 the source being shorter than a declared count. `source_limited` means the
