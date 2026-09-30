@@ -475,6 +475,24 @@ def validate_project(
             _require_string(data[field], field, issues)
     if data.get("definitions") is not None and not isinstance(data["definitions"], dict):
         issues.append("definitions must be an object")
+    definitions = data.get("definitions")
+    sasa = definitions.get("solvent_accessible_surface_area") if isinstance(definitions, dict) else None
+    if isinstance(sasa, dict):
+        selections = data.get("selections")
+        declared = selections if isinstance(selections, dict) else {}
+        for field in ("surface_selection", "occluder_selection"):
+            selection_id = sasa.get(field)
+            if not isinstance(selection_id, str) or selection_id not in declared:
+                issues.append(
+                    f"definitions.solvent_accessible_surface_area.{field}="
+                    f"{selection_id!r} is not a declared named selection for "
+                    f"project {data.get('project_id')!r} "
+                    f"(reference system {data.get('reference_system')!r}, "
+                    f"system manifest {data.get('system_manifest')!r}); "
+                    f"declared selections: {', '.join(sorted(declared)) or '(none)'}. "
+                    "Choose a declared selection in the study configuration; "
+                    "no replacement was made."
+                )
 
     requested = data.get("requested_modules")
     if requested is not None:
