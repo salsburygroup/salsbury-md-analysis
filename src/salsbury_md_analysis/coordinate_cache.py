@@ -703,6 +703,8 @@ def build_coordinate_cache(
                 )
                 replica_source_offset = 0
                 previous_cache_starting_step = None
+                previous_cache_next_step = None
+                previous_cache_segment_index = None
                 for segment_index, (
                     segment, segment_id, trajectory, probe, declared
                 ) in enumerate(segment_inputs):
@@ -752,8 +754,11 @@ def build_coordinate_cache(
                                 # A reset-policy cache restarts its counter at
                                 # the preceding derived segment's baseline when
                                 # the source counters restart at the same value.
-                                # A declared reset policy also permits
-                                # continuous counters, which keep their offset.
+                                # A following continuous counter must carry
+                                # the derived baseline forward as well. Only
+                                # an exact valid source-header adjacency can
+                                # trigger that adjustment; an unexpected source
+                                # counter remains available for rejection.
                                 # The first retained source index may differ by
                                 # segment when a global cache stride does not
                                 # divide each segment length. Physical time and
@@ -769,6 +774,20 @@ def build_coordinate_cache(
                                     and previous_cache_starting_step is not None
                                 ):
                                     cache_starting_step = previous_cache_starting_step
+                                elif (
+                                    bool(segment.get("continuous_with_previous", False))
+                                    and previous_cache_segment_index == segment_index - 1
+                                    and previous_cache_next_step is not None
+                                    and segment_index > 0
+                                ):
+                                    previous_probe = segment_inputs[segment_index - 1][3]
+                                    expected_source_start = (
+                                        int(previous_probe.get("starting_step", 0))
+                                        + int(previous_probe["declared_frame_count"])
+                                        * int(previous_probe.get("save_interval_steps", 1))
+                                    )
+                                    if source_starting_step == expected_source_start:
+                                        cache_starting_step = previous_cache_next_step
                                 writer = _DCDWriter(
                                     cached_trajectory,
                                     atom_count=len(atom_indices),
@@ -778,6 +797,10 @@ def build_coordinate_cache(
                                     unit_cell_present=frame.periodic_cell_present,
                                 )
                                 previous_cache_starting_step = cache_starting_step
+                                previous_cache_next_step = (
+                                    cache_starting_step + retained * source_interval * cache_stride
+                                )
+                                previous_cache_segment_index = segment_index
                             writer.write(frame, atom_indices)
                         if decoded != declared:
                             raise CoordinateCacheError(

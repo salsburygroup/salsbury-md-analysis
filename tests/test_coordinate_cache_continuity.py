@@ -300,6 +300,58 @@ class CoordinateCacheContinuityTests(unittest.TestCase):
             self.assertEqual([probe_trajectory(output / s["trajectory"])["starting_step"]
                               for s in cached_segments], [5000, 305000, 305000])
 
+    def test_continuous_counter_after_reset_chain_retains_derived_phase(self):
+        for lengths in ((5, 7, 6), (5, 7, 5, 7, 6)):
+            with self.subTest(lengths=lengths), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                data, manifest = _fixture(root, lengths=lengths)
+                segments = data["systems"][0]["replicas"][0]["segments"]
+                final_start = 5000 + lengths[-2] * 50000
+                _write_dcd(Path(segments[-1]["trajectory"]), lengths[-1],
+                           sum(lengths[:-1]), start=final_start)
+                hashes = {Path(s["trajectory"]): sha256_file(Path(s["trajectory"]))
+                          for s in segments}
+                self.assertEqual(self._preflight(manifest)["technical_status"], "complete")
+                output = root / "cache"
+                build_coordinate_cache(manifest, output, cache_stride=3)
+                report = self._preflight(output / "system-cache.json")
+                self.assertEqual(report["technical_status"], "complete", report["issues"])
+                cached_segments = load_json(output / "system-cache.json")["systems"][0]["replicas"][0]["segments"]
+                self.assertEqual([probe_trajectory(output / s["trajectory"])["starting_step"]
+                                  for s in cached_segments],
+                                 [5000] * (len(lengths) - 1) + [305000])
+                selected_indices = list(range(0, (sum(lengths) // 3) * 3, 3))
+                frames = [f for s in cached_segments for f in iter_coordinate_frames(
+                    output / s["trajectory"], "angstrom")]
+                source_frames = [f for s in segments for f in iter_coordinate_frames(
+                    Path(s["trajectory"]), "angstrom")]
+                np.testing.assert_allclose(
+                    [f.coordinates_angstrom[0][0] for f in frames],
+                    [9.5 + i * .001 for i in selected_indices], rtol=0, atol=2e-6,
+                )
+                np.testing.assert_allclose(
+                    [f.cell_vectors_angstrom for f in frames],
+                    [source_frames[i].cell_vectors_angstrom for i in selected_indices],
+                    rtol=0, atol=1e-12,
+                )
+                self.assertEqual({p: sha256_file(p) for p in hashes}, hashes)
+
+    def test_invalid_counter_after_reset_chain_is_never_normalized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data, manifest = _fixture(root, lengths=(5, 7, 6))
+            final = data["systems"][0]["replicas"][0]["segments"][-1]
+            _write_dcd(Path(final["trajectory"]), 6, 12, start=356000)
+            output = root / "cache"
+            build_coordinate_cache(manifest, output, cache_stride=3)
+            for path in (manifest, output / "system-cache.json"):
+                report = self._preflight(path)
+                self.assertEqual(report["technical_status"], "failed")
+                self.assertIn("DCD_CONTINUITY_MISMATCH",
+                              {i["code"] for i in report["issues"]})
+            cached_segments = load_json(output / "system-cache.json")["systems"][0]["replicas"][0]["segments"]
+            self.assertEqual(probe_trajectory(output / cached_segments[-1]["trajectory"])["starting_step"], 356000)
+
 
 if __name__ == "__main__":
     unittest.main()
