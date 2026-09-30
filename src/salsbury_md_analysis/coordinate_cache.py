@@ -702,6 +702,7 @@ def build_coordinate_cache(
                     if replica_retained_count else -1
                 )
                 replica_source_offset = 0
+                previous_cache_starting_step = None
                 for segment_index, (
                     segment, segment_id, trajectory, probe, declared
                 ) in enumerate(segment_inputs):
@@ -746,17 +747,37 @@ def build_coordinate_cache(
                                 source_interval = int(
                                     probe.get("save_interval_steps", 1)
                                 )
+                                source_starting_step = int(probe.get("starting_step", 0))
+                                cache_starting_step = source_starting_step + local_index * source_interval
+                                # A reset-policy cache restarts its counter at
+                                # the preceding derived segment's baseline when
+                                # the source counters restart at the same value.
+                                # A declared reset policy also permits
+                                # continuous counters, which keep their offset.
+                                # The first retained source index may differ by
+                                # segment when a global cache stride does not
+                                # divide each segment length. Physical time and
+                                # source-frame identity are carried explicitly
+                                # below, not inferred from reset counters.
+                                if (
+                                    segment.get("dcd_header_step_policy") == "reset_per_segment"
+                                    and bool(segment.get("continuous_with_previous", False))
+                                    and segment_index > 0
+                                    and source_starting_step == int(
+                                        segment_inputs[segment_index - 1][3].get("starting_step", 0)
+                                    )
+                                    and previous_cache_starting_step is not None
+                                ):
+                                    cache_starting_step = previous_cache_starting_step
                                 writer = _DCDWriter(
                                     cached_trajectory,
                                     atom_count=len(atom_indices),
                                     frame_count=retained,
-                                    starting_step=(
-                                        int(probe.get("starting_step", 0))
-                                        + local_index * source_interval
-                                    ),
+                                    starting_step=cache_starting_step,
                                     save_interval=source_interval * cache_stride,
                                     unit_cell_present=frame.periodic_cell_present,
                                 )
+                                previous_cache_starting_step = cache_starting_step
                             writer.write(frame, atom_indices)
                         if decoded != declared:
                             raise CoordinateCacheError(
@@ -816,6 +837,15 @@ def build_coordinate_cache(
                     if "continuous_with_previous" in segment:
                         cached_segment["continuous_with_previous"] = segment[
                             "continuous_with_previous"
+                        ]
+                    # Cached DCDs retain the source counter convention.  In
+                    # particular, a restarted counter is not evidence of a
+                    # physical-time gap when the source explicitly declares
+                    # reset_per_segment.  Keep that declaration so downstream
+                    # preflight applies the same continuity contract.
+                    if "dcd_header_step_policy" in segment:
+                        cached_segment["dcd_header_step_policy"] = segment[
+                            "dcd_header_step_policy"
                         ]
                     cached_segments.append(cached_segment)
                     segment_reports.append({
