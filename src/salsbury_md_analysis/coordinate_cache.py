@@ -690,6 +690,35 @@ def build_coordinate_cache(
                         raise CoordinateCacheError(
                             f"{system_id}/{replica_id}/{segment_id} has no declared frames"
                         )
+                    # Validate the source counter before deriving a cache
+                    # counter. Otherwise an invalid source step can happen to
+                    # equal the expected *derived* step after stride/reset
+                    # phase adjustment and evade cached-input preflight.
+                    # These are the same header-only adjacency rules used by
+                    # preflight; physical-time continuity remains a separate
+                    # check on the explicit frame axis.
+                    if segment.get("continuous_with_previous", False) and segment_inputs:
+                        previous_probe = segment_inputs[-1][3]
+                        if previous_probe.get("format") == "dcd" and probe.get("format") == "dcd":
+                            previous_start = int(previous_probe["starting_step"])
+                            observed_start = int(probe["starting_step"])
+                            expected_start = (
+                                previous_start
+                                + int(previous_probe["declared_frame_count"])
+                                * int(previous_probe["save_interval_steps"])
+                            )
+                            permitted_reset = (
+                                observed_start == previous_start
+                                and (segment.get("dcd_header_step_policy") == "reset_per_segment"
+                                     or previous_start == 0)
+                            )
+                            if observed_start != expected_start and not permitted_reset:
+                                raise CoordinateCacheError(
+                                    "DCD_CONTINUITY_MISMATCH in source "
+                                    f"{system_id}/{replica_id}/{segment_id}: "
+                                    f"starts at step {observed_start}; expected {expected_start} "
+                                    "from the preceding source DCD header, or a permitted reset"
+                                )
                     segment_inputs.append(
                         (segment, segment_id, trajectory, probe, declared)
                     )

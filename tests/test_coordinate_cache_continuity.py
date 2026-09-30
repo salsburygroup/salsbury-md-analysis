@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from salsbury_md_analysis.coordinate_cache import (
+    CoordinateCacheError,
     build_coordinate_cache,
     validate_reusable_coordinate_cache,
 )
@@ -197,11 +198,12 @@ class CoordinateCacheContinuityTests(unittest.TestCase):
             second = data["systems"][0]["replicas"][0]["segments"][1]
             _write_dcd(Path(second["trajectory"]), 4, 4, start=6000)
             output = root / "cache"
-            build_coordinate_cache(manifest, output)
-            for path in (manifest, output / "system-cache.json"):
-                report = self._preflight(path)
-                self.assertEqual(report["technical_status"], "failed")
-                self.assertIn("DCD_CONTINUITY_MISMATCH", {i["code"] for i in report["issues"]})
+            report = self._preflight(manifest)
+            self.assertEqual(report["technical_status"], "failed")
+            self.assertIn("DCD_CONTINUITY_MISMATCH", {i["code"] for i in report["issues"]})
+            with self.assertRaisesRegex(CoordinateCacheError, "DCD_CONTINUITY_MISMATCH in source"):
+                build_coordinate_cache(manifest, output)
+            self.assertFalse(output.exists())
 
     def test_single_file_without_declared_policy_remains_valid(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -343,14 +345,30 @@ class CoordinateCacheContinuityTests(unittest.TestCase):
             final = data["systems"][0]["replicas"][0]["segments"][-1]
             _write_dcd(Path(final["trajectory"]), 6, 12, start=356000)
             output = root / "cache"
-            build_coordinate_cache(manifest, output, cache_stride=3)
-            for path in (manifest, output / "system-cache.json"):
-                report = self._preflight(path)
-                self.assertEqual(report["technical_status"], "failed")
-                self.assertIn("DCD_CONTINUITY_MISMATCH",
-                              {i["code"] for i in report["issues"]})
-            cached_segments = load_json(output / "system-cache.json")["systems"][0]["replicas"][0]["segments"]
-            self.assertEqual(probe_trajectory(output / cached_segments[-1]["trajectory"])["starting_step"], 356000)
+            report = self._preflight(manifest)
+            self.assertEqual(report["technical_status"], "failed")
+            self.assertIn("DCD_CONTINUITY_MISMATCH", {i["code"] for i in report["issues"]})
+            with self.assertRaisesRegex(CoordinateCacheError, "starts at step 356000; expected 355000"):
+                build_coordinate_cache(manifest, output, cache_stride=3)
+            self.assertFalse(output.exists())
+
+    def test_invalid_source_counter_cannot_coincide_with_valid_derived_phase(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data, manifest = _fixture(root, lengths=(5, 7, 6))
+            final = data["systems"][0]["replicas"][0]["segments"][-1]
+            # 305000 would be the next cached step after the adjusted reset,
+            # but the valid SOURCE continuation is 355000. Reject before
+            # creating a cache that could otherwise pass cached preflight.
+            path = Path(final["trajectory"])
+            _write_dcd(path, 6, 12, start=305000)
+            source_hash = sha256_file(path)
+            self.assertEqual(self._preflight(manifest)["technical_status"], "failed")
+            output = root / "cache"
+            with self.assertRaisesRegex(CoordinateCacheError, "starts at step 305000; expected 355000"):
+                build_coordinate_cache(manifest, output, cache_stride=3)
+            self.assertFalse(output.exists())
+            self.assertEqual(sha256_file(path), source_hash)
 
 
 if __name__ == "__main__":
