@@ -50,7 +50,7 @@
     "memory_safety_factor": 1.5,
     "memory_overhead_gib": 1,
     "large_memory_threshold_gib": 96,
-    "request_campaign_wall_limit_for_planned_tasks": true
+    "request_campaign_wall_limit_for_planned_tasks": false
   },
   "node_policy": {
     "cpus_per_node": 44,

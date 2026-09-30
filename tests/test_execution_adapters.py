@@ -45,13 +45,13 @@ class ExecutionAdapterTests(unittest.TestCase):
                 name,
             )
 
-    def test_deac_profile_requests_the_padded_campaign_wall_limit(self):
+    def test_deac_profile_uses_task_specific_timeouts(self):
         repository = Path(__file__).resolve().parents[1]
         deac = load_slurm_profile(repository / "profiles/slurm/deac.json")
         generic = load_slurm_profile(
             repository / "profiles/slurm/generic-template.json"
         )
-        self.assertTrue(deac["resource_policy"][
+        self.assertFalse(deac["resource_policy"][
             "request_campaign_wall_limit_for_planned_tasks"
         ])
         self.assertEqual(deac["node_policy"]["maximum_nodes_per_campaign"], 16)
@@ -631,8 +631,8 @@ class ExecutionAdapterTests(unittest.TestCase):
             )
         self.assertEqual(task["planned_peak_memory_gib"], 10)
         self.assertEqual(task["requested_memory_gib"], 16)
-        self.assertEqual(task["requested_wall_minutes"], 24 * 60)
-        self.assertTrue(task["wall_request_uses_campaign_cap"])
+        self.assertEqual(task["requested_wall_minutes"], 45)
+        self.assertFalse(task["wall_request_uses_campaign_cap"])
         self.assertEqual(
             task["resource_request_source"],
             "campaign_planner_final_memory_reservation_passthrough",
