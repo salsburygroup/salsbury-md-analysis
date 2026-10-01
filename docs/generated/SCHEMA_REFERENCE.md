@@ -130,7 +130,7 @@ Source: `schemas/scientific-minimums.schema.json`
 | Field | Required | Type or constraint |
 |---|---|---|
 | `minimums_schema` | yes | `structured` |
-| `base_policy_id` | yes | `structured` |
+| `base_policy_id` | yes | `['scientific-sampling-standard-v4', 'scientific-sampling-standard-v3']` |
 | `interpretation` | no | `object` |
 | `override_policy` | no | `string` |
 | `methods` | yes | `object` |

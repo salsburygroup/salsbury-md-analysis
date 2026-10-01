@@ -312,6 +312,7 @@ def default_analysis_config(
             "b_vs_2b_sensitivity": False,
             "optional_replica_diagnostics": False,
             "scientific_minimums_file": None,
+            "fixed_schedule_file": None,
         },
         "clustering": {
             "feature_space": "tica",
@@ -596,7 +597,7 @@ def load_analysis_config(
     raw_sampling = supplied.get("sampling", {})
     allowed_sampling = {
         "strategy", "preserve_replica_balance", "b_vs_2b_sensitivity",
-        "optional_replica_diagnostics", "scientific_minimums_file",
+        "optional_replica_diagnostics", "scientific_minimums_file", "fixed_schedule_file",
     }
     if not isinstance(raw_sampling, dict) or set(raw_sampling).difference(allowed_sampling):
         raise AnalysisConfigError("sampling configuration is invalid")
@@ -625,6 +626,16 @@ def load_analysis_config(
         if not candidate.is_absolute():
             candidate = Path(path).expanduser().resolve(strict=True).parent / candidate
         sampling["scientific_minimums_file"] = str(candidate.resolve(strict=True))
+    fixed_schedule_file = sampling["fixed_schedule_file"]
+    if fixed_schedule_file is not None:
+        if not isinstance(fixed_schedule_file, str) or not fixed_schedule_file.strip():
+            raise AnalysisConfigError("sampling.fixed_schedule_file must be null or a nonempty path")
+        candidate = Path(fixed_schedule_file).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path(path).expanduser().resolve(strict=True).parent / candidate
+        sampling["fixed_schedule_file"] = str(candidate.resolve(strict=True))
+        if planning["stride_mode"] == "uniform_cache_stride" or stride_mode_override == "uniform_cache_stride":
+            raise AnalysisConfigError("fixed sampling cannot be combined with uniform-cache-stride optimization")
 
     raw_clustering = supplied.get("clustering", {})
     if (

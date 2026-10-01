@@ -1205,7 +1205,7 @@ remain visible in `module-coverage.json`.
         ),
         "generated_files": [
             "system.json", "project.json", "sampling-plan.json",
-            "campaign-resource-plan.json", "module-coverage.json",
+            "campaign-resource-plan.json", "fixed-sampling-schedule.json", "module-coverage.json",
             *(["coordinate-cache-reuse.json"] if coordinate_cache_input is not None else []),
             *per_system_manifest_files, *view_project_files,
             *context_generated_files, *context_slurm_files,

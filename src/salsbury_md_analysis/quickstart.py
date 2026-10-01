@@ -3188,7 +3188,7 @@ override them with `SALSBURY_MD_ANALYSIS_PYTHON` and
         ),
         "generated_files": [
             "system.json", "project.json", "sampling-plan.json",
-            "campaign-resource-plan.json", "module-coverage.json",
+            "campaign-resource-plan.json", "fixed-sampling-schedule.json", "module-coverage.json",
             *(["coordinate-cache-reuse.json"] if coordinate_cache_input is not None else []),
             *(
                 [str(generated_connectivity_file.relative_to(root))]

@@ -181,22 +181,32 @@ replica- and member-segment-safe sequences. The planner does not estimate
 autocorrelation times or event rates. Runtime pilots calibrate CPU and memory
 costs only.
 
-| Methods | Frames per replica | Frames per system | Temporal rule |
-|---|---:|---:|---|
-| Structural-integrity QC | 100 | 500 | Count floor; selected frames use frame-local whole-molecule repair, one worker per replica |
-| Replica RMSD/Rg | 100 | 100 | Count floor; order and times are retained for reporting |
-| RMSF, dihedrals, nucleic-acid geometry, optional observables, scalar distributions, H-bond pattern/comparison, grouped regularized classification, RMSF permutation | 200 | 1,000 | Count floor; no spacing gate |
-| H bonds, automatic H-bond discovery, ion coordination, ion atmosphere, RDF, trajectory features | 200 | 1,000 | Count floor; no spacing gate |
-| Water-mediated H-bond networks, DSSP, nucleic-acid structure, SASA | 100 | 500 | Count floor; no spacing gate |
-| DCCM | 250 | 1,000 | Count floor; no spacing gate |
-| Individual/common PCA | 250 | 1,000 | Count floor; no spacing gate |
-| Generalized correlation, correlation networks, FES, clustering, representatives/exports, grouped ML | 250 | 1,000 | Count floor; no spacing gate |
-| PaLD, when explicitly enabled | 20 | 100 | Count floor; no spacing gate |
-| Information dynamics | 500 | 2,000 | At most 0.50 ns between retained frames plus configured lag and total valid-pair minimum |
-| tICA | 500 | 2,000 | At most 0.50 ns between retained frames plus configured lag and valid pairs in every segment |
-| MSMs | 500 | 2,000 | At most 0.50 ns between retained frames plus largest configured lag and total valid-transition minimum |
-| Scalar threshold-state dynamics | 250 | 1,000 | Ordered, segment-safe series; selected spacing is reported, with no universal gap gate |
-| Convergence/uncertainty | 250 | 250 | Ordered per-replica series; duration and spacing are reported, with no universal gap gate |
+| Methods | Frames per replica | Temporal rule |
+|---|---:|---|
+| Structural-integrity QC | 100 | Count floor; selected frames use frame-local whole-molecule repair, one worker per replica |
+| Replica RMSD/Rg | 100 | Count floor; order and times are retained for reporting |
+| RMSF, dihedrals, nucleic-acid geometry, optional observables, scalar distributions, H-bond pattern/comparison, grouped regularized classification, RMSF permutation | 200 | Count floor; no spacing gate |
+| H bonds, automatic H-bond discovery, ion coordination, ion atmosphere, trajectory features, RDF | 200 | Count floor; no spacing gate |
+| Water-mediated H-bond networks, DSSP, nucleic-acid structure, SASA | 100 | Count floor; no spacing gate |
+| DCCM, individual/common PCA | 250 | Count floor; no spacing gate |
+| Generalized correlation, correlation networks, FES, clustering, representatives/exports, grouped ML | 250 | Count floor; no spacing gate |
+| PaLD, when explicitly enabled | 20 | Count floor; no spacing gate |
+| Information dynamics | 500 | At most 0.50 ns between retained frames plus configured lag and total valid-pair minimum |
+| tICA | 500 | At most 0.50 ns between retained frames plus configured lag and valid pairs in every segment |
+| MSMs | 500 | At most 0.50 ns between retained frames plus largest configured lag and total valid-transition minimum |
+| Scalar threshold-state dynamics | 250 | Ordered, segment-safe series; selected spacing is reported, with no universal gap gate |
+| Convergence/uncertainty | 250 | Ordered per-replica series; duration and spacing are reported, with no universal gap gate |
+
+Policy v4 has no independent pooled frame floor by default. Each included
+replica must meet its method's minimum; the implied total is reported but is
+not a second gate. RDF therefore requires 200 frames from each replica: 800
+across four replicas, or 400 across two. Extra frames in one replica cannot
+compensate for another replica below its minimum. These are retained frames,
+not statistically independent samples or evidence of convergence.
+
+Algorithm-specific requirements still apply, including PCA rank, usable lag
+pairs, uncertainty blocks, and valid cluster/state definitions. Removing the
+pooled policy floor does not bypass those checks.
 
 Convergence block sizes are defined in selected upstream observations. The
 generated workflow derives them from the planner-resolved RMSD/Rg count for
@@ -214,10 +224,11 @@ standard and is not an automatic resource-planning action.
 When an overall coordinate-cache stride and a downstream method stride are
 both present, the planner validates their product against the original raw
 trajectory. A method cannot satisfy its contract by meeting a pooled campaign
-count while falling below a per-replica or per-system floor. For example, with
-100,000 raw frames in each of three replicas, a method requiring 200 frames per
-replica and 1,000 pooled frames per system needs at least 334 frames from each
-replica, so its effective raw stride cannot exceed 300. Any candidate whose
+count while falling below a per-replica floor or an explicit pooled override.
+For example, with 100,000 raw frames in each of three replicas, a method
+requiring 200 frames per replica permits an effective raw stride of at most
+500. If the user adds a 1,000-frame pooled requirement, the balanced allocation
+needs at least 334 frames per replica and a stride no larger than 299. Any candidate whose
 composed stride violates that limit is refined or rejected.
 
 Generate the complete user-editable policy with:
@@ -230,7 +241,8 @@ salsbury-md-analysis write-scientific-minimums-template \
 Each method has three explicit fields:
 
 - `minimum_frames_per_replica`;
-- `minimum_frames_overall_per_system`, pooled across that system's replicas;
+- `minimum_frames_overall_per_system`, an optional stricter pooled override;
+  the default is zero, meaning no additional pooled gate;
 - `maximum_time_gap_between_retained_frames_ns`, where zero means no time-gap
   gate for a static ensemble estimator.
 
@@ -238,6 +250,39 @@ Set `sampling.scientific_minimums_file` in the analysis config. The loader
 accepts equal or stricter frame counts and equal or smaller positive time gaps.
 It rejects weaker values and records the file path and SHA-256 with each
 planned task.
+
+The shipped v4 template uses these defaults. Explicit v3 policy files remain
+supported and retain their positive pooled floors. Regenerate and review a
+v4 template to adopt the new defaults; existing locked configurations are
+not rewritten.
+
+### Preserve an existing sampling schedule
+
+Export the sampling controls from an existing preparation:
+
+```bash
+salsbury-md-analysis export-fixed-sampling /path/to/previous/prepared \
+  --output /path/to/fixed-sampling.json
+```
+
+Set `sampling.fixed_schedule_file` to that file in the analysis configuration,
+then run the usual preparation command with a new output directory and the
+desired resource limits. Preparation also writes `fixed-sampling-schedule.json`
+for later use.
+
+Fixed sampling retains cache and method strides, PCA basis and projection
+selections, clustering-fit sampling, and observation caps. The planner
+re-estimates CPU, memory and wall time and produces the scheduler plan without
+upgrading or reducing those selections. An infeasible schedule fails before
+submission files are ready; increase resources or explicitly choose another
+schedule. Automatic method reduction and uniform-stride optimization cannot
+override a fixed schedule.
+
+This mode requires the same source declarations, replica/frame/segment/timing
+inventory, projects and task set. It rejects changed inputs, invalid sampling
+contracts and obsolete scientific minima. It does not transfer a schedule to
+a filtered ensemble, validate trajectory bytes, or authorize reuse of previous
+results. Normal input and runtime provenance checks still apply.
 
 Thermodynamic and ensemble estimators have no time-gap rule because randomizing
 their stride-1 frame order would not change the estimator. Their count floors

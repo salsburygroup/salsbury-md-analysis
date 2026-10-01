@@ -17,6 +17,52 @@ from salsbury_md_analysis.scientific_sampling import (
 
 
 class ScientificSamplingTests(unittest.TestCase):
+    def test_default_pooled_floor_is_derived_from_replica_count(self):
+        profile = scientific_sampling_profile("radial_distribution_functions")
+        self.assertEqual(profile.minimum_frames_per_replica, 200)
+        self.assertEqual(profile.minimum_frames_per_system, 0)
+        self.assertTrue(all(p.minimum_frames_per_system == 0 for p in list_scientific_sampling_profiles()))
+        self.assertEqual(required_frames_per_replica(profile, replica_count=4), 200)
+        for counts, accepted in (([200] * 4, True), ([199, 200, 200, 201], False)):
+            assessment = assess_raw_sampling(
+                profile, selected_frames_per_replica=counts,
+                source_frames_per_replica=[10_000] * 4,
+                system_ids_per_replica=["system"] * 4, integer_stride=50,
+            )
+            self.assertEqual(assessment["keep_enabled"], accepted)
+            self.assertEqual(assessment["derived_minimum_frames_per_system"], {"system": 800})
+            self.assertFalse(assessment["additional_pooled_floor_requested"])
+        self.assertEqual(
+            required_frames_per_replica(profile, replica_count=2), 200
+        )
+        self.assertEqual(scientific_sampling_profile("common_pca").minimum_frames_per_replica, 250)
+        shipped = Path(__file__).resolve().parents[1] / "profiles/sampling/scientific-minimums-v4.json"
+        self.assertEqual(json.loads(shipped.read_text()), scientific_minimums_document())
+
+    def test_explicit_legacy_pooled_floors_remain_enforced(self):
+        path = Path(__file__).resolve().parents[1] / "profiles/sampling/scientific-minimums-v3.json"
+        policy = load_scientific_minimums(path)
+        self.assertEqual(policy["profiles"]["radial_distribution_functions"].minimum_frames_per_system, 1_000)
+        self.assertEqual(required_frames_per_replica(policy["profiles"]["radial_distribution_functions"], replica_count=4), 250)
+
+    def test_all_per_replica_defaults_unchanged_and_enforced_individually(self):
+        path = Path(__file__).resolve().parents[1] / "profiles/sampling/scientific-minimums-v3.json"
+        old = json.loads(path.read_text())["methods"]
+        for profile in list_scientific_sampling_profiles():
+            floor = profile.minimum_frames_per_replica
+            self.assertEqual(floor, old[profile.module_id]["minimum_frames_per_replica"])
+            if not floor:
+                continue
+            for replicas in (1, 2, 4, 20):
+                with self.subTest(method=profile.module_id, replicas=replicas):
+                    self.assertEqual(required_frames_per_replica(profile, replica_count=replicas), floor)
+                    arguments = dict(source_frames_per_replica=[floor * 10] * replicas,
+                                     system_ids_per_replica=["A"] * replicas)
+                    self.assertTrue(assess_raw_sampling(profile, selected_frames_per_replica=[floor] * replicas, **arguments)["keep_enabled"])
+                    deficient = [floor * 2] * replicas
+                    deficient[0] = floor - 1
+                    self.assertFalse(assess_raw_sampling(profile, selected_frames_per_replica=deficient, **arguments)["keep_enabled"])
+
     def test_policy_application_never_weakens_existing_scientific_floor(self):
         tasks = apply_scientific_minimums_to_tasks([{
             "task_id": "strict-rdf",
@@ -61,7 +107,7 @@ class ScientificSamplingTests(unittest.TestCase):
         self.assertEqual(tasks[0]["minimum_frames_per_replica"], 1_200)
         self.assertTrue(
             str(tasks[0]["scientific_sampling_requirements"]["policy_id"])
-            .startswith("scientific-sampling-standard-v3+strict-")
+            .startswith("scientific-sampling-standard-v4+strict-")
         )
 
     def test_editable_minimums_cannot_weaken_packaged_policy(self):
@@ -132,7 +178,7 @@ class ScientificSamplingTests(unittest.TestCase):
             frame_intervals_ns_per_replica=[0.01],
             source_time_spans_ns_per_replica=[100.0],
         )
-        self.assertEqual(required, 500)
+        self.assertEqual(required, 100)
         assessment = assess_raw_sampling(
             profile,
             selected_frames_per_replica=[2_001],
