@@ -367,6 +367,29 @@ strides within the smaller execution budget. Queue waiting and a separately
 launched interactive build are excluded. Local-only execution retains its
 existing budget; this allocation allowance applies to Slurm planning.
 
+Native preparation validates the generated task/dependency schedule before it
+enables a launcher. `native-schedule-validation.json` records the schedule hash,
+task coverage, CPU-hour and wall-time budgets, final estimate, and any failures.
+Every logical task must map to exactly one execution task; one serial worker
+can contain several logical clustering methods. The same dependency and
+CPU/memory packing calculation supplies the Slurm preview and acceptance check,
+including the configured memory reserve once per node.
+
+The earlier stage/lane estimate remains a diagnostic. It serializes broad
+analysis stages and can overestimate the time needed by independent tasks.
+A wall-time objection from that estimate alone allows preparation to reach the
+native check; missing calibration, scientific-floor, CPU and memory failures
+still stop preparation. The native schedule must fit the science wall-time
+allowance after the existing utilization, pilot and finalization reserves.
+Changing the acceptance check does not remove these reserves or alter a fixed
+sampling schedule.
+
+Automatic stride allocation still uses the conservative stage model to choose
+candidates; this check does not make that search globally optimal. Legacy
+independently authored workflows without a native validation record keep their
+existing validation path. Estimates exclude queue delays and do not guarantee
+execution time.
+
 For a campaign that fits on one node, use the generated shared-allocation route:
 
 ```bash

@@ -538,9 +538,13 @@ def build_planning_report(root: Path) -> Dict[str, object]:
         "scientific_status": resources.get("scientific_status", "planning only"),
         "execution_authorized": resources.get("execution_authorized"),
         "feasibility_status": resources.get("feasibility_status"),
+        "native_schedule_validation": resources.get("native_schedule_validation"),
         "orchestration": {"task_count": len(orchestration), "tasks": orchestration},
         "resource_envelope": {
-            "estimated_scheduled_execution_hours": preview.get("planner_estimated_dependency_critical_path_hours"),
+            "estimated_scheduled_execution_hours": preview.get(
+                "planner_estimated_dependency_critical_path_hours",
+                _mapping(resources.get("native_schedule_validation")).get("estimated_execution_hours"),
+            ),
             "campaign_walltime_request": preview.get("campaign_walltime_request"),
             "single_allocation": preview.get("single_allocation"),
             "maximum_parallel_cpus": resources.get(
@@ -648,6 +652,11 @@ def render_planning_report_markdown(report: Mapping[str, object]) -> str:
         f"- Execution budget before campaign allowance: `{envelope.get('maximum_estimated_execution_hours')} hours`",
         f"- Scheduled runtime estimate (model uncertainty included): `{estimated_hours if estimated_hours is not None else 'unavailable'} hours`",
         f"- Recommended campaign Slurm limit: `{requested_hours if requested_hours is not None else 'unavailable'} hours`",
+        *([
+            f"- Native dependency/resource validation: `{_mapping(report.get('native_schedule_validation')).get('status')}`",
+            "- Stage/lane estimate (diagnostic only): "
+            f"`{_mapping(report.get('native_schedule_validation')).get('stage_schedule_estimated_wall_hours')} hours`",
+        ] if report.get("native_schedule_validation") else []),
         f"- Planned sampling tasks: `{sampling.get('task_count')}`",
         f"- Tasks below a declared sampling floor: `{sampling.get('below_floor_task_count')}`",
         f"- Source-limited tasks: `{sampling.get('source_limited_task_count', 0)}`. Short supplied inputs are reported separately; using all available frames does not establish adequate scientific sampling.",
