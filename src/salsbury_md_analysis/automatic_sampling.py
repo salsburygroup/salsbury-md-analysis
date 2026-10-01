@@ -18,6 +18,7 @@ from .frame_sampling import (
     integer_stride_for_budget,
     integer_stride_selected_count,
 )
+from .execution_adapters import execution_walltime_budget
 from .hydrogen_bond_discovery import (
     HydrogenBondDiscoveryError,
     _automatic_endpoint_identity_inventory,
@@ -757,10 +758,11 @@ def _campaign_direct_resource_plan(
         apply_memory_calibration_uncertainty(tasks, memory_uncertainty_policy)
     except MemoryPolicyError as exc:
         raise AutomaticSamplingError(str(exc)) from exc
+    time_budget = execution_walltime_budget(execution)
     plan = plan_campaign_resource_budget(
         tasks,
         maximum_parallel_cpus=int(execution["maximum_parallel_cpus"]),
-        maximum_wall_hours=float(execution["maximum_hours_per_cpu"]),
+        maximum_wall_hours=float(time_budget["maximum_estimated_execution_hours"]),
         maximum_memory_gib=float(execution["maximum_memory_gib"]),
         planning_utilization=float(execution["planning_utilization"]),
         pilot_budget_fraction=float(execution["pilot_budget_fraction"]),
@@ -768,6 +770,7 @@ def _campaign_direct_resource_plan(
             execution.get("finalization_headroom_fraction", 0.0)
         ),
     )
+    plan["campaign_walltime_budget"] = time_budget
     plan["planning_scope"] = "enabled direct trajectory estimators"
     plan["memory_calibration_uncertainty"] = memory_uncertainty_policy
     plan["scope_limit"] = (

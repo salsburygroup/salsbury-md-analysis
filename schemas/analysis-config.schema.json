@@ -127,7 +127,11 @@
         "preserve_replica_balance": {"type": "boolean", "default": true},
         "b_vs_2b_sensitivity": {"type": "boolean", "default": false},
         "optional_replica_diagnostics": {"type": "boolean", "default": false}
-        ,"scientific_minimums_file": {
+        ,"fixed_schedule_file": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Frozen sampling schedule exported from a preparation; resources may change but sampling and enabled tasks may not."
+        },"scientific_minimums_file": {
           "type": ["string", "null"],
           "default": null,
           "description": "Optional standard-or-stricter per-method sample-count and ordered-method time-gap policy."

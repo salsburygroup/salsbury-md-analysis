@@ -548,11 +548,22 @@ salsbury-md-analysis write-scientific-minimums-template \
 ```
 
 Every method lists `minimum_frames_per_replica`,
-`minimum_frames_overall_per_system` (pooled across that system's replicas), and
+`minimum_frames_overall_per_system` (optional stricter pooled override), and
 `maximum_time_gap_between_retained_frames_ns`. Point
 `sampling.scientific_minimums_file` at the reviewed file. Values may be kept or
 made stricter; the public workflow refuses a lower frame floor or a looser
 positive time-gap gate.
+
+By default, every replica must meet its method's minimum, with no separate
+pooled floor. For RDF that is 200 frames per replica. The pooled override
+defaults to zero; older explicit minimum files keep their stronger settings.
+Method-specific validity checks still apply.
+
+To keep a previous sampling schedule while changing resources, use
+`export-fixed-sampling` and set `sampling.fixed_schedule_file` in your config.
+The planner preserves that schedule or reports that it cannot fit. See
+[fixed sampling](docs/FRAME_SAMPLING.md#preserve-an-existing-sampling-schedule)
+for the command and input restrictions.
 
 The default remains all automatically applicable modules and high-detail
 conformational views. Each instrumented result includes measured CPU,

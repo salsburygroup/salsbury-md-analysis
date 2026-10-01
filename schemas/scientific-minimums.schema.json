@@ -6,7 +6,7 @@
   "required": ["minimums_schema", "base_policy_id", "methods"],
   "properties": {
     "minimums_schema": {"const": "salsbury-scientific-minimums-v1"},
-    "base_policy_id": {"const": "scientific-sampling-standard-v3"},
+    "base_policy_id": {"enum": ["scientific-sampling-standard-v4", "scientific-sampling-standard-v3"]},
     "interpretation": {"type": "object"},
     "override_policy": {"type": "string"},
     "methods": {

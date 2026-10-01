@@ -36,6 +36,7 @@ from .automatic_sampling import (
     automatic_sampling_plan,
 )
 from .analysis_config import COMMAND_MODULES
+from .fixed_sampling import export_fixed_sampling_schedule
 from .static_ensemble import STATIC_DISABLED_MODULES, static_ensemble_enabled
 from .correlation_networks import correlation_networks_project_safe
 from .dccm import dccm_project_safe
@@ -680,7 +681,10 @@ def _campaign_plan_terminal_summary(
     return {
         "requested_parallel_cpus": plan.get("maximum_parallel_cpus_input"),
         "requested_memory_gib": plan.get("maximum_memory_gib_input"),
-        "requested_wall_hours": plan.get("maximum_wall_hours_input"),
+        "requested_wall_hours": plan.get("campaign_walltime_budget", {}).get(
+            "maximum_campaign_wall_hours", plan.get("maximum_wall_hours_input")
+        ),
+        "execution_wall_hours_before_campaign_allowance": plan.get("maximum_wall_hours_input"),
         "science_wall_hours": plan.get("science_budget_wall_hours"),
         "useful_parallel_cpu_ceiling": capacity.get(
             "useful_parallel_cpu_ceiling"
@@ -1189,6 +1193,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="salsbury-md-analysis")
     parser.add_argument("--version", action="version", version=__version__)
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    fixed_parser = subparsers.add_parser(
+        "export-fixed-sampling", help="Freeze a prepared campaign's sampling for resource-only replanning."
+    )
+    fixed_parser.add_argument("prepared_directory", type=Path)
+    fixed_parser.add_argument("--output", required=True, type=Path)
 
     list_parser = subparsers.add_parser(
         "list-modules", help="List registered analyses and honest implementation status."
@@ -1769,6 +1779,10 @@ def build_parser() -> argparse.ArgumentParser:
     local_workflow_parser.add_argument(
         "root", type=Path, help="Prepared analysis directory."
     )
+    local_workflow_parser.add_argument(
+        "--maximum-wall-hours", type=float,
+        help="Shorter allocation deadline; cannot extend the prepared campaign ceiling or change sampling.",
+    )
 
     plan_matrix_parser = subparsers.add_parser(
         "report-plan-matrix",
@@ -2153,6 +2167,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "export-fixed-sampling":
+        try:
+            report = export_fixed_sampling_schedule(args.prepared_directory, args.output)
+        except (OSError, ValueError, KeyError) as exc:
+            print(json.dumps({"technical_status": "failed", "message": str(exc)}))
+            return 2
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
     analysis_command = getattr(args, "analysis_command", args.command)
     if COMMAND_MODULES.get(analysis_command) in STATIC_DISABLED_MODULES and static_ensemble_enabled():
         print(json.dumps({
@@ -2352,7 +2374,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
     if args.command == "run-local-workflow":
         try:
-            report = run_local_workflow(args.root)
+            report = run_local_workflow(args.root, maximum_wall_hours=args.maximum_wall_hours)
         except (ExecutionAdapterError, OSError, ValueError) as exc:
             report = {
                 "technical_status": "failed",

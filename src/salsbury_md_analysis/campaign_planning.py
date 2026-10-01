@@ -15,10 +15,15 @@ from .automatic_sampling import (
 from .ensemble_parallelism import annotate_task_parallelism
 from .convergence_contracts import configure_convergence_blocks
 from .orchestration_resources import orchestration_tasks
-from .execution_adapters import load_slurm_profile
+from .execution_adapters import load_slurm_profile, execution_walltime_budget
+from .campaign_walltime import CAMPAIGN_WALLTIME_DEFAULTS, campaign_walltime_request
 from .frame_sampling import (
     integer_stride_for_budget,
     integer_stride_selected_count,
+)
+from .fixed_sampling import (
+    FixedSamplingError, freeze_task_sampling, load_fixed_schedule,
+    schedule_document, verify_fixed_plan,
 )
 from .manifests import load_json, validate_project
 from .memory_policy import (
@@ -141,6 +146,12 @@ def _campaign_infeasibility_detail(plan: Mapping[str, object]) -> str:
             f"{minimum_wall_value:.3f} h; science wall allowance "
             f"{science_wall:.3f} h within the {maximum_wall:.3f} h campaign ceiling"
         )
+        allocation_budget = plan.get("campaign_walltime_budget", {})
+        if isinstance(allocation_budget, Mapping) and allocation_budget.get("rounding_minutes"):
+            parts.append(
+                f"the {maximum_wall:.3f} h estimate budget reserves the full "
+                f"campaign allowance inside the {allocation_budget['maximum_campaign_wall_hours']:g} h Slurm ceiling"
+            )
         if science_wall > 0.0:
             required_candidates.append(
                 minimum_wall_value * maximum_wall / science_wall
@@ -156,6 +167,12 @@ def _campaign_infeasibility_detail(plan: Mapping[str, object]) -> str:
         required_candidates.append(minimum_cpu * maximum_wall / science_cpu)
     if required_candidates:
         required = max(required_candidates)
+        allocation_budget = plan.get("campaign_walltime_budget", {})
+        if isinstance(allocation_budget, Mapping) and allocation_budget.get("rounding_minutes"):
+            required = campaign_walltime_request(required, float(allocation_budget["maximum_campaign_wall_hours"]), {
+                "campaign_walltime_headroom_fraction": allocation_budget["headroom_fraction"],
+                "campaign_walltime_rounding_minutes": allocation_budget["rounding_minutes"],
+            })["preferred_wall_hours"]
         parts.append(
             "estimated minimum campaign ceiling with the current utilization and "
             f"reserves is {required:.3f} h; retry with --target-wall-hours "
@@ -2226,6 +2243,16 @@ def plan_and_apply_complete_campaign(
         if filename.startswith("project-") and filename.endswith(".json")
     ]
     context_paths = [root / filename for filename in context_project_files]
+    fixed_schedule = None
+    fixed_path = sampling_configuration.get("fixed_schedule_file")
+    if fixed_path is not None:
+        try:
+            fixed_schedule = load_fixed_schedule(
+                Path(str(fixed_path)), replicas,
+                [base_project_path, *view_paths, *context_paths],
+            )
+        except (OSError, ValueError) as exc:
+            raise CampaignPlanningError(f"Fixed sampling rejected: {exc}") from exc
     delegated_context_modules = set()
     for context_path in context_paths:
         context_project = load_json(context_path)
@@ -2248,6 +2275,7 @@ def plan_and_apply_complete_campaign(
     except MemoryPolicyError as exc:
         raise CampaignPlanningError(str(exc)) from exc
     scheduler_time_policy: Dict[str, float] = {
+        **CAMPAIGN_WALLTIME_DEFAULTS,
         "walltime_safety_factor": 1.0,
         "walltime_overhead_minutes": 15.0,
         "minimum_wall_minutes": 30.0,
@@ -2321,17 +2349,31 @@ def plan_and_apply_complete_campaign(
                 "minimum_wall_minutes"
             ],
             "scheduler_walltime_interpretation": (
-                "preferred per-job timeout allowance inside the padded "
-                "end-to-end campaign wall limit; the execution adapter reduces "
-                "this additional padding uniformly when required to keep the "
-                "serialized scheduler kill-limit path inside that limit"
+                "the full campaign allowance and rounding are reserved before "
+                "planning; per-job kill-limit sums are diagnostic only"
             ),
         })
+        if execution.get("submission_adapter") == "slurm" and "campaign_walltime_budget" not in request:
+            estimate = request.get("unrounded_request", {}).get("wall_hours")
+            request["campaign_walltime_budget"] = dict(time_budget)
+            if estimate is not None:
+                allocation = campaign_walltime_request(float(estimate), float(execution["maximum_hours_per_cpu"]), scheduler_time_policy)
+                requested = allocation["preferred_wall_hours"]
+                request["recommended_request"]["wall_hours"] = requested
+                request["estimated_execution_wall_hours"] = estimate
+                request["input_caps"]["wall_hours"] = float(execution["maximum_hours_per_cpu"])
+                request["fits_input_wall_cap"] = allocation["submission_time_feasible"]
+                request["additional_wall_hours_required"] = max(0.0, requested - float(execution["maximum_hours_per_cpu"]))
+                if request["status"] != "unavailable_within_cpu_or_memory_caps":
+                    request["status"] = "available_within_all_input_caps" if allocation["submission_time_feasible"] else "requires_larger_wall_time"
 
     def annotate_plan_minimum_request(candidate: Mapping[str, object]) -> None:
+        if isinstance(candidate, dict):
+            candidate["campaign_walltime_budget"] = dict(time_budget)
         request = candidate.get("permissive_minimum_resource_request")
         if isinstance(request, dict):
             annotate_permissive_minimum_request(request)
+    time_budget = execution_walltime_budget(execution)
     cache_mode = str(execution.get("coordinate_cache", "auto"))
     base_request = load_json(base_project_path)
     base_requested_modules = (
@@ -2355,6 +2397,10 @@ def plan_and_apply_complete_campaign(
     def build_tasks() -> tuple[List[Dict[str, object]], Dict[str, object]]:
         built = [
             row for row in _direct_task_inputs(sampling_plan)
+            # The initial composition scan may suggest a method for which
+            # chemistry inference could not produce a runnable definition.
+            # Budget only the resolved base project, not that provisional row.
+            if str(row.get("module_id")) in base_requested_modules
             if not (
                 row.get("task_scope") == "direct_trajectory_estimator"
                 and str(row.get("module_id")) in delegated_context_modules
@@ -2480,6 +2526,18 @@ def plan_and_apply_complete_campaign(
                 and view_id in view_frame_counts_by_id
                 else source_counts
             )
+            if fixed_schedule is not None:
+                saved_projection = fixed_schedule["tasks"].get(f"view:{view_id}:common_pca")
+                if saved_projection is None:
+                    raise CampaignPlanningError(f"fixed sampling has no PCA task for {view_id}")
+                cache_task = fixed_schedule["tasks"].get("preprocessing:coordinate_cache", {})
+                cache_stride = int(cache_task.get("integer_stride", 1))
+                expected_source = [integer_stride_selected_count(n, cache_stride) for n in view_source_counts]
+                if saved_projection["source_frames_per_replica"] != expected_source:
+                    raise CampaignPlanningError(f"fixed sampling PCA source counts do not match the cache for {view_id}")
+                # The project selectors operate on the retained cache stream.
+                # Build basis and downstream-fit costs on that same stream.
+                view_source_counts = list(saved_projection["source_frames_per_replica"])
             built.extend(_view_tasks(
                 path,
                 view_source_counts,
@@ -2547,7 +2605,7 @@ def plan_and_apply_complete_campaign(
         try:
             planning_kwargs = {
                 "maximum_parallel_cpus": int(execution["maximum_parallel_cpus"]),
-                "maximum_wall_hours": float(execution["maximum_hours_per_cpu"]),
+                "maximum_wall_hours": float(time_budget["maximum_estimated_execution_hours"]),
                 "maximum_memory_gib": float(execution["maximum_memory_gib"]),
                 "planning_utilization": float(execution["planning_utilization"]),
                 "pilot_budget_fraction": float(execution["pilot_budget_fraction"]),
@@ -2575,7 +2633,25 @@ def plan_and_apply_complete_campaign(
                     "coordinate cache; it cannot be silently approximated with "
                     "a lossless/external cache or a cache-disabled workflow"
                 )
-            if (
+            if fixed_schedule is not None:
+                tasks = freeze_task_sampling(
+                    tasks, fixed_schedule,
+                    coordinate_cache_full_scan_fraction=float(execution.get("coordinate_cache_full_scan_fraction", 1.0)),
+                )
+                plan = plan_campaign_resource_budget(tasks, **planning_kwargs)
+                plan["fixed_sampling"] = verify_fixed_plan(plan, fixed_schedule)
+                if fixed_schedule.get("global_stride_coupling") is not None:
+                    # Only the stride contract is reusable; prior timings and
+                    # candidate-search evidence are not a fresh estimate.
+                    old_coupling = fixed_schedule["global_stride_coupling"]
+                    coupling = {key: deepcopy(old_coupling[key]) for key in (
+                        "selected_coordinate_cache_integer_stride",
+                        "selected_overall_trajectory_integer_stride",
+                    )}
+                    coupling.update({"converged": True, "planning_mode": "fixed_sampling"})
+                    plan["global_stride_coupling"] = coupling
+                    plan["coordinate_cache_coupling"] = deepcopy(coupling)
+            elif (
                 coordinate_cache_build_required
                 and cache_materialization == "planned_strided"
             ):
@@ -2595,12 +2671,31 @@ def plan_and_apply_complete_campaign(
                 )
             else:
                 plan = plan_campaign_resource_budget(tasks, **planning_kwargs)
-        except ResourcePlanningError as exc:
+        except (ResourcePlanningError, FixedSamplingError) as exc:
             raise CampaignPlanningError(str(exc)) from exc
         plan["comparison_clustering_consistency_skips"] = consistency_skips
         annotate_plan_minimum_request(plan)
+        # A stage/lane schedule is a conservative construction, not a lower
+        # bound on every valid task DAG. Only this wall-time objection may
+        # proceed to native graph validation; all other failures remain hard.
+        wall_only = (
+            plan["feasibility_status"] == "infeasible"
+            and plan.get("infeasibility_reasons") == [
+                "minimum calibrated critical path exceeds the campaign science wall-time budget"
+            ]
+        )
+        if wall_only:
+            plan["feasibility_status"] = "pending_execution_schedule"
+        if fixed_schedule is not None and plan["feasibility_status"] not in {
+            "feasible", "pending_execution_schedule"
+        }:
+            raise CampaignPlanningError(
+                "No feasible fixed-sampling plan: sampling and methods were not changed. "
+                "Increase resources or explicitly supply a different schedule. "
+                + _campaign_infeasibility_detail(plan), plan=plan,
+            )
         if (
-            plan["feasibility_status"] != "feasible"
+            plan["feasibility_status"] not in {"feasible", "pending_execution_schedule"}
             and bool(execution.get("fail_if_minimum_coverage_unaffordable", True))
         ):
             recommendation = recommend_scientifically_valid_task_subset(
@@ -2653,6 +2748,24 @@ def plan_and_apply_complete_campaign(
             time_safety_factor=time_safety_factor,
         )
         sampling_plan["campaign_resource_plan"] = plan
+        if fixed_schedule is not None:
+            # All source scientific sampling controls were restored before
+            # costing. Do not run the allocation-to-settings mutators below.
+            frozen_base = load_json(base_project_path)
+            convergence = frozen_base.get("definitions", {}).get("convergence_uncertainty")
+            rmsd_task = next((row for row in plan["tasks"] if row["module_id"] == "replica_rmsd_rg"), None)
+            if isinstance(convergence, dict) and rmsd_task is not None:
+                try:
+                    sampling_plan["convergence_preparation_contract"] = configure_convergence_blocks(
+                        convergence,
+                        _convergence_selected_series(frozen_base, sampling_plan, rmsd_task["selected_physical_frames_per_replica"]),
+                        explicit_block_size=True,
+                    )
+                except ValueError as exc:
+                    raise CampaignPlanningError(str(exc)) from exc
+            converged = True
+            iteration_history.append({"iteration": 1, "sampling_frozen": True})
+            break
         if coordinate_cache_enabled and coordinate_cache_input is not None:
             plan["coordinate_cache_reuse"] = {
                 "status": "external_lossless_cache",
@@ -2700,7 +2813,7 @@ def plan_and_apply_complete_campaign(
                 path,
                 task_rows,
                 view_source_counts,
-                target_wall_hours=float(execution["maximum_hours_per_cpu"]),
+                target_wall_hours=float(time_budget["maximum_estimated_execution_hours"]),
                 consistency_skips=consistency_skips,
             ))
         plan["applied_view_allocations"] = applied_views
@@ -2755,6 +2868,21 @@ def plan_and_apply_complete_campaign(
             f"{maximum_iterations} iterations"
         )
     plan.update({
+        "native_schedule_validation": {
+            "status": "pending",
+            "required": True,
+            "stage_feasibility_status": plan["feasibility_status"],
+            "stage_schedule_estimated_wall_hours": plan[
+                "estimated_selected_wall_hours_lower_bound"
+            ],
+            "stage_schedule_minimum_estimate_hours": plan["minimum_wall_hours_lower_bound"],
+            "stage_infeasibility_reasons": list(plan.get("infeasibility_reasons", [])),
+            "interpretation": (
+                "Stage/lane estimates guide allocation but do not prove wall-time "
+                "infeasibility. The generated dependency/resource schedule must "
+                "pass the same science budget before any launcher is ready."
+            ),
+        },
         "planning_scope": (
             "complete generated base including inferred chemistry, per-system "
             "topology-local automatic chemical context, and conformational-view campaign"
@@ -2762,7 +2890,10 @@ def plan_and_apply_complete_campaign(
             else "complete generated base including inferred chemistry plus "
             "conformational-view campaign"
         ),
-        "planning_algorithm": "globally_coupled_integer_stride_iteration_v2",
+        "planning_algorithm": (
+            "fixed_sampling_resource_only_v1" if fixed_schedule is not None
+            else "globally_coupled_integer_stride_iteration_v2"
+        ),
         "planning_iterations": len(iteration_history),
         "planning_converged": True,
         "planning_iteration_history": iteration_history,
@@ -2834,8 +2965,9 @@ def plan_and_apply_complete_campaign(
             ],
             **scheduler_time_policy,
             "scheduler_walltime_interpretation": (
-                "preferred per-job timeout allowance bounded by the padded "
-                "end-to-end campaign wall limit"
+                "campaign request is the final uncertainty-adjusted schedule "
+                "plus the full campaign headroom, rounded up within the user ceiling; "
+                "individual kill-limit sums are diagnostic only"
             ),
         },
         "censored_timeout_safety_factor": float(
@@ -2854,4 +2986,11 @@ def plan_and_apply_complete_campaign(
         ),
     })
     sampling_plan["campaign_resource_plan"] = plan
+    snapshot = schedule_document(
+        root, plan, sampling_plan,
+        [base_project_path, *view_paths, *context_paths],
+    )
+    (root / "fixed-sampling-schedule.json").write_text(
+        json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return plan

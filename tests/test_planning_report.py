@@ -117,6 +117,16 @@ class PlanningReportTests(unittest.TestCase):
             self.assertIn("| RMSF and DCCM | 30 |", markdown)
             self.assertIn("| Structural-integrity QC | Off |", markdown)
 
+            _write_json(root / "slurm-submission-preview.json", {
+                "planner_estimated_dependency_critical_path_hours": 11.75,
+                "campaign_walltime_request": {"requested_wall_hours": 16},
+                "single_allocation": {"submission_permitted": True},
+            })
+            write_planning_report(root)
+            updated = (root / "planning-report.md").read_text()
+            self.assertIn("Scheduled runtime estimate (model uncertainty included): `11.75 hours`", updated)
+            self.assertIn("Recommended campaign Slurm limit: `16 hours`", updated)
+
     def test_plan_matrix_preserves_scenario_labels_and_family_cells(self):
         reports = []
         for label, cell in (("8 h reduced", "Off"), ("48 h reduced", "50")):

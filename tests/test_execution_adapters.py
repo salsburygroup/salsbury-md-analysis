@@ -59,7 +59,7 @@ class ExecutionAdapterTests(unittest.TestCase):
             "request_campaign_wall_limit_for_planned_tasks"
         ])
 
-    def test_scheduler_timeout_padding_is_bounded_by_campaign_wall(self):
+    def test_campaign_request_rejects_insufficient_full_headroom(self):
         def task(task_id):
             return {
                 "task_id": task_id,
@@ -91,22 +91,21 @@ class ExecutionAdapterTests(unittest.TestCase):
         allocation = _fit_walltime_requests_to_campaign(plan)
 
         self.assertEqual(
-            allocation["status"], "preferred_padding_reduced_to_fit"
+            allocation["status"], "padded_request_exceeds_campaign_cap"
         )
         self.assertGreater(
-            allocation["preferred_scheduler_reservation_critical_path_hours"],
-            25,
-        )
-        self.assertLessEqual(
             allocation["selected_scheduler_reservation_critical_path_hours"],
             25,
         )
-        self.assertTrue(all(
+        self.assertIsNone(allocation["campaign_walltime_request"]["requested_wall_hours"])
+        self.assertEqual(allocation["campaign_walltime_request"]["preferred_wall_hours"], 27)
+        self.assertFalse(allocation["submission_time_feasible"])
+        self.assertFalse(any(
             task["wall_request_limited_by_campaign_cap"]
             for phase in plan["phases"] for task in phase["tasks"]
         ))
 
-    def test_scheduler_minimum_timeouts_fail_closed_over_campaign_wall(self):
+    def test_task_timeout_floors_do_not_inflate_estimated_campaign_time(self):
         def task(task_id):
             return {
                 "task_id": task_id,
@@ -138,12 +137,13 @@ class ExecutionAdapterTests(unittest.TestCase):
         allocation = _fit_walltime_requests_to_campaign(plan)
 
         self.assertEqual(
-            allocation["status"], "minimum_time_limits_exceed_campaign"
+            allocation["status"], "complete"
         )
-        self.assertFalse(allocation["submission_time_feasible"])
+        self.assertTrue(allocation["submission_time_feasible"])
+        self.assertEqual(allocation["campaign_walltime_request"]["requested_wall_hours"], 3)
         self.assertEqual(
             allocation["selected_scheduler_reservation_critical_path_hours"],
-            4,
+            6,
         )
 
     def test_distributed_replica_launcher_spans_configured_nodes(self):
@@ -1246,7 +1246,7 @@ class ExecutionAdapterTests(unittest.TestCase):
                 "dependency_model": "task_dag_v1",
                 "maximum_parallel_cpus": 44,
                 "maximum_parallel_memory_gib": 185,
-                "maximum_campaign_wall_hours": 3.5,
+                "maximum_campaign_wall_hours": 4,
                 "phases": [
                     {"phase_id": "first", "tasks": [
                         task("large", "large.slurm", 20, 172, 2),
