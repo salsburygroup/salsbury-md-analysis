@@ -8,6 +8,8 @@ JSON Schema files remain the machine-readable interchange specification.
 from __future__ import annotations
 
 import datetime as _datetime
+from contextlib import contextmanager
+from contextvars import ContextVar
 import hashlib
 import json
 import math
@@ -1109,15 +1111,51 @@ def validate_manifest(
         raise ValueError(f"unknown manifest kind: {kind}")
 
 
+_HASH_SESSION = ContextVar("salsbury_content_hash_session", default=None)
+
+
+@contextmanager
+def content_hash_session():
+    """Reuse file digests within one validation operation, never across runs.
+
+Each lookup checks device/inode/size/mtime/ctime. A changed file is rehashed.
+Concurrent modification during a read fails closed. Nested checks share the
+session; ordinary callers retain the uncached behavior.
+"""
+    if _HASH_SESSION.get() is not None:
+        yield
+        return
+    token = _HASH_SESSION.set({})
+    try:
+        yield
+    finally:
+        _HASH_SESSION.reset(token)
+
+
+def _file_identity(path):
+    stat = path.stat()
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
 def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
     """Return the SHA-256 of one regular file using bounded memory."""
 
     source = Path(path)
+    cache = _HASH_SESSION.get()
+    identity = _file_identity(source) if cache is not None else None
+    key = (str(source.resolve()), identity) if cache is not None else None
+    if cache is not None and key in cache:
+        return cache[key]
     digest = hashlib.sha256()
     with source.open("rb") as handle:
         for chunk in iter(lambda: handle.read(chunk_size), b""):
             digest.update(chunk)
-    return digest.hexdigest()
+    result = digest.hexdigest()
+    if cache is not None:
+        if _file_identity(source) != identity:
+            raise ValueError(f"file changed while hashing: {source}")
+        cache[key] = result
+    return result
 
 
 def _file_record(

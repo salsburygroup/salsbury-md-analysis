@@ -74,7 +74,16 @@ def validate_complete_report(path: Path, *, expected_module=None, expected_proje
                 raise ArtifactValidationError(f"stale {prefix} hash")
     if verify_inputs and expected_project is None:
         expected_project = report.get("project_manifest_path")
-    if expected_project:
+    from .report_reuse import receipt_path, validate_adoption
+    adopted = receipt_path(path).is_file()
+    if adopted:
+        # The immutable report retains the original context. Only a revalidated
+        # adoption receipt may bind it to a new prepared task.
+        target = expected_project
+        if verify_inputs and target == report.get("project_manifest_path"):
+            target = None
+        validate_adoption(path, target)
+    if expected_project and not adopted:
         source = Path(expected_project).resolve(strict=True)
         if report.get("project_manifest_sha256") != sha256_file(source):
             from .upstream_cache import project_module_contract_sha256
@@ -97,6 +106,8 @@ def validate_complete_report(path: Path, *, expected_module=None, expected_proje
         summary_path = legacy_summary
     if require_sidecar or summary_path.exists():
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        if summary.get("report_adoption") and not adopted:
+            raise ArtifactValidationError("adopted summary is missing its adoption receipt")
         _complete(summary, str(summary_path))
         if summary.get("report_sha256") != sha256_file(path):
             raise ArtifactValidationError("report/summary hash mismatch")

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from functools import partial
 from pathlib import Path
@@ -9,7 +11,7 @@ from typing import Dict, List, Mapping, Sequence, Tuple
 
 import numpy as np
 
-from .manifests import ManifestValidationError, load_json
+from .manifests import ManifestValidationError, load_json, sha256_file
 from .oligomer_symmetry import OligomerSymmetryError, paired_member_score_correlations
 from .pca import PCAAnalysisError, common_pca_project
 from .validation import positive_integer
@@ -157,6 +159,13 @@ def project_tica(
 _positive_integer = partial(positive_integer, error_type=TICAAnalysisError)
 
 
+def _payload_sha256(payload):
+    digest = hashlib.sha256()
+    for chunk in json.JSONEncoder(sort_keys=True, separators=(",", ":"), allow_nan=False).iterencode(payload):
+        digest.update(chunk.encode("utf-8"))
+    return digest.hexdigest()
+
+
 def _settings(project: Mapping[str, object]) -> Dict[str, object]:
     definitions = project.get("definitions")
     raw = definitions.get("time_lagged_independent_component_analysis") if isinstance(definitions, dict) else None
@@ -175,11 +184,14 @@ def _settings(project: Mapping[str, object]) -> Dict[str, object]:
         "maximum_features",
     }
     missing = sorted(required.difference(raw))
-    unknown = sorted(set(raw).difference(required))
+    unknown = sorted(set(raw).difference(required | {"short_segment_policy"}))
     if missing:
         raise TICAAnalysisError("TICA settings missing: " + ", ".join(missing))
     if unknown:
         raise TICAAnalysisError("TICA settings contain unknown fields: " + ", ".join(unknown))
+    short_policy = raw.get("short_segment_policy", "error")
+    if short_policy not in {"error", "omit"}:
+        raise TICAAnalysisError("short_segment_policy must be error or omit")
     if raw["feature_source"] != "common_pca":
         raise TICAAnalysisError("feature_source currently supports only common_pca")
     components = raw["component_indices"]
@@ -220,6 +232,7 @@ def _settings(project: Mapping[str, object]) -> Dict[str, object]:
             raw["minimum_pairs_per_segment"], "minimum_pairs_per_segment"
         ),
         "maximum_features": maximum_features,
+        "short_segment_policy": short_policy,
     }
 
 
@@ -241,6 +254,10 @@ def time_lagged_independent_component_analysis_project(
     segment_metadata: List[Dict[str, object]] = []
     evaluated_intervals: List[float] = []
     physical_frame_identities = set()
+    retained_physical_identities = set()
+    input_observation_identities = set()
+    eligibility = []
+    supplied_time_units = set()
     for system in pca_report["systems"]:
         system_id = str(system["system_id"])
         for replica in system["replicas"]:
@@ -281,24 +298,64 @@ def time_lagged_independent_component_analysis_project(
                             )
                         if "time" not in projection:
                             raise TICAAnalysisError("TICA requires physical-time projections")
+                        if (isinstance(projection.get("source_frame_index"), bool)
+                                or not isinstance(projection.get("source_frame_index"), int)
+                                or projection["source_frame_index"] < 0):
+                            raise TICAAnalysisError("TICA source-frame indices must be nonnegative integers")
                         rows.append([float(scores[index]) for index in selected])
                         times.append(float(projection["time"]))
-                    pair_count = len(rows) - int(settings["lag_frames"])
+                        supplied_time_units.add(str(projection.get("time_unit", "")))
+                        identity = (
+                            system_id, replica_id, str(segment["segment_id"]),
+                            member_id, int(projection["source_frame_index"]),
+                        )
+                        if identity in input_observation_identities:
+                            raise TICAAnalysisError("duplicate TICA source observation identity")
+                        input_observation_identities.add(identity)
+                    if not np.isfinite(rows).all() or not np.isfinite(times).all():
+                        raise TICAAnalysisError("TICA features and physical times must be finite")
+                    pair_count = max(0, len(rows) - int(settings["lag_frames"]))
                     location = f"{system_id}/{replica_id}/{segment['segment_id']}"
                     if member_id is not None:
                         location += f"/{member_id}"
-                    if pair_count < int(settings["minimum_pairs_per_segment"]):
-                        raise TICAAnalysisError(
-                            f"{location} has {pair_count} lag pairs; minimum is "
-                            f"{settings['minimum_pairs_per_segment']}"
-                        )
                     intervals = [right - left for left, right in zip(times, times[1:])]
-                    if not intervals or any(value <= 0.0 for value in intervals):
+                    if any(value <= 0.0 for value in intervals):
                         raise TICAAnalysisError("TICA projection times must be strictly increasing")
-                    interval = intervals[0]
-                    if any(abs(value - interval) > 1.0e-9 * max(1.0, abs(interval)) for value in intervals[1:]):
-                        raise TICAAnalysisError("TICA requires a constant evaluated frame interval")
-                    evaluated_intervals.append(interval)
+                    if intervals:
+                        interval = intervals[0]
+                        if any(abs(value - interval) > 1.0e-9 * max(1.0, abs(interval)) for value in intervals[1:]):
+                            raise TICAAnalysisError("TICA requires a constant evaluated frame interval")
+                        # Check malformed short streams too: omission is not a timing repair.
+                        evaluated_intervals.append(interval)
+                    eligible = pair_count >= int(settings["minimum_pairs_per_segment"])
+                    eligibility.append({
+                        "system_id": system_id, "replica_id": replica_id,
+                        "segment_id": str(segment["segment_id"]),
+                        **({"member_id": member_id} if member_id is not None else {}),
+                        "included": eligible,
+                        "reason": "eligible" if eligible else "insufficient_lag_pairs",
+                        "projected_observation_count": len(rows),
+                        "available_lag_pair_count": pair_count,
+                        "required_observation_count": int(settings["lag_frames"]) + int(settings["minimum_pairs_per_segment"]),
+                        "first_source_frame_index": int(member_projections[0]["source_frame_index"]),
+                        "last_source_frame_index": int(member_projections[-1]["source_frame_index"]),
+                        **({"excluded_source_frame_indices": [int(row["source_frame_index"]) for row in member_projections]} if not eligible else {}),
+                        "first_time": times[0], "last_time": times[-1],
+                        "time_unit": str(member_projections[0]["time_unit"]),
+                    })
+                    if not eligible:
+                        if settings["short_segment_policy"] == "error":
+                            raise TICAAnalysisError(
+                                f"{location} has {pair_count} lag pairs; minimum is "
+                                f"{settings['minimum_pairs_per_segment']}. Requires "
+                                f"{int(settings['lag_frames']) + int(settings['minimum_pairs_per_segment'])} "
+                                "projected observations; short_segment_policy=omit excludes only this tICA stream."
+                            )
+                        continue
+                    retained_physical_identities.update(
+                        (system_id, replica_id, str(segment["segment_id"]), int(row["source_frame_index"]))
+                        for row in member_projections
+                    )
                     segment_arrays.append(rows)
                     segment_metadata.append({
                         "system_id": system_id,
@@ -313,11 +370,13 @@ def time_lagged_independent_component_analysis_project(
                         "feature_rows": rows,
                         "lag_pair_count": pair_count,
                     })
+    if not segment_arrays:
+        raise TICAAnalysisError("no eligible continuous tICA streams remain; lag and minimum-pair requirements are unchanged")
     interval = evaluated_intervals[0]
     if any(abs(value - interval) > 1.0e-9 * max(1.0, abs(interval)) for value in evaluated_intervals[1:]):
         raise TICAAnalysisError("all TICA segments must share one evaluated physical-time interval")
-    time_units = {str(segment["time_unit"]) for segment in segment_metadata}
-    if len(time_units) != 1:
+    time_units = supplied_time_units
+    if len(time_units) != 1 or "" in time_units:
         raise TICAAnalysisError("all TICA segments must share one time unit")
     model = fit_tica(
         segment_arrays,
@@ -329,6 +388,12 @@ def time_lagged_independent_component_analysis_project(
     lag_time = interval * int(settings["lag_frames"])
     component_rows = []
     issues = [issue for issue in pca_report.get("issues", []) if isinstance(issue, dict)]
+    omitted = [entry for entry in eligibility if not entry["included"]]
+    if omitted:
+        issues.append({
+            "severity": "warning", "code": "TICA_SHORT_STREAMS_OMITTED",
+            "message": f"Omitted {len(omitted)} continuous streams from tICA only; see segment_eligibility for identities and coverage. The common PCA basis was not refitted.",
+        })
     for index, (eigenvalue, vector, residual) in enumerate(
         zip(model["eigenvalues"], model["eigenvectors"], model["generalized_eigen_residual_norms"]),
         start=1,
@@ -400,7 +465,7 @@ def time_lagged_independent_component_analysis_project(
         "technical_status": "complete",
         "scientific_status": "not evaluated",
         "project_manifest_path": str(source),
-        "project_manifest_sha256": pca_report["project_manifest_sha256"],
+        "project_manifest_sha256": sha256_file(source),
         "system_manifest_path": pca_report["system_manifest_path"],
         "system_manifest_sha256": pca_report["system_manifest_sha256"],
         "contract_signature_sha256": pca_report["contract_signature_sha256"],
@@ -411,12 +476,27 @@ def time_lagged_independent_component_analysis_project(
             "module_id": "common_pca",
             "component_indices": settings["component_indices"],
             "common_pca_settings": pca_report["settings"],
+            "common_pca_payload_sha256": _payload_sha256(pca_report),
+            "basis_refitted_after_eligibility_filter": False,
+        },
+        "segment_eligibility": {
+            "policy": settings["short_segment_policy"],
+            "scope": "tica_pairs_and_projections_only",
+            "denominator": "all supplied common-PCA projections, including short continuous streams",
+            "input_stream_count": len(eligibility),
+            "included_stream_count": len(segment_arrays),
+            "excluded_stream_count": len(omitted),
+            "input_observation_count": len(input_observation_identities),
+            "included_observation_count": sum(len(values) for values in segment_arrays),
+            "excluded_observation_count": sum(entry["projected_observation_count"] for entry in omitted),
+            "streams": eligibility,
         },
         "lag_time": lag_time,
         "time_unit": next(iter(time_units)),
         "pair_count": model["pair_count"],
         "observation_accounting": {
-            "source_physical_frame_count": len(physical_frame_identities),
+            "source_physical_frame_count": len(retained_physical_identities),
+            "input_source_physical_frame_count": len(physical_frame_identities),
             "symmetry_expanded_observation_count": sum(len(values) for values in segment_arrays),
             "kinetic_trajectory_count": len(segment_arrays),
             "member_observations_are_independent_replicas": False,
@@ -437,6 +517,7 @@ def time_lagged_independent_component_analysis_project(
         "issues": issues,
         "limitations": [
             "Lag pairs are formed within declared trajectory segments only; segment boundaries are never joined.",
+            "When short_segment_policy=omit, tICA and its feature-based dependents describe only the retained continuous streams; common-PCA and independent analyses retain their original inputs.",
             "Equivalent oligomer members are separate time series; no lag pair ever joins two member identities.",
             "Symmetry-expanded member observations are paired within physical frames and do not increase the independent-replica count.",
             "The estimator uses reversible symmetrized endpoint and lagged covariances on declared common-PCA features.",
