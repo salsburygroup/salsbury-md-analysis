@@ -59,12 +59,21 @@ never edits the source manifest, topology, connectivity, or trajectory.
 ## What the cache preserves
 
 - original system, replica, segment, and frame identities;
-- segment timing and declared continuity fields;
-- DCD frame count, starting step, save interval, and periodic cell;
+- segment timing, declared continuity and `dcd_header_step_policy`, including
+  `reset_per_segment`;
+- DCD frame count, header-counter convention, save interval, and periodic cell;
 - source PDB atom identity and order for the retained payload;
 - an explicit subset bond graph with source-connectivity provenance;
 - SHA-256 hashes for every generated DCD, topology, connectivity file, and
   cache manifest.
+
+When striding fragmented trajectories, the cache records the first retained
+source-frame index and the stride for each segment. Its physical timestamps
+follow those retained frames. Derived DCD counters preserve valid source reset
+or continuous conventions, including when a stride crosses a fragment boundary
+at a different offset. Use the timing and lineage metadata, rather than reset
+header counters, to recover physical time. Declaring a header reset does not
+permit a physical-time gap, overlap or unexpected source-counter change.
 
 The lossless cache builder can use one worker per replica. For example, 21
 systems with three replicas each expose 63 useful unwrapping workers. More

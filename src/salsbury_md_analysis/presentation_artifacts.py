@@ -2321,6 +2321,10 @@ def generate_presentation_artifacts(
             _alternative_clustering_artifacts(
                 destination, path, report, artifacts
             )
+        elif module_id == "pald_community_analysis":
+            from .presentation_pald import pald_artifacts
+
+            pald_artifacts(destination, path, report, artifacts)
         elif module_id == "dccm":
             _dccm_artifacts(destination, path, report, artifacts)
         elif module_id == "replica_rmsd_rg":

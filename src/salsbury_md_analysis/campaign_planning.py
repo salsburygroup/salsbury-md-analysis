@@ -13,6 +13,7 @@ from .automatic_sampling import (
     _measured_reference_seconds_per_frame,
 )
 from .ensemble_parallelism import annotate_task_parallelism
+from .convergence_contracts import configure_convergence_blocks
 from .orchestration_resources import orchestration_tasks
 from .execution_adapters import load_slurm_profile
 from .frame_sampling import (
@@ -1626,7 +1627,8 @@ def _method_rows(sampling_plan: Mapping[str, object]) -> Dict[str, MutableMappin
 
 
 def _apply_direct_project_sampling(
-    project: MutableMapping[str, object], sampling_plan: Mapping[str, object]
+    project: MutableMapping[str, object], sampling_plan: Mapping[str, object],
+    *, convergence_options: Optional[Mapping[str, object]] = None,
 ) -> None:
     definitions = project.get("definitions")
     if not isinstance(definitions, dict):
@@ -1755,30 +1757,78 @@ def _apply_direct_project_sampling(
                 raise CampaignPlanningError(
                     "convergence allocation has invalid selected frame counts"
                 )
-            minimum_selected = min(selected_by_replica)
-            minimum_blocks = int(convergence.get("minimum_blocks", 1))
-            include_partial = bool(
-                convergence.get("include_partial_final_block", False)
+            selected_series = _convergence_selected_series(
+                project, sampling_plan, selected_by_replica
             )
-            if minimum_blocks < 1:
-                raise CampaignPlanningError(
-                    "convergence minimum_blocks must be positive"
+            try:
+                contract = configure_convergence_blocks(
+                    convergence, selected_series,
+                    explicit_block_size=(
+                        isinstance(convergence_options, Mapping)
+                        and "block_size_frames" in convergence_options
+                    ),
                 )
-            if include_partial and minimum_blocks > 1:
-                maximum_valid_block = (
-                    (minimum_selected - 1) // (minimum_blocks - 1)
-                )
-            else:
-                maximum_valid_block = minimum_selected // minimum_blocks
-            if maximum_valid_block < 1:
-                raise CampaignPlanningError(
-                    "final sampling allocation cannot satisfy the convergence "
-                    "minimum-block contract"
-                )
-            convergence["block_size_frames"] = min(
-                max(1, minimum_selected // 10),
-                maximum_valid_block,
-            )
+            except ValueError as exc:
+                raise CampaignPlanningError(str(exc)) from exc
+            if isinstance(sampling_plan, MutableMapping):
+                sampling_plan["convergence_preparation_contract"] = contract
+
+
+def _convergence_selected_series(
+    project: Mapping[str, object], sampling_plan: Mapping[str, object],
+    selected_by_replica: Sequence[int],
+) -> list[Dict[str, object]]:
+    """Match RMSD's per-segment selection, including cache materialization."""
+    dimensions = sampling_plan.get("dimensions")
+    replicas = dimensions.get("replicas") if isinstance(dimensions, Mapping) else None
+    if not isinstance(replicas, list) or not replicas:
+        # Older in-memory planner clients supplied only replica totals. Their
+        # existing single-series contract remains supported; native preparation
+        # always supplies the inventoried segment counts below.
+        return [
+            {"system_id": "unknown", "replica_id": str(index + 1),
+             "segment_id": "single-series", "selected_observation_count": count}
+            for index, count in enumerate(selected_by_replica)
+        ]
+    definitions = project.get("definitions", {})
+    rmsd = definitions.get("replica_rmsd_rg", {})
+    stride = int(rmsd.get("frame_stride", 1))
+    plan = sampling_plan.get("campaign_resource_plan")
+    coupling = plan.get("global_stride_coupling") if isinstance(plan, Mapping) else None
+    cache_stride = (
+        int(coupling.get("selected_coordinate_cache_integer_stride") or 1)
+        if isinstance(coupling, Mapping) else 1
+    )
+    result = []
+    for replica in replicas:
+        segments = replica.get("segments") if isinstance(replica, Mapping) else None
+        if not isinstance(segments, list) or not segments:
+            raise CampaignPlanningError("convergence preparation requires inventoried segment counts")
+        counts = [int(segment["source_frame_count"]) for segment in segments]
+        # Cache construction strides globally within each replica; RMSD then
+        # strides each retained segment. This repeats neither reconstruction
+        # nor coordinate reads and does not change either selection.
+        retained = integer_stride_selected_count(sum(counts), cache_stride)
+        last = (retained - 1) * cache_stride
+        offset = 0
+        for segment, source_count in zip(segments, counts):
+            first = (-offset) % cache_stride
+            final = min(source_count - 1, last - offset)
+            available = (final - first) // cache_stride + 1 if final >= first else 0
+            offset += source_count
+            if not available:
+                continue  # cache materialization omits empty derived segments
+            selected = integer_stride_selected_count(available, stride)
+            result.append({
+                "system_id": str(replica.get("system_id", "unknown")),
+                "replica_id": str(replica.get("replica_id", "unknown")),
+                "segment_id": str(segment.get("segment_id", "unknown")),
+                "source_frame_count": source_count,
+                "cache_stride": cache_stride,
+                "downstream_stride": stride,
+                "selected_observation_count": selected,
+            })
+    return result
 
 
 def _apply_automatic_context_allocation(
@@ -2610,7 +2660,14 @@ def plan_and_apply_complete_campaign(
                 "cache_stride": 1,
                 "cache_build_task_omitted": True,
             }
-        _apply_direct_project_sampling(base_project, sampling_plan)
+        convergence_config = configured_modules.get("convergence_uncertainty")
+        _apply_direct_project_sampling(
+            base_project, sampling_plan,
+            convergence_options=(
+                convergence_config.get("options")
+                if isinstance(convergence_config, Mapping) else None
+            ),
+        )
         base_project_path.write_text(
             json.dumps(base_project, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",

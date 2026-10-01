@@ -9,6 +9,7 @@ from typing import Dict, List, Mapping, Sequence
 import numpy as np
 
 from .geometry import GeometryError
+from .convergence_contracts import minimum_observations_for_blocks
 from .manifests import ManifestValidationError, load_json, sha256_file
 from .moments import sample_summary
 from .rmsd_rg import RMSDRGError, replica_rmsd_rg_project
@@ -331,9 +332,7 @@ def _minimum_observations_for_blocks(
 ) -> int:
     """Return the smallest series that can yield the declared block count."""
 
-    if include_partial:
-        return block_size * (minimum_blocks - 1) + 1
-    return block_size * minimum_blocks
+    return minimum_observations_for_blocks(block_size, minimum_blocks, include_partial)
 
 
 def _series_diagnostic(values: Sequence[float], settings: Mapping[str, object]) -> Dict[str, object]:

@@ -31,6 +31,11 @@ files from immutable results.
 - FES basins and clustering states include per-system population tables and
   stacked bar charts. Clustering model tables identify the method, feature
   source, state count, and silhouette value.
+- PaLD reports show sampled-community fractions, local-depth and boundary-cohesion
+  histograms. Their CSVs retain sample identities, per-system sample denominators,
+  community cores and the reported strongest intercommunity ties. These fractions
+  describe only the PaLD sample; they are not all-frame populations. Community
+  IDs are local to each report, and the figures do not establish kinetic states.
 - DCCM reports include system matrices and pairwise difference matrices with
   the mapped atom labels retained in full-matrix CSV tables. A separate table
   lists the 50 largest off-diagonal differences.
@@ -43,9 +48,9 @@ files from immutable results.
   internal coordinates, RDFs, information measures, networks, kinetic models,
   and other completed modules each receive a method-appropriate figure and a
   table when their report exposes tabular values.
-- A module without a specialized adapter receives a labeled numerical summary
-  and table. If no truthful numerical presentation can be made, the reporting
-  stage fails instead of inventing a plot.
+- A module without a specialized adapter receives a diagnostic numerical summary
+  and table. Those diagnostics do not satisfy the primary-figure requirement;
+  the reporting stage fails until a scientifically appropriate adapter exists.
 
 ## Replotting FES and DCCM results
 
