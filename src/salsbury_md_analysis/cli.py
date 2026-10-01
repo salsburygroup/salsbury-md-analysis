@@ -680,7 +680,10 @@ def _campaign_plan_terminal_summary(
     return {
         "requested_parallel_cpus": plan.get("maximum_parallel_cpus_input"),
         "requested_memory_gib": plan.get("maximum_memory_gib_input"),
-        "requested_wall_hours": plan.get("maximum_wall_hours_input"),
+        "requested_wall_hours": plan.get("campaign_walltime_budget", {}).get(
+            "maximum_campaign_wall_hours", plan.get("maximum_wall_hours_input")
+        ),
+        "execution_wall_hours_before_campaign_allowance": plan.get("maximum_wall_hours_input"),
         "science_wall_hours": plan.get("science_budget_wall_hours"),
         "useful_parallel_cpu_ceiling": capacity.get(
             "useful_parallel_cpu_ceiling"
@@ -1769,6 +1772,10 @@ def build_parser() -> argparse.ArgumentParser:
     local_workflow_parser.add_argument(
         "root", type=Path, help="Prepared analysis directory."
     )
+    local_workflow_parser.add_argument(
+        "--maximum-wall-hours", type=float,
+        help="Shorter allocation deadline; cannot extend the prepared campaign ceiling or change sampling.",
+    )
 
     plan_matrix_parser = subparsers.add_parser(
         "report-plan-matrix",
@@ -2336,7 +2343,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
     if args.command == "run-local-workflow":
         try:
-            report = run_local_workflow(args.root)
+            report = run_local_workflow(args.root, maximum_wall_hours=args.maximum_wall_hours)
         except (ExecutionAdapterError, OSError, ValueError) as exc:
             report = {
                 "technical_status": "failed",

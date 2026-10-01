@@ -339,20 +339,61 @@ request using the profile preferences. The shipped profiles set
 task-time factor. The scheduler therefore does not multiply planner estimates a
 second time. Profiles with another value fail validation instead of silently
 restoring the duplicate factor. Scheduler-only padding belongs in
-`walltime_overhead_minutes`. The scheduler adds only that declared per-job
-overhead and minimum. The
-requested campaign wall time is the padded end-to-end execution ceiling, not a
-science estimate to which the adapter adds another budget. If the overhead
-would make the serialized kill-limit path exceed that ceiling, the adapter
-reduces it uniformly. It never changes sampling or module selection during that
-adjustment. If the planner estimates plus minimum job limits still exceed the
-ceiling, submission fails closed.
+`walltime_overhead_minutes`. Individual jobs retain that overhead and their
+minimum timeout. Their timeout sum is a diagnostic, not a campaign runtime
+estimate, and no longer rejects an otherwise feasible schedule.
+
+The campaign allocation recommendation uses the final dependency/resource
+schedule, including the planner's existing uncertainty adjustment:
+
+```text
+requested hours = ceil(estimated scheduled hours × 4/3)
+```
+
+Both profiles expose `campaign_walltime_headroom_fraction` (default one-third)
+and `campaign_walltime_rounding_minutes` (default 60). For example, an
+already-buffered estimate of 11.75 hours requests 16 hours, even if the planning
+budget was 48 hours. The user ceiling includes the full allowance and rounding.
+For a 48-hour ceiling, the planner reserves at most 36 estimated execution hours
+before selecting strides or proposing optional reductions. These execution
+hours already include the configured task-level model uncertainty; existing
+planning-utilization and pilot/finalization reserves also remain in force.
+For a non-integer ceiling, the planner first rounds the usable allocation down
+to the configured interval, then divides by the headroom factor. The preview
+refuses submission if the final schedule plus the full allowance exceeds the
+ceiling; it never trims the allowance to make a plan pass. Scientific minima,
+chemistry and memory padding are unchanged. Fresh planning can select different
+strides within the smaller execution budget. Queue waiting and a separately
+launched interactive build are excluded. Local-only execution retains its
+existing budget; this allocation allowance applies to Slurm planning.
+
+For a campaign that fits on one node, use the generated shared-allocation route:
+
+```bash
+./submit.sh --single-allocation --preview  # Inspect; submits nothing.
+./submit.sh --single-allocation            # Submit after reviewing the plan.
+```
+
+`run-campaign.slurm` requests the computed campaign time and the existing
+CPU/memory envelope. It runs the native local task-DAG executor on the allocated
+node, with the same shorter deadline enforced inside the job. It does not
+submit child Slurm jobs. Check `single_allocation.submission_permitted` in the
+preview. A multi-node plan, incompatible node capacity or unavailable partition
+is refused for this route; use the normal distributed `./submit.sh` instead.
+Normal per-task submissions keep individual task timeouts, not a 16-hour limit
+on every task. Separate queued jobs do not share one enforceable elapsed-time
+deadline; the campaign value is their runtime recommendation, not a guarantee
+about calendar completion.
+
+Previously prepared directories are unchanged. Prepare into a new directory
+after upgrading; do not overwrite accepted plans or edit their scientific
+budget merely to shorten a Slurm request.
 
 `scheduler-resource-requests.json` records every mapped planner task, safety
 margin, selected partition, final request, and resource-token schedule.
 `slurm-submission-preview.json` also records the planned node count, each task's
-conceptual node assignment and per-node padded reservation, preferred timeout
-path, selected timeout path, and applied padding scale. Replica-final modules
+conceptual node assignment, per-node padded reservation, runtime estimate,
+campaign time request and diagnostic timeout path. Replica-final modules
 and coordinate-cache construction can use an
 identity-preserving `srun` worker group across several nodes; pooled reducers
 still run once after all replica workers finish. Non-distributed modules remain

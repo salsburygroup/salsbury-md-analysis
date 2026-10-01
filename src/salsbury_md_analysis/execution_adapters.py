@@ -22,6 +22,7 @@ from .accepted_artifacts import reports_complete
 from .ensemble_parallelism import annotate_task_parallelism
 from .manifests import load_json
 from .resource_planning import ResourcePlanningError, pack_resource_lanes
+from .campaign_walltime import CAMPAIGN_WALLTIME_DEFAULTS, campaign_walltime_budget, campaign_walltime_request
 
 
 class ExecutionAdapterError(ValueError):
@@ -41,6 +42,7 @@ _PROFILE_FIELDS = {
     "node_policy", "additional_sbatch_directives",
 }
 _RESOURCE_POLICY_DEFAULTS = {
+    **CAMPAIGN_WALLTIME_DEFAULTS,
     "minimum_wall_minutes": 30.0,
     "walltime_safety_factor": 1.0,
     "walltime_overhead_minutes": 15.0,
@@ -249,6 +251,7 @@ def load_slurm_profile(path: Path) -> Dict[str, object]:
 
     policy = profile.get("resource_policy", {})
     allowed_policy = {
+        *CAMPAIGN_WALLTIME_DEFAULTS,
         "minimum_wall_minutes", "walltime_safety_factor",
         "walltime_overhead_minutes", "minimum_memory_gib",
         "memory_safety_factor", "memory_overhead_gib",
@@ -286,6 +289,8 @@ def load_slurm_profile(path: Path) -> Dict[str, object]:
     checked_policy["request_campaign_wall_limit_for_planned_tasks"] = (
         full_campaign_wall
     )
+    if checked_policy["campaign_walltime_rounding_minutes"] <= 0:
+        raise ExecutionAdapterError("campaign_walltime_rounding_minutes must be positive")
     normalized["resource_policy"] = checked_policy
 
     node_policy = profile.get("node_policy", {})
@@ -375,6 +380,26 @@ def _script_role(name: str) -> str:
     if name.startswith("run_view_"):
         return "conformational"
     return "analysis"
+
+
+def execution_walltime_budget(execution: Mapping[str, object]) -> Dict[str, object]:
+    """Resolve the Slurm allowance without mutating the user's configuration."""
+    maximum = float(execution["maximum_hours_per_cpu"])
+    if execution.get("submission_adapter", "local") != "slurm":
+        return {"maximum_campaign_wall_hours": maximum,
+                "maximum_estimated_execution_hours": maximum,
+                "headroom_fraction": 0.0, "rounding_minutes": None}
+    profile_path = execution.get("slurm_profile")
+    if not isinstance(profile_path, str) or not profile_path:
+        raise ExecutionAdapterError("Slurm planning requires execution.slurm_profile")
+    policy = load_slurm_profile(Path(profile_path))["resource_policy"]
+    budget = campaign_walltime_budget(maximum, policy)
+    if budget["maximum_estimated_execution_hours"] <= 0:
+        raise ExecutionAdapterError(
+            "campaign wall limit is smaller than campaign_walltime_rounding_minutes; "
+            "increase the limit or explicitly choose a smaller rounding interval"
+        )
+    return budget
 
 
 def _profile_preamble(profile: Mapping[str, object], profile_path: Path) -> str:
@@ -879,13 +904,7 @@ def _walltime_path_for_phases(
 def _fit_walltime_requests_to_campaign(
     execution_plan: Dict[str, object],
 ) -> Dict[str, object]:
-    """Fit job kill limits inside the padded end-to-end campaign ceiling.
-
-    Planner wall estimates already include the configured model uncertainty.
-    A Slurm profile may request additional per-job timeout padding, but that
-    padding is optional headroom inside the campaign limit rather than a second
-    wall-time budget layered on top of it.
-    """
+    """Bound individual kill limits; forecast the campaign from execution costs."""
 
     campaign_wall = float(execution_plan["maximum_campaign_wall_hours"])
     maximum_cpus = int(execution_plan["maximum_parallel_cpus"])
@@ -905,99 +924,31 @@ def _fit_walltime_requests_to_campaign(
         )
     )
 
-    def assign(scale: float) -> float:
-        for task in tasks:
-            minimum = float(task["minimum_requested_wall_minutes"])
-            preferred = float(task["preferred_requested_wall_minutes"])
-            requested = minimum + scale * max(0.0, preferred - minimum)
-            task["requested_wall_minutes"] = min(
-                campaign_wall * 60.0,
-                max(minimum, float(math.ceil(requested))),
-            )
-            task["wall_request_limited_by_campaign_cap"] = (
-                float(task["requested_wall_minutes"]) + 1.0e-9 < preferred
-            )
-        return _walltime_path_for_phases(
-            phases,
-            maximum_parallel_cpus=maximum_cpus,
-            maximum_parallel_memory_gib=maximum_memory,
-            node_policy=node_policy,
+    for task in tasks:
+        preferred = float(task["preferred_requested_wall_minutes"])
+        if full_campaign_wall and task.get("wall_request_uses_campaign_cap"):
+            preferred = campaign_wall * 60.0
+        task["requested_wall_minutes"] = min(campaign_wall * 60.0, preferred)
+        task["wall_request_limited_by_campaign_cap"] = (
+            float(task["requested_wall_minutes"]) + 1e-9 < preferred
         )
-
-    if full_campaign_wall:
-        for task in tasks:
-            if task.get("wall_request_uses_campaign_cap"):
-                task["requested_wall_minutes"] = campaign_wall * 60.0
-                task["preferred_requested_wall_minutes"] = campaign_wall * 60.0
-                task["wall_request_limited_by_campaign_cap"] = False
-        selected_path = _walltime_path_for_phases(
-            phases,
-            maximum_parallel_cpus=maximum_cpus,
-            maximum_parallel_memory_gib=maximum_memory,
-            node_policy=node_policy,
-        )
-        allocation = {
-            "walltime_allocation_schema": "salsbury-walltime-allocation-v2",
-            "contract": "full_campaign_limit_per_planner_backed_job",
-            "campaign_wall_limit_hours": campaign_wall,
-            "minimum_scheduler_reservation_critical_path_hours": None,
-            "preferred_scheduler_reservation_critical_path_hours": selected_path,
-            "selected_scheduler_reservation_critical_path_hours": selected_path,
-            "preferred_padding_scale_applied": 1.0,
-            "status": "full_campaign_limit_per_planned_task",
-            "submission_time_feasible": True,
-            "interpretation": (
-                "Every planner-backed Slurm job requests the configured campaign "
-                "wall limit as timeout headroom. Submission feasibility uses the "
-                "planner's expected dependency-chain runtime; serialized job kill "
-                "limits are not treated as elapsed runtime."
-            ),
-        }
-        execution_plan["walltime_allocation"] = allocation
-        return allocation
-
-    minimum_path = assign(0.0)
-    preferred_path = assign(1.0)
-    if preferred_path <= campaign_wall + 1.0e-9:
-        scale = 1.0
-        selected_path = preferred_path
-        status = "preferred_padding_fits"
-    elif minimum_path > campaign_wall + 1.0e-9:
-        scale = 0.0
-        selected_path = assign(scale)
-        status = "minimum_time_limits_exceed_campaign"
-    else:
-        low = 0.0
-        high = 1.0
-        for _ in range(50):
-            midpoint = (low + high) / 2.0
-            path = assign(midpoint)
-            if path <= campaign_wall + 1.0e-9:
-                low = midpoint
-            else:
-                high = midpoint
-        scale = low
-        selected_path = assign(scale)
-        status = "preferred_padding_reduced_to_fit"
-
+    epochs = _slurm_resource_epochs(
+        {"maximum_parallel_cpus": maximum_cpus,
+         "maximum_parallel_memory_gib": maximum_memory, "phases": phases},
+        {}, {}, {}, {"large_memory_threshold_gib": float("inf")}, node_policy,
+    )
+    estimated_path = sum(float(epoch["planned_wall_hours"]) for epoch in epochs)
+    timeout_path = sum(float(epoch["wall_hours"]) for epoch in epochs)
+    request = campaign_walltime_request(estimated_path, campaign_wall, resource_policy)
     allocation = {
-        "walltime_allocation_schema": "salsbury-walltime-allocation-v1",
-        "contract": "padded_end_to_end_campaign_ceiling",
+        "walltime_allocation_schema": "salsbury-walltime-allocation-v3",
+        "contract": "padded_campaign_ceiling_with_reserved_headroom",
         "campaign_wall_limit_hours": campaign_wall,
-        "minimum_scheduler_reservation_critical_path_hours": minimum_path,
-        "preferred_scheduler_reservation_critical_path_hours": preferred_path,
-        "selected_scheduler_reservation_critical_path_hours": selected_path,
-        "preferred_padding_scale_applied": scale,
-        "status": status,
-        "submission_time_feasible": (
-            selected_path <= campaign_wall + 1.0e-9
-        ),
-        "interpretation": (
-            "Planner estimates already include modeled task-time uncertainty. "
-            "Profile timeout padding is retained only to the extent that the "
-            "serialized scheduler kill-limit path remains inside the requested "
-            "padded end-to-end campaign wall limit."
-        ),
+        "selected_scheduler_reservation_critical_path_hours": timeout_path,
+        "status": request["status"],
+        "submission_time_feasible": request["submission_time_feasible"],
+        "campaign_walltime_request": request,
+        "interpretation": request["interpretation"],
     }
     execution_plan["walltime_allocation"] = allocation
     return allocation
@@ -2036,25 +1987,26 @@ def _slurm_submission_preview(
         campaign_wall_hours is None
         or planner_critical_path <= campaign_wall_hours + 1.0e-9
     )
-    scheduler_path_feasible = (
-        bool(
-            isinstance(execution_plan.get("resource_policy"), Mapping)
-            and execution_plan["resource_policy"].get(
-                "request_campaign_wall_limit_for_planned_tasks", False
-            )
-        )
-        or campaign_wall_hours is None
-        or scheduler_reservation_path <= campaign_wall_hours + 1.0e-9
+    wall_request = (
+        campaign_walltime_request(
+            planner_critical_path, campaign_wall_hours,
+            execution_plan.get("resource_policy", {}),
+        ) if campaign_wall_hours is not None else None
     )
-    walltime_allocation = execution_plan.get("walltime_allocation", {})
-    allocation_feasible = (
-        not isinstance(walltime_allocation, Mapping)
-        or bool(walltime_allocation.get("submission_time_feasible", True))
-    )
-    generated_schedule_feasible = (
-        planner_path_feasible
-        and scheduler_path_feasible
-        and allocation_feasible
+    walltime_allocation = dict(execution_plan.get("walltime_allocation", {}))
+    if wall_request is not None:
+        walltime_allocation.update({
+            "walltime_allocation_schema": "salsbury-walltime-allocation-v3",
+            "contract": "padded_campaign_ceiling_with_reserved_headroom",
+            "campaign_wall_limit_hours": campaign_wall_hours,
+            "selected_scheduler_reservation_critical_path_hours": scheduler_reservation_path,
+            "campaign_walltime_request": wall_request,
+            "status": wall_request["status"],
+            "submission_time_feasible": wall_request["submission_time_feasible"],
+            "interpretation": wall_request["interpretation"],
+        })
+    generated_schedule_feasible = planner_path_feasible and (
+        wall_request is None or wall_request["submission_time_feasible"]
     )
     if not planner_path_feasible:
         warnings.append({
@@ -2070,50 +2022,18 @@ def _slurm_submission_preview(
             "generated_schedule_wall_hours": planner_critical_path,
             "campaign_wall_limit_hours": campaign_wall_hours,
         })
-    elif not scheduler_path_feasible or not allocation_feasible:
+    elif wall_request and not wall_request["submission_time_feasible"]:
         warnings.append({
             "severity": "error",
-            "code": "MINIMUM_SCHEDULER_TIMEOUTS_EXCEED_CAMPAIGN_WALL_LIMIT",
+            "code": "CAMPAIGN_PADDED_TIME_EXCEEDS_WALL_LIMIT",
             "message": (
-                "Even the planner estimates with minimum per-job scheduler "
-                f"timeouts require {scheduler_reservation_path:g} hours along "
-                f"the dependency path, exceeding the padded end-to-end campaign "
-                f"limit of {campaign_wall_hours:g} hours. Submission is disabled; "
-                "reduce optional work, adjust sampling, or increase the campaign "
-                "wall limit and replan."
+                "The final execution schedule plus the full campaign allowance "
+                "and rounding exceeds the user ceiling. Replan within the "
+                "reported execution budget or increase the campaign limit; "
+                "submission is disabled and the allowance is not trimmed."
             ),
-            "scheduler_reservation_critical_path_hours": (
-                scheduler_reservation_path
-            ),
-            "campaign_wall_limit_hours": campaign_wall_hours,
-        })
-    if (
-        isinstance(walltime_allocation, Mapping)
-        and walltime_allocation.get("status")
-        == "preferred_padding_reduced_to_fit"
-    ):
-        warnings.append({
-            "severity": "warning",
-            "code": "SCHEDULER_TIMEOUT_PADDING_REDUCED_TO_FIT_CAMPAIGN",
-            "message": (
-                "The preferred per-job scheduler timeout padding did not fit "
-                "inside the requested padded end-to-end campaign wall limit. "
-                "The launcher retained the largest uniform fraction that fits; "
-                "sampling and enabled analyses were not changed."
-            ),
-            "preferred_padding_scale_applied": float(
-                walltime_allocation.get("preferred_padding_scale_applied", 0.0)
-            ),
-            "preferred_scheduler_reservation_critical_path_hours": float(
-                walltime_allocation.get(
-                    "preferred_scheduler_reservation_critical_path_hours", 0.0
-                )
-            ),
-            "selected_scheduler_reservation_critical_path_hours": float(
-                walltime_allocation.get(
-                    "selected_scheduler_reservation_critical_path_hours", 0.0
-                )
-            ),
+            "preferred_wall_hours": wall_request["preferred_wall_hours"],
+            "maximum_estimated_execution_hours": wall_request["maximum_estimated_execution_hours"],
             "campaign_wall_limit_hours": campaign_wall_hours,
         })
     lane_summaries = [
@@ -2188,6 +2108,7 @@ def _slurm_submission_preview(
             scheduler_reservation_path
         ),
         "campaign_planner_wall_hours": campaign_wall_hours,
+        "campaign_walltime_request": wall_request,
         "walltime_allocation": dict(walltime_allocation),
         "generated_schedule_feasibility_status": (
             "feasible" if generated_schedule_feasible else "infeasible"
@@ -2222,12 +2143,12 @@ def _slurm_submission_preview(
             "within every wave stay at or below the configured aggregate caps."
         ),
         "time_interpretation": (
-            "The requested campaign wall time is the padded end-to-end ceiling. "
-            "Planner hours are estimated execution time, while scheduler "
-            "reservation hours sum per-job kill limits along the serialized "
-            "dependency path. Preferred profile padding is reduced uniformly "
-            "when necessary so that those kill limits remain inside the ceiling; "
-            "sampling and module selection are unchanged by this adjustment."
+            "Planner hours already include model uncertainty. The campaign "
+            "Slurm recommendation adds the configured headroom once, rounds up, "
+            "and respects the user ceiling. Serialized per-task timeout limits "
+            "remain diagnostic and are not execution-time estimates. Separate "
+            "Slurm jobs retain their individual timeouts. Queue waiting and "
+            "interactive packaging are excluded."
         ),
         "preview_command": "./submit.sh --preview",
         "execution_command": "./submit.sh",
@@ -2243,6 +2164,7 @@ def _render_resource_bounded_submit(
     resource_epochs: Sequence[Mapping[str, object]],
     submission_permitted: bool,
     autorecovery: bool = False,
+    single_allocation_permitted: bool = False,
 ) -> str:
     """Render one launcher with scientific dependencies and resource epochs."""
 
@@ -2253,6 +2175,7 @@ def _render_resource_bounded_submit(
         'ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)',
         _profile_preamble(profile, profile_path),
         f"SUBMIT_COMMAND={submit_command}",
+        f"SINGLE_ALLOCATION_ALLOWED={1 if single_allocation_permitted else 0}",
         'RECOVERY_RUNNER="$ROOT/run-task-with-recovery.sh"',
         'PREVIEW="$ROOT/slurm-submission-preview.json"',
         'case "${1:-}" in',
@@ -2260,9 +2183,24 @@ def _render_resource_bounded_submit(
         '    cat "$PREVIEW"',
         '    exit 0',
         '    ;;',
+        '  --single-allocation)',
+        '    cat "$PREVIEW"',
+        '    if [[ "${2:-}" == "--preview" ]]; then exit 0; fi',
+        '    if [[ $# -ne 1 || "$SINGLE_ALLOCATION_ALLOWED" != 1 || ! -f "$ROOT/run-campaign.slurm" ]]; then',
+        '      printf "Single-allocation submission unavailable; inspect single_allocation in the preview.\\n" >&2',
+        '      exit 3',
+        '    fi',
+        '    mkdir -p "$ROOT/submission-ledgers"',
+        '    LEDGER="$ROOT/submission-ledgers/single-$(date -u +%Y%m%dT%H%M%S)-$$.tsv"',
+        '    printf "task_id\\tjob_id\\n" > "$LEDGER"',
+        '    JOB=$("$SUBMIT_COMMAND" --parsable --chdir="$ROOT" "$ROOT/run-campaign.slurm")',
+        '    printf "campaign\\t%s\\n" "$JOB" >> "$LEDGER"',
+        '    printf "Campaign job: %s\\nSubmission ledger: %s\\n" "$JOB" "$LEDGER"',
+        '    exit 0',
+        '    ;;',
         '  "") ;;',
         '  *)',
-        '    printf "Usage: %s [--preview]\\n" "$0" >&2',
+        '    printf "Usage: %s [--preview | --single-allocation [--preview]]\\n" "$0" >&2',
         '    exit 2',
         '    ;;',
         'esac',
@@ -2581,6 +2519,87 @@ exit "$exit_code"
 '''
 
 
+def _prepare_single_allocation(
+    root: Path, profile: Mapping[str, object], execution_plan: Mapping[str, object],
+    preview: Mapping[str, object],
+) -> Dict[str, object]:
+    """Keep the native executor inside one requested node, never collapse nodes."""
+    cpus = int(execution_plan["maximum_parallel_cpus"])
+    memory = float(execution_plan["maximum_parallel_memory_gib"])
+    policy = profile["node_policy"]
+    tasks = [task for phase in execution_plan["phases"] for task in phase["tasks"]]
+    reasons = []
+    if not preview["submission_permitted"]:
+        reasons.append("the final schedule plus campaign allowance does not fit the campaign limit")
+    if any(int(task.get("node_count", 1)) > 1 for task in tasks):
+        reasons.append("a task requires distributed multi-node execution")
+    if int(preview.get("planned_node_count", 1)) > 1:
+        reasons.append("the final schedule reserves multiple nodes")
+    if policy.get("cpus_per_node") is not None and cpus > int(policy["cpus_per_node"]):
+        reasons.append("the CPU envelope exceeds the configured single-node capacity")
+    scheduler_memory = int(math.ceil(memory))
+    if policy.get("memory_gib_per_node") is not None and scheduler_memory > float(policy["memory_gib_per_node"]):
+        reasons.append("the rounded memory request exceeds the configured single-node capacity")
+    request = preview.get("campaign_walltime_request")
+    if not isinstance(request, Mapping) or request.get("requested_wall_minutes") is None:
+        reasons.append("a feasible campaign wall-time request is unavailable")
+    elif float(request["requested_wall_minutes"]) < 1:
+        reasons.append("the campaign ceiling is shorter than the one-minute Slurm request minimum")
+    result = {
+        "supported": not reasons, "submission_permitted": not reasons,
+        "reasons": reasons, "nodes": 1, "cpus": cpus,
+        "memory_gib": scheduler_memory,
+        "memory_policy": "existing padded aggregate ceiling; no extra multiplier",
+        "launcher": "./submit.sh --single-allocation",
+    }
+    if reasons:
+        return result
+    minutes = float(request["requested_wall_minutes"])
+    try:
+        route = _partition_for_request(
+            "run-campaign.slurm", minutes, scheduler_memory,
+            profile["partitions"], profile["partition_maximum_wall_minutes"],
+            profile["partition_maximum_nodes"], profile["resource_policy"],
+        )
+    except ExecutionAdapterError as exc:
+        return {**result, "supported": False, "submission_permitted": False,
+                "reasons": [str(exc)]}
+    time_text = _format_slurm_time(minutes)
+    lines = [
+        "#!/usr/bin/env bash", "#SBATCH --job-name=salsbury-md-campaign",
+        "#SBATCH --nodes=1", "#SBATCH --ntasks=1",
+        f"#SBATCH --cpus-per-task={cpus}", f"#SBATCH --mem={scheduler_memory}G",
+        f"#SBATCH --time={time_text}", "#SBATCH --open-mode=append",
+        "#SBATCH --output=campaign-%j.out", "#SBATCH --error=campaign-%j.err",
+    ]
+    for name, value in (("account", profile.get("account")),
+                        ("qos", profile.get("qos")),
+                        ("partition", route["selected_partition"])):
+        if value:
+            lines.append(f"#SBATCH --{name}={value}")
+    lines.extend(str(value) for value in profile["additional_sbatch_directives"])
+    env = profile["environment"]
+    python = env.get("python_executable") or _active_python_executable()
+    package = env.get("package_root") or str(Path(__file__).resolve().parents[1])
+    lines.extend([
+        "set -euo pipefail", _profile_preamble(profile, root / "slurm-profile.json"),
+        f"ROOT={shlex.quote(str(root))}", 'cd "$ROOT"',
+        f"PYTHON_DEFAULT={shlex.quote(str(python))}",
+        'PYTHON="${SALSBURY_MD_ANALYSIS_PYTHON:-$PYTHON_DEFAULT}"',
+        f"PACKAGE_ROOT_DEFAULT={shlex.quote(str(package))}",
+        'PACKAGE_ROOT="${SALSBURY_MD_ANALYSIS_PYTHONPATH:-$PACKAGE_ROOT_DEFAULT}"',
+        'export PYTHONPATH="$PACKAGE_ROOT${PYTHONPATH:+:$PYTHONPATH}"',
+        'mkdir -p "$ROOT/logs"',
+        'exec "$PYTHON" -m salsbury_md_analysis run-local-workflow "$ROOT" '
+        f'--maximum-wall-hours {minutes / 60.0:.12g} '
+        '> "$ROOT/logs/campaign-${SLURM_JOB_ID:-local}.json"',
+    ])
+    path = root / "run-campaign.slurm"
+    path.write_text(_inject_package_source_validation("\n".join(lines) + "\n"), encoding="utf-8")
+    return {**result, "script": path.name, "slurm_time": time_text,
+            "requested_wall_hours": minutes / 60.0, **route}
+
+
 def apply_slurm_profile(
     root: Path,
     profile: Mapping[str, object],
@@ -2625,12 +2644,9 @@ def apply_slurm_profile(
     submission_preview = _slurm_submission_preview(
         execution_plan, resource_epochs, node_policy
     )
-    (root / "slurm-submission-preview.json").write_text(
-        json.dumps(submission_preview, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
     for path in sorted(root.glob("*.slurm")):
+        if path.name == "run-campaign.slurm":
+            continue  # Regenerated separately; it is not an analysis task.
         text = path.read_text(encoding="utf-8")
         request = script_requests.get(path.name, {
             "requested_wall_minutes": _existing_wall_minutes(path),
@@ -2714,6 +2730,11 @@ def apply_slurm_profile(
             )
         text = _inject_package_source_validation(text)
         path.write_text(text, encoding="utf-8")
+    single = _prepare_single_allocation(root, profile, execution_plan, submission_preview)
+    submission_preview["single_allocation"] = single
+    (root / "slurm-submission-preview.json").write_text(
+        json.dumps(submission_preview, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     canonical_submit = root / "submit.sh"
     if canonical_submit.is_file():
         canonical_submit.write_text(
@@ -2724,6 +2745,7 @@ def apply_slurm_profile(
                 resource_epochs,
                 bool(submission_preview["submission_permitted"]),
                 bool(execution_plan.get("autorecovery", True)),
+                bool(single["submission_permitted"]),
             ),
             encoding="utf-8",
         )
@@ -2746,9 +2768,9 @@ def apply_slurm_profile(
         "maximum_parallel_memory_gib": execution_plan[
             "maximum_parallel_memory_gib"
         ],
-        "walltime_allocation": dict(
-            execution_plan.get("walltime_allocation", {})
-        ),
+        "walltime_allocation": submission_preview["walltime_allocation"],
+        "campaign_walltime_request": submission_preview["campaign_walltime_request"],
+        "single_allocation": single,
         "resource_waves": resource_epochs,
         "resource_epochs": resource_epochs,
         "resource_lanes": [
@@ -3509,6 +3531,16 @@ exec "$LAUNCHER" "$CONTRACT"
             json.dumps(retained, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         scheduler_requests = apply_slurm_profile(root, retained, plan)
+        # Bind the final routed schedule, rather than an earlier packing pass.
+        plan["walltime_allocation"] = scheduler_requests["walltime_allocation"]
+        (root / "local-execution-plan.json").write_text(
+            json.dumps(plan, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        launcher_contract["campaign_walltime_request"] = scheduler_requests["campaign_walltime_request"]
+        launcher_contract["single_allocation"] = scheduler_requests["single_allocation"]
+        (root / "launcher-contract.json").write_text(
+            json.dumps(launcher_contract, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         (root / "scheduler-resource-requests.json").write_text(
             json.dumps(scheduler_requests, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -3518,6 +3550,8 @@ exec "$LAUNCHER" "$CONTRACT"
             "scheduler-resource-requests.json",
             "slurm-submission-preview.json",
         ])
+        if scheduler_requests["single_allocation"]["supported"]:
+            generated.append("run-campaign.slurm")
     # Put the policy in each worker, after the site setup and before execution.
     # This covers direct Slurm submission, local execution, custom launchers,
     # and nested replica subprocesses; an ambient flag cannot change the plan.
@@ -3860,14 +3894,14 @@ def _run_ready_dag(
     return reports
 
 
-def run_local_workflow(root: Path) -> Dict[str, object]:
+def run_local_workflow(root: Path, *, maximum_wall_hours: Optional[float] = None) -> Dict[str, object]:
     """Execute under a campaign lock, including the legacy run-local entry point."""
     from .user_workflow import campaign_lock
     with campaign_lock(root.expanduser().resolve(strict=True)):
-        return _run_local_workflow_locked(root)
+        return _run_local_workflow_locked(root, maximum_wall_hours=maximum_wall_hours)
 
 
-def _run_local_workflow_locked(root: Path) -> Dict[str, object]:
+def _run_local_workflow_locked(root: Path, *, maximum_wall_hours: Optional[float] = None) -> Dict[str, object]:
     """Execute a generated workflow locally while respecting its CPU envelope."""
 
     resolved = root.expanduser().resolve(strict=True)
@@ -3886,6 +3920,13 @@ def _run_local_workflow_locked(root: Path) -> Dict[str, object]:
     maximum_cpus = int(plan["maximum_parallel_cpus"])
     maximum_memory_gib = float(plan.get("maximum_parallel_memory_gib", 1.0e12))
     campaign_seconds = float(plan["maximum_campaign_wall_hours"]) * 3600.0
+    if maximum_wall_hours is not None:
+        if (isinstance(maximum_wall_hours, bool) or not isinstance(maximum_wall_hours, (int, float))
+                or not math.isfinite(maximum_wall_hours) or maximum_wall_hours <= 0):
+            raise ExecutionAdapterError("maximum_wall_hours must be finite and positive")
+        if maximum_wall_hours * 3600.0 > campaign_seconds + 1e-9:
+            raise ExecutionAdapterError("allocation time cannot exceed the prepared campaign ceiling")
+        campaign_seconds = min(campaign_seconds, maximum_wall_hours * 3600.0)
     autorecovery = bool(plan.get("autorecovery", False))
     maximum_task_attempts = int(plan.get("maximum_task_attempts", 1))
     if maximum_cpus <= 0 or maximum_memory_gib <= 0.0 or campaign_seconds <= 0.0:
@@ -4028,6 +4069,8 @@ def _run_local_workflow_locked(root: Path) -> Dict[str, object]:
         "analysis_root": str(resolved),
         "maximum_parallel_cpus": maximum_cpus,
         "maximum_parallel_memory_gib": maximum_memory_gib,
+        "prepared_campaign_wall_hours": float(plan["maximum_campaign_wall_hours"]),
+        "effective_campaign_wall_hours": campaign_seconds / 3600.0,
         "autorecovery": {
             "enabled": autorecovery,
             "maximum_task_attempts": maximum_task_attempts,

@@ -13,10 +13,9 @@ hardware, or calibration data change.
 | Generic Slurm | 2 | 32 GiB | 10 hours | Built-in models plus site scheduler policy |
 | WFU DEAC | 2 | 32 GiB | 16 hours | Apollo measured calibration catalog v5 plus DEAC policy |
 
-These settings retain the enabled analyses and their frame minima. The generic
-Slurm allowance accommodates the generic profile's per-job timeout floors
-along the dependency path. It must still pass the preview for your site. The
-DEAC allowance includes calibrated analysis costs, censored timing floors, and
+These are historical starting budgets, not current Slurm requests. They retain
+the enabled analyses and their frame minima. A fresh plan must pass the preview
+for your site. The DEAC allowance includes calibrated analysis costs, censored timing floors, and
 provisional preflight/reporting estimates; it is not a measurement that the
 small fixture needs 16 hours. The two own-data tutorials
 use illustrative budgets only. None of these examples sets a universal budget
@@ -39,15 +38,27 @@ plan. On Slurm, inspect `slurm-submission-preview.json` after
 exit zero while reporting an infeasible schedule. New plans explicitly budget
 setup and reporting under **Required execution overhead** in `planning-report.md`.
 Queue waiting is separate. A sum of scheduler time limits is not a runtime forecast. Check
-`walltime_allocation.contract`: both shipped profiles now enforce a padded
-end-to-end reservation ceiling with task-specific timeouts. DEAC's
-`request_campaign_wall_limit_for_planned_tasks` is disabled by default.
+`walltime_allocation.contract`: both shipped profiles use
+`padded_campaign_ceiling_with_reserved_headroom`. The final scheduled estimate already
+includes model uncertainty; the recommended allocation adds one-third and rounds
+up to the next hour. Thus 11.75 estimated hours become 16 requested hours, not
+the entire 48-hour planning budget. A requested 48-hour limit reserves at most
+36 estimated execution hours before planning strides and optional reductions.
+The full allowance and rounding must fit; a final schedule that exceeds this
+execution budget is rejected. The allowance is never silently reduced.
+DEAC's `request_campaign_wall_limit_for_planned_tasks` is disabled by default.
 Existing profile copies and prepared scripts retain their previous setting;
 update the profile and prepare a fresh output directory to use this default.
-For the tested generic profile with DSSP available, an eight-hour campaign passed
-analysis planning but failed preview because its minimum serialized timeout path was 9.5 hours;
-the ten-hour example passes, including the preferred 9.73-hour timeout path.
-Do not infer feasibility from the analysis planner's two-hour recommendation alone.
+The historical generic eight-hour rejection came from a 9.5-hour minimum
+timeout chain. That chain no longer determines runtime feasibility. Regenerate
+the preview rather than treating either that rejection or the historical
+ten-hour pass as current evidence. Keep the scientific budget separate from
+the allocation timeout so changing a request does not silently alter sampling.
+
+For one node, inspect `./submit.sh --single-allocation --preview`, then use
+`./submit.sh --single-allocation` after approval. The generated script uses the
+recommended campaign limit. Multi-node plans retain the ordinary per-task
+launcher; see [execution adapters](../docs/EXECUTION_ADAPTERS.md).
 
 Preflight estimates now depend on input bytes, file reads, replicas, and topology
 size. Reporting estimates depend on report bundles, views, system size, and
