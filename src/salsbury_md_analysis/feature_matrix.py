@@ -395,6 +395,9 @@ def load_feature_matrix(
         "feature_count": len(vectors[0]),
         "columns": columns,
         "replica_feature_extraction": extraction_parallelism,
+        **({"segment_eligibility": report["segment_eligibility"],
+             "feature_lineage": report["feature_lineage"]}
+            if selection["feature_source"] == "tica" and "segment_eligibility" in report else {}),
         **(
             {
                 "symmetry_expansion": report["settings"].get("symmetry_expansion"),

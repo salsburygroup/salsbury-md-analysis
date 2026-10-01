@@ -2964,6 +2964,12 @@ def prioritize_findings(
         sidecar_path = Path(str(path) + ".summary.json")
         if sidecar_path.is_file():
             sidecar = load_json(sidecar_path)
+            if sidecar.get("report_adoption"):
+                from .accepted_artifacts import validate_complete_report
+                try:
+                    validate_complete_report(path, require_sidecar=True)
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    raise FindingPickerError(f"adopted finding evidence is not accepted: {exc}") from exc
             if sidecar.get("technical_status") != "complete":
                 raise FindingPickerError(f"analysis sidecar is not complete: {sidecar_path}")
             if sidecar.get("report_path") != str(path.resolve()):

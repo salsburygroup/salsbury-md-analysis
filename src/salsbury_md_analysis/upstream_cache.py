@@ -90,6 +90,14 @@ def load_cached_project_report(
         raise error_type(f"cached {module_id} report is unreadable: {exc}") from exc
     if not isinstance(payload, dict):
         raise error_type(f"cached {module_id} report must contain a JSON object")
+    from .report_reuse import receipt_path, runtime_report
+    if receipt_path(report_path).is_file():
+        try:
+            validate_complete_report(report_path, expected_module=module_id,
+                                     expected_project=project_path, require_sidecar=True)
+            return runtime_report(report_path, project_path)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise error_type(f"cached {module_id} adoption failed validation: {exc}") from exc
     try:
         validate_complete_report(report_path, expected_module=module_id, require_sidecar=True)
     except (OSError, ValueError, TypeError) as exc:

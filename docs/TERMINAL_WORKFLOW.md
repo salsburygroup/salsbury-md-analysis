@@ -123,6 +123,11 @@ campaign cost. Moving a runnable campaign to a different filesystem may require
 a fresh plan because validated source/cache paths are explicit; copying a
 dashboard is different and is supported offline.
 
+For a newly prepared repair directory, [report adoption](REPORT_REUSE.md)
+provides an explicit review-and-import command for supported unchanged results.
+It validates the original calculation and the new target before native resume
+can treat an imported report as complete.
+
 ## Read the results
 
 Start with `prioritized_findings.md`, the figures and CSV tables under

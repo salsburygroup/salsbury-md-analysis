@@ -68,6 +68,7 @@ they still agree with the source.
 - [Common-atom mapping](ATOM_MAPPING.md)
 - [Periodic coordinate reconstruction](PERIODIC_COORDINATES.md)
 - [Reusable coordinate caches](COORDINATE_CACHE.md)
+- [Validated report reuse in repaired campaigns](REPORT_REUSE.md)
 - [Replica parallelism and pooled reducers](ENSEMBLE_PARALLELISM.md)
 - [Structural-integrity QC](STRUCTURAL_QC.md)
 - [RMSD and radius of gyration](RMSD_RG.md)

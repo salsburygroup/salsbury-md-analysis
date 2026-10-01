@@ -480,6 +480,7 @@
             "covariance_regularization": {"type": "number", "minimum": 0},
             "covariance_eigenvalue_cutoff": {"type": "number", "exclusiveMinimum": 0},
             "minimum_pairs_per_segment": {"type": "integer", "minimum": 1},
+            "short_segment_policy": {"enum": ["error", "omit"], "default": "error"},
             "maximum_features": {"type": "integer", "minimum": 1}
           }
         },

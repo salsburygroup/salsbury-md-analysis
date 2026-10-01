@@ -2139,6 +2139,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run a hash-pinned project regression without changing project data.",
     )
     regression_parser.add_argument("path", type=Path, help="Regression-case path.")
+    reuse_parser = subparsers.add_parser(
+        "adopt-report", help="Review or explicitly adopt an unchanged report into one prepared task.",
+    )
+    reuse_parser.add_argument("source", type=Path)
+    reuse_parser.add_argument("--prepared", type=Path, required=True)
+    reuse_parser.add_argument("--task", required=True, help="Exact task_id in local-execution-plan.json.")
+    reuse_parser.add_argument("--apply", action="store_true", help="Copy the unchanged report and create a validated adoption receipt. Default: read-only review.")
     from .user_workflow import add_parsers
     add_parsers(subparsers)
     return parser
@@ -2155,6 +2162,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         }))
         return 2
     from .user_workflow import COMMANDS, run_command
+    if args.command == "adopt-report":
+        from .report_reuse import adopt_prepared_task
+        try:
+            review = adopt_prepared_task(args.source, args.prepared, args.task, apply=args.apply)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            print(json.dumps({"eligible": False, "disposition": "rejected", "reason": str(exc)}, indent=2))
+            return 2
+        print(json.dumps(review, indent=2, sort_keys=True))
+        return 0 if review["eligible"] else 2
     if args.command in COMMANDS:
         return run_command(args)
     if args.command == "list-modules":
