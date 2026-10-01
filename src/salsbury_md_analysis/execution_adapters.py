@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import re
@@ -12,6 +13,7 @@ import subprocess
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence
@@ -2621,6 +2623,10 @@ def apply_slurm_profile(
     assert isinstance(resource_policy, Mapping)
     node_policy = profile["node_policy"]
     assert isinstance(node_policy, Mapping)
+    node_policy = {
+        **node_policy,
+        "memory_reserve_gib": float(execution_plan.get("node_memory_reserve_gib", 0.0)),
+    }
     script_requests = _script_resource_requests(execution_plan)
     partition_limits = profile["partition_maximum_wall_minutes"]
     assert isinstance(partition_limits, Mapping)
@@ -2643,6 +2649,9 @@ def apply_slurm_profile(
     )
     submission_preview = _slurm_submission_preview(
         execution_plan, resource_epochs, node_policy
+    )
+    validate_native_campaign_schedule(
+        root, execution_plan, adapter="slurm", resource_epochs=resource_epochs,
     )
     for path in sorted(root.glob("*.slurm")):
         if path.name == "run-campaign.slurm":
@@ -3345,6 +3354,136 @@ def build_local_execution_plan(
     return plan
 
 
+def validate_native_campaign_schedule(
+    root: Path, execution_plan: Mapping[str, object], *, adapter: str,
+    resource_epochs: Optional[Sequence[Mapping[str, object]]] = None,
+) -> Optional[Dict[str, object]]:
+    """Accept native preparations using the exact graph emitted by the adapter.
+
+    Cost-only stage plans remain diagnostics. Only a wall-only stage failure
+    may reach this point; scientific, CPU, memory and calibration failures are
+    never overridden. Legacy independently authored workflows are unchanged.
+    """
+    path = root / "campaign-resource-plan.json"
+    if not path.is_file():
+        return None
+    resources = load_json(path)
+    validation = resources.get("native_schedule_validation", {})
+    if not validation.get("required"):
+        return None
+    rows = resources.get("tasks", [])
+    tasks = [task for phase in execution_plan.get("phases", [])
+             for task in phase.get("tasks", [])]
+    logical_ids = [str(row["task_id"]) for row in rows]
+    mapped = Counter(str(task_id) for task in tasks
+                     for task_id in task.get("planner_task_ids", []))
+    errors = []
+    if (not rows or len(set(logical_ids)) != len(logical_ids)
+            or set(mapped) != set(logical_ids) or any(n != 1 for n in mapped.values())
+            or any(not task.get("planner_task_ids") for task in tasks)):
+        errors.append(
+            "native schedule must cover every logical task exactly once; "
+            f"missing={sorted(set(logical_ids) - set(mapped))}; "
+            f"extra={sorted(set(mapped) - set(logical_ids))}; "
+            f"duplicate={sorted(key for key, count in mapped.items() if count > 1)}; "
+            f"unmapped={[task['task_id'] for task in tasks if not task.get('planner_task_ids')]}"
+        )
+    coarse_wall_reason = "minimum calibrated critical path exceeds the campaign science wall-time budget"
+    errors.extend(reason for reason in resources.get("infeasibility_reasons", [])
+                  if reason != coarse_wall_reason)
+    if resources.get("tasks_requiring_project_pilots"):
+        errors.append("native schedule has uncalibrated task costs")
+    if resources.get("scientific_sampling_feasibility", {}).get("below_standard_tasks"):
+        errors.append("native schedule has tasks below scientific sampling floors")
+    epochs = resource_epochs if resource_epochs is not None else _slurm_resource_epochs(
+        execution_plan, {}, {}, {}, {"large_memory_threshold_gib": float("inf")},
+        execution_plan.get("node_policy", {}),
+    )
+    estimate = sum(float(epoch["planned_wall_hours"]) for epoch in epochs)
+    wall_budget = float(resources["science_budget_wall_hours"])
+    cpu_budget = float(resources["science_budget_cpu_hours"])
+    cpu_hours = sum(float(row["estimated_cpu_hours"]) for row in rows)
+    if not all(math.isfinite(value) and value >= 0
+               for value in (estimate, wall_budget, cpu_budget, cpu_hours)):
+        errors.append("native schedule has invalid resource estimates")
+    if estimate > wall_budget + 1e-9:
+        errors.append(
+            f"native dependency/resource schedule requires {estimate:.6f} h, "
+            f"exceeding the {wall_budget:.6f} h science wall allowance"
+        )
+    if cpu_hours > cpu_budget + 1e-9:
+        errors.append("native schedule exceeds the campaign science CPU-hour budget")
+    request = None
+    if adapter == "slurm":
+        request = campaign_walltime_request(
+            estimate, float(execution_plan["maximum_campaign_wall_hours"]),
+            execution_plan.get("resource_policy", {}),
+        )
+        if not request["submission_time_feasible"]:
+            errors.append("native schedule plus campaign headroom exceeds the user wall-time ceiling")
+    schedule_payload = {
+        "tasks": tasks,
+        "maximum_parallel_cpus": execution_plan["maximum_parallel_cpus"],
+        "maximum_parallel_memory_gib": execution_plan["maximum_parallel_memory_gib"],
+        "node_policy": execution_plan.get("node_policy", {}),
+        "maximum_campaign_wall_hours": execution_plan["maximum_campaign_wall_hours"],
+        "resource_policy": execution_plan.get("resource_policy", {}),
+        "science_budget_wall_hours": wall_budget,
+        "science_budget_cpu_hours": cpu_budget,
+    }
+    receipt = {
+        **validation,
+        "schema": "salsbury-native-schedule-validation-v1",
+        "status": "failed" if errors else "complete",
+        "basis": "task_dag_resource_token_schedule",
+        "logical_task_count": len(rows), "execution_task_count": len(tasks),
+        "mapped_logical_task_count": sum(mapped.values()),
+        "estimated_execution_hours": estimate,
+        "estimated_cpu_hours": cpu_hours,
+        "science_budget_wall_hours": wall_budget,
+        "science_budget_cpu_hours": cpu_budget,
+        "campaign_walltime_request": request,
+        "schedule_sha256": hashlib.sha256(json.dumps(
+            schedule_payload, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        ).encode()).hexdigest(),
+        "errors": errors,
+        "interpretation": (
+            "The native task/dependency/CPU/memory schedule decides feasibility; "
+            "the stage estimate is retained only as a diagnostic. Model uncertainty "
+            "and configured planning reserves are unchanged. This is a forecast, "
+            "not measured runtime or scientific acceptance."
+        ),
+    }
+    resources["native_schedule_validation"] = receipt
+    resources["feasibility_status"] = "infeasible" if errors else "feasible"
+    resources["infeasibility_reasons"] = errors
+    resources["estimated_selected_wall_hours_lower_bound"] = estimate
+    resources["estimated_selected_wall_hours"] = estimate
+    resources["walltime_estimate_basis"] = receipt["basis"]
+    resources.setdefault("resource_budget_utilization", {}).update({
+        "science_wall_time_fraction": estimate / wall_budget if wall_budget else None,
+        "average_parallel_cpus_during_selected_schedule": cpu_hours / estimate if estimate else 0.0,
+    })
+    if resources.get("fixed_sampling"):
+        resources["minimum_wall_hours_lower_bound"] = estimate
+    # The old recommendation was based on stage serialization, not this DAG.
+    if "permissive_minimum_resource_request" in resources:
+        resources["stage_permissive_minimum_resource_request"] = resources.pop(
+            "permissive_minimum_resource_request"
+        )
+    for destination, payload in ((path, resources), (root / "native-schedule-validation.json", receipt)):
+        destination.write_text(json.dumps(payload, indent=2, sort_keys=True)+"\n", encoding="utf-8")
+    sampling_path = root / "sampling-plan.json"
+    if sampling_path.is_file():
+        sampling = load_json(sampling_path)
+        sampling["campaign_resource_plan"] = resources
+        sampling_path.write_text(json.dumps(sampling, indent=2, sort_keys=True)+"\n", encoding="utf-8")
+    if errors:
+        prefix = "No feasible fixed-sampling plan: " if resources.get("fixed_sampling") else "No feasible native schedule: "
+        raise ExecutionAdapterError(prefix + "; ".join(errors))
+    return receipt
+
+
 def prepare_execution_artifacts(
     root: Path, analysis_config: Mapping[str, object]
 ) -> Dict[str, object]:
@@ -3374,6 +3513,7 @@ def prepare_execution_artifacts(
         None if profile is None else profile["resource_policy"],
         None if profile is None else profile["node_policy"],
     )
+    validate_native_campaign_schedule(root, plan, adapter=adapter)
     (root / "local-execution-plan.json").write_text(
         json.dumps(plan, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -3523,6 +3663,8 @@ exec "$LAUNCHER" "$CONTRACT"
         "local-execution-plan.json", "launcher-contract.json",
         "run-local.sh", "run-custom.sh", "run-task-with-recovery.sh",
     ]
+    if (root / "native-schedule-validation.json").is_file():
+        generated.append("native-schedule-validation.json")
     if adapter == "slurm":
         assert profile is not None
         profile_id = str(profile["profile_id"])
@@ -3905,6 +4047,11 @@ def _run_local_workflow_locked(root: Path, *, maximum_wall_hours: Optional[float
     """Execute a generated workflow locally while respecting its CPU envelope."""
 
     resolved = root.expanduser().resolve(strict=True)
+    resource_path = resolved / "campaign-resource-plan.json"
+    if resource_path.is_file():
+        required = load_json(resource_path).get("native_schedule_validation", {})
+        if required.get("required") and required.get("status") != "complete":
+            raise ExecutionAdapterError("native schedule validation is incomplete; execution is disabled")
     plan_path = resolved / "local-execution-plan.json"
     plan = load_json(plan_path)
     accepted_schemas = {

@@ -38,7 +38,11 @@ class FixedSamplingTests(unittest.TestCase):
             with self.subTest(protected=protected):
                 self._five_system_fixed_schedule(protected)
 
-    def _five_system_fixed_schedule(self, protected):
+    @patch("salsbury_md_analysis.comparative_quickstart._discover_dssp_executable", return_value=None)
+    def test_five_system_wall_only_stage_failure_reaches_native_validation(self, _dssp):
+        self._five_system_fixed_schedule(False, stage_wall_failure=True)
+
+    def _five_system_fixed_schedule(self, protected, stage_wall_failure=False):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
             pdb, psf, trajectories = _write_ion_inputs(root)
@@ -77,7 +81,18 @@ class FixedSamplingTests(unittest.TestCase):
             settings["sampling"] = {"fixed_schedule_file":str(schedule)}
             settings["execution"]["maximum_parallel_cpus"] = 24
             config.write_text(json.dumps(settings))
-            prepare_comparative_analysis(**kwargs, output_directory=second)
+            def conservative_stage_estimate(*args, **kwargs):
+                result = plan_campaign_resource_budget(*args, **kwargs)
+                result["feasibility_status"] = "infeasible"
+                result["infeasibility_reasons"] = ["minimum calibrated critical path exceeds the campaign science wall-time budget"]
+                result["estimated_selected_wall_hours_lower_bound"] = 1000.0
+                result["minimum_wall_hours_lower_bound"] = 1000.0
+                return result
+            if stage_wall_failure:
+                with patch("salsbury_md_analysis.campaign_planning.plan_campaign_resource_budget", side_effect=conservative_stage_estimate):
+                    prepare_comparative_analysis(**kwargs, output_directory=second)
+            else:
+                prepare_comparative_analysis(**kwargs, output_directory=second)
             after = json.loads((second / "campaign-resource-plan.json").read_text())
             self.assertTrue(verify_fixed_plan(after, frozen)["sampling_preserved"])
             if protected:
@@ -87,6 +102,10 @@ class FixedSamplingTests(unittest.TestCase):
                 self.assertEqual(sampling_fields(current["definitions"]), project["sampling_fields"])
             self.assertTrue((second / "submit.sh").exists())
             self.assertEqual(after["feasibility_status"], "feasible")
+            native = after["native_schedule_validation"]
+            self.assertEqual(native["status"], "complete")
+            preview = json.loads((second / "slurm-submission-preview.json").read_text())
+            self.assertAlmostEqual(native["estimated_execution_hours"], preview["planner_estimated_dependency_critical_path_hours"])
             # A frozen historical block size must still be feasible; freezing
             # does not authorize changing scientific validity requirements.
             if not protected:

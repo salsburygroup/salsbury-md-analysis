@@ -11,6 +11,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import sys
 import tempfile
@@ -2504,6 +2505,21 @@ printf 'Results will appear under %s/results.\\n' "$ROOT"
         (root / filename).write_text(worker, encoding="utf-8")
         generated.append(filename)
     (root / "run_finalize_reporting.slurm").write_text(finalizer, encoding="utf-8")
+    # Preserve the legacy script for diagnosis/local users, but make it inert
+    # until native graph validation succeeds. Slurm profiles replace it later.
+    if (root / "campaign-resource-plan.json").is_file() and load_json(
+        root / "campaign-resource-plan.json"
+    ).get("native_schedule_validation", {}).get("required"):
+        guard = (
+            f"{shlex.quote(python_executable)} -c "
+            + shlex.quote(
+                "import json,sys; "
+                "v=json.load(open(sys.argv[1])).get('native_schedule_validation',{}); "
+                "sys.exit(0 if v.get('status') == 'complete' else "
+                "'Preparation has not completed native schedule validation; submission is disabled.')"
+            ) + " " + shlex.quote(str(root / "campaign-resource-plan.json")) + "\n"
+        )
+        submit = submit.replace("set -euo pipefail\n", "set -euo pipefail\n" + guard, 1)
     (root / "submit.sh").write_text(submit, encoding="utf-8")
     _json_write(
         root / "workflow-stages.json",

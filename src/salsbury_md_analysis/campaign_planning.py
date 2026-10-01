@@ -2397,6 +2397,10 @@ def plan_and_apply_complete_campaign(
     def build_tasks() -> tuple[List[Dict[str, object]], Dict[str, object]]:
         built = [
             row for row in _direct_task_inputs(sampling_plan)
+            # The initial composition scan may suggest a method for which
+            # chemistry inference could not produce a runnable definition.
+            # Budget only the resolved base project, not that provisional row.
+            if str(row.get("module_id")) in base_requested_modules
             if not (
                 row.get("task_scope") == "direct_trajectory_estimator"
                 and str(row.get("module_id")) in delegated_context_modules
@@ -2671,14 +2675,27 @@ def plan_and_apply_complete_campaign(
             raise CampaignPlanningError(str(exc)) from exc
         plan["comparison_clustering_consistency_skips"] = consistency_skips
         annotate_plan_minimum_request(plan)
-        if fixed_schedule is not None and plan["feasibility_status"] != "feasible":
+        # A stage/lane schedule is a conservative construction, not a lower
+        # bound on every valid task DAG. Only this wall-time objection may
+        # proceed to native graph validation; all other failures remain hard.
+        wall_only = (
+            plan["feasibility_status"] == "infeasible"
+            and plan.get("infeasibility_reasons") == [
+                "minimum calibrated critical path exceeds the campaign science wall-time budget"
+            ]
+        )
+        if wall_only:
+            plan["feasibility_status"] = "pending_execution_schedule"
+        if fixed_schedule is not None and plan["feasibility_status"] not in {
+            "feasible", "pending_execution_schedule"
+        }:
             raise CampaignPlanningError(
                 "No feasible fixed-sampling plan: sampling and methods were not changed. "
                 "Increase resources or explicitly supply a different schedule. "
                 + _campaign_infeasibility_detail(plan), plan=plan,
             )
         if (
-            plan["feasibility_status"] != "feasible"
+            plan["feasibility_status"] not in {"feasible", "pending_execution_schedule"}
             and bool(execution.get("fail_if_minimum_coverage_unaffordable", True))
         ):
             recommendation = recommend_scientifically_valid_task_subset(
@@ -2851,6 +2868,21 @@ def plan_and_apply_complete_campaign(
             f"{maximum_iterations} iterations"
         )
     plan.update({
+        "native_schedule_validation": {
+            "status": "pending",
+            "required": True,
+            "stage_feasibility_status": plan["feasibility_status"],
+            "stage_schedule_estimated_wall_hours": plan[
+                "estimated_selected_wall_hours_lower_bound"
+            ],
+            "stage_schedule_minimum_estimate_hours": plan["minimum_wall_hours_lower_bound"],
+            "stage_infeasibility_reasons": list(plan.get("infeasibility_reasons", [])),
+            "interpretation": (
+                "Stage/lane estimates guide allocation but do not prove wall-time "
+                "infeasibility. The generated dependency/resource schedule must "
+                "pass the same science budget before any launcher is ready."
+            ),
+        },
         "planning_scope": (
             "complete generated base including inferred chemistry, per-system "
             "topology-local automatic chemical context, and conformational-view campaign"
