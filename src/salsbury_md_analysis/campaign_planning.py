@@ -15,8 +15,8 @@ from .automatic_sampling import (
 from .ensemble_parallelism import annotate_task_parallelism
 from .convergence_contracts import configure_convergence_blocks
 from .orchestration_resources import orchestration_tasks
-from .execution_adapters import load_slurm_profile
-from .campaign_walltime import CAMPAIGN_WALLTIME_DEFAULTS
+from .execution_adapters import load_slurm_profile, execution_walltime_budget
+from .campaign_walltime import CAMPAIGN_WALLTIME_DEFAULTS, campaign_walltime_request
 from .frame_sampling import (
     integer_stride_for_budget,
     integer_stride_selected_count,
@@ -142,6 +142,12 @@ def _campaign_infeasibility_detail(plan: Mapping[str, object]) -> str:
             f"{minimum_wall_value:.3f} h; science wall allowance "
             f"{science_wall:.3f} h within the {maximum_wall:.3f} h campaign ceiling"
         )
+        allocation_budget = plan.get("campaign_walltime_budget", {})
+        if isinstance(allocation_budget, Mapping) and allocation_budget.get("rounding_minutes"):
+            parts.append(
+                f"the {maximum_wall:.3f} h estimate budget reserves the full "
+                f"campaign allowance inside the {allocation_budget['maximum_campaign_wall_hours']:g} h Slurm ceiling"
+            )
         if science_wall > 0.0:
             required_candidates.append(
                 minimum_wall_value * maximum_wall / science_wall
@@ -157,6 +163,12 @@ def _campaign_infeasibility_detail(plan: Mapping[str, object]) -> str:
         required_candidates.append(minimum_cpu * maximum_wall / science_cpu)
     if required_candidates:
         required = max(required_candidates)
+        allocation_budget = plan.get("campaign_walltime_budget", {})
+        if isinstance(allocation_budget, Mapping) and allocation_budget.get("rounding_minutes"):
+            required = campaign_walltime_request(required, float(allocation_budget["maximum_campaign_wall_hours"]), {
+                "campaign_walltime_headroom_fraction": allocation_budget["headroom_fraction"],
+                "campaign_walltime_rounding_minutes": allocation_budget["rounding_minutes"],
+            })["preferred_wall_hours"]
         parts.append(
             "estimated minimum campaign ceiling with the current utilization and "
             f"reserves is {required:.3f} h; retry with --target-wall-hours "
@@ -2323,17 +2335,31 @@ def plan_and_apply_complete_campaign(
                 "minimum_wall_minutes"
             ],
             "scheduler_walltime_interpretation": (
-                "preferred per-job timeout allowance inside the padded "
-                "end-to-end campaign wall limit; the execution adapter reduces "
-                "this additional padding uniformly when required to keep the "
-                "serialized scheduler kill-limit path inside that limit"
+                "the full campaign allowance and rounding are reserved before "
+                "planning; per-job kill-limit sums are diagnostic only"
             ),
         })
+        if execution.get("submission_adapter") == "slurm" and "campaign_walltime_budget" not in request:
+            estimate = request.get("unrounded_request", {}).get("wall_hours")
+            request["campaign_walltime_budget"] = dict(time_budget)
+            if estimate is not None:
+                allocation = campaign_walltime_request(float(estimate), float(execution["maximum_hours_per_cpu"]), scheduler_time_policy)
+                requested = allocation["preferred_wall_hours"]
+                request["recommended_request"]["wall_hours"] = requested
+                request["estimated_execution_wall_hours"] = estimate
+                request["input_caps"]["wall_hours"] = float(execution["maximum_hours_per_cpu"])
+                request["fits_input_wall_cap"] = allocation["submission_time_feasible"]
+                request["additional_wall_hours_required"] = max(0.0, requested - float(execution["maximum_hours_per_cpu"]))
+                if request["status"] != "unavailable_within_cpu_or_memory_caps":
+                    request["status"] = "available_within_all_input_caps" if allocation["submission_time_feasible"] else "requires_larger_wall_time"
 
     def annotate_plan_minimum_request(candidate: Mapping[str, object]) -> None:
+        if isinstance(candidate, dict):
+            candidate["campaign_walltime_budget"] = dict(time_budget)
         request = candidate.get("permissive_minimum_resource_request")
         if isinstance(request, dict):
             annotate_permissive_minimum_request(request)
+    time_budget = execution_walltime_budget(execution)
     cache_mode = str(execution.get("coordinate_cache", "auto"))
     base_request = load_json(base_project_path)
     base_requested_modules = (
@@ -2549,7 +2575,7 @@ def plan_and_apply_complete_campaign(
         try:
             planning_kwargs = {
                 "maximum_parallel_cpus": int(execution["maximum_parallel_cpus"]),
-                "maximum_wall_hours": float(execution["maximum_hours_per_cpu"]),
+                "maximum_wall_hours": float(time_budget["maximum_estimated_execution_hours"]),
                 "maximum_memory_gib": float(execution["maximum_memory_gib"]),
                 "planning_utilization": float(execution["planning_utilization"]),
                 "pilot_budget_fraction": float(execution["pilot_budget_fraction"]),
@@ -2702,7 +2728,7 @@ def plan_and_apply_complete_campaign(
                 path,
                 task_rows,
                 view_source_counts,
-                target_wall_hours=float(execution["maximum_hours_per_cpu"]),
+                target_wall_hours=float(time_budget["maximum_estimated_execution_hours"]),
                 consistency_skips=consistency_skips,
             ))
         plan["applied_view_allocations"] = applied_views
@@ -2837,7 +2863,7 @@ def plan_and_apply_complete_campaign(
             **scheduler_time_policy,
             "scheduler_walltime_interpretation": (
                 "campaign request is the final uncertainty-adjusted schedule "
-                "plus campaign headroom, rounded up within the user ceiling; "
+                "plus the full campaign headroom, rounded up within the user ceiling; "
                 "individual kill-limit sums are diagnostic only"
             ),
         },

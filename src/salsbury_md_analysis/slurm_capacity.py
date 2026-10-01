@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from .execution_adapters import load_slurm_profile
+from .campaign_walltime import campaign_walltime_budget
 from .manifests import load_json
 from .resource_planning import plan_projection_coupled_campaign_resource_budget
 
@@ -644,6 +645,12 @@ def advise_slurm_capacity(
     profile = load_slurm_profile(profile_source)
     policy = profile["resource_policy"]
     assert isinstance(policy, Mapping)
+    time_budget = campaign_walltime_budget(hours, policy)
+    if time_budget["maximum_estimated_execution_hours"] <= 0:
+        raise SlurmCapacityError(
+            "wall_hours is shorter than campaign_walltime_rounding_minutes; "
+            "increase wall_hours or explicitly choose a smaller rounding interval"
+        )
     node_policy = profile["node_policy"]
     assert isinstance(node_policy, Mapping)
     useful_peak = _workflow_useful_cpu_peak(planning_tasks)
@@ -675,7 +682,7 @@ def advise_slurm_capacity(
         replanned = plan_projection_coupled_campaign_resource_budget(
             planning_tasks,
             maximum_parallel_cpus=recommended_cpus,
-            maximum_wall_hours=hours,
+            maximum_wall_hours=time_budget["maximum_estimated_execution_hours"],
             maximum_memory_gib=memory,
             planning_utilization=float(plan.get("planning_utilization", 0.85)),
             pilot_budget_fraction=float(plan.get("pilot_budget_fraction", 0.05)),
@@ -769,6 +776,7 @@ def advise_slurm_capacity(
             "resource_bounded_replanning_iterations": replanning_iterations,
         },
         "replanned_campaign": {
+            "campaign_walltime_budget": time_budget,
             "task_selection": {
                 "source": (
                     "scheduler-resource-requests.json"

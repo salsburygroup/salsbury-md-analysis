@@ -353,11 +353,19 @@ requested hours = ceil(estimated scheduled hours × 4/3)
 Both profiles expose `campaign_walltime_headroom_fraction` (default one-third)
 and `campaign_walltime_rounding_minutes` (default 60). For example, an
 already-buffered estimate of 11.75 hours requests 16 hours, even if the planning
-budget was 48 hours. The user ceiling remains a hard maximum. When it trims the
-headroom or rounding, the preview warns; if the execution estimate itself
-exceeds the ceiling, submission is refused. These adjustments do not change
-methods, frame selections, memory padding or the scientific budget. Queue
-waiting and a separately launched interactive build are excluded.
+budget was 48 hours. The user ceiling includes the full allowance and rounding.
+For a 48-hour ceiling, the planner reserves at most 36 estimated execution hours
+before selecting strides or proposing optional reductions. These execution
+hours already include the configured task-level model uncertainty; existing
+planning-utilization and pilot/finalization reserves also remain in force.
+For a non-integer ceiling, the planner first rounds the usable allocation down
+to the configured interval, then divides by the headroom factor. The preview
+refuses submission if the final schedule plus the full allowance exceeds the
+ceiling; it never trims the allowance to make a plan pass. Scientific minima,
+chemistry and memory padding are unchanged. Fresh planning can select different
+strides within the smaller execution budget. Queue waiting and a separately
+launched interactive build are excluded. Local-only execution retains its
+existing budget; this allocation allowance applies to Slurm planning.
 
 For a campaign that fits on one node, use the generated shared-allocation route:
 

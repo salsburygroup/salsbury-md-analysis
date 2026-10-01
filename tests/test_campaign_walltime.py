@@ -6,10 +6,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from salsbury_md_analysis.campaign_walltime import campaign_walltime_request
+from salsbury_md_analysis.campaign_walltime import campaign_walltime_budget, campaign_walltime_request
 from salsbury_md_analysis.execution_adapters import (
     ExecutionAdapterError, apply_slurm_profile, load_slurm_profile,
-    run_local_workflow,
+    run_local_workflow, execution_walltime_budget,
 )
 
 
@@ -28,13 +28,30 @@ class CampaignWalltimeTests(unittest.TestCase):
             "campaign_walltime_rounding_minutes": 30,
         })["requested_wall_hours"], 15)
 
-    def test_user_ceiling_trims_headroom_never_estimated_work(self):
+    def test_user_ceiling_preserves_full_headroom(self):
         r = campaign_walltime_request(11.75, 15)
-        self.assertEqual(r["requested_wall_hours"], 15)
-        self.assertTrue(r["headroom_limited_by_campaign_cap"])
+        self.assertFalse(r["submission_time_feasible"])
+        self.assertIsNone(r["requested_wall_hours"])
+        self.assertFalse(r["headroom_limited_by_campaign_cap"])
         r = campaign_walltime_request(16, 15)
         self.assertFalse(r["submission_time_feasible"])
         self.assertIsNone(r["requested_wall_hours"])
+
+    def test_different_padded_limits_reserve_allowance_before_planning(self):
+        for cap, execution in [(8, 6), (16, 12), (24, 18), (48, 36), (168, 126), (48.5, 36)]:
+            with self.subTest(cap=cap):
+                budget = campaign_walltime_budget(cap)
+                self.assertEqual(budget["maximum_estimated_execution_hours"], execution)
+                self.assertLessEqual(campaign_walltime_request(execution, cap)["requested_wall_hours"], cap)
+                self.assertFalse(campaign_walltime_request(execution + 0.01, cap)["submission_time_feasible"])
+        self.assertEqual(campaign_walltime_budget(48, {"campaign_walltime_headroom_fraction": 0.5})["maximum_estimated_execution_hours"], 32)
+        self.assertEqual(execution_walltime_budget({"maximum_hours_per_cpu": 48, "submission_adapter": "local"})["maximum_estimated_execution_hours"], 48)
+        repo = Path(__file__).resolve().parents[1]
+        for profile in ("deac.json", "generic-template.json"):
+            self.assertEqual(execution_walltime_budget({
+                "maximum_hours_per_cpu": 48, "submission_adapter": "slurm",
+                "slurm_profile": str(repo / "profiles/slurm" / profile),
+            })["maximum_estimated_execution_hours"], 36)
 
     def test_invalid_or_nonfinite_values_fail(self):
         for value in (True, -1, math.inf, math.nan, "11.75"):
@@ -140,6 +157,17 @@ class CampaignWalltimeTests(unittest.TestCase):
                                            capture_output=True, text=True)
                 self.assertNotEqual(submitted.returncode, 0)
             self.assertFalse((root / "submission-ledgers").exists())
+
+    def test_preview_rejects_runtime_that_fits_but_leaves_insufficient_allowance(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            profile, plan = self.fixture(root, "generic-template.json")
+            plan["maximum_campaign_wall_hours"] = 15
+            result = apply_slurm_profile(root, profile, plan)
+            self.assertFalse(result["submission_preview"]["submission_permitted"])
+            codes = {r["code"] for r in result["submission_preview"]["warnings"]}
+            self.assertIn("CAMPAIGN_PADDED_TIME_EXCEEDS_WALL_LIMIT", codes)
+            self.assertFalse(result["single_allocation"]["submission_permitted"])
 
     def test_native_executor_records_shorter_deadline_without_changing_plan(self):
         with tempfile.TemporaryDirectory() as temp:

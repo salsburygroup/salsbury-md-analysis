@@ -557,7 +557,12 @@ def build_planning_report(root: Path) -> Dict[str, object]:
             "maximum_parallel_memory_gib": resources.get(
                 "maximum_parallel_memory_gib_input"
             ),
-            "maximum_wall_hours": resources.get("maximum_wall_hours_input"),
+            "maximum_wall_hours": _mapping(resources.get("campaign_walltime_budget")).get(
+                "maximum_campaign_wall_hours", resources.get("maximum_wall_hours_input")
+            ),
+            "maximum_estimated_execution_hours": _mapping(resources.get("campaign_walltime_budget")).get(
+                "maximum_estimated_execution_hours", resources.get("maximum_wall_hours_input")
+            ),
             "estimated_selected_cpu_hours": resources.get(
                 "estimated_selected_cpu_hours"
             ),
@@ -640,6 +645,7 @@ def render_planning_report_markdown(report: Mapping[str, object]) -> str:
         f"`{envelope.get('effective_maximum_parallel_cpus')}`",
         f"- Aggregate memory cap: `{envelope.get('maximum_parallel_memory_gib')} GiB`",
         f"- Campaign wall-time cap: `{envelope.get('maximum_wall_hours')} hours`",
+        f"- Execution budget before campaign allowance: `{envelope.get('maximum_estimated_execution_hours')} hours`",
         f"- Scheduled runtime estimate (model uncertainty included): `{estimated_hours if estimated_hours is not None else 'unavailable'} hours`",
         f"- Recommended campaign Slurm limit: `{requested_hours if requested_hours is not None else 'unavailable'} hours`",
         f"- Planned sampling tasks: `{sampling.get('task_count')}`",

@@ -12,19 +12,13 @@ CAMPAIGN_WALLTIME_DEFAULTS = {
 }
 
 
-def campaign_walltime_request(
-    estimated_hours: float,
+def campaign_walltime_budget(
     maximum_hours: float,
     policy: Mapping[str, object] | None = None,
 ) -> dict:
-    """Add explicit allocation headroom once, without changing scientific work.
-
-    A user ceiling can trim headroom/rounding, never the execution estimate.
-    Serialized per-task kill limits do not enter this calculation.
-    """
+    """Reserve the full allocation allowance before selecting scientific work."""
     settings = {**CAMPAIGN_WALLTIME_DEFAULTS, **(policy or {})}
     values = {
-        "estimated_hours": estimated_hours,
         "maximum_hours": maximum_hours,
         **{key: settings[key] for key in CAMPAIGN_WALLTIME_DEFAULTS},
     }
@@ -36,34 +30,51 @@ def campaign_walltime_request(
     if rounding <= 0 or maximum_hours <= 0:
         raise ValueError("campaign wall-time ceiling and rounding must be positive")
     fraction = float(settings["campaign_walltime_headroom_fraction"])
+    usable_minutes = math.floor(maximum_hours * 60.0 / rounding + 1e-12) * rounding
+    return {
+        "maximum_campaign_wall_hours": maximum_hours,
+        "maximum_estimated_execution_hours": usable_minutes / (60.0 * (1.0 + fraction)),
+        "maximum_rounded_allocation_hours": usable_minutes / 60.0,
+        "headroom_fraction": fraction,
+        "rounding_minutes": rounding,
+    }
+
+
+def campaign_walltime_request(
+    estimated_hours: float,
+    maximum_hours: float,
+    policy: Mapping[str, object] | None = None,
+) -> dict:
+    """Add full headroom once; reject rather than shrink it at the user ceiling."""
+    budget = campaign_walltime_budget(maximum_hours, policy)
+    if (isinstance(estimated_hours, bool) or not isinstance(estimated_hours, (int, float))
+            or not math.isfinite(estimated_hours) or estimated_hours < 0):
+        raise ValueError("estimated_hours must be finite and nonnegative")
+    rounding = budget["rounding_minutes"]
+    fraction = budget["headroom_fraction"]
     preferred_minutes = max(rounding, math.ceil(
         estimated_hours * 60.0 * (1.0 + fraction) / rounding - 1e-12
     ) * rounding)
-    # Slurm's wall-time requests have second precision; never round a cap up.
-    cap_minutes = math.floor(maximum_hours * 3600.0) / 60.0
-    feasible = estimated_hours * 60.0 <= cap_minutes + 1e-9
-    selected_minutes = min(preferred_minutes, cap_minutes) if feasible else None
+    feasible = preferred_minutes <= maximum_hours * 60.0 + 1e-9
+    selected_minutes = preferred_minutes if feasible else None
     return {
         "schema": "salsbury-campaign-walltime-request-v1",
         "basis": "final_dependency_resource_schedule_with_model_uncertainty",
         "estimated_execution_hours": estimated_hours,
-        "maximum_campaign_wall_hours": maximum_hours,
-        "headroom_fraction": fraction,
-        "rounding_minutes": rounding,
+        **budget,
         "preferred_wall_hours": preferred_minutes / 60.0,
         "requested_wall_hours": (
             selected_minutes / 60.0 if selected_minutes is not None else None
         ),
         "requested_wall_minutes": selected_minutes,
-        "headroom_limited_by_campaign_cap": preferred_minutes > cap_minutes + 1e-9,
+        "headroom_limited_by_campaign_cap": False,
         "submission_time_feasible": feasible,
-        "status": ("estimate_exceeds_campaign_cap" if not feasible else
-                   "headroom_limited_by_campaign_cap" if preferred_minutes > cap_minutes + 1e-9
-                   else "complete"),
+        "status": "complete" if feasible else "padded_request_exceeds_campaign_cap",
         "interpretation": (
             "The execution estimate already includes planner uncertainty. Add "
-            "the declared campaign headroom once and round up, bounded by the "
-            "user ceiling. Per-task timeout sums are diagnostics, not execution "
+            "the full declared campaign headroom once and round up. Planning "
+            "reserves this allowance within the user ceiling; never trim it to "
+            "make a plan pass. Per-task timeout sums are diagnostics, not execution "
             "time. Queue waiting and a separate interactive build are excluded."
         ),
     }

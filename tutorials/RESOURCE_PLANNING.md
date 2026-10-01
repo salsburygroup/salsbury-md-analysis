@@ -39,11 +39,13 @@ exit zero while reporting an infeasible schedule. New plans explicitly budget
 setup and reporting under **Required execution overhead** in `planning-report.md`.
 Queue waiting is separate. A sum of scheduler time limits is not a runtime forecast. Check
 `walltime_allocation.contract`: both shipped profiles use
-`estimated_schedule_plus_campaign_headroom`. The final scheduled estimate already
+`padded_campaign_ceiling_with_reserved_headroom`. The final scheduled estimate already
 includes model uncertainty; the recommended allocation adds one-third and rounds
 up to the next hour. Thus 11.75 estimated hours become 16 requested hours, not
-the entire 48-hour planning budget. The user ceiling can limit this extra
-headroom, with a warning; an execution estimate above the ceiling still fails.
+the entire 48-hour planning budget. A requested 48-hour limit reserves at most
+36 estimated execution hours before planning strides and optional reductions.
+The full allowance and rounding must fit; a final schedule that exceeds this
+execution budget is rejected. The allowance is never silently reduced.
 DEAC's `request_campaign_wall_limit_for_planned_tasks` is disabled by default.
 Existing profile copies and prepared scripts retain their previous setting;
 update the profile and prepare a fresh output directory to use this default.

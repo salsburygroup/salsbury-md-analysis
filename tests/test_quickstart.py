@@ -212,6 +212,7 @@ class QuickstartTests(unittest.TestCase):
                 output_directory=output,
                 project_id="deac-profile-test",
                 frame_interval_ps=10.0,
+                target_wall_hours=48,
                 config_path=repository / "profiles/analysis/deac-default.json",
             )
             worker = (output / "run_stage_0_array.slurm").read_text(
@@ -222,6 +223,15 @@ class QuickstartTests(unittest.TestCase):
             scheduler = json.loads(
                 (output / "scheduler-resource-requests.json").read_text()
             )
+            resources = json.loads((output / "campaign-resource-plan.json").read_text())
+            config = json.loads((output / "analysis-config.json").read_text())
+            readable = json.loads((output / "planning-report.json").read_text())
+        self.assertEqual(config["execution"]["maximum_hours_per_cpu"], 48)
+        self.assertEqual(resources["maximum_wall_hours_input"], 36)
+        self.assertEqual(resources["campaign_walltime_budget"]["maximum_campaign_wall_hours"], 48)
+        self.assertEqual(resources["time_safety_factor"], 1.5)
+        self.assertEqual(readable["resource_envelope"]["maximum_wall_hours"], 48)
+        self.assertEqual(readable["resource_envelope"]["maximum_estimated_execution_hours"], 36)
         self.assertEqual(report["execution_adapter"], "slurm")
         self.assertEqual(report["slurm_profile_id"], "wfu-deac-salsbury-group-v1")
         self.assertTrue(report["next_command"].endswith("./submit.sh"))
@@ -593,7 +603,7 @@ class QuickstartTests(unittest.TestCase):
             walltime_allocation = local_plan["walltime_allocation"]
             self.assertEqual(
                 walltime_allocation["contract"],
-                "estimated_schedule_plus_campaign_headroom",
+                "padded_campaign_ceiling_with_reserved_headroom",
             )
             self.assertLessEqual(
                 walltime_allocation["campaign_walltime_request"]["requested_wall_hours"],

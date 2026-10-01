@@ -59,7 +59,7 @@ class ExecutionAdapterTests(unittest.TestCase):
             "request_campaign_wall_limit_for_planned_tasks"
         ])
 
-    def test_campaign_request_is_capped_without_summing_task_timeouts(self):
+    def test_campaign_request_rejects_insufficient_full_headroom(self):
         def task(task_id):
             return {
                 "task_id": task_id,
@@ -91,14 +91,15 @@ class ExecutionAdapterTests(unittest.TestCase):
         allocation = _fit_walltime_requests_to_campaign(plan)
 
         self.assertEqual(
-            allocation["status"], "headroom_limited_by_campaign_cap"
+            allocation["status"], "padded_request_exceeds_campaign_cap"
         )
         self.assertGreater(
             allocation["selected_scheduler_reservation_critical_path_hours"],
             25,
         )
-        self.assertEqual(allocation["campaign_walltime_request"]["requested_wall_hours"], 25)
-        self.assertTrue(allocation["submission_time_feasible"])
+        self.assertIsNone(allocation["campaign_walltime_request"]["requested_wall_hours"])
+        self.assertEqual(allocation["campaign_walltime_request"]["preferred_wall_hours"], 27)
+        self.assertFalse(allocation["submission_time_feasible"])
         self.assertFalse(any(
             task["wall_request_limited_by_campaign_cap"]
             for phase in plan["phases"] for task in phase["tasks"]
@@ -1245,7 +1246,7 @@ class ExecutionAdapterTests(unittest.TestCase):
                 "dependency_model": "task_dag_v1",
                 "maximum_parallel_cpus": 44,
                 "maximum_parallel_memory_gib": 185,
-                "maximum_campaign_wall_hours": 3.5,
+                "maximum_campaign_wall_hours": 4,
                 "phases": [
                     {"phase_id": "first", "tasks": [
                         task("large", "large.slurm", 20, 172, 2),

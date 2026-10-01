@@ -22,7 +22,7 @@ from .accepted_artifacts import reports_complete
 from .ensemble_parallelism import annotate_task_parallelism
 from .manifests import load_json
 from .resource_planning import ResourcePlanningError, pack_resource_lanes
-from .campaign_walltime import CAMPAIGN_WALLTIME_DEFAULTS, campaign_walltime_request
+from .campaign_walltime import CAMPAIGN_WALLTIME_DEFAULTS, campaign_walltime_budget, campaign_walltime_request
 
 
 class ExecutionAdapterError(ValueError):
@@ -380,6 +380,26 @@ def _script_role(name: str) -> str:
     if name.startswith("run_view_"):
         return "conformational"
     return "analysis"
+
+
+def execution_walltime_budget(execution: Mapping[str, object]) -> Dict[str, object]:
+    """Resolve the Slurm allowance without mutating the user's configuration."""
+    maximum = float(execution["maximum_hours_per_cpu"])
+    if execution.get("submission_adapter", "local") != "slurm":
+        return {"maximum_campaign_wall_hours": maximum,
+                "maximum_estimated_execution_hours": maximum,
+                "headroom_fraction": 0.0, "rounding_minutes": None}
+    profile_path = execution.get("slurm_profile")
+    if not isinstance(profile_path, str) or not profile_path:
+        raise ExecutionAdapterError("Slurm planning requires execution.slurm_profile")
+    policy = load_slurm_profile(Path(profile_path))["resource_policy"]
+    budget = campaign_walltime_budget(maximum, policy)
+    if budget["maximum_estimated_execution_hours"] <= 0:
+        raise ExecutionAdapterError(
+            "campaign wall limit is smaller than campaign_walltime_rounding_minutes; "
+            "increase the limit or explicitly choose a smaller rounding interval"
+        )
+    return budget
 
 
 def _profile_preamble(profile: Mapping[str, object], profile_path: Path) -> str:
@@ -922,7 +942,7 @@ def _fit_walltime_requests_to_campaign(
     request = campaign_walltime_request(estimated_path, campaign_wall, resource_policy)
     allocation = {
         "walltime_allocation_schema": "salsbury-walltime-allocation-v3",
-        "contract": "estimated_schedule_plus_campaign_headroom",
+        "contract": "padded_campaign_ceiling_with_reserved_headroom",
         "campaign_wall_limit_hours": campaign_wall,
         "selected_scheduler_reservation_critical_path_hours": timeout_path,
         "status": request["status"],
@@ -1977,7 +1997,7 @@ def _slurm_submission_preview(
     if wall_request is not None:
         walltime_allocation.update({
             "walltime_allocation_schema": "salsbury-walltime-allocation-v3",
-            "contract": "estimated_schedule_plus_campaign_headroom",
+            "contract": "padded_campaign_ceiling_with_reserved_headroom",
             "campaign_wall_limit_hours": campaign_wall_hours,
             "selected_scheduler_reservation_critical_path_hours": scheduler_reservation_path,
             "campaign_walltime_request": wall_request,
@@ -2002,16 +2022,18 @@ def _slurm_submission_preview(
             "generated_schedule_wall_hours": planner_critical_path,
             "campaign_wall_limit_hours": campaign_wall_hours,
         })
-    if wall_request and wall_request["headroom_limited_by_campaign_cap"] and generated_schedule_feasible:
+    elif wall_request and not wall_request["submission_time_feasible"]:
         warnings.append({
-            "severity": "warning",
-            "code": "CAMPAIGN_WALLTIME_HEADROOM_LIMITED",
+            "severity": "error",
+            "code": "CAMPAIGN_PADDED_TIME_EXCEEDS_WALL_LIMIT",
             "message": (
-                "The user ceiling limits the requested campaign headroom or "
-                "rounding. The execution estimate still fits; sampling, "
-                "methods and memory were not changed."
+                "The final execution schedule plus the full campaign allowance "
+                "and rounding exceeds the user ceiling. Replan within the "
+                "reported execution budget or increase the campaign limit; "
+                "submission is disabled and the allowance is not trimmed."
             ),
             "preferred_wall_hours": wall_request["preferred_wall_hours"],
+            "maximum_estimated_execution_hours": wall_request["maximum_estimated_execution_hours"],
             "campaign_wall_limit_hours": campaign_wall_hours,
         })
     lane_summaries = [
@@ -2508,7 +2530,7 @@ def _prepare_single_allocation(
     tasks = [task for phase in execution_plan["phases"] for task in phase["tasks"]]
     reasons = []
     if not preview["submission_permitted"]:
-        reasons.append("the generated execution estimate exceeds the campaign limit")
+        reasons.append("the final schedule plus campaign allowance does not fit the campaign limit")
     if any(int(task.get("node_count", 1)) > 1 for task in tasks):
         reasons.append("a task requires distributed multi-node execution")
     if int(preview.get("planned_node_count", 1)) > 1:
