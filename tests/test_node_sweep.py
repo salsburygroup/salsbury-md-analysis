@@ -40,8 +40,9 @@ class NodeSweepTests(unittest.TestCase):
         task["selected_physical_frames_per_replica"] = [600, 600]
         summary = scientific_minimum_multiples([task])
         self.assertEqual(summary["task_count"], 1)
-        self.assertEqual(summary["mean_multiple_of_scientific_minimum"], 1.2)
-        self.assertEqual(summary["median_multiple_of_scientific_minimum"], 1.2)
+        # Default H-bond policy requires 200 in each replica, not 1,000 pooled.
+        self.assertEqual(summary["mean_multiple_of_scientific_minimum"], 3.0)
+        self.assertEqual(summary["median_multiple_of_scientific_minimum"], 3.0)
 
     def test_sweep_uses_all_cores_per_node_and_selects_smallest_plateau(self):
         report = plan_node_sweep(

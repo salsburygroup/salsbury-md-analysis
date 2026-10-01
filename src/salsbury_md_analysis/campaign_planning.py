@@ -21,6 +21,10 @@ from .frame_sampling import (
     integer_stride_for_budget,
     integer_stride_selected_count,
 )
+from .fixed_sampling import (
+    FixedSamplingError, freeze_task_sampling, load_fixed_schedule,
+    schedule_document, verify_fixed_plan,
+)
 from .manifests import load_json, validate_project
 from .memory_policy import (
     MemoryPolicyError,
@@ -2239,6 +2243,16 @@ def plan_and_apply_complete_campaign(
         if filename.startswith("project-") and filename.endswith(".json")
     ]
     context_paths = [root / filename for filename in context_project_files]
+    fixed_schedule = None
+    fixed_path = sampling_configuration.get("fixed_schedule_file")
+    if fixed_path is not None:
+        try:
+            fixed_schedule = load_fixed_schedule(
+                Path(str(fixed_path)), replicas,
+                [base_project_path, *view_paths, *context_paths],
+            )
+        except (OSError, ValueError) as exc:
+            raise CampaignPlanningError(f"Fixed sampling rejected: {exc}") from exc
     delegated_context_modules = set()
     for context_path in context_paths:
         context_project = load_json(context_path)
@@ -2508,6 +2522,18 @@ def plan_and_apply_complete_campaign(
                 and view_id in view_frame_counts_by_id
                 else source_counts
             )
+            if fixed_schedule is not None:
+                saved_projection = fixed_schedule["tasks"].get(f"view:{view_id}:common_pca")
+                if saved_projection is None:
+                    raise CampaignPlanningError(f"fixed sampling has no PCA task for {view_id}")
+                cache_task = fixed_schedule["tasks"].get("preprocessing:coordinate_cache", {})
+                cache_stride = int(cache_task.get("integer_stride", 1))
+                expected_source = [integer_stride_selected_count(n, cache_stride) for n in view_source_counts]
+                if saved_projection["source_frames_per_replica"] != expected_source:
+                    raise CampaignPlanningError(f"fixed sampling PCA source counts do not match the cache for {view_id}")
+                # The project selectors operate on the retained cache stream.
+                # Build basis and downstream-fit costs on that same stream.
+                view_source_counts = list(saved_projection["source_frames_per_replica"])
             built.extend(_view_tasks(
                 path,
                 view_source_counts,
@@ -2603,7 +2629,25 @@ def plan_and_apply_complete_campaign(
                     "coordinate cache; it cannot be silently approximated with "
                     "a lossless/external cache or a cache-disabled workflow"
                 )
-            if (
+            if fixed_schedule is not None:
+                tasks = freeze_task_sampling(
+                    tasks, fixed_schedule,
+                    coordinate_cache_full_scan_fraction=float(execution.get("coordinate_cache_full_scan_fraction", 1.0)),
+                )
+                plan = plan_campaign_resource_budget(tasks, **planning_kwargs)
+                plan["fixed_sampling"] = verify_fixed_plan(plan, fixed_schedule)
+                if fixed_schedule.get("global_stride_coupling") is not None:
+                    # Only the stride contract is reusable; prior timings and
+                    # candidate-search evidence are not a fresh estimate.
+                    old_coupling = fixed_schedule["global_stride_coupling"]
+                    coupling = {key: deepcopy(old_coupling[key]) for key in (
+                        "selected_coordinate_cache_integer_stride",
+                        "selected_overall_trajectory_integer_stride",
+                    )}
+                    coupling.update({"converged": True, "planning_mode": "fixed_sampling"})
+                    plan["global_stride_coupling"] = coupling
+                    plan["coordinate_cache_coupling"] = deepcopy(coupling)
+            elif (
                 coordinate_cache_build_required
                 and cache_materialization == "planned_strided"
             ):
@@ -2623,10 +2667,16 @@ def plan_and_apply_complete_campaign(
                 )
             else:
                 plan = plan_campaign_resource_budget(tasks, **planning_kwargs)
-        except ResourcePlanningError as exc:
+        except (ResourcePlanningError, FixedSamplingError) as exc:
             raise CampaignPlanningError(str(exc)) from exc
         plan["comparison_clustering_consistency_skips"] = consistency_skips
         annotate_plan_minimum_request(plan)
+        if fixed_schedule is not None and plan["feasibility_status"] != "feasible":
+            raise CampaignPlanningError(
+                "No feasible fixed-sampling plan: sampling and methods were not changed. "
+                "Increase resources or explicitly supply a different schedule. "
+                + _campaign_infeasibility_detail(plan), plan=plan,
+            )
         if (
             plan["feasibility_status"] != "feasible"
             and bool(execution.get("fail_if_minimum_coverage_unaffordable", True))
@@ -2681,6 +2731,24 @@ def plan_and_apply_complete_campaign(
             time_safety_factor=time_safety_factor,
         )
         sampling_plan["campaign_resource_plan"] = plan
+        if fixed_schedule is not None:
+            # All source scientific sampling controls were restored before
+            # costing. Do not run the allocation-to-settings mutators below.
+            frozen_base = load_json(base_project_path)
+            convergence = frozen_base.get("definitions", {}).get("convergence_uncertainty")
+            rmsd_task = next((row for row in plan["tasks"] if row["module_id"] == "replica_rmsd_rg"), None)
+            if isinstance(convergence, dict) and rmsd_task is not None:
+                try:
+                    sampling_plan["convergence_preparation_contract"] = configure_convergence_blocks(
+                        convergence,
+                        _convergence_selected_series(frozen_base, sampling_plan, rmsd_task["selected_physical_frames_per_replica"]),
+                        explicit_block_size=True,
+                    )
+                except ValueError as exc:
+                    raise CampaignPlanningError(str(exc)) from exc
+            converged = True
+            iteration_history.append({"iteration": 1, "sampling_frozen": True})
+            break
         if coordinate_cache_enabled and coordinate_cache_input is not None:
             plan["coordinate_cache_reuse"] = {
                 "status": "external_lossless_cache",
@@ -2790,7 +2858,10 @@ def plan_and_apply_complete_campaign(
             else "complete generated base including inferred chemistry plus "
             "conformational-view campaign"
         ),
-        "planning_algorithm": "globally_coupled_integer_stride_iteration_v2",
+        "planning_algorithm": (
+            "fixed_sampling_resource_only_v1" if fixed_schedule is not None
+            else "globally_coupled_integer_stride_iteration_v2"
+        ),
         "planning_iterations": len(iteration_history),
         "planning_converged": True,
         "planning_iteration_history": iteration_history,
@@ -2883,4 +2954,11 @@ def plan_and_apply_complete_campaign(
         ),
     })
     sampling_plan["campaign_resource_plan"] = plan
+    snapshot = schedule_document(
+        root, plan, sampling_plan,
+        [base_project_path, *view_paths, *context_paths],
+    )
+    (root / "fixed-sampling-schedule.json").write_text(
+        json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return plan
