@@ -377,16 +377,21 @@ including the configured memory reserve once per node.
 
 The earlier stage/lane estimate remains a diagnostic. It serializes broad
 analysis stages and can overestimate the time needed by independent tasks.
-A wall-time objection from that estimate alone allows preparation to reach the
-native check; missing calibration, scientific-floor, CPU and memory failures
-still stop preparation. The native schedule must fit the science wall-time
+A wall-time objection from that estimate alone allows a concrete sampling
+schedule to reach the native check; missing calibration, scientific-floor,
+CPU and memory failures still stop preparation. The native schedule must fit the science wall-time
 allowance after the existing utilization, pilot and finalization reserves.
 Changing the acceptance check does not remove these reserves or alter a fixed
 sampling schedule.
 
 Automatic stride allocation still uses the conservative stage model to choose
-candidates; this check does not make that search globally optimal. Legacy
-independently authored workflows without a native validation record keep their
+candidates; this check does not make that search globally optimal. If no cache
+stride is selected, preparation saves the rejected candidate diagnostics and
+evaluates the protected-core reduction recommendation. It does not export a
+fixed sampling schedule or enable a launcher. Setting
+`fail_if_minimum_coverage_unaffordable` to `false` cannot make an unselected
+cache search executable. Legacy independently authored workflows without a
+native validation record keep their
 existing validation path. Estimates exclude queue delays and do not guarantee
 execution time.
 

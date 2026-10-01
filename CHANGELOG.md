@@ -14,6 +14,10 @@
 
 ## Unreleased
 
+- Report rejected cache-stride searches before fixed-sampling export. Preserve
+  resource and protected-core reduction diagnostics without treating an
+  unselected candidate as an executable schedule.
+
 - Link either triangle of a symmetric DCCM difference to the same ordered-system
   comparison. Export algorithm-specific clustering population plots and tables,
   with separate paths for each system and partition.
