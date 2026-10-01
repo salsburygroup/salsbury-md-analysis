@@ -593,12 +593,10 @@ class QuickstartTests(unittest.TestCase):
             walltime_allocation = local_plan["walltime_allocation"]
             self.assertEqual(
                 walltime_allocation["contract"],
-                "padded_end_to_end_campaign_ceiling",
+                "estimated_schedule_plus_campaign_headroom",
             )
             self.assertLessEqual(
-                walltime_allocation[
-                    "selected_scheduler_reservation_critical_path_hours"
-                ],
+                walltime_allocation["campaign_walltime_request"]["requested_wall_hours"],
                 local_plan["maximum_campaign_wall_hours"],
             )
             local_tasks = [

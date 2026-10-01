@@ -501,8 +501,10 @@ def build_planning_report(root: Path) -> Dict[str, object]:
     sampling = load_json(required["sampling-plan.json"])
     coverage = load_json(required["module-coverage.json"])
     launcher = load_json(required["launcher-contract.json"])
+    preview_path = root / "slurm-submission-preview.json"
+    preview = load_json(preview_path) if preview_path.is_file() else {}
     if not all(isinstance(value, dict) for value in (
-        config, resources, sampling, coverage, launcher
+        config, resources, sampling, coverage, launcher, preview
     )):
         raise PlanningReportError("planning report inputs must be JSON objects")
 
@@ -538,6 +540,9 @@ def build_planning_report(root: Path) -> Dict[str, object]:
         "feasibility_status": resources.get("feasibility_status"),
         "orchestration": {"task_count": len(orchestration), "tasks": orchestration},
         "resource_envelope": {
+            "estimated_scheduled_execution_hours": preview.get("planner_estimated_dependency_critical_path_hours"),
+            "campaign_walltime_request": preview.get("campaign_walltime_request"),
+            "single_allocation": preview.get("single_allocation"),
             "maximum_parallel_cpus": resources.get(
                 "effective_parallel_cpu_cap",
                 resources.get("maximum_parallel_cpus_input"),
@@ -623,6 +628,8 @@ def render_planning_report_markdown(report: Mapping[str, object]) -> str:
     families = [
         _mapping(value) for value in _sequence(sampling.get("analysis_families"))
     ]
+    estimated_hours = envelope.get("estimated_scheduled_execution_hours")
+    requested_hours = _mapping(envelope.get("campaign_walltime_request")).get("requested_wall_hours")
     lines = [
         "# Analysis planning report",
         "",
@@ -633,6 +640,8 @@ def render_planning_report_markdown(report: Mapping[str, object]) -> str:
         f"`{envelope.get('effective_maximum_parallel_cpus')}`",
         f"- Aggregate memory cap: `{envelope.get('maximum_parallel_memory_gib')} GiB`",
         f"- Campaign wall-time cap: `{envelope.get('maximum_wall_hours')} hours`",
+        f"- Scheduled runtime estimate (model uncertainty included): `{estimated_hours if estimated_hours is not None else 'unavailable'} hours`",
+        f"- Recommended campaign Slurm limit: `{requested_hours if requested_hours is not None else 'unavailable'} hours`",
         f"- Planned sampling tasks: `{sampling.get('task_count')}`",
         f"- Tasks below a declared sampling floor: `{sampling.get('below_floor_task_count')}`",
         f"- Source-limited tasks: `{sampling.get('source_limited_task_count', 0)}`. Short supplied inputs are reported separately; using all available frames does not establish adequate scientific sampling.",

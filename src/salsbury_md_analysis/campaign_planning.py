@@ -16,6 +16,7 @@ from .ensemble_parallelism import annotate_task_parallelism
 from .convergence_contracts import configure_convergence_blocks
 from .orchestration_resources import orchestration_tasks
 from .execution_adapters import load_slurm_profile
+from .campaign_walltime import CAMPAIGN_WALLTIME_DEFAULTS
 from .frame_sampling import (
     integer_stride_for_budget,
     integer_stride_selected_count,
@@ -2248,6 +2249,7 @@ def plan_and_apply_complete_campaign(
     except MemoryPolicyError as exc:
         raise CampaignPlanningError(str(exc)) from exc
     scheduler_time_policy: Dict[str, float] = {
+        **CAMPAIGN_WALLTIME_DEFAULTS,
         "walltime_safety_factor": 1.0,
         "walltime_overhead_minutes": 15.0,
         "minimum_wall_minutes": 30.0,
@@ -2834,8 +2836,9 @@ def plan_and_apply_complete_campaign(
             ],
             **scheduler_time_policy,
             "scheduler_walltime_interpretation": (
-                "preferred per-job timeout allowance bounded by the padded "
-                "end-to-end campaign wall limit"
+                "campaign request is the final uncertainty-adjusted schedule "
+                "plus campaign headroom, rounded up within the user ceiling; "
+                "individual kill-limit sums are diagnostic only"
             ),
         },
         "censored_timeout_safety_factor": float(

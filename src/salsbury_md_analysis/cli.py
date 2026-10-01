@@ -1769,6 +1769,10 @@ def build_parser() -> argparse.ArgumentParser:
     local_workflow_parser.add_argument(
         "root", type=Path, help="Prepared analysis directory."
     )
+    local_workflow_parser.add_argument(
+        "--maximum-wall-hours", type=float,
+        help="Shorter allocation deadline; cannot extend the prepared campaign ceiling or change sampling.",
+    )
 
     plan_matrix_parser = subparsers.add_parser(
         "report-plan-matrix",
@@ -2336,7 +2340,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
     if args.command == "run-local-workflow":
         try:
-            report = run_local_workflow(args.root)
+            report = run_local_workflow(args.root, maximum_wall_hours=args.maximum_wall_hours)
         except (ExecutionAdapterError, OSError, ValueError) as exc:
             report = {
                 "technical_status": "failed",
