@@ -90,6 +90,11 @@ Read the failure reasons and
 `campaign-resource-plan.json`. An infeasible preparation has no analysis jobs
 to resume. Preserve that directory.
 
+If the cache-stride search finds no acceptable candidate, the report keeps its
+candidate evaluations and protected-core reduction recommendation. No fixed
+sampling schedule or launcher is created. A wall-time diagnostic can reach the
+final dependency-aware check only when a concrete sampling schedule exists.
+
 For `prepare-analysis`, repeat preparation with the reviewed
 `--target-wall-hours` recommendation and a new `--output` directory. That flag
 does not belong to `plan`. For a study created with `init`, update both

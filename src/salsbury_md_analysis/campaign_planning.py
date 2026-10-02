@@ -2675,11 +2675,50 @@ def plan_and_apply_complete_campaign(
             raise CampaignPlanningError(str(exc)) from exc
         plan["comparison_clustering_consistency_skips"] = consistency_skips
         annotate_plan_minimum_request(plan)
+        coupling = plan.get("global_stride_coupling")
+        cache_selection_required = (
+            "global_stride_coupling" in plan
+            or (
+                fixed_schedule is None
+                and coordinate_cache_build_required
+                and cache_materialization == "planned_strided"
+            )
+        )
+        cache_selection_valid = not cache_selection_required or (
+            isinstance(coupling, Mapping)
+            and coupling.get("converged") is True
+            and all(
+                isinstance(coupling.get(key), int)
+                and not isinstance(coupling.get(key), bool)
+                and coupling[key] > 0
+                for key in (
+                    "selected_coordinate_cache_integer_stride",
+                    "selected_overall_trajectory_integer_stride",
+                )
+            )
+        )
+        if not cache_selection_valid:
+            # A rejected global search returns a diagnostic candidate with no
+            # selected stride. It cannot be materialized for native-DAG review
+            # or exported as a fixed schedule, even if minimum failures were
+            # explicitly allowed for legacy planning diagnostics.
+            plan["feasibility_status"] = "infeasible"
+            plan["execution_authorized"] = False
+            plan["sampling_selection_validation"] = {
+                "status": "failed",
+                "reason": "no valid coordinate-cache sampling schedule was selected",
+            }
+            if not plan.get("infeasibility_reasons"):
+                plan["infeasibility_reasons"] = [
+                    "no valid coordinate-cache sampling schedule was selected"
+                ]
         # A stage/lane schedule is a conservative construction, not a lower
         # bound on every valid task DAG. Only this wall-time objection may
-        # proceed to native graph validation; all other failures remain hard.
+        # proceed to native graph validation, and only with concrete sampling;
+        # an unselected global-search diagnostic is not such a schedule.
         wall_only = (
-            plan["feasibility_status"] == "infeasible"
+            cache_selection_valid
+            and plan["feasibility_status"] == "infeasible"
             and plan.get("infeasibility_reasons") == [
                 "minimum calibrated critical path exceeds the campaign science wall-time budget"
             ]
@@ -2695,8 +2734,11 @@ def plan_and_apply_complete_campaign(
                 + _campaign_infeasibility_detail(plan), plan=plan,
             )
         if (
-            plan["feasibility_status"] not in {"feasible", "pending_execution_schedule"}
-            and bool(execution.get("fail_if_minimum_coverage_unaffordable", True))
+            not cache_selection_valid
+            or (
+                plan["feasibility_status"] not in {"feasible", "pending_execution_schedule"}
+                and bool(execution.get("fail_if_minimum_coverage_unaffordable", True))
+            )
         ):
             recommendation = recommend_scientifically_valid_task_subset(
                 tasks,
