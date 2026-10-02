@@ -10,9 +10,39 @@ from typing import Mapping, Sequence
 
 from .manifests import load_json, resolve_manifest_path
 from .coordinate_cache import coordinate_cache_system_manifest_filename
+from .frame_sampling import integer_stride_selected_count
 
 
 MODEL_ID = "orchestration-workload-v1"
+
+
+def refresh_cache_preflight_task(task: dict, stride: int) -> dict:
+    """Estimate future cached reads at the candidate's materialization stride.
+
+    Raw-input preflight and continuous unwrapping deliberately do not use this
+    adjustment. Existing caches use measured file sizes instead.
+    """
+    spec = task.get("future_cache_preflight")
+    if not spec:
+        return task
+    counts = [integer_stride_selected_count(int(n), stride)
+              for n in spec["raw_frames_per_replica"]]
+    atoms = int(spec["maximum_atom_count"])
+    workload = dict(task["resource_model"]["workload"])
+    workload.update({
+        "input_bytes_read": 16 * atoms * sum(counts) + int(spec["fixed_bytes"]),
+        "source": "candidate_cache_payload_upper_bound",
+        "cache_integer_stride": stride,
+        "selected_frames_per_replica": counts,
+    })
+    seconds = (60.0 + workload["input_bytes_read"] / (64 * 1024**2)
+               + 2.0 * workload["input_file_reads"] + 2.0 * workload["replica_count"])
+    return {**task,
+            "fixed_cpu_hours": seconds * task["resource_model"]["time_safety_factor"] / 3600,
+            "estimated_peak_memory_gib": (0.5 + min(3.5, workload["input_bytes_read"] / 1024**3)
+                                           + 12 * workload["largest_topology_bytes"] / 1024**3),
+            "resource_model": {**task["resource_model"], "workload": workload,
+                               "estimated_unpadded_wall_seconds": seconds}}
 
 
 def manifest_workload(path: Path) -> dict:
@@ -77,9 +107,12 @@ def orchestration_tasks(root: Path, views: Sequence[Path],
                         analysis_tasks: Sequence[Mapping], config: Mapping,
                         *, time_safety_factor: float,
                         maximum_atom_count: int = 85_206,
-                        coordinate_cache_enabled: bool = False) -> list[dict]:
+                        coordinate_cache_enabled: bool = False,
+                        raw_view_frame_counts: Mapping[str, Sequence[int]] | None = None) -> list[dict]:
     """Generate one protected overhead row per generated orchestration script."""
     manifests = {}
+    source_manifests = {}
+    future_caches = {}
     for view in views:
         source_name = str(load_json(view)["system_manifest"])
         workload = manifest_workload(root / source_name)
@@ -96,19 +129,29 @@ def orchestration_tasks(root: Path, views: Sequence[Path],
                 workload = manifest_workload(existing)
             else:
                 # Views are rewritten to future caches after planning. Account
-                # for their real script identities now; bound bytes by full
-                # source coverage rather than treating absent caches as empty.
+                # for their real script identities now. Keep raw counts here:
+                # fixed-sampling fit tasks may already describe the cache stream.
                 view_id = view.stem.removeprefix("project-")
-                frames = max((sum(t["source_frames_per_replica"])
-                              for t in analysis_tasks if t.get("workflow_id") == view_id), default=0)
+                if raw_view_frame_counts is not None:
+                    counts = list(raw_view_frame_counts[view_id])
+                else:
+                    counts = max((list(t["source_frames_per_replica"])
+                                  for t in analysis_tasks if t.get("workflow_id") == view_id), key=sum, default=[])
+                frames = sum(counts)
+                if not counts:
+                    raise ValueError(f"future cache preflight lacks frame counts: {source_name}")
                 cache_bytes = (16 * maximum_atom_count * frames
                                + 512 * maximum_atom_count * workload["replica_count"])
-                workload["input_bytes_read"] = max(workload["input_bytes_read"], cache_bytes)
+                workload["input_bytes_read"] = cache_bytes
                 workload["largest_topology_bytes"] = max(
                     workload["largest_topology_bytes"], 256 * maximum_atom_count)
                 workload["source"] = "full_source_coverage_cache_upper_bound"
+                future_caches[name] = {"raw_frames_per_replica": counts,
+                                      "maximum_atom_count": maximum_atom_count,
+                                      "fixed_bytes": 512 * maximum_atom_count * workload["replica_count"]}
         if name != "system.json":
             manifests[name] = workload
+            source_manifests[name] = source_name
     workloads = [("run_preflight.slurm", manifest_workload(root / "system.json"), 0)]
     workloads.extend((f"run_view_preflight_{i}.slurm", manifests[name], 2)
                      for i, name in enumerate(sorted(manifests)))
@@ -123,8 +166,16 @@ def orchestration_tasks(root: Path, views: Sequence[Path],
         # allowance, but do not cap topology/parser memory for large systems.
         memory = (0.5 + min(3.5, workload["input_bytes_read"] / 1024**3)
                   + 12 * workload["largest_topology_bytes"] / 1024**3)
-        result.append(_task(script, "workflow_preflight", seconds, memory,
-                            stage, workload, time_safety_factor))
+        task = _task(script, "workflow_preflight", seconds, memory,
+                     stage, workload, time_safety_factor)
+        if stage == 2:
+            name = sorted(manifests)[int(script.removeprefix("run_view_preflight_").removesuffix(".slurm"))]
+            task["preflight_source_manifest"] = source_manifests[name]
+            task["preflight_requires_cache"] = bool(coordinate_cache_enabled and not config.get("execution", {}).get("coordinate_cache_input"))
+            if name in future_caches:
+                task["future_cache_preflight"] = future_caches[name]
+                task = refresh_cache_preflight_task(task, 1)
+        result.append(task)
     reporting = config.get("reporting", {})
     picker = reporting.get("finding_picker_enabled", True)
     # Sequential alternative-clustering fits publish one bundled report.

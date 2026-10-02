@@ -241,20 +241,20 @@ values. Their printed resource-token policy states the reserved node-count
 upper bound and aggregate reserve; it may conservatively exceed the nodes
 occupied at a particular instant. See [execution adapters](EXECUTION_ADAPTERS.md).
 The default 1.5 time factor is applied to modeled task costs before frame
-allocation. The planner then uses only the configured utilization fraction
-(normally 0.85) and removes pilot and finalization reserves. The shipped Slurm
+allocation. Fresh configurations use planning utilization 1.0 and zero extra
+pilot/finalization reserves; preflight and reporting already have explicit task
+costs. Existing or user-selected reserves are honored and itemized in
+`time_allowance_accounting`. The shipped Slurm
 profiles set their scheduler wall-time factor to 1.0, so that factor is not
 applied again. Profile validation requires 1.0; older profiles that specify 1.5
-must be updated rather than silently double-padding time. Their 15-minute
-per-job overhead and 30-minute minimum must fit
-inside `maximum_hours_per_cpu`, which is the final padded end-to-end execution
-ceiling. The execution adapter retains the largest uniform fraction of the
-overhead whose serialized dependency-path kill limits fit inside the ceiling.
-It does not alter sampling or enabled modules. If planner estimates plus minimum
-job limits cannot fit, submission is refused.
-`finalization_headroom_fraction` reserves campaign capacity for dependency
-barriers, summaries, hashes, and fail-closed acceptance rather than allocating
-the entire envelope to scientific estimators. A timed-out job is retained as a
+must be updated rather than silently double-padding time. Per-job timeout
+allowances and minimums are separate from estimated task durations and are
+capped by the campaign ceiling. For Slurm, the estimated campaign schedule
+plus the one-third allocation allowance, rounded up, must fit inside
+`maximum_hours_per_cpu`. The adapter does not change sampling or enabled modules
+to meet that limit. Queue waiting is not part of the estimate.
+`finalization_headroom_fraction` can reserve additional campaign capacity beyond
+the explicitly budgeted reporting jobs. A timed-out job is retained as a
 right-censored lower bound: its target frames are not counted as completed
 coverage, and its elapsed time is never mislabeled as a successful runtime.
 For a public or shared source tree, build the distributable catalog with
@@ -262,9 +262,13 @@ For a public or shared source tree, build the distributable catalog with
 retains measured CPU, memory, frame coverage, evidence hashes, and timeout
 censoring semantics while removing private paths, scheduler IDs, and hostnames.
 The full catalog remains separately hash-pinned as internal provenance.
-Two or more complete measurements for a module qualify the largest completed
-RSS to replace an older built-in memory baseline and receive the
-well-calibrated uncertainty factor. A single completed run and timeout-only
+Two or more complete measurements with a matching resource context qualify the
+largest completed RSS to replace an older built-in memory baseline and receive
+the well-calibrated uncertainty factor. Explicit context mismatches are excluded
+from that task's fit but retained, with evidence hashes and reasons, in its
+applicability record. Unknown-context measurements retain the conservative
+runtime/censoring fallback and cannot justify lowering memory. If no measurement
+applies, the built-in estimate is marked provisional. A single completed run and timeout-only
 evidence can raise a memory floor but cannot lower it; those cases receive the
 poorly calibrated factor. An upper prediction bound, when fitted, is part of
 the working-set model. The planner then applies the cluster profile's memory
@@ -346,7 +350,7 @@ caps can saturate wall time while many requested cores are idle.
 ceilings, memory-blocked groups, and the wall allowance required by the next
 stride upgrade. No duplicate calculation is added merely to consume the raw
 CPU-hour envelope.
-When `maximum_parallel_cpus` exceeds the largest concurrently useful stage,
+When `maximum_parallel_cpus` exceeds the dependency graph's useful CPU ceiling,
 `resource_warnings` reports `REQUESTED_CPUS_EXCEED_USEFUL_PARALLELISM`, the
 useful ceiling, and the excess requested cores. The requested value remains in
 the provenance record. The resolved execution cap is reduced to the useful
@@ -367,10 +371,11 @@ factor also has a 0.1 floor. A power-law method keeps its declared
 observation-based exponent. Every task records the reference value, applicable
 scaling model, and final selected-observation estimate. The execution profile
 then converts each working set to a buffered request. The DEAC rule is
-`ceil(1.5 × working set + 1 GiB)`, with a 2 GiB minimum. The campaign's
-`maximum_memory_gib` limits the sum of those requests in each concurrent wave.
+`ceil(1.5 × working set)` per task/node, with a 2 GiB task minimum and a separate
+1 GiB reserve per occupied node. The campaign's
+`maximum_memory_gib` limits concurrent task requests plus node reserves.
 It is not repeated for every job. CPU and memory limits are both considered
-while allocating frames and estimating dependency-stage wall time.
+while allocating frames and estimating the task dependency schedule.
 
 A Slurm profile can also declare `node_policy.cpus_per_node`,
 `node_policy.memory_gib_per_node`, and an optional
@@ -452,14 +457,18 @@ same workers and output contracts.
 The Slurm adapter records task-specific scheduler requests in
 `scheduler-resource-requests.json` and routes sufficiently large requests through
 the profile's large-memory role. Its canonical launcher submits deterministic
-resource epochs. Each dependency level is packed into serial lanes that stay
-within both `maximum_parallel_cpus` and the aggregate `maximum_memory_gib`; the
-next epoch waits for completion of the preceding epoch only to release and
-reuse resources. A task waits for successful completion only of its declared
+resource-token schedules. Candidate stride allocation and adapter replay share
+the same dependencies and scheduler. CPU and padded-memory tokens stay within
+both campaign and per-node limits; independent tasks can overlap across phase
+labels. Extra allowed nodes do not force unchanged tasks onto a slower placement.
+A task waits for successful completion only of its declared
 data prerequisites. The launcher refuses submission when its generated
-critical-path estimate or serialized scheduler kill-limit path exceeds the
+estimated schedule plus its allocation allowance exceeds the
 campaign wall limit. Queue wait and scheduler backfill are not counted as
-analysis wall time.
+analysis wall time. A failed heuristic search does not prove that no feasible
+schedule exists. Legacy fields ending in `wall_hours_lower_bound` retain their
+names for compatibility; for native scheduling they contain the constructed
+schedule estimate, not a mathematical optimum.
 
 `advise-slurm-capacity` is an optional, read-only step for prepared Slurm
 campaigns. It can replace the configured CPU count with the smaller of the live

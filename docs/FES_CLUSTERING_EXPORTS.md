@@ -153,5 +153,21 @@ must be `fail`; an existing export ID is never overwritten or merged. Publicatio
 repositories should lock selected export manifests and parameters rather than
 forking the reusable implementation.
 
+## Weighted K-means fit and assignment coverage
+
+`clustering_imwkmeans.fit_stride` controls a separate uniform integer-stride fit
+sample from the pooled feature stream; it defaults to 1 for existing projects.
+The campaign planner can choose it independently of the parent PCA projection
+stride, subject to the same raw-frame scientific minima. There is one pooled
+model, not a separate model per replica or member. Feature standardization uses
+the full common feature stream.
+
+The fitted weighted-Minkowski model assigns all supplied projections in chunks
+(`assignment_chunk_size`, default 4096). A strided fit is rejected if its labels
+cannot be reproduced by that model's assignment rule. The report distinguishes
+fit coverage, fit-sample silhouette and cluster sizes, and all-assigned cluster
+populations. All-frame assignment does not imply an all-frame fit. Replica,
+segment and source-frame identities remain attached to assignments and exports.
+
 State assignments, silhouettes, smoothing stability, and representatives remain
 descriptive until sampling, convergence, and kinetics are independently valid.

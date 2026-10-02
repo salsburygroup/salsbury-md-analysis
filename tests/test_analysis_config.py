@@ -33,7 +33,9 @@ class AnalysisConfigTests(unittest.TestCase):
         self.assertEqual(config["execution"]["coordinate_cache"], "auto")
         self.assertEqual(config["execution"]["submission_adapter"], "local")
         self.assertIsNone(config["execution"]["slurm_profile"])
-        self.assertEqual(config["execution"]["finalization_headroom_fraction"], 0.05)
+        self.assertEqual(config["execution"]["planning_utilization"], 1.0)
+        self.assertEqual(config["execution"]["pilot_budget_fraction"], 0.0)
+        self.assertEqual(config["execution"]["finalization_headroom_fraction"], 0.0)
         self.assertEqual(config["execution"]["time_safety_factor"], 1.5)
         self.assertNotIn("memory_safety_factor", config["execution"])
         self.assertEqual(

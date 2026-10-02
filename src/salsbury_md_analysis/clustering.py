@@ -642,7 +642,7 @@ def _imwkmeans_settings(project: Mapping[str, object]) -> Dict[str, object]:
     }
     missing = sorted(required.difference(raw))
     unknown = sorted(set(raw).difference(
-        required | {"component_indices", "trajectory_feature_columns"}
+        required | {"component_indices", "trajectory_feature_columns", "fit_stride", "assignment_chunk_size"}
     ))
     if missing:
         raise ClusteringAnalysisError(
@@ -695,6 +695,8 @@ def _imwkmeans_settings(project: Mapping[str, object]) -> Dict[str, object]:
             raise ClusteringAnalysisError(f"{label} must be finite and positive")
     return {
         **feature_selection,
+        "fit_stride": _positive_integer(raw.get("fit_stride", 1), "fit_stride"),
+        "assignment_chunk_size": _positive_integer(raw.get("assignment_chunk_size", 4096), "assignment_chunk_size"),
         "standardize_features": raw["standardize_features"],
         "k_values": sorted(k_values),
         "minkowski_p_values": sorted(float(value) for value in p_values),
@@ -886,7 +888,22 @@ def run_imwkmeans(
 
 
 _IMWKMEANS_CHECKPOINT_ENV = "SALSBURY_MD_ANALYSIS_IMWKMEANS_CHECKPOINT"
-_IMWKMEANS_CHECKPOINT_SCHEMA = "salsbury-imwkmeans-grid-checkpoint-v1"
+_IMWKMEANS_CHECKPOINT_SCHEMA = "salsbury-imwkmeans-grid-checkpoint-v2"
+
+
+def assign_imwkmeans(vectors, centers, weights, p, chunk_size=4096):
+    """Assign to the fitted weighted-Lp model, without refitting any replica."""
+    center_array, weight_array = np.asarray(centers), np.asarray(weights)
+    labels = []
+    for start in range(0, len(vectors), chunk_size):
+        chunk = np.asarray(vectors[start:start + chunk_size])
+        distances = np.sum(
+            (np.abs(chunk[:, None, :] - center_array[None, :, :])
+             * weight_array[None, :, :]) ** p, axis=2)
+        if not np.all(np.isfinite(distances)):
+            raise ClusteringAnalysisError("nonfinite weighted-Lp assignment distances")
+        labels.extend(np.argmin(distances, axis=1).tolist())
+    return labels
 
 
 def _imwkmeans_checkpoint_root() -> Optional[Path]:
@@ -1016,6 +1033,11 @@ def clustering_imwkmeans_project(
     vectors, means, scales = _standardize(
         raw_vectors, bool(settings["standardize_features"])
     )
+    # Import at execution time: the alternative algorithms use this module's
+    # numerical helpers. Both paths share the exact replica/member stride rule.
+    from .alternative_clustering import _integer_stride_sample
+    fit_indices, fit_sampling = _integer_stride_sample(metadata, int(settings["fit_stride"]))
+    fit_vectors = [vectors[index] for index in fit_indices]
     checkpoint_root = _imwkmeans_checkpoint_root()
     checkpoint_signature = _imwkmeans_checkpoint_signature(feature_report, settings)
     restored_checkpoint_count = 0
@@ -1036,7 +1058,7 @@ def clustering_imwkmeans_project(
             else:
                 runs = [
                     run_imwkmeans(
-                        vectors,
+                        fit_vectors,
                         int(k),
                         float(p),
                         int(rank),
@@ -1051,6 +1073,12 @@ def clustering_imwkmeans_project(
                     if run["valid"]
                     and min(run["cluster_sizes"]) >= int(settings["minimum_cluster_size"])  # type: ignore[arg-type]
                 ]
+                if int(settings["fit_stride"]) > 1:
+                    # A tolerance-stopped model is not necessarily a fixed
+                    # partition. Do not extend an inconsistent fitted model.
+                    valid = [run for run in valid if assign_imwkmeans(
+                        fit_vectors, run["centers"], run["feature_weights"], run["p"],
+                        int(settings["assignment_chunk_size"])) == run["assignments"]]
                 best = min(
                     valid,
                     key=lambda run: (run["objective"], run["initialization_rank"]),
@@ -1063,7 +1091,7 @@ def clustering_imwkmeans_project(
                     }
                 else:
                     silhouette_evaluation = silhouette_score_report(
-                        vectors,
+                        fit_vectors,
                         best["assignments"],  # type: ignore[arg-type]
                         int(settings["maximum_silhouette_observations"]),
                         min(settings["initialization_ranks"]),  # type: ignore[arg-type]
@@ -1112,7 +1140,11 @@ def clustering_imwkmeans_project(
     )
     run = selected["best_run"]
     centers = run["centers"]
-    assignments = run["assignments"]
+    assignments = (run["assignments"] if int(settings["fit_stride"]) == 1 else
+                   assign_imwkmeans(vectors, centers, run["feature_weights"], float(run["p"]),
+                                    int(settings["assignment_chunk_size"])))
+    if [assignments[i] for i in fit_indices] != run["assignments"]:
+        raise ClusteringAnalysisError("fitted labels disagree with full-observation weighted-Lp assignment")
     raw_centers = [
         [center[index] * scales[index] + means[index] for index in range(len(center))]
         for center in centers
@@ -1151,6 +1183,10 @@ def clustering_imwkmeans_project(
         "input_content_signature_sha256": feature_report["input_content_signature_sha256"],
         "content_hashes_included": hash_content,
         "settings": settings,
+        "fit_sampling": fit_sampling,
+        "model_fit_observation_count": len(fit_indices),
+        "fit_observation_count": len(fit_indices),
+        "full_assignment_observation_count": len(assignments),
         "algorithm_contract": {
             "name": "intelligent Minkowski weighted KMeans",
             "initialization": "ranked farthest observation from global Lp center, then deterministic farthest-first",
@@ -1175,7 +1211,7 @@ def clustering_imwkmeans_project(
             "standardization_scales": list(scales),
         },
         "selection_rule": (
-            "maximum exact or prespecified seeded-estimate Euclidean silhouette, then maximum initialization ARI stability, "
+            "maximum exact or prespecified seeded-estimate Euclidean silhouette on the pooled fit sample, then maximum initialization ARI stability, "
             "then smaller k and p among converged occupancy-gated iMWK-Means models"
         ),
         "grid_diagnostics": diagnostics,
@@ -1186,10 +1222,12 @@ def clustering_imwkmeans_project(
             "initialization_rank": run["initialization_rank"],
             "iteration_count": run["iteration_count"],
             "objective": run["objective"],
+            "objective_scope": "pooled_fit_sample",
             "silhouette": selected["silhouette"],
             "silhouette_evaluation": selected["silhouette_evaluation"],
             "mean_adjusted_rand_to_best": selected["mean_adjusted_rand_to_best"],
-            "cluster_sizes": run["cluster_sizes"],
+            "fit_cluster_sizes": run["cluster_sizes"],
+            "cluster_sizes": np.bincount(assignments, minlength=int(selected["k"])).tolist(),
             "centers_in_input_units": raw_centers,
             **(
                 {"centers_angstrom": raw_centers}
@@ -1206,6 +1244,7 @@ def clustering_imwkmeans_project(
         "warning_count": sum(issue.get("severity") == "warning" for issue in issues),
         "issues": issues,
         "limitations": [
+            "Model fitting and grid selection use the declared pooled integer-stride sample; populations use all assigned observations. Standardization uses the common full feature stream, never separate replicas.",
             "Feature weights are cluster-specific descriptors and are not mechanistic importance scores.",
             "Silhouette is evaluated in Euclidean clustering space for cross-method comparison, while the fitted objective is weighted Minkowski.",
             "Initialization, p, k, feature definitions, standardization, and dispersion floors require sensitivity analysis.",

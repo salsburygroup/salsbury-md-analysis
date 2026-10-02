@@ -32,18 +32,21 @@ Counts include repeated reads when the same file appears more than once in a
 manifest: the current preflight hashes each occurrence. Planning inspects file
 sizes without hashing trajectory content. Missing original files are errors.
 
-Future cache preflights use the larger of original input bytes and an all-source
-cache-size bound: 16 bytes per source atom per source frame, plus 512 bytes per
-source atom per replica for metadata. The topology bound is 256 bytes per source
-atom. This intentionally overestimates a stripped or strided cache; it never
-assumes that a cache not yet written is empty. Reused external caches use their
-actual file sizes. No preflight work is removed by changing analysis strides.
+Future cache preflights use a candidate-specific size bound: 16 bytes per source
+atom per retained cache frame, plus 512 bytes per source atom per replica for
+metadata. The topology bound is 256 bytes per source atom. The maximum source
+atom count remains a conservative bound for stripped caches. Changing the cache
+stride updates these derived reads; a method's stride does not. Reused external
+caches use their actual file sizes. Raw-input preflight and the full-frame
+continuous-unwrapping scan are unchanged.
 
 Single-core occupied time is charged conservatively as CPU budget, including I/O
 wait. The configured `time_safety_factor` applies once. The planner applies named
 memory uncertainty and cluster padding once. The DEAC profile retains its 1.5×
 task-memory factor and separate 1-GiB-per-node reserve; the adapter does not add
-another memory factor. Additional configured campaign reserves still apply.
+another memory factor. Fresh configurations use full planning utilization with
+zero additional pilot/finalization reserves because these jobs have explicit
+costs. Previously configured reserves still apply and appear in the time ledger.
 
 ## Evidence and limits
 
@@ -65,3 +68,15 @@ reporting components should be retained from subsequent executions. In particula
 accounting values near a job's memory limit need corroboration before fitting a
 memory model. These estimates do not replace the existing scientific-analysis
 calibration catalog or change sampling minima. Queue delay is not predicted.
+
+Calibration sidecars and timeout records may declare `resource_context`. The
+catalog preserves it alongside the source hashes. Prepared tasks declare their
+`coordinate_source` (`raw_source` or `validated_coordinate_cache`) and
+`task_scope`; explicitly conflicting measurements are retained but not applied
+to that task. Additional declared fields, such as implementation or worker
+scope, must also match before evidence is fully qualified. Missing context is
+unknown, not a match: historical runtime and timeout bounds remain conservative,
+and unknown-context records cannot justify lowering the memory baseline.
+This qualification does not supply new timing measurements or validate an
+unmeasured implementation. Built-in estimates remain provisional where no
+applicable measurement exists.

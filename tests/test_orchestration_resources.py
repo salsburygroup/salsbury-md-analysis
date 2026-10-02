@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from salsbury_md_analysis.orchestration_resources import manifest_workload, orchestration_tasks
+from salsbury_md_analysis.orchestration_resources import manifest_workload, orchestration_tasks, refresh_cache_preflight_task
 from salsbury_md_analysis.execution_adapters import _task_planner_rows, ExecutionAdapterError
 from salsbury_md_analysis.resource_planning import (
     plan_campaign_resource_budget,
@@ -17,6 +17,27 @@ from tests.test_quickstart import _write_inputs
 
 
 class OrchestrationResourceTests(unittest.TestCase):
+    def test_cache_candidate_io_changes_but_raw_inspection_does_not(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self.fixture(root)
+            manifest = json.loads((root / "system.json").read_text())
+            manifest["systems"][0]["system_id"] = "A"
+            (root / "system.json").write_text(json.dumps(manifest))
+            (root / "view.json").write_text(json.dumps(manifest))
+            rows = orchestration_tasks(root, [root / "project-v.json"], [{
+                "workflow_id":"v", "source_frames_per_replica":[10000,10000],
+                "task_id":"pca", "dependency_stage":2}], {},
+                maximum_atom_count=10000, time_safety_factor=1.5, coordinate_cache_enabled=True)
+            raw, cached = rows[:2]
+            self.assertEqual(refresh_cache_preflight_task(raw, 10), raw)
+            selected = refresh_cache_preflight_task(cached, 10)
+            workload = selected["resource_model"]["workload"]
+            self.assertEqual(workload["selected_frames_per_replica"], [1000,1000])
+            self.assertLess(selected["fixed_cpu_hours"], cached["fixed_cpu_hours"])
+            self.assertEqual(selected["source_frames_per_replica"], [1])
+            self.assertEqual(workload["input_bytes_read"], 16*10000*2000 + 512*10000*2)
+
     def fixture(self, root):
         (root / "top.pdb").write_bytes(b"x" * 10)
         (root / "traj.dcd").write_bytes(b"x" * 100)

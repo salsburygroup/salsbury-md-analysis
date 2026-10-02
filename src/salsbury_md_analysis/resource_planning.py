@@ -10,7 +10,10 @@ from __future__ import annotations
 import math
 import time
 from copy import deepcopy
+from functools import lru_cache
+from .orchestration_resources import refresh_cache_preflight_task
 from typing import Dict, Mapping, Optional, Sequence
+from .resource_schedule import ResourceScheduleError, schedule_resource_tasks
 
 from .frame_sampling import (
     integer_stride_for_budget,
@@ -34,7 +37,7 @@ def workflow_useful_parallel_cpu_ceiling(
     *,
     maximum_cpus_per_node: Optional[int] = None,
 ) -> int:
-    """Return the dependency-stage CPU peak without a user or cluster cap."""
+    """Return the dependency-constrained CPU ceiling, before memory packing."""
 
     stages: Dict[int, Dict[str, int]] = {}
     for row in tasks:
@@ -55,7 +58,69 @@ def workflow_useful_parallel_cpu_ceiling(
         stage_bundles[bundle] = max(cap, stage_bundles.get(bundle, 0))
     if not stages:
         raise ResourcePlanningError("workflow has no tasks for CPU capacity")
+    if all("planning_dependencies" in task for task in tasks):
+        caps, edges = {}, {}
+        for row in tasks:
+            bundle = str(row.get("execution_bundle_id") or row["task_id"])
+            cap = int(row.get("intrinsic_cpu_cap", row.get("effective_cpu_cap", 1)))
+            if maximum_cpus_per_node is not None and row.get("parallel_execution_model") is None:
+                cap = min(cap, maximum_cpus_per_node)
+            caps[bundle] = max(caps.get(bundle, 1), cap)
+            contract = row["planning_dependencies"]
+            edges.setdefault(bundle, set()).update(contract["depends_on_bundle_ids"] + contract["wait_for_bundle_ids"])
+        return _dag_cpu_ceiling(tuple((key, caps[key], tuple(sorted(edges[key].intersection(caps))))
+                                      for key in sorted(caps)))
     return max(sum(bundles.values()) for bundles in stages.values())
+
+
+@lru_cache(maxsize=128)
+def _dag_cpu_ceiling(rows):
+    """Maximum weighted antichain via weighted bipartite minimum cover."""
+    from collections import deque
+    weights = {name: cap for name, cap, _ in rows}
+    direct = {name: set(deps) for name, _, deps in rows}
+    ancestors = {}
+    def visit(name, active):
+        if name in active:
+            raise ResourcePlanningError("cycle in planning dependency contract")
+        if name not in ancestors:
+            ancestors[name] = set().union(*(visit(dep, active | {name}) | {dep}
+                                            for dep in direct[name])) if direct[name] else set()
+        return ancestors[name]
+    total = sum(weights.values())
+    graph = {}
+    def edge(a, b, capacity):
+        graph.setdefault(a, {})[b] = capacity
+        graph.setdefault(b, {}).setdefault(a, 0)
+    for name, cap in weights.items():
+        edge("source", ("left", name), cap)
+        edge(("right", name), "sink", cap)
+        for parent in visit(name, set()):
+            edge(("left", parent), ("right", name), total)
+    flow = 0
+    while True:
+        parents, queue = {"source": None}, deque(["source"])
+        while queue and "sink" not in parents:
+            current = queue.popleft()
+            for node, capacity in graph[current].items():
+                if capacity > 0 and node not in parents:
+                    parents[node] = current
+                    queue.append(node)
+        if "sink" not in parents:
+            break
+        node, amount = "sink", total
+        while parents[node] is not None:
+            parent = parents[node]
+            amount = min(amount, graph[parent][node])
+            node = parent
+        node = "sink"
+        while parents[node] is not None:
+            parent = parents[node]
+            graph[parent][node] -= amount
+            graph[node][parent] += amount
+            node = parent
+        flow += amount
+    return total - flow
 
 
 def pack_resource_waves(
@@ -673,6 +738,8 @@ def _permissive_minimum_resource_request(
         for stage in minimum_stages
     ]
     lanes = [lane for stage in stage_lanes for lane in stage]
+    native_epoch = (minimum_stages[0].get("native_schedule")
+                    if len(minimum_stages) == 1 else None)
     modeled_parallel_cpus = max(
         (sum(int(lane.get("cpu_slots", 0)) for lane in stage) for stage in stage_lanes),
         default=0,
@@ -684,6 +751,12 @@ def _permissive_minimum_resource_request(
         ),
         default=0.0,
     )
+    if isinstance(native_epoch, Mapping):
+        modeled_parallel_cpus = int(native_epoch["cpu_slots"])
+        modeled_aggregate_memory = float(native_epoch["memory_gib"])
+        # Preserve actual task placement for request dimensions; these are
+        # overlapping intervals, not simultaneously reserved serial lanes.
+        lanes = list(native_epoch["scheduled_items"])
 
     def lane_node_indices(lane: Mapping[str, object]) -> list[int]:
         distributed = lane.get("planned_node_indices")
@@ -700,6 +773,8 @@ def _permissive_minimum_resource_request(
         })
         for stage in stage_lanes
     ), default=0)
+    if isinstance(native_epoch, Mapping):
+        planned_nodes = int(native_epoch["resource_token_policy"]["reserved_node_count_upper_bound"])
     modeled_aggregate_memory += memory_overhead_gib * max(1, planned_nodes)
     requested_parallel_cpus = modeled_parallel_cpus
     requested_aggregate_memory = modeled_aggregate_memory
@@ -1801,7 +1876,10 @@ def plan_campaign_resource_budget(
         rate = row["cpu_seconds_per_physical_frame"]
         if rate is None:
             return None
-        return float(row["fixed_cpu_hours"]) + float(rate) * sum(counts) / 3600.0
+        assignment = float(row.get("full_assignment_seconds_per_observation", 0.0))
+        return (float(row["fixed_cpu_hours"]) + float(rate) * sum(counts) / 3600.0
+                + assignment * sum(row["source_frames_per_replica"])
+                * int(row["member_observation_multiplier"]) / 3600.0)
 
     def task_wall_hours(
         row: Mapping[str, object], counts: Sequence[int], cpu_hours: float,
@@ -1861,8 +1939,14 @@ def plan_campaign_resource_budget(
         return max(modeled, censored_floor)
 
     def task_parallel_layout(row: Mapping[str, object]) -> Dict[str, object]:
-        """Resolve one logical task into safe single- or multi-node workers."""
+        return cached_parallel_layout(str(row["task_id"]))
 
+    normalized_by_id = {str(row["task_id"]): row for row in normalized}
+
+    @lru_cache(maxsize=None)
+    def cached_parallel_layout(task_id: str) -> Dict[str, object]:
+        """Resolve one logical task into safe single- or multi-node workers."""
+        row = normalized_by_id[task_id]
         active_cpus = min(maximum_parallel_cpus, int(row["effective_cpu_cap"]))
         if row.get("parallel_execution_model") is None:
             return {
@@ -2012,6 +2096,52 @@ def plan_campaign_resource_budget(
     dependency_stages = sorted({
         int(row["dependency_stage"]) for row in normalized
     })
+    native_dependencies = all("planning_dependencies" in row for row in normalized)
+    if any("planning_dependencies" in row for row in normalized) and not native_dependencies:
+        raise ResourcePlanningError("partial native planning dependency contract")
+
+    @lru_cache(maxsize=32)
+    def native_schedule(selected_counts: tuple) -> tuple[float, list]:
+        selection = dict(zip(normalized_by_id, selected_counts))
+        costs = known_costs(selection)
+        bundles = {}
+        for row in normalized:
+            bundles.setdefault(str(row["execution_bundle_id"]), []).append(row)
+        items = []
+        for index, (bundle, rows) in enumerate(bundles.items()):
+            layouts = [task_parallel_layout(row) for row in rows]
+            nodes = max(int(layout["node_count"]) for layout in layouts)
+            # Identical to the execution adapter's bundle resource envelope.
+            memory = max(task_scheduler_memory(row, selection[str(row["task_id"])])
+                         / int(layout["node_count"]) for row, layout in zip(rows, layouts))
+            cpus = max(int(layout["execution_cpu_slots"]) for layout in layouts)
+            duration = sum(task_wall_hours(row, selection[str(row["task_id"])], costs[str(row["task_id"])]) for row in rows)
+            deps = {d for row in rows for d in row["planning_dependencies"]["depends_on_bundle_ids"]}
+            waits = {d for row in rows for d in row["planning_dependencies"]["wait_for_bundle_ids"]}
+            items.append({
+                "item_id": bundle, "task_id": bundle, "script": bundle,
+                "depends_on_task_ids": sorted(deps - {bundle}),
+                "wait_for_task_ids": sorted(waits.intersection(bundles) - {bundle}),
+                "cpu_slots": cpus, "memory_gib": memory * nodes,
+                "requested_memory_gib": memory, "node_count": nodes,
+                "workers_per_node": max(int(l["workers_per_node"]) for l in layouts),
+                "planned_wall_hours": duration, "wall_hours": duration,
+                "submission_index": index,
+            })
+        epoch = schedule_resource_tasks(items, maximum_cpus=maximum_parallel_cpus,
+            maximum_memory=memory_gib, node_policy={
+                "cpus_per_node": maximum_cpus_per_node,
+                "memory_gib_per_node": node_memory_gib,
+                "maximum_nodes_per_campaign": maximum_nodes,
+                "memory_reserve_gib": memory_overhead,
+            })[0]
+        wall = float(epoch["planned_wall_hours"])
+        return wall, [{"dependency_stage": 0, "task_count": len(normalized),
+                       "execution_bundle_count": len(items), "estimated_cpu_hours": sum(costs.values()),
+                       "estimated_wall_hours_with_resource_lanes": wall,
+                       "estimated_wall_hours_with_resource_waves": wall,
+                       "resource_lanes": [], "resource_waves": [],
+                       "native_schedule": epoch}]
 
     def schedule_stage(
         stage: int,
@@ -2122,6 +2252,11 @@ def plan_campaign_resource_budget(
         costs = known_costs(selection)
         if len(costs) != len(normalized):
             return None, []
+        if native_dependencies:
+            try:
+                return native_schedule(tuple(tuple(selection[tid]) for tid in normalized_by_id))
+            except ResourceScheduleError:
+                return None, []
         stages = []
         total_wall = 0.0
         try:
@@ -2360,7 +2495,9 @@ def plan_campaign_resource_budget(
             proposed_total = sum(proposed_costs.values())
             delta = proposed_total - current_total
             proposed_wall = current_wall
-            if proposed_wall is not None and len(proposed_costs) == len(normalized):
+            if native_dependencies:
+                proposed_wall, _ = schedule_summary(proposed)
+            elif proposed_wall is not None and len(proposed_costs) == len(normalized):
                 try:
                     for stage in sorted({
                         int(row["dependency_stage"]) for row in rows
@@ -2422,6 +2559,29 @@ def plan_campaign_resource_budget(
     final_memory_blocked_groups: list[str] = []
     final_groups_at_ceiling: list[str] = []
     if not infeasibility_reasons and not calibration_required:
+        # An affordable full-coverage endpoint dominates every intermediate
+        # sampling upgrade. Verify it once; never skip a resource/coverage gate.
+        ceiling_selection = {key: list(values) for key, values in selected.items()}
+        ceiling_budgets = dict(group_budgets)
+        ceiling_strides = dict(group_strides)
+        for group_id, rows in groups.items():
+            if any(row.get("required_integer_stride") is not None for row in rows):
+                continue
+            ceiling_budgets[group_id] = maximum_group_budget(rows)
+            ceiling_strides[group_id], counts = group_selection(rows, ceiling_budgets[group_id])
+            ceiling_selection.update(counts)
+        ceiling_costs = known_costs(ceiling_selection)
+        if (native_dependencies and len(ceiling_costs) == len(normalized)
+                and sum(ceiling_costs.values()) <= science_cpu_hours
+                and all(task_scheduler_memory(row, ceiling_selection[str(row["task_id"])])
+                        <= memory_gib for row in normalized)):
+            ceiling_wall, _ = schedule_summary(ceiling_selection)
+            if ceiling_wall is not None and ceiling_wall <= science_wall_hours:
+                selected = ceiling_selection
+                group_budgets = ceiling_budgets
+                group_strides = ceiling_strides
+                allocation_order.append({"decision": "verified_full_coverage_endpoint",
+                                         "estimated_wall_hours": ceiling_wall})
         while True:
             (
                 candidates,
@@ -2833,7 +2993,17 @@ def plan_campaign_resource_budget(
         "reserved_finalization_cpu_hours": reserved_finalization_cpu_hours,
         "science_budget_cpu_hours": science_cpu_hours,
         "science_budget_wall_hours": science_wall_hours,
+        "time_allowance_accounting": {
+            "estimated_execution_ceiling_hours": wall_hours,
+            "modeled_work_budget_hours": science_wall_hours,
+            "additional_configured_reserve_fraction": 1.0 - utilization + pilot_fraction + finalization_fraction,
+            "explicit_orchestration_tasks": any(r.get("task_scope") == "orchestration_overhead" for r in normalized),
+            "task_uncertainty_already_in_costs": True,
+            "note": "Campaign allocation allowance is applied once outside this execution budget; explicit reserve settings are preserved.",
+        },
         "minimum_known_cpu_hours": minimum_known_cpu_hours,
+        "schedule_model": "native_dependency_resource_tokens" if native_dependencies else "legacy_stage_lanes",
+        "schedule_bound_classification": "constructed_schedule_not_proof_of_minimal_runtime",
         "minimum_wall_hours_lower_bound": minimum_wall,
         "estimated_selected_cpu_hours": final_known_cpu_hours,
         "estimated_selected_wall_hours_lower_bound": final_wall,
@@ -2864,7 +3034,8 @@ def plan_campaign_resource_budget(
             ),
             "interpretation": (
                 "The useful ceiling is the largest sum of independent execution "
-                "bundle CPU caps in one dependency stage. Aggregate memory, the "
+                "bundle CPU caps across the dependency graph (legacy tasks use "
+                "their stage boundaries). Aggregate memory, the "
                 "configured CPU envelope, scheduler policy, and queue state may "
                 "reduce the practical request."
             ),
@@ -3667,7 +3838,7 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
         for original in base_tasks:
             row = dict(original)
             if row.get("task_scope") == "orchestration_overhead":
-                candidate_tasks.append(row)
+                candidate_tasks.append(refresh_cache_preflight_task(row, cache_stride))
                 continue
             if str(row.get("task_id")) == cache_id:
                 rate = row.get("coordinate_cache_full_rate_seconds_per_frame")
@@ -4517,9 +4688,10 @@ def recommend_scientifically_valid_task_subset(
             "A reduced configuration can meet the envelope while retaining every "
             "protected module. Review and apply the proposed switches explicitly."
             if feasible else
-            "No acceptable reduced plan: the envelope cannot retain every "
-            "protected module at its scientific minimum. Increase the resource "
-            "envelope; protected checks will not be disabled."
+            "No acceptable reduced plan: this search did not find a schedule "
+            "retaining every protected module at its scientific minimum. "
+            "This is not proof of optimality or physical impossibility; "
+            "protected checks will not be disabled."
         ),
         "automatic_changes_applied": False,
         "protected_module_ids": sorted(protected),

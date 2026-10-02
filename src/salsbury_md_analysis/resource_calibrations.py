@@ -105,6 +105,7 @@ def _entry_from_sidecar(path: Path) -> Dict[str, object]:
         "memory_measurement_scope": resources.get("memory_measurement_scope"),
         "memory_replacement_qualified": resources.get("memory_replacement_qualified") is True,
         "requested_cpu_count": resources.get("requested_cpu_count"),
+        "resource_context": deepcopy(evidence.get("resource_context", {})),
         **workload_fields,
     }
 
@@ -170,6 +171,7 @@ def _entry_from_timeout(path: Path) -> Dict[str, object]:
         "scheduler_array_task_id": record.get("scheduler_array_task_id"),
         "source_timeout_path": str(path),
         "source_timeout_sha256": _sha256(path),
+        "resource_context": deepcopy(record.get("resource_context", {})),
         "scientific_status": record.get("scientific_status", "not evaluated"),
     }
 
@@ -470,6 +472,8 @@ def load_resource_calibration_catalog(
     for row in entries:
         if not isinstance(row, dict):
             raise ResourceCalibrationError("resource calibration entry must be an object")
+        if not isinstance(row.get("resource_context", {}), dict):
+            raise ResourceCalibrationError("resource_context must be an object")
         module_id = str(row.get("module_id", "")).strip()
         status = str(row.get("evidence_status", "complete_execution"))
         if status not in {"complete_execution", "right_censored_timeout"}:
@@ -540,6 +544,11 @@ def load_resource_calibration_catalog(
             raise ResourceCalibrationError(str(exc)) from exc
     else:
         validated_models = {}
+    return _aggregate_calibrations(grouped, str(source), _sha256(source), validated_models, timeout_safety)
+
+
+def _aggregate_calibrations(grouped, catalog_path, catalog_sha256, validated_models, timeout_safety):
+    """Aggregate validated evidence; retain rows for task-specific qualification."""
     result: Dict[str, Dict[str, object]] = {}
     for module_id, rows in grouped.items():
         complete_rows = [
@@ -785,8 +794,49 @@ def load_resource_calibration_catalog(
                 "completed_execution" if complete_rows else
                 "censored_lower_bound_only"
             ),
-            "catalog_path": str(source),
-            "catalog_sha256": _sha256(source),
+            "catalog_path": catalog_path,
+            "catalog_sha256": catalog_sha256,
             "size_length_cpu_model": validated_models.get(module_id),
+            "measurement_rows": list(rows),
         }
     return result
+
+
+def qualify_calibration(calibration: Mapping, context: Mapping) -> tuple[dict | None, dict]:
+    """Exclude known implementation/input/workload mismatches, retaining evidence.
+
+    Unscoped historical evidence remains a conservative fallback. It cannot
+    qualify a smaller memory replacement for a newly specified execution path.
+    """
+    rows = calibration.get("measurement_rows")
+    if not isinstance(rows, list):
+        return dict(calibration), {"status": "legacy_aggregate_scope_unknown"}
+    retained, excluded, unknown = [], [], []
+    for row in rows:
+        declared = row.get("resource_context", {})
+        mismatched = [key for key, value in declared.items()
+                      if key in context and value != context[key]]
+        unresolved = not declared or any(key not in context for key in declared)
+        evidence_id = row.get("source_sidecar_sha256", row.get("source_timeout_sha256"))
+        if mismatched:
+            excluded.append({"evidence_sha256": evidence_id, "mismatched_fields": sorted(mismatched),
+                             "evidence_status": row.get("evidence_status", "complete_execution")})
+        else:
+            kept = dict(row)
+            if unresolved or any(key not in declared for key in context):
+                unknown.append(evidence_id)
+                kept["memory_replacement_qualified"] = False
+            retained.append(kept)
+    audit = {"status": "matched_with_legacy_fallback" if unknown else "context_matched",
+             "target_context": dict(context), "retained_count": len(retained),
+             "excluded_evidence": excluded, "scope_unknown_evidence_sha256": unknown,
+             "excluded_evidence_preserved_in_catalog": True}
+    if not retained:
+        audit["status"] = "no_applicable_measurement_use_provisional_model"
+        return None, audit
+    module = str(calibration["module_id"])
+    result = _aggregate_calibrations({module: retained}, calibration["catalog_path"],
+        calibration["catalog_sha256"], {}, calibration["censored_timeout_safety_factor"])[module]
+    # Independently qualified size/length models carry their own held-out gate.
+    result["size_length_cpu_model"] = calibration.get("size_length_cpu_model")
+    return result, audit

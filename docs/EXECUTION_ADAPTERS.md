@@ -81,9 +81,9 @@ dependencies, but it does not need Slurm:
     "maximum_hours_per_cpu": 24,
     "maximum_memory_gib": 64,
     "maximum_scratch_gib": 256,
-    "planning_utilization": 0.85,
-    "pilot_budget_fraction": 0.05,
-    "finalization_headroom_fraction": 0.05,
+    "planning_utilization": 1.0,
+    "pilot_budget_fraction": 0.0,
+    "finalization_headroom_fraction": 0.0,
     "time_safety_factor": 1.5,
     "well_calibrated_memory_uncertainty_factor": 1.0,
     "poorly_calibrated_memory_uncertainty_factor": 1.0,
@@ -311,7 +311,7 @@ Set `submission_adapter` to `slurm` and provide `slurm_profile`:
     "slurm_profile": "../slurm/my-cluster.json",
     "maximum_parallel_cpus": 32,
     "maximum_hours_per_cpu": 24,
-    "finalization_headroom_fraction": 0.05
+    "finalization_headroom_fraction": 0.0
   }
 }
 ```
@@ -356,8 +356,10 @@ already-buffered estimate of 11.75 hours requests 16 hours, even if the planning
 budget was 48 hours. The user ceiling includes the full allowance and rounding.
 For a 48-hour ceiling, the planner reserves at most 36 estimated execution hours
 before selecting strides or proposing optional reductions. These execution
-hours already include the configured task-level model uncertainty; existing
-planning-utilization and pilot/finalization reserves also remain in force.
+hours already include task-level model uncertainty and explicit preflight and
+reporting costs. Fresh configurations add no utilization, pilot or finalization
+reserve. Existing explicit reserve settings remain in force and are reported
+separately in `time_allowance_accounting`.
 For a non-integer ceiling, the planner first rounds the usable allocation down
 to the configured interval, then divides by the headroom factor. The preview
 refuses submission if the final schedule plus the full allowance exceeds the
@@ -375,17 +377,16 @@ can contain several logical clustering methods. The same dependency and
 CPU/memory packing calculation supplies the Slurm preview and acceptance check,
 including the configured memory reserve once per node.
 
-The earlier stage/lane estimate remains a diagnostic. It serializes broad
-analysis stages and can overestimate the time needed by independent tasks.
-A wall-time objection from that estimate alone allows a concrete sampling
-schedule to reach the native check; missing calibration, scientific-floor,
-CPU and memory failures still stop preparation. The native schedule must fit the science wall-time
-allowance after the existing utilization, pilot and finalization reserves.
-Changing the acceptance check does not remove these reserves or alter a fixed
-sampling schedule.
+Fresh candidate allocation and adapter validation use the same task dependencies
+and CPU/per-node-memory token scheduler. Independent tasks can overlap without
+waiting for an entire analysis stage. When more nodes are allowed, smaller-node
+placements remain candidates for unchanged task requests. The chosen schedule
+is a constructed feasible schedule, not proof of a globally optimal runtime.
+Older task metadata without dependency contracts retains the legacy stage model.
+Scientific floors, CPU limits, memory limits and missing-calibration checks
+remain enforced. Fixed sampling remains fixed.
 
-Automatic stride allocation still uses the conservative stage model to choose
-candidates; this check does not make that search globally optimal. If no cache
+If no cache
 stride is selected, preparation saves the rejected candidate diagnostics and
 evaluates the protected-core reduction recommendation. It does not export a
 fixed sampling schedule or enable a launcher. Setting
