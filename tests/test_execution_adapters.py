@@ -1185,7 +1185,9 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertEqual(preview["maximum_parallel_cpus_in_generated_waves"], 2)
         self.assertEqual(preview["maximum_parallel_memory_gib_configured"], 185)
         self.assertEqual(preview["maximum_parallel_memory_gib_in_generated_waves"], 180)
-        self.assertEqual(preview["planned_node_count"], 2)
+        # A permitted second node is unnecessary for this same two-hour
+        # schedule: the concurrent 100 + 80 GiB pair fits one node.
+        self.assertEqual(preview["planned_node_count"], 1)
         self.assertTrue(all(
             row["reserved_memory_gib_per_node"] <= 185.0
             for row in preview["planned_node_reservations"]

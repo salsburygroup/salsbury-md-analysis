@@ -303,7 +303,8 @@ class ComparativeQuickstartTests(unittest.TestCase):
             self.assertEqual(
                 capacity["coordinate_cache_replica_parallel_cpu_ceiling"], 63
             )
-            self.assertEqual(capacity["useful_parallel_cpu_ceiling"], 380)
+            # Cross-stage tasks can overlap once their actual inputs exist.
+            self.assertEqual(capacity["useful_parallel_cpu_ceiling"], 534)
 
     def test_comparison_rejects_disabling_protected_common_pca(self):
         with tempfile.TemporaryDirectory() as temporary:

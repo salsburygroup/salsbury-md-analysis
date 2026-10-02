@@ -42,7 +42,11 @@ class FixedSamplingTests(unittest.TestCase):
     def test_five_system_wall_only_stage_failure_reaches_native_validation(self, _dssp):
         self._five_system_fixed_schedule(False, stage_wall_failure=True)
 
-    def _five_system_fixed_schedule(self, protected, stage_wall_failure=False):
+    @patch("salsbury_md_analysis.comparative_quickstart._discover_dssp_executable", return_value=None)
+    def test_historical_all_projection_weighted_kmeans_schedule_is_preserved(self, _dssp):
+        self._five_system_fixed_schedule(False, legacy_imwk=True)
+
+    def _five_system_fixed_schedule(self, protected, stage_wall_failure=False, legacy_imwk=False):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
             pdb, psf, trajectories = _write_ion_inputs(root)
@@ -77,6 +81,18 @@ class FixedSamplingTests(unittest.TestCase):
                 self.assertEqual(before["global_stride_coupling"]["selected_coordinate_cache_integer_stride"], 2)
             schedule = first / "fixed-sampling-schedule.json"
             frozen = json.loads(schedule.read_text())
+            if legacy_imwk:
+                for row in frozen["tasks"].values():
+                    if row["module_id"] != "clustering_imwkmeans":
+                        continue
+                    parent = frozen["tasks"][f"view:{row['workflow_id']}:common_pca"]
+                    row["task_scope"] = "conformational_view"
+                    for key in ("integer_stride", "source_frames_per_replica", "selected_physical_frames_per_replica"):
+                        row[key] = copy.deepcopy(parent[key])
+                    definition = frozen["projects"][f"project-{row['workflow_id']}.json"]["sampling_fields"]["clustering_imwkmeans"]
+                    definition.pop("fit_stride", None)
+                frozen["content_sha256"] = _digest({k:v for k,v in frozen.items() if k != "content_sha256"})
+                schedule.write_text(json.dumps(frozen))
             settings["planning"]["stride_mode"] = "balanced_per_method"
             settings["sampling"] = {"fixed_schedule_file":str(schedule)}
             settings["execution"]["maximum_parallel_cpus"] = 24
@@ -104,6 +120,17 @@ class FixedSamplingTests(unittest.TestCase):
             self.assertEqual(after["feasibility_status"], "feasible")
             native = after["native_schedule_validation"]
             self.assertEqual(native["status"], "complete")
+            self.assertEqual(after["schedule_model"], "native_dependency_resource_tokens")
+            self.assertAlmostEqual(after["stages"][0]["native_schedule"]["planned_wall_hours"],
+                                   native["estimated_execution_hours"])
+            for row in after["tasks"]:
+                if row.get("future_cache_preflight"):
+                    stride = after.get("global_stride_coupling", {}).get("selected_coordinate_cache_integer_stride", 1)
+                    raw_counts = row["future_cache_preflight"]["raw_frames_per_replica"]
+                    workload = row["resource_model"]["workload"]
+                    self.assertEqual(workload["selected_frames_per_replica"], [n // stride for n in raw_counts])
+                    # Raw counts must not already have been cache-strided.
+                    self.assertTrue(all(n == 2000 for n in raw_counts))
             preview = json.loads((second / "slurm-submission-preview.json").read_text())
             self.assertAlmostEqual(native["estimated_execution_hours"], preview["planner_estimated_dependency_critical_path_hours"])
             # A frozen historical block size must still be feasible; freezing

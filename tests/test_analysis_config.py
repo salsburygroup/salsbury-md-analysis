@@ -14,6 +14,23 @@ from salsbury_md_analysis.analysis_config import (
 
 
 class AnalysisConfigTests(unittest.TestCase):
+    def test_shipped_profiles_use_explicit_overhead_without_duplicate_reserves(self):
+        profiles = Path(__file__).resolve().parents[1] / "profiles" / "analysis"
+        for name in ("deac-default.json", "local-default.json"):
+            config = load_analysis_config(profiles / name, ["common_pca"], ["global"])
+            self.assertEqual(config["execution"]["planning_utilization"], 1.0)
+            self.assertEqual(config["execution"]["pilot_budget_fraction"], 0.0)
+            self.assertEqual(config["execution"]["finalization_headroom_fraction"], 0.0)
+            self.assertEqual(config["execution"]["time_safety_factor"], 1.5)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "explicit-reserves.json"
+            values = {"planning_utilization":0.85, "pilot_budget_fraction":0.05,
+                      "finalization_headroom_fraction":0.05}
+            path.write_text(json.dumps({"config_schema":"salsbury-analysis-config-v1", "execution":values}))
+            config = load_analysis_config(path, ["common_pca"], ["global"])
+            for key, value in values.items():
+                self.assertEqual(config["execution"][key], value)
+
     def test_default_enables_every_module_view_and_final_report(self):
         config = default_analysis_config(
             ["common_pca", "pca_fes_basins", "solvent_accessible_surface_area"],
@@ -33,7 +50,9 @@ class AnalysisConfigTests(unittest.TestCase):
         self.assertEqual(config["execution"]["coordinate_cache"], "auto")
         self.assertEqual(config["execution"]["submission_adapter"], "local")
         self.assertIsNone(config["execution"]["slurm_profile"])
-        self.assertEqual(config["execution"]["finalization_headroom_fraction"], 0.05)
+        self.assertEqual(config["execution"]["planning_utilization"], 1.0)
+        self.assertEqual(config["execution"]["pilot_budget_fraction"], 0.0)
+        self.assertEqual(config["execution"]["finalization_headroom_fraction"], 0.0)
         self.assertEqual(config["execution"]["time_safety_factor"], 1.5)
         self.assertNotIn("memory_safety_factor", config["execution"])
         self.assertEqual(

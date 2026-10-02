@@ -14,7 +14,8 @@ from .automatic_sampling import (
 )
 from .ensemble_parallelism import annotate_task_parallelism
 from .convergence_contracts import configure_convergence_blocks
-from .orchestration_resources import orchestration_tasks
+from .orchestration_resources import orchestration_tasks, refresh_cache_preflight_task
+from .planning_dependencies import annotate_planning_dependencies
 from .execution_adapters import load_slurm_profile, execution_walltime_budget
 from .campaign_walltime import CAMPAIGN_WALLTIME_DEFAULTS, campaign_walltime_request
 from .frame_sampling import (
@@ -40,7 +41,7 @@ from .resource_planning import (
     recommend_scientifically_valid_task_subset,
 )
 from .resource_calibrations import (
-    ResourceCalibrationError, load_resource_calibration_catalog,
+    ResourceCalibrationError, load_resource_calibration_catalog, qualify_calibration,
 )
 from .scientific_sampling import (
     apply_scientific_minimums_to_tasks,
@@ -194,6 +195,13 @@ def _apply_measured_resource_calibrations(
         calibration = measured.get(module_id)
         if calibration is None or task.get("measured_calibration_eligible", True) is False:
             continue
+        if task.get("resource_context"):
+            calibration, audit = qualify_calibration(calibration, task["resource_context"])
+            task["calibration_applicability"] = audit
+            if calibration is None:
+                task["baseline_calibration_status"] = task.get("calibration_status")
+                task["calibration_status"] = "provisional_no_applicable_catalog_measurement"
+                continue
         rate_multiplier = task.get("measured_cpu_rate_multiplier", 1.0)
         memory_multiplier = task.get("measured_memory_multiplier", 1.0)
         for value, label in (
@@ -1517,6 +1525,23 @@ def _view_tasks(
             "calibration_id": str(model["calibration"]),
             **method_specific,
         }
+        if module_id == "clustering_imwkmeans":
+            definition = project["definitions"][module_id]
+            dimensions = len(definition.get("component_indices", [1, 2, 3]))
+            largest_k = max(definition["k_values"])
+            # Provisional assignment/serialization allowance, separate from
+            # the existing fit-grid proxy. No new measured rate is claimed.
+            task.update({
+                "task_scope": "conformational_view_algorithm_fit",
+                "algorithm_id": "intelligent_minkowski_weighted_kmeans",
+                "balance_group": f"{pca_task['balance_group']}:imwkmeans_fit",
+                "projection_source_task_id": pca_task["task_id"],
+                "full_assignment_seconds_per_observation": (
+                    (0.002 + 3.0 * dimensions * largest_k / 1_000_000) * time_safety_factor),
+                "assignment_cost_basis": "provisional_linear_assignment_and_record_serialization_v1",
+                "measured_calibration_eligible": False,
+                "calibration_status": "provisional_separate_fit_and_assignment",
+            })
         tasks.append(task)
     return tasks
 
@@ -2011,6 +2036,14 @@ def _apply_view_allocation(
     )
     multiplier = _view_member_multiplier(project)
     effective = sum(selected) * multiplier
+    imwkmeans = definitions.get("clustering_imwkmeans")
+    if isinstance(imwkmeans, dict):
+        fit_row = task_rows.get(f"view:{view_id}:clustering_imwkmeans")
+        if fit_row is not None:
+            imwkmeans["fit_stride"] = (
+                int(fit_row["integer_stride"])
+                if fit_row["task_scope"] == "conformational_view_algorithm_fit" else 1)
+            imwkmeans["assignment_chunk_size"] = 4096
     representative = definitions.get("representative_frames")
     if isinstance(representative, dict):
         representative["maximum_candidates"] = max(1, effective)
@@ -2550,6 +2583,19 @@ def plan_and_apply_complete_campaign(
                     view_source_counts
                 )[1],
             ))
+        if fixed_schedule is not None:
+            # Historical iMWK plans used every projection and expressed their
+            # stride on the parent stream. Preserve that frozen convention;
+            # interpreting it as a new fit stride would downsample twice.
+            for task in built:
+                saved = fixed_schedule["tasks"].get(task["task_id"], {})
+                if (task["module_id"] == "clustering_imwkmeans"
+                        and saved.get("task_scope") == "conformational_view"):
+                    task["task_scope"] = "conformational_view"
+                    task["balance_group"] = task["balance_group"].removesuffix(":imwkmeans_fit")
+                    task.pop("projection_source_task_id", None)
+                    task["full_assignment_seconds_per_observation"] = 0.0
+                    task["fixed_legacy_all_projection_fit"] = True
         # Conservative costing levels, not new runtime success dependencies.
         for task in built:
             original_stage = int(task.get("science_dependency_stage", task["dependency_stage"]))
@@ -2564,6 +2610,12 @@ def plan_and_apply_complete_campaign(
                 time_safety_factor=time_safety_factor,
                 maximum_atom_count=int(dimensions["maximum_atom_count"]),
                 coordinate_cache_enabled=coordinate_cache_enabled,
+                raw_view_frame_counts={
+                    path.stem.removeprefix("project-"): list(
+                        (view_frame_counts_by_id or {}).get(
+                            path.stem.removeprefix("project-"), source_counts))
+                    for path in view_paths
+                },
             ))
         except (OSError, KeyError, TypeError, ValueError) as exc:
             raise CampaignPlanningError(
@@ -2575,6 +2627,15 @@ def plan_and_apply_complete_campaign(
         _apply_system_memory_scaling(
             built, int(dimensions["maximum_atom_count"])
         )
+        from .cache_routing import cache_routing_plan
+        cached_modules = set(cache_routing_plan(current_base).get("cache_project_modules", [])) if coordinate_cache_enabled else set()
+        for task in built:
+            task["resource_context"] = {
+                "coordinate_source": ("validated_coordinate_cache" if coordinate_cache_enabled and
+                    (task.get("task_scope") in {"conformational_view", "conformational_view_algorithm_fit"}
+                     or task.get("module_id") in cached_modules) else "raw_source"),
+                "task_scope": str(task.get("task_scope", "unspecified")),
+            }
         _apply_measured_resource_calibrations(
             built, measured_calibrations,
             time_safety_factor=time_safety_factor,
@@ -2586,6 +2647,11 @@ def plan_and_apply_complete_campaign(
         except MemoryPolicyError as exc:
             raise CampaignPlanningError(str(exc)) from exc
         built = [annotate_task_parallelism(task) for task in built]
+        annotate_planning_dependencies(
+            built, root=root, base_project=current_base, view_paths=view_paths,
+            context_paths=context_paths, config=analysis_config,
+            cache_enabled=coordinate_cache_enabled,
+        )
         return built, current_base
 
     previous_signature: object = None
@@ -2638,6 +2704,9 @@ def plan_and_apply_complete_campaign(
                     tasks, fixed_schedule,
                     coordinate_cache_full_scan_fraction=float(execution.get("coordinate_cache_full_scan_fraction", 1.0)),
                 )
+                fixed_cache_stride = (fixed_schedule.get("global_stride_coupling") or {}).get(
+                    "selected_coordinate_cache_integer_stride", 1)
+                tasks = [refresh_cache_preflight_task(t, fixed_cache_stride) for t in tasks]
                 plan = plan_campaign_resource_budget(tasks, **planning_kwargs)
                 plan["fixed_sampling"] = verify_fixed_plan(plan, fixed_schedule)
                 if fixed_schedule.get("global_stride_coupling") is not None:
@@ -2769,9 +2838,9 @@ def plan_and_apply_complete_campaign(
             plan["method_reduction_recommendation"] = recommendation
             if recommendation["recommendation_status"] == "no_feasible_subset_found":
                 message = (
-                    "No acceptable reduced plan: the configured whole-campaign "
-                    "envelope cannot retain every protected module at its "
-                    "scientific minimum. "
+                    "No acceptable reduced plan: the search did not find a "
+                    "schedule retaining every protected module at its "
+                    "scientific minimum within the configured envelope. "
                 )
             else:
                 message = (
