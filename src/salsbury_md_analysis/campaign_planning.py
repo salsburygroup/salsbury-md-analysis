@@ -199,6 +199,8 @@ def _apply_measured_resource_calibrations(
             calibration, audit = qualify_calibration(calibration, task["resource_context"])
             task["calibration_applicability"] = audit
             if calibration is None:
+                task["baseline_calibration_status"] = task.get("calibration_status")
+                task["calibration_status"] = "provisional_no_applicable_catalog_measurement"
                 continue
         rate_multiplier = task.get("measured_cpu_rate_multiplier", 1.0)
         memory_multiplier = task.get("measured_memory_multiplier", 1.0)

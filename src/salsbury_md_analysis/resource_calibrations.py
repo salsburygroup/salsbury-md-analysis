@@ -810,7 +810,13 @@ def qualify_calibration(calibration: Mapping, context: Mapping) -> tuple[dict | 
     """
     rows = calibration.get("measurement_rows")
     if not isinstance(rows, list):
-        return dict(calibration), {"status": "legacy_aggregate_scope_unknown"}
+        # An old aggregate cannot prove that its completed RSS measurements
+        # match this implementation/input scope. Keep runtime/censor bounds,
+        # but do not use it to reduce the task's memory baseline.
+        return {**calibration, "memory_replacement_qualified": False,
+                "per_worker_memory_replacement_qualified": False,
+                "memory_replacement_policy": "retain_legacy_baseline_and_use_measurement_as_lower_bound"}, {
+                    "status": "legacy_aggregate_scope_unknown", "target_context": dict(context)}
     retained, excluded, unknown = [], [], []
     for row in rows:
         declared = row.get("resource_context", {})

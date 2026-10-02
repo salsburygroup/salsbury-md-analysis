@@ -42,9 +42,20 @@ class CalibrationApplicabilityTests(unittest.TestCase):
         self.assertEqual(result["conservative_cpu_seconds_per_frame"], 13.5)
         self.assertEqual(audit["status"], "matched_with_legacy_fallback")
 
+    def test_legacy_aggregate_cannot_lower_memory_without_scope_evidence(self):
+        catalog = self.catalog([self.measurement("a"), self.measurement("b")])
+        catalog.pop("measurement_rows")
+        original = copy.deepcopy(catalog)
+        self.assertTrue(catalog["memory_replacement_qualified"])
+        result, audit = qualify_calibration(catalog, {"coordinate_source":"cache"})
+        self.assertFalse(result["memory_replacement_qualified"])
+        self.assertFalse(result["per_worker_memory_replacement_qualified"])
+        self.assertEqual(result["conservative_cpu_seconds_per_frame"], catalog["conservative_cpu_seconds_per_frame"])
+        self.assertEqual(audit["status"], "legacy_aggregate_scope_unknown")
+        self.assertEqual(catalog, original)
+
     def test_no_matching_evidence_is_explicitly_provisional(self):
         result, audit = qualify_calibration(self.catalog([self.measurement("a", context={"implementation_id":"old"})]),
                                             {"implementation_id":"new"})
         self.assertIsNone(result)
         self.assertEqual(audit["status"], "no_applicable_measurement_use_provisional_model")
-
