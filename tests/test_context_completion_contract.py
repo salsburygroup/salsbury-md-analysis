@@ -15,6 +15,7 @@ PROJECTS=(
   'project-a.json'
   'project-b.json'
 )
+PROJECT="${PROJECTS[$SLURM_ARRAY_TASK_ID]}"
 COMMANDS=(
   'ion-atmosphere'
   'ion-geometry'

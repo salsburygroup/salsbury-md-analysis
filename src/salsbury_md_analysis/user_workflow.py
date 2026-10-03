@@ -250,6 +250,7 @@ def prepare_study(path, output=None):
 
 def workflow_status(root):
     from .accepted_artifacts import reports_complete
+    from .task_status import latest_task_statuses, temporary_failure_evidence
     root = Path(root).expanduser().resolve(strict=True)
     plan = _json(root / "local-execution-plan.json")
     tasks = [t for phase in plan["phases"] for t in phase["tasks"]]
@@ -259,6 +260,8 @@ def workflow_status(root):
         for phase in _json(path).get("phase_reports", []):
             for record in phase.get("tasks", []):
                 latest[record.get("task_id")] = record
+    latest.update(latest_task_statuses(root, tasks))
+    report_owners = Counter(str(name) for task in tasks for name in task.get("completion_reports", []))
     for task in tasks:
         names = task.get("completion_reports",[])
         complete = bool(names) and reports_complete(root,names,task)
@@ -268,8 +271,17 @@ def workflow_status(root):
             "reports":list(names),"logs":str(root / "logs"), "blocking_tasks":[],
             "last_attempt":latest.get(task["task_id"])}
         attempt = latest.get(task["task_id"], {})
-        if states[task["task_id"]]["state"] == "not_complete" and attempt.get("status") in {"failed", "timed_out"}:
-            states[task["task_id"]]["state"] = attempt["status"]
+        row = states[task["task_id"]]
+        row["artifact_state"] = row["state"]
+        if not complete:
+            if attempt.get("status") in {"failed", "timed_out"}:
+                row["state"] = attempt["status"]
+            elif not attempt and all(report_owners[str(name)] == 1 for name in names):
+                evidence = temporary_failure_evidence(root, task)
+                if evidence:
+                    row["state"] = "failed"
+                    row["failure_evidence"] = evidence
+                    row["failure_evidence_scope"] = "legacy temporary report; attempt freshness unverified"
     for task in tasks:
         row = states[task["task_id"]]
         if row["state"] != "complete":
@@ -277,14 +289,20 @@ def workflow_status(root):
             if row["state"] == "not_complete" and row["blocking_tasks"]:
                 row["state"] = "dependency_blocked"
     activity = campaign_activity(root)
+    if activity.get("local_controller") == "active":
+        for row in states.values():
+            if row["state"] in {"not_complete", "dependency_blocked"} and (row.get("last_attempt") or {}).get("status") == "running":
+                row["state"] = "running"
     # Scheduler activity is not acceptance. A live job may have partial files.
     for job in activity["slurm_jobs"]:
         for task_id in job.get("task_ids", []):
-            if task_id in states and states[task_id]["state"] != "complete":
+            if task_id in states:
                 row = states[task_id]
-                row["artifact_state"] = row["state"]
-                row["state"] = "running" if job["state"] in {"RUNNING", "COMPLETING"} else "queued"
                 row.setdefault("slurm_jobs", []).append(job)
+                row["allocation_state"] = job["state"]
+                if row["state"] in {"complete", "failed", "timed_out", "invalid_output"}:
+                    continue
+                row["state"] = "running" if job["state"] in {"RUNNING", "COMPLETING"} else "queued"
     rows = list(states.values())
     counts = dict(Counter(row["state"] for row in rows))
     return {"technical_status":"complete" if counts.get("complete",0)==len(rows) else "incomplete",
@@ -362,7 +380,7 @@ def _execute_workflow(root, *, resume=False, execute=True):
     status = workflow_status(root)
     if status["technical_status"] == "complete":
         return dict(status,execution_started=False,jobs_submitted=False)
-    if status["counts"].get("invalid_output"):
+    if status["counts"].get("invalid_output") or any(row.get("artifact_state") == "invalid_output" for row in status["tasks"]):
         raise ValueError("Existing output failed validation. Preserve it and diagnose the cause; automatic overwrite is forbidden.")
     config = _json(root / "analysis-config.json")
     adapter = config["execution"].get("submission_adapter","local")
@@ -373,6 +391,8 @@ def _execute_workflow(root, *, resume=False, execute=True):
         raise ValueError("Custom launchers own submission and recovery. Use launcher-contract.json and run-custom.sh.")
     if adapter == "slurm":
         # Unknown scheduler state must never result in duplicate submissions.
+        from .execution_adapters import validate_worker_projects
+        validate_worker_projects(root, _json(root / "local-execution-plan.json"))
         queue = subprocess.run(_queue_command(root),capture_output=True,text=True,check=True)
         for line in queue.stdout.splitlines():
             fields = line.split("|",2)

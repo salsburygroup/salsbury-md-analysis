@@ -27,6 +27,7 @@ from .ensemble_parallelism import annotate_task_parallelism
 from .manifests import load_json
 from .resource_planning import ResourcePlanningError, pack_resource_lanes
 from .campaign_walltime import CAMPAIGN_WALLTIME_DEFAULTS, campaign_walltime_budget, campaign_walltime_request
+from .task_status import persist_task_status
 
 
 class ExecutionAdapterError(ValueError):
@@ -2093,6 +2094,7 @@ record_status() {{
   printf '{{"event":"%s","task":"%s","attempt":%s,"restart_count":%s,"exit_code":%s,"stdout":"%s","stderr":"%s"}}\n' \
     "$event" "${{TASK##*/}}" "$attempt" "$RESTART_COUNT" "$exit_code" \
     "${{ATTEMPT_STDOUT##*/}}" "${{ATTEMPT_STDERR##*/}}" >> "$STATUS_FILE"
+  "$PYTHON" -m salsbury_md_analysis.task_status "$ROOT" "$TASK" "$event" "$attempt" "$exit_code" || exit 70
 }}
 validate_completion_reports() {{
   if [[ "$#" -eq 0 ]]; then
@@ -2538,13 +2540,26 @@ def _task_project_filename(root: Path, task: Mapping[str, object]) -> Optional[s
     ):
         projects = _bash_array_values(path, "PROJECTS")
         index = int(array_task_id)
-        if index >= len(projects):
+        if index < 0 or index >= len(projects):
             raise ExecutionAdapterError(
                 f"array task {index} is outside PROJECTS in {script}"
             )
-        return projects[index]
+        # Resolve the argument the worker will actually pass. Reading only the
+        # array hid replay scripts that prepended ROOT to an absolute value.
+        expression = _script_scalar(path, "PROJECT")
+        element = "${PROJECTS[$SLURM_ARRAY_TASK_ID]}"
+        if expression is None or element not in expression:
+            raise ExecutionAdapterError(f"cannot statically resolve PROJECT in {script}")
+        value = expression.replace(element, projects[index])
+        value = value.replace("${ROOT}", str(root)).replace("$ROOT", str(root))
+        if "$" in value:
+            raise ExecutionAdapterError(f"unresolved worker PROJECT in {script}: {value}")
+        return value
     project = _script_scalar(path, "PROJECT")
     if project:
+        project = project.replace("${ROOT}", str(root)).replace("$ROOT", str(root))
+        if "$" in project:
+            raise ExecutionAdapterError(f"unresolved worker PROJECT in {script}: {project}")
         candidate = Path(project)
         if not candidate.is_absolute():
             candidate = root / candidate
@@ -2553,6 +2568,68 @@ def _task_project_filename(root: Path, task: Mapping[str, object]) -> Optional[s
         except ValueError:
             return str(candidate.resolve(strict=False))
     return None
+
+
+def validate_worker_projects(root: Path, plan: Mapping[str, object], *, allow_future_inputs: bool = True) -> None:
+    """Check exact project arguments and final population guards before launch."""
+    from .observation_guards import validate_project_observation_guards, validate_projection_guards
+    resource_path = root / "campaign-resource-plan.json"
+    resources = load_json(resource_path) if resource_path.is_file() else {}
+    allocations = {row.get("task_id"): row for row in resources.get("tasks", [])}
+    checked = set()
+    for phase in plan.get("phases", []):
+        for task in phase.get("tasks", []):
+            script = root / str(task["script"])
+            if not script.is_file():
+                raise ExecutionAdapterError(f"worker script is missing: {script}")
+            actual = _task_project_filename(root, task)
+            declared = task.get("project_filename")
+            if actual is None and declared is None:
+                continue  # Non-project reporting commands and custom launchers.
+            if actual is None:
+                raise ExecutionAdapterError(f"cannot verify project argument in {script.name}")
+            path = Path(actual).expanduser()
+            path = path if path.is_absolute() else root / path
+            if declared is not None:
+                expected = Path(str(declared)).expanduser()
+                expected = expected if expected.is_absolute() else root / expected
+                if expected.resolve() != path.resolve():
+                    raise ExecutionAdapterError(f"worker {script.name} project argument differs from its plan: {path} != {expected}")
+            if not path.is_file():
+                routing_path = root / "base-cache-routing.json"
+                routing = load_json(routing_path) if routing_path.is_file() else {}
+                producers = {row.get("task_id") for phase in plan.get("phases", [])
+                             for row in phase.get("tasks", [])
+                             if row.get("script") == "run_coordinate_cache.slurm"}
+                if (allow_future_inputs and routing.get("routing_status") == "planned_after_coordinate_cache_validation"
+                        and routing.get("runtime_cache_project") == "project-cache-base.json"
+                        and path.resolve() == (root / "project-cache-base.json").resolve()
+                        and (root / str(routing.get("source_project", ""))).is_file()
+                        and producers.intersection(task.get("depends_on_task_ids", []))):
+                    continue  # This exact path is produced by a required predecessor.
+                raise ExecutionAdapterError(f"worker {script.name} project argument does not exist: {path}")
+            if path.resolve() in checked:
+                continue
+            checked.add(path.resolve())
+            project = load_json(path)
+            try:
+                observed_count = validate_project_observation_guards(project, path)
+                # Cache-backed inputs may not be materialized yet. The final
+                # allocation still declares the selected pooled population.
+                view_id = path.stem.removeprefix("project-")
+                row = allocations.get(f"view:{view_id}:common_pca")
+                if row is not None:
+                    count = sum(row["selected_physical_frames_per_replica"])
+                    count *= int(row.get("member_observation_multiplier", 1))
+                    validate_projection_guards(project, count)
+                    if observed_count is not None and observed_count != count:
+                        raise ValueError(
+                            f"Project {path.name}: current selection gives {observed_count} "
+                            f"pooled observations but the resource plan costs {count}; "
+                            "replan before launch. No sampling was changed."
+                        )
+            except ValueError as exc:
+                raise ExecutionAdapterError(str(exc)) from exc
 
 
 def _project_cached_modules(
@@ -3152,6 +3229,7 @@ def prepare_execution_artifacts(
         None if profile is None else profile["resource_policy"],
         None if profile is None else profile["node_policy"],
     )
+    validate_worker_projects(root, plan)
     validate_native_campaign_schedule(root, plan, adapter=adapter)
     (root / "local-execution-plan.json").write_text(
         json.dumps(plan, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -3471,6 +3549,7 @@ def _run_local_task(
         script = root / str(task["script"])
         if not script.is_file() or script.parent != root:
             raise ExecutionAdapterError(f"local worker is missing or outside root: {script}")
+        validate_worker_projects(root, {"phases": [{"tasks": [task]}]}, allow_future_inputs=False)
         suffix = "single" if task.get("array_task_id") is None else str(task["array_task_id"])
         stem = f"{attempt_id}-{phase_id}-{task_index}-{suffix}"
         env = os.environ.copy()
@@ -3484,6 +3563,8 @@ def _run_local_task(
         })
         if task.get("array_task_id") is not None:
             env["SLURM_ARRAY_TASK_ID"] = str(task["array_task_id"])
+        else:
+            env.pop("SLURM_ARRAY_TASK_ID", None)
         task_start = time.monotonic()
         attempts = []
         exit_code = None
@@ -3508,8 +3589,14 @@ def _run_local_task(
                     "stdout": str(stdout_path.relative_to(root)),
                     "stderr": str(stderr_path.relative_to(root)),
                 })
+                persist_task_status(root, task, attempt_id, attempts[-1])
                 break
             timed_out = False
+            persist_task_status(root, task, attempt_id, {
+                "status": "running", "attempt_number": attempt_number,
+                "stdout": str(stdout_path.relative_to(root)),
+                "stderr": str(stderr_path.relative_to(root)),
+            })
             with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
                 process = subprocess.Popen(
                     ["bash", str(script)], cwd=root, env=env,
@@ -3556,6 +3643,7 @@ def _run_local_task(
                 "stdout_size_bytes": stdout_path.stat().st_size,
                 "stderr_size_bytes": stderr_path.stat().st_size,
             })
+            persist_task_status(root, task, attempt_id, attempts[-1])
             if exit_code == 0 and not timed_out:
                 break
         recovered = len(attempts) > 1 and attempts[-1]["status"] == "complete"
@@ -3617,7 +3705,9 @@ def _run_ready_dag(
     reserved_cpus, reserved_memory = 0, 0.0
 
     def terminal(task, status, **extra):
-        return {**task, "status": status, "exit_code": None, "wall_seconds": 0.0, **extra}
+        record = {**task, "status": status, "exit_code": None, "wall_seconds": 0.0, **extra}
+        persist_task_status(root, task, attempt_id, record)
+        return record
 
     with ThreadPoolExecutor(max_workers=slots.cpu_capacity) as executor:
         while pending or running:
@@ -3658,6 +3748,7 @@ def _run_ready_dag(
                     reserved_memory -= memory
                     try:
                         results[key] = future.result()
+                        persist_task_status(root, task, attempt_id, results[key])
                     except Exception as exc:
                         results[key] = terminal(task, "failed", error=str(exc))
             elif pending:
@@ -3703,6 +3794,7 @@ def _run_local_workflow_locked(root: Path, *, maximum_wall_hours: Optional[float
     }
     if not isinstance(plan, dict) or plan.get("local_execution_plan_schema") not in accepted_schemas:
         raise ExecutionAdapterError("local execution plan is invalid")
+    validate_worker_projects(resolved, plan)
     maximum_cpus = int(plan["maximum_parallel_cpus"])
     maximum_memory_gib = float(plan.get("maximum_parallel_memory_gib", 1.0e12))
     campaign_seconds = float(plan["maximum_campaign_wall_hours"]) * 3600.0
@@ -3827,6 +3919,7 @@ def _run_local_workflow_locked(root: Path, *, maximum_wall_hours: Optional[float
                         "error": str(exc),
                         "wall_seconds": 0.0,
                     })
+                persist_task_status(resolved, tasks[futures[future]], attempt_id, results[-1])
         results.sort(key=lambda row: (str(row["script"]), str(row.get("array_task_id"))))
         phase_status = (
             "complete" if all(row["status"] in {

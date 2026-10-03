@@ -1996,6 +1996,7 @@ def _apply_view_allocation(
     *,
     target_wall_hours: float,
     consistency_skips: Mapping[str, str] | None = None,
+    explicit_guard_options: Mapping[str, object] | None = None,
 ) -> Dict[str, object]:
     project = load_json(project_path)
     assert isinstance(project, dict)
@@ -2138,6 +2139,13 @@ def _apply_view_allocation(
     exports = definitions.get("state_coordinate_exports")
     if isinstance(exports, dict):
         exports["frame_stride_within_state"] = max(1, math.ceil(effective / 200))
+    # Generated limits follow the allocation; explicit user limits remain
+    # rejection guards and are checked after the final plan is materialized.
+    for module, field in (("representative_frames", "maximum_candidates"),
+                          ("grouped_ml", "maximum_observations")):
+        options = (explicit_guard_options or {}).get(module, {})
+        if isinstance(options, Mapping) and field in options and isinstance(definitions.get(module), dict):
+            definitions[module][field] = options[field]
     project_path.write_text(
         json.dumps(project, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -2926,6 +2934,13 @@ def plan_and_apply_complete_campaign(
                 view_source_counts,
                 target_wall_hours=float(time_budget["maximum_estimated_execution_hours"]),
                 consistency_skips=consistency_skips,
+                explicit_guard_options={
+                    module: {
+                        **analysis_config.get("modules", {}).get(module, {}).get("options", {}),
+                        **analysis_config.get("views", {}).get(view_id.split("__")[-1], {}).get("module_options", {}).get(module, {}),
+                    }
+                    for module in ("representative_frames", "grouped_ml")
+                },
             ))
         plan["applied_view_allocations"] = applied_views
         applied_contexts = []

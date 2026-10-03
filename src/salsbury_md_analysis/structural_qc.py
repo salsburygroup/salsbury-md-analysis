@@ -1092,10 +1092,17 @@ def _structural_qc_project_serial(
                                 ))
                         save_timed_checkpoint_if_due()
                     if decoded_frames == 0:
-                        issues.append(issue_record(
-                            "error", "NO_COORDINATE_FRAMES", location,
-                            "trajectory contains no readable coordinate frames",
-                        ))
+                        if source_frames > 0 and selected_indices is not None and not selected_indices:
+                            issues.append(issue_record(
+                                "warning", "NO_QC_FRAMES_SELECTED", location,
+                                "nonempty source segment has no observations in the declared "
+                                "frame selection; coordinate and chemical gates were not evaluated",
+                            ))
+                        else:
+                            issues.append(issue_record(
+                                "error", "NO_COORDINATE_FRAMES", location,
+                                "trajectory contains no readable coordinate frames",
+                            ))
                 except (
                     CoordinateReadError, PeriodicReconstructionError,
                     StructuralChemistryError, OSError,

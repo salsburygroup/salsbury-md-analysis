@@ -173,6 +173,24 @@ class PreparationContractTests(unittest.TestCase):
             self.assertTrue((good / "run-local.sh").exists())
             self.assertFalse(list((good / "results").iterdir()))
 
+            # A saved-plan edit must be caught before dispatch, even though
+            # the future coordinate cache has not yet been materialized.
+            from salsbury_md_analysis.execution_adapters import validate_worker_projects, ExecutionAdapterError
+            native = json.loads((good / "local-execution-plan.json").read_text())
+            view_path = good / "project-global_common_heavy.json"
+            view = json.loads(view_path.read_text())
+            original_view = view_path.read_bytes()
+            for module, field in (("representative_frames", "maximum_candidates"), ("grouped_ml", "maximum_observations")):
+                edited = copy.deepcopy(view)
+                if module not in edited["requested_modules"]:
+                    edited["requested_modules"].append(module)
+                edited["definitions"][module][field] = 1
+                view_path.write_text(json.dumps(edited))
+                with self.assertRaisesRegex(ExecutionAdapterError, "selected pooled observations.*" + field):
+                    validate_worker_projects(good, native)
+            view_path.write_bytes(original_view)
+            validate_worker_projects(good, native)
+
             settings["modules"] = {"solvent_accessible_surface_area": {"options": {"surface_selection": "E7_heavy"}}}
             config.write_text(json.dumps(settings))
             bad = root / "invalid-sasa"

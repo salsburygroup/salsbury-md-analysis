@@ -2,6 +2,13 @@
 
 Status: **experimental**
 
+Replica-wide integer sampling can select no frames from a short segment within
+a nonempty replica. QC records `NO_QC_FRAMES_SELECTED` for that segment and
+states that its coordinate and chemical checks were not evaluated. It does not
+add a frame, reset the stride, or exclude the segment from provenance. Empty
+sources, missing requested frames, and unreadable or truncated inputs remain
+errors. A warning about an unsampled segment is not a physical-validation pass.
+
 The first coordinate-level analysis module streams every declared trajectory,
 detects execution-invalid inputs, and records explicit coordinate and optional
 chemical-integrity review findings. It is the start of standard-analysis stage
