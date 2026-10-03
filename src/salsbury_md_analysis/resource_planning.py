@@ -12,7 +12,7 @@ import time
 from copy import deepcopy
 from functools import lru_cache
 from .orchestration_resources import refresh_cache_preflight_task
-from typing import Dict, Mapping, Optional, Sequence
+from typing import Callable, Dict, Mapping, Optional, Sequence
 from .resource_schedule import ResourceScheduleError, schedule_resource_tasks
 
 from .frame_sampling import (
@@ -30,6 +30,14 @@ from .scientific_sampling import (
 
 class ResourcePlanningError(ValueError):
     """Raised when benchmark evidence cannot support a resource estimate."""
+
+
+class PlanningSearchError(ResourcePlanningError):
+    """An unfinished search, not evidence that a resource envelope cannot fit."""
+
+    def __init__(self, message: str, *, diagnostics: Mapping[str, object]):
+        super().__init__(message)
+        self.diagnostics = deepcopy(dict(diagnostics))
 
 
 def workflow_useful_parallel_cpu_ceiling(
@@ -3456,9 +3464,12 @@ def plan_projection_coupled_campaign_resource_budget(
             }
             return plan
         working = next_working
-    raise ResourcePlanningError(
+    raise PlanningSearchError(
         "projection/clustering campaign replanning did not converge within "
-        f"{maximum_coupling_iterations} iterations"
+        f"{maximum_coupling_iterations} iterations",
+        diagnostics={"iteration_history": history,
+                     "cycle_resolutions": cycle_resolutions,
+                     "maximum_coupling_iterations": maximum_coupling_iterations},
     )
 
 
@@ -3830,6 +3841,7 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
         tuple[tuple[float, float, float, int, float], Dict[str, object]]
     ] = []
     candidate_plans: list[Dict[str, object]] = []
+    search_failures: list[Dict[str, object]] = []
     best_feasible_information = -math.inf
     for candidate_index, cache_stride in enumerate(candidates):
         evaluated_candidates.append(cache_stride)
@@ -4147,22 +4159,35 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
                         int(row["maximum_frames_per_replica"]),
                     )
                 planner_candidate_tasks.append(row)
-        plan = plan_projection_coupled_campaign_resource_budget(
-            planner_candidate_tasks,
-            maximum_parallel_cpus=maximum_parallel_cpus,
-            maximum_wall_hours=maximum_wall_hours,
-            maximum_memory_gib=maximum_memory_gib,
-            planning_utilization=planning_utilization,
-            pilot_budget_fraction=pilot_budget_fraction,
-            finalization_headroom_fraction=finalization_headroom_fraction,
-            memory_safety_factor=memory_safety_factor,
-            memory_overhead_gib=memory_overhead_gib,
-            minimum_scheduler_memory_gib=minimum_scheduler_memory_gib,
-            maximum_cpus_per_node=maximum_cpus_per_node,
-            maximum_memory_gib_per_node=maximum_memory_gib_per_node,
-            maximum_nodes=maximum_nodes,
-            maximum_coupling_iterations=maximum_coupling_iterations,
-        )
+        try:
+            plan = plan_projection_coupled_campaign_resource_budget(
+                planner_candidate_tasks,
+                maximum_parallel_cpus=maximum_parallel_cpus,
+                maximum_wall_hours=maximum_wall_hours,
+                maximum_memory_gib=maximum_memory_gib,
+                planning_utilization=planning_utilization,
+                pilot_budget_fraction=pilot_budget_fraction,
+                finalization_headroom_fraction=finalization_headroom_fraction,
+                memory_safety_factor=memory_safety_factor,
+                memory_overhead_gib=memory_overhead_gib,
+                minimum_scheduler_memory_gib=minimum_scheduler_memory_gib,
+                maximum_cpus_per_node=maximum_cpus_per_node,
+                maximum_memory_gib_per_node=maximum_memory_gib_per_node,
+                maximum_nodes=maximum_nodes,
+                maximum_coupling_iterations=maximum_coupling_iterations,
+            )
+        except PlanningSearchError as exc:
+            search_failures.append({
+                "coordinate_cache_integer_stride": cache_stride,
+                "message": str(exc), "diagnostics": exc.diagnostics,
+            })
+            evaluations.append({
+                "coordinate_cache_integer_stride": cache_stride,
+                "feasibility_status": "unknown",
+                "search_status": "failed",
+                "planner_evaluation_wall_seconds": time.monotonic() - candidate_started,
+            })
+            continue
         candidate_plans.append(plan)
         if invalid_optional_tasks:
             plan["feasibility_status"] = "infeasible"
@@ -4247,6 +4272,12 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
                 early_terminated_candidates = list(remaining)
                 break
     if not feasible:
+        if search_failures:
+            raise PlanningSearchError(
+                "No validated cache-stride candidate: some candidate searches failed; feasibility is unknown",
+                diagnostics={"candidate_search_failures": search_failures,
+                             "candidate_evaluations": evaluations},
+            )
         # Return the finest candidate's fail-closed diagnostic rather than
         # obscuring the actual technical minimum or memory shortfall.
         if candidate_plans:
@@ -4364,6 +4395,8 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
     coupling_report = {
         "coupling_schema": "salsbury-global-stride-coupling-v1",
         "converged": True,
+        "candidate_search_failures": search_failures,
+        "search_complete": not search_failures,
         "selected_overall_trajectory_integer_stride": selected_stride,
         "selected_coordinate_cache_integer_stride": selected_stride,
         "minimum_retained_frames_per_replica": declared_minimum,
@@ -4454,6 +4487,14 @@ def _configuration_switch_for_task(task: Mapping[str, object]) -> str:
     return f"modules.{module_id}.enabled"
 
 
+def _trajectory_export_switch(task: Mapping[str, object]) -> Optional[str]:
+    if (task.get("module_id") == "state_coordinate_exports"
+            and task.get("state_trajectory_exports_enabled") is True):
+        view = str(task["workflow_id"]).rsplit("__", 1)[-1]
+        return f"views.{view}.state_trajectory_exports_enabled"
+    return None
+
+
 def _resource_shortfall_score(plan: Mapping[str, object]) -> float:
     """Return a normalized deterministic infeasibility score."""
 
@@ -4517,13 +4558,18 @@ def recommend_scientifically_valid_task_subset(
     coordinate_cache_full_scan_fraction: float = 1.0,
     overall_stride_candidate_strides: Optional[Sequence[int]] = None,
     uniform_cache_stride: bool = False,
+    rebuild_subset: Optional[Callable[
+        [Sequence[Mapping[str, object]], Sequence[str]],
+        Sequence[Mapping[str, object]],
+    ]] = None,
 ) -> Dict[str, object]:
     """Propose the broadest scientifically valid task subset for an envelope.
 
-    The recommendation never mutates a requested configuration.  It prices the
-    standard scientific minimum first, removes the configuration bundle with
-    the greatest normalized bottleneck relief per unit of lost scientific
-    priority, closes downstream dependencies, and replans after every decision.
+    The recommendation never mutates a requested configuration. Validate a
+    dependency-closed protected fallback before trying the full scope. Reprice
+    each removal, including zero-relief steps across tied bottlenecks. A caller
+    with scope-dependent costs supplies ``rebuild_subset``; it must rebuild
+    those costs and dependencies without changing the scientific contracts.
     Extra sampling is never sacrificed below a method's standard floor merely
     to keep the method nominally enabled.
     """
@@ -4564,8 +4610,8 @@ def recommend_scientifically_valid_task_subset(
                 **planner_kwargs,
             )
         return plan_campaign_resource_budget(rows, **planner_kwargs)
-    working = [deepcopy(dict(task)) for task in tasks]
-    if not working:
+    original = [deepcopy(dict(task)) for task in tasks]
+    if not original:
         raise ResourcePlanningError("task-subset recommendation requires tasks")
     protected = (
         set(str(value) for value in protected_module_ids)
@@ -4575,15 +4621,34 @@ def recommend_scientifically_valid_task_subset(
     )
     protected_task_ids = {
         str(row["task_id"])
-        for row in working
+        for row in original
         if str(row.get("module_id")) in protected
     }
+    # Required report inputs and explicit success dependencies are protected
+    # transitively. Reporting wait edges are not scientific prerequisites.
+    changed = True
+    while changed:
+        changed = False
+        for row in original:
+            if str(row["task_id"]) not in protected_task_ids:
+                continue
+            modules = DEPENDENCIES.get(str(row.get("module_id")), set())
+            bundles = row.get("planning_dependencies", {}).get("depends_on_bundle_ids", [])
+            for dependency in original:
+                if (str(dependency.get("module_id")) in modules
+                        or str(dependency.get("execution_bundle_id", dependency["task_id"])) in bundles):
+                    task_id = str(dependency["task_id"])
+                    if task_id not in protected_task_ids:
+                        protected_task_ids.add(task_id)
+                        changed = True
     disabled_switches: list[str] = []
     decisions: list[Dict[str, object]] = []
+    search_errors: list[Dict[str, object]] = []
 
     def task_ids_for_switch(
         rows: Sequence[Mapping[str, object]], switch: str
     ) -> set[str]:
+        originally_present = {str(row.get("module_id")) for row in rows}
         removed = {
             str(row["task_id"])
             for row in rows
@@ -4602,7 +4667,13 @@ def recommend_scientifically_valid_task_subset(
                 if task_id in removed:
                     continue
                 dependencies = DEPENDENCIES.get(module_id, set())
-                if any(dependency not in modules_present for dependency in dependencies):
+                removed_bundles = {
+                    str(r.get("execution_bundle_id", r["task_id"]))
+                    for r in rows if str(r["task_id"]) in removed
+                }
+                required_bundles = row.get("planning_dependencies", {}).get("depends_on_bundle_ids", [])
+                if (any(dependency in originally_present and dependency not in modules_present for dependency in dependencies)
+                        or any(b in removed_bundles for b in required_bundles)):
                     removed.add(task_id)
                     changed = True
         # The coordinate cache is also the validated input for cache-compatible
@@ -4611,14 +4682,64 @@ def recommend_scientifically_valid_task_subset(
         # it merely because no PCA view remains.
         return removed
 
-    current_plan = run_planner(working)
-    current_score = _resource_shortfall_score(current_plan)
-    while current_plan["feasibility_status"] != "feasible":
-        switches = sorted({
-            _configuration_switch_for_task(row)
-            for row in working
-            if str(row.get("module_id")) not in protected
-        })
+    def switches_for(rows):
+        return sorted({
+            _configuration_switch_for_task(row) for row in rows
+            if str(row["task_id"]) not in protected_task_ids
+        } | {value for row in rows if (value := _trajectory_export_switch(row))})
+
+    def rebuild(rows, switches):
+        result = [deepcopy(dict(row)) for row in rows]
+        for row in result:
+            if _trajectory_export_switch(row) in switches:
+                if "representatives_only_fixed_cpu_hours" not in row:
+                    raise ResourcePlanningError("state export lacks a representatives-only cost")
+                row.update({
+                    "fixed_cpu_hours": row["representatives_only_fixed_cpu_hours"],
+                    "state_trajectory_exports_enabled": False,
+                    "coordinate_export_mode": "representatives_only",
+                    "maximum_trajectory_frames": 0,
+                    "maximum_coordinate_writes": row["maximum_representative_structures"],
+                })
+        if rebuild_subset is not None:
+            result = [deepcopy(dict(row)) for row in rebuild_subset(result, switches)]
+        retained = {str(row["task_id"]) for row in result}
+        if not protected_task_ids.issubset(retained):
+            raise ResourcePlanningError("subset rebuild removed a protected prerequisite")
+        # Drop waits for deliberately removed optional producers. A missing
+        # required dependency is an invalid subset, not a removable barrier.
+        bundles = {str(row.get("execution_bundle_id", row["task_id"])) for row in result}
+        for row in result:
+            edges = row.get("planning_dependencies")
+            if isinstance(edges, dict):
+                if set(edges.get("depends_on_bundle_ids", [])) - bundles:
+                    raise ResourcePlanningError("subset lost a required task dependency")
+                edges["wait_for_bundle_ids"] = sorted(set(edges.get("wait_for_bundle_ids", [])) & bundles)
+        return result
+
+    def evaluate(rows, switches):
+        try:
+            return run_planner(rows)
+        except PlanningSearchError as exc:
+            search_errors.append({"disabled_configuration_switches": list(switches),
+                                  "message": str(exc), "diagnostics": exc.diagnostics})
+            return None
+
+    core_switches = switches_for(original)
+    core_tasks = rebuild([row for row in original if str(row["task_id"]) in protected_task_ids], core_switches)
+    core_plan = evaluate(core_tasks, core_switches)
+    core_feasible = core_plan is not None and core_plan["feasibility_status"] == "feasible"
+    working = core_tasks
+    current_plan = core_plan
+    fallback_used = False
+    full_plan = None
+    if core_feasible:
+        working = rebuild(original, [])
+        full_plan = evaluate(working, [])
+        current_plan = full_plan
+    current_score = _resource_shortfall_score(current_plan) if current_plan else float("inf")
+    while core_feasible and current_plan is not None and current_plan["feasibility_status"] != "feasible":
+        switches = switches_for(working)
         candidates = []
         for switch in switches:
             removed_ids = task_ids_for_switch(working, switch)
@@ -4629,10 +4750,15 @@ def recommend_scientifically_valid_task_subset(
             ]
             if not candidate_tasks:
                 continue
-            candidate_plan = run_planner(candidate_tasks)
+            candidate_tasks = rebuild(candidate_tasks, [*disabled_switches, switch])
+            removed_ids = {str(row["task_id"]) for row in working} - {
+                str(row["task_id"]) for row in candidate_tasks}
+            candidate_plan = evaluate(candidate_tasks, [*disabled_switches, switch])
+            if candidate_plan is None:
+                continue
             candidate_score = _resource_shortfall_score(candidate_plan)
             relief = current_score - candidate_score
-            if relief <= 1.0e-12:
+            if relief < -1.0e-12:
                 continue
             removed_rows = [
                 row for row in working if str(row["task_id"]) in removed_ids
@@ -4640,9 +4766,19 @@ def recommend_scientifically_valid_task_subset(
             priority_loss = sum(
                 float(row.get("priority_weight", 1.0)) for row in removed_rows
             )
+            if not removed_ids:  # optional trajectory writing, not representatives
+                priority_loss = 1.0
+            # A tied maximum hides the benefit of removing one slow worker.
+            # Prefer eliminating more minimum work before unrelated cheap
+            # methods when no candidate yet changes that maximum.
+            plateau_work_relief = max(
+                0.0, float(current_plan["minimum_known_cpu_hours"])
+                - float(candidate_plan["minimum_known_cpu_hours"])
+            ) if abs(relief) <= 1.0e-12 else 0.0
             candidates.append((
                 relief / max(1.0e-12, priority_loss),
                 relief,
+                plateau_work_relief,
                 -priority_loss,
                 switch,
                 candidate_tasks,
@@ -4652,9 +4788,9 @@ def recommend_scientifically_valid_task_subset(
         if not candidates:
             break
         (
-            _, relief, negative_priority, switch, candidate_tasks,
+            _, relief, _, negative_priority, switch, candidate_tasks,
             candidate_plan, removed_ids,
-        ) = max(candidates, key=lambda value: value[:4])
+        ) = max(candidates, key=lambda value: value[:5])
         decisions.append({
             "iteration": len(decisions) + 1,
             "disabled_configuration_switch": switch,
@@ -4665,14 +4801,19 @@ def recommend_scientifically_valid_task_subset(
             ),
             "shortfall_relief": relief,
             "scientific_priority_removed": -negative_priority,
+            "tied_bottleneck_step": abs(relief) <= 1.0e-12,
         })
         disabled_switches.append(switch)
         working = candidate_tasks
         current_plan = candidate_plan
         current_score = _resource_shortfall_score(current_plan)
-    feasible = current_plan["feasibility_status"] == "feasible"
+    if core_feasible and (current_plan is None or current_plan["feasibility_status"] != "feasible"):
+        working, current_plan = core_tasks, core_plan
+        disabled_switches = core_switches
+        fallback_used = True
+    feasible = current_plan is not None and current_plan["feasibility_status"] == "feasible"
     protected_minimum_request = deepcopy(
-        current_plan.get("permissive_minimum_resource_request", {})
+        (core_plan or {}).get("permissive_minimum_resource_request", {})
     )
     if isinstance(protected_minimum_request, dict):
         protected_minimum_request["request_scope"] = (
@@ -4682,18 +4823,27 @@ def recommend_scientifically_valid_task_subset(
         "recommendation_schema": "salsbury-scientific-method-fit-v1",
         "technical_status": "complete",
         "recommendation_status": (
-            "feasible_subset_found" if feasible else "no_feasible_subset_found"
+            "feasible_subset_found" if feasible else
+            "planning_search_failed" if core_plan is None else "no_feasible_subset_found"
         ),
         "recommendation_message": (
-            "A reduced configuration can meet the envelope while retaining every "
-            "protected module. Review and apply the proposed switches explicitly."
+            "A validated configuration meets the envelope while retaining every "
+            "protected prerequisite. Review and apply any proposed switches explicitly."
             if feasible else
+            "Protected-core search did not finish; resource feasibility is unknown."
+            if core_plan is None else
             "No acceptable reduced plan: this search did not find a schedule "
             "retaining every protected module at its scientific minimum. "
             "This is not proof of optimality or physical impossibility; "
             "protected checks will not be disabled."
         ),
         "automatic_changes_applied": False,
+        "protected_core_checked_first": True,
+        "protected_core_plan": core_plan,
+        "full_requested_plan": full_plan,
+        "protected_core_fallback_used": fallback_used,
+        "search_errors": search_errors,
+        "optimality_proven": False,
         "protected_module_ids": sorted(protected),
         "protected_task_ids": sorted(protected_task_ids),
         "protected_set_preserved": not any(
@@ -4721,7 +4871,8 @@ def recommend_scientifically_valid_task_subset(
         "recommended_plan": current_plan,
         "planner_wall_seconds": time.monotonic() - started,
         "strategy": (
-            "deterministic dependency-closed removal by normalized CPU, wall, "
+            "protected core first, full scope second, validated fallback retained; "
+            "deterministic dependency-closed removal including tied bottlenecks by normalized CPU, wall, "
             "and memory shortfall relief per lost scientific-priority weight; "
             + (
                 (
@@ -4738,8 +4889,8 @@ def recommend_scientifically_valid_task_subset(
             "This is a proposed configuration. Apply and rerun planning explicitly; "
             "a disabled method is absent, not a low-sample scientific result."
             if feasible else
-            "No configuration change is proposed. Diagnostic removals did not make "
-            "the protected workflow feasible, so the resource envelope must change."
+            "No configuration change is proposed. The protected workflow has no "
+            "validated plan in this search; a failed search is not proof of resource infeasibility."
         ),
     }
 

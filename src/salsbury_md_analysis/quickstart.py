@@ -2602,6 +2602,7 @@ def prepare_standard_analysis(
     openmm_bond_definitions: Sequence[Path] = (),
     protected_core_only: bool = False,
     uniform_cache_stride: bool = False,
+    _recommend_reductions: bool = True,
 ) -> Dict[str, object]:
     """Prepare manifests, budgets, and a local or Slurm workflow without touching inputs."""
 
@@ -2911,6 +2912,7 @@ def prepare_standard_analysis(
     )
     try:
         campaign_resource_plan = plan_and_apply_complete_campaign(
+            recommend_reductions=_recommend_reductions,
             root=root,
             sampling_plan=sampling_plan,
             analysis_config=analysis_config,
@@ -3243,7 +3245,7 @@ def prepare_standard_analysis_resource_fit(
     """Prepare an explicit dependency-closed optional resource reduction.
 
     The ordinary entry point remains fail-closed. This opt-in entry point first
-    plans the complete requested workflow, applies the planner's optional
+    validates the protected core, then plans the complete workflow and applies optional
     dependency-closed switch set only when necessary, and fails if the protected
     core cannot fit the requested CPU, wall-time, and memory envelope.
     """
@@ -3270,114 +3272,11 @@ def prepare_standard_analysis_resource_fit(
         "protected_core_only": protected_core_only,
         "uniform_cache_stride": uniform_cache_stride,
     }
-    with tempfile.TemporaryDirectory(
-        prefix="salsbury-resource-fit-planning-"
-    ) as temporary:
-        temporary_root = Path(temporary)
-        requested_output = temporary_root / "requested-plan"
-        recommendation: Mapping[str, object] = {}
-        try:
-            prepare_standard_analysis(
-                **common,
-                output_directory=requested_output,
-                target_wall_hours=target_wall_hours,
-                config_path=config_path,
-            )
-            requested_config = load_json(
-                requested_output / "analysis-config.json"
-            )
-            requested_plan = load_json(
-                requested_output / "campaign-resource-plan.json"
-            )
-            active_config = deepcopy(requested_config)
-            direct_disabled: list[str] = []
-            transitive_disabled: list[str] = []
-        except QuickstartPlanningError as exc:
-            requested_config = deepcopy(exc.analysis_config)
-            requested_plan = deepcopy(exc.plan)
-            raw_recommendation = exc.plan.get(
-                "method_reduction_recommendation"
-            )
-            if not isinstance(raw_recommendation, Mapping):
-                raise QuickstartError(
-                    "resource-fit planning produced no dependency-closed "
-                    "reduction recommendation"
-                ) from exc
-            recommendation = raw_recommendation
-            if recommendation.get("recommendation_status") != (
-                "feasible_subset_found"
-            ):
-                raise
-            patch = recommendation.get("configuration_patch")
-            if not isinstance(patch, Mapping) or not patch:
-                raise QuickstartError(
-                    "resource-fit recommendation contains no configuration patch"
-                ) from exc
-            active_config, direct_disabled, transitive_disabled = (
-                make_resource_fit_config(requested_config, list(patch))
-            )
-
-        resolved_path = temporary_root / "resolved-resource-fit-config.json"
-        _json_write(resolved_path, active_config)
-        report = prepare_standard_analysis(
-            **common,
-            output_directory=destination,
-            target_wall_hours=None,
-            config_path=resolved_path,
-        )
-        final_plan = load_json(destination / "campaign-resource-plan.json")
-        fit_report = {
-            "report_schema": "salsbury-resource-fit-report-v1",
-            "technical_status": "complete",
-            "planning_status": (
-                "replanned_with_dependency_closed_optional_reduction"
-                if direct_disabled or transitive_disabled
-                else "requested_plan_feasible"
-            ),
-            "automatic_changes_applied": bool(
-                direct_disabled or transitive_disabled
-            ),
-            "protected_set_preserved": bool(
-                recommendation.get("protected_set_preserved", True)
-            ),
-            "directly_disabled_configuration_switches": sorted(
-                direct_disabled
-            ),
-            "transitively_disabled_modules": sorted(transitive_disabled),
-            "reduction_decisions": deepcopy(
-                recommendation.get("decisions", [])
-            ),
-            "requested_config": "analysis-config.requested.json",
-            "resolved_config": "analysis-config.resource-fit.json",
-            "requested_plan": "campaign-resource-plan.requested.json",
-            "final_plan": "campaign-resource-plan.json",
-            "final_feasibility_status": final_plan.get("feasibility_status"),
-            "original_request_preserved": True,
-            "failure_boundary": (
-                "Preparation fails when no dependency-closed subset preserving "
-                "every protected module can fit the requested resource envelope."
-            ),
-        }
-        _json_write(
-            destination / "analysis-config.requested.json", requested_config
-        )
-        _json_write(
-            destination / "analysis-config.resource-fit.json", active_config
-        )
-        _json_write(
-            destination / "campaign-resource-plan.requested.json", requested_plan
-        )
-        _json_write(destination / "resource-fit-report.json", fit_report)
-        generated = report.get("generated_files")
-        if isinstance(generated, list):
-            generated.extend([
-                "analysis-config.requested.json",
-                "analysis-config.resource-fit.json",
-                "campaign-resource-plan.requested.json",
-                "resource-fit-report.json",
-            ])
-        report["resource_fit"] = fit_report
-        return report
+    from .resource_fit_preparation import prepare_core_first_resource_fit
+    return prepare_core_first_resource_fit(
+        prepare=prepare_standard_analysis, common=common, destination=destination,
+        target_wall_hours=target_wall_hours, config_path=config_path,
+    )
 
 
 def prepare_standard_analysis_memory_fit(

@@ -278,10 +278,23 @@ fail closed.
 
 Use `--auto-disable-optional-to-fit-resources` when the user wants the same
 explicit reduction across CPU, critical-path wall time, and memory. The
-planner applies its dependency-closed optional switch set, replans, and writes
-`analysis-config.resource-fit.json` plus `resource-fit-report.json`. Protected
-modules remain enabled. If the protected subset does not fit, preparation
-returns `NO_ACCEPTABLE_REDUCED_PLAN` and submits nothing.
+initializer validates the protected core first, including preprocessing,
+representative structures and reporting. If that plan does not fit, it stops
+before exploring optional analyses. It then tries the full requested scope;
+when necessary, it removes optional configuration bundles and recalculates
+sampling, reporting costs and dependencies after each change. Tied bottlenecks
+can require several removals before wall time falls. Trajectory writing may be
+disabled separately; representative structures remain protected.
+
+Review `analysis-config.resource-fit.json` and `resource-fit-report.json` for
+every disabled switch and whether the protected fallback was used;
+`planning-report.md` gives the final strides. The completed protected preparation is retained if an optional
+search fails. Search errors and iteration histories are recorded separately
+from resource rejections, and the result is not claimed to be an optimal
+subset. Trial receipts are saved beside the output in
+`<output>.resource-fit-evidence/` as each trial finishes, then copied into the
+completed output. A stopped preparation submits nothing. A fixed sampling
+schedule is checked unchanged, without optional pruning.
 
 Slurm requests can be larger than the estimated working set because the
 planner reads explicit adjustments from the site profile. It applies those

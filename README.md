@@ -362,10 +362,14 @@ fully explicit result to `analysis-config.memory-fit.json`. If the reduced
 campaign still violates CPU or wall-time limits, it still fails.
 
 For an opt-in reduction across CPU, wall time, and memory, use
-`--auto-disable-optional-to-fit-resources`. The planner starts with the full
-requested workflow. If it does not fit, it applies the planner's
-dependency-closed optional switch set, preserves every protected module, and
-replans. The output retains the request in `analysis-config.requested.json`,
+`--auto-disable-optional-to-fit-resources`. The initializer validates the
+protected core first, then tries the full requested workflow. If the full
+scope does not fit, it removes optional bottlenecks and replans, including
+cases where several tied bottlenecks must be removed together. Reporting costs
+and dependencies follow the retained scope. Optional trajectory files can be
+disabled while representative structures stay protected. The validated core
+remains available if the optional search fails. The output retains the request
+in `analysis-config.requested.json`,
 writes the runnable choice to `analysis-config.resource-fit.json`, and records
 every direct and transitive disablement in `resource-fit-report.json`. The
 command fails when the protected core cannot fit; it never weakens protected
