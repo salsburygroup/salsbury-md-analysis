@@ -2,11 +2,94 @@
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Mapping, Sequence
+from bisect import bisect_left
+from typing import Dict, List, Mapping, NamedTuple, Sequence
 
 
 class ResourceScheduleError(ValueError):
     """Invalid or unschedulable task/resource contract."""
+
+
+class _TokenSelection(NamedTuple):
+    ranges: tuple[tuple[int, int], ...]
+    count: int
+    ready: float
+    owners: frozenset[str]
+
+    def __len__(self) -> int:
+        return self.count
+
+
+class _TokenPool:
+    """Exact run-length representation of the former per-token array.
+
+    Tokens are still selected by (availability, original index). Compressing
+    equal adjacent states changes neither the quarter-GiB quantum nor ownership
+    edges; work scales with allocation boundaries instead of memory capacity.
+    """
+
+    def __init__(self, count: int):
+        self.count = count
+        self.runs = [(0, count, 0.0, None)] if count else []
+        self._ordered = None
+        self._selections = {}
+
+    def __len__(self) -> int:
+        return self.count
+
+    def select(self, count: int) -> _TokenSelection:
+        count = min(count, self.count)
+        if count in self._selections:
+            return self._selections[count]
+        if self._ordered is None:
+            self._ordered = sorted(self.runs, key=lambda run: (run[2], run[0]))
+            self._ends, self._owners = [], []
+            total, owners = 0, frozenset()
+            for lo, hi, _available, owner in self._ordered:
+                total += hi - lo
+                self._ends.append(total)
+                if owner is not None:
+                    owners = owners | {owner}
+                self._owners.append(owners)
+            self._ranges = tuple((lo, hi) for lo, hi, *_ in self._ordered)
+        if count:
+            index = bisect_left(self._ends, count)
+            lo, _hi, ready, _owner = self._ordered[index]
+            previous = self._ends[index - 1] if index else 0
+            ranges = self._ranges[:index] + ((lo, lo + count - previous),)
+            selection = _TokenSelection(ranges, count, ready, self._owners[index])
+        else:
+            selection = _TokenSelection((), 0, 0.0, frozenset())
+        self._selections[count] = selection
+        return selection
+
+    def assign(self, selection: _TokenSelection, finish: float, owner: str) -> None:
+        if not selection.count:
+            return
+        chosen = sorted(selection.ranges)
+        updated = []
+
+        def append(lo, hi, available, previous_owner):
+            if lo == hi:
+                return
+            if updated and updated[-1][1] == lo and updated[-1][2:] == (available, previous_owner):
+                updated[-1] = (updated[-1][0], hi, available, previous_owner)
+            else:
+                updated.append((lo, hi, available, previous_owner))
+
+        index = 0
+        for lo, hi, available, previous_owner in self.runs:
+            cursor = lo
+            while index < len(chosen) and chosen[index][0] < hi:
+                start, end = chosen[index]
+                append(cursor, start, available, previous_owner)
+                append(start, end, finish, owner)
+                cursor = end
+                index += 1
+            append(cursor, hi, available, previous_owner)
+        self.runs = updated
+        self._ordered = None
+        self._selections.clear()
 
 
 def schedule_resource_tasks(items: Sequence[Mapping[str, object]], *,
@@ -75,13 +158,8 @@ def _schedule_resource_tasks(items: Sequence[Mapping[str, object]], *,
         raise ResourceScheduleError(
             "aggregate memory is below the resource-token quantum"
         )
-    cpu_tokens = [
-        {"available": 0.0, "owner": None} for _ in range(maximum_cpus)
-    ]
-    memory_tokens = [
-        {"available": 0.0, "owner": None}
-        for _ in range(memory_token_count)
-    ]
+    cpu_tokens = _TokenPool(maximum_cpus)
+    memory_tokens = _TokenPool(memory_token_count)
     if node_cpus is not None and node_memory is not None:
         if maximum_nodes is None:
             raise ResourceScheduleError(
@@ -91,28 +169,20 @@ def _schedule_resource_tasks(items: Sequence[Mapping[str, object]], *,
             (float(node_memory) - node_reserve) / memory_quantum_gib + 1.0e-9
         ))
         node_tokens = [{
-            "cpu": [
-                {"available": 0.0, "owner": None}
-                for _ in range(int(node_cpus))
-            ],
-            "memory": [
-                {"available": 0.0, "owner": None}
-                for _ in range(per_node_memory_tokens)
-            ],
+            "cpu": _TokenPool(int(node_cpus)),
+            "memory": _TokenPool(per_node_memory_tokens),
         } for _ in range(maximum_nodes)]
+        # With one node, equal aggregate and node capacities are the same
+        # token constraint. Share their exact state instead of recomputing it.
+        if maximum_nodes == 1:
+            if len(node_tokens[0]["cpu"]) == len(cpu_tokens):
+                node_tokens[0]["cpu"] = cpu_tokens
+            if (len(node_tokens[0]["memory"]) == len(memory_tokens)
+                    and all(float(item["memory_gib"]) == float(item["requested_memory_gib"])
+                            for item in items)):
+                node_tokens[0]["memory"] = memory_tokens
     else:
         node_tokens = []
-
-    token_orders = {}
-
-    def selected_token_indices(
-        tokens: Sequence[Mapping[str, object]], count: int,
-    ) -> List[int]:
-        key = id(tokens)
-        if key not in token_orders:
-            token_orders[key] = sorted(range(len(tokens)), key=lambda index: (
-                float(tokens[index]["available"]), index))
-        return token_orders[key][:count]
 
     item_by_id = {str(item["item_id"]): item for item in items}
     if len(item_by_id) != len(items):
@@ -171,12 +241,29 @@ def _schedule_resource_tasks(items: Sequence[Mapping[str, object]], *,
 
     planned_finishes: Dict[str, float] = {}
     allocation_templates = {}
+    signatures = {item_id: tuple(item.get(key) for key in (
+        "cpu_slots", "memory_gib", "node_count", "workers_per_node",
+        "requested_memory_gib")) for item_id, item in item_by_id.items()}
+    priorities = {item_id: (
+        -critical_rank(item_id), -float(item["memory_gib"]),
+        -int(item["cpu_slots"]), str(item.get("schedule_order_key", item_id)), index,
+    ) for index, (item_id, item) in enumerate(item_by_id.items())}
+    remaining_dependencies = {key: len(deps) for key, deps in declared_dependencies_by_id.items()}
+    dependency_ready = {}
+    ready_groups = {}
+
+    def mark_ready(item_id):
+        dependency_ready[item_id] = max(
+            (planned_finishes[d] for d in declared_dependencies_by_id[item_id]), default=0.0)
+        ready_groups.setdefault(signatures[item_id], {})[item_id] = None
+
+    for item_id, count in remaining_dependencies.items():
+        if not count:
+            mark_ready(item_id)
 
     def candidate_allocation(item: Mapping[str, object]) -> Dict[str, object]:
         scheduling_id = str(item["item_id"])
-        signature = tuple(item.get(key) for key in (
-            "cpu_slots", "memory_gib", "node_count", "workers_per_node",
-            "requested_memory_gib"))
+        signature = signatures[scheduling_id]
         declared_dependencies = declared_dependencies_by_id[scheduling_id]
         if signature in allocation_templates:
             template = allocation_templates[signature]
@@ -193,9 +280,9 @@ def _schedule_resource_tasks(items: Sequence[Mapping[str, object]], *,
             raise ResourceScheduleError(
                 f"task {item['item_id']} exceeds the aggregate resource envelope"
             )
-        cpu_indices = selected_token_indices(cpu_tokens, cpu_count)
-        memory_indices = selected_token_indices(memory_tokens, memory_count)
-        selected_node_tokens: List[tuple[int, List[int], List[int]]] = []
+        cpu_indices = cpu_tokens.select(cpu_count)
+        memory_indices = memory_tokens.select(memory_count)
+        selected_node_tokens: List[tuple[int, _TokenSelection, _TokenSelection]] = []
         assigned_node_indices: List[int] = []
         if node_tokens:
             task_nodes = int(item.get("node_count", 1))
@@ -221,24 +308,14 @@ def _schedule_resource_tasks(items: Sequence[Mapping[str, object]], *,
             ))
             candidate_nodes = []
             for node_index, node in enumerate(node_tokens):
-                node_cpu_indices = selected_token_indices(
-                    node["cpu"], max(per_node_cpus)
-                )
-                node_memory_indices = selected_token_indices(
-                    node["memory"], memory_per_node_count
-                )
+                node_cpu_indices = node["cpu"].select(max(per_node_cpus))
+                node_memory_indices = node["memory"].select(memory_per_node_count)
                 if (
                     len(node_cpu_indices) < max(per_node_cpus)
                     or len(node_memory_indices) < memory_per_node_count
                 ):
                     continue
-                ready = max(
-                    [float(node["cpu"][index]["available"])
-                     for index in node_cpu_indices]
-                    + [float(node["memory"][index]["available"])
-                       for index in node_memory_indices]
-                    + [0.0]
-                )
+                ready = max(node_cpu_indices.ready, node_memory_indices.ready)
                 candidate_nodes.append((ready, node_index))
             if len(candidate_nodes) < task_nodes:
                 raise ResourceScheduleError(
@@ -253,52 +330,30 @@ def _schedule_resource_tasks(items: Sequence[Mapping[str, object]], *,
                 node = node_tokens[node_index]
                 selected_node_tokens.append((
                     node_index,
-                    selected_token_indices(node["cpu"], fragment_cpus),
-                    selected_token_indices(
-                        node["memory"], memory_per_node_count
-                    ),
+                    node["cpu"].select(fragment_cpus),
+                    node["memory"].select(memory_per_node_count),
                 ))
-        global_cpu_owners = {
-            str(owner)
-            for index in cpu_indices for owner in [cpu_tokens[index]["owner"]]
-            if owner is not None
-        }
-        global_memory_owners = {
-            str(owner)
-            for index in memory_indices
-            for owner in [memory_tokens[index]["owner"]]
-            if owner is not None
-        }
+        global_cpu_owners = cpu_indices.owners
+        global_memory_owners = memory_indices.owners
         node_owners = {
-            str(owner)
-            for node_index, node_cpu_indices, node_memory_indices
+            owner
+            for _node_index, node_cpu_indices, node_memory_indices
             in selected_node_tokens
-            for tokens, indices in (
-                (node_tokens[node_index]["cpu"], node_cpu_indices),
-                (node_tokens[node_index]["memory"], node_memory_indices),
-            )
-            for index in indices
-            for owner in [tokens[index]["owner"]]
-            if owner is not None
+            for selection in (node_cpu_indices, node_memory_indices)
+            for owner in selection.owners
         }
         resource_predecessors = sorted(
             (global_cpu_owners | global_memory_owners | node_owners)
             .difference(declared_dependencies)
         )
         resource_ready = max(
-            [float(cpu_tokens[index]["available"]) for index in cpu_indices]
-            + [float(memory_tokens[index]["available"]) for index in memory_indices]
+            [cpu_indices.ready, memory_indices.ready]
             + [
-                float(tokens[index]["available"])
-                for node_index, node_cpu_indices, node_memory_indices
+                selection.ready
+                for _node_index, node_cpu_indices, node_memory_indices
                 in selected_node_tokens
-                for tokens, indices in (
-                    (node_tokens[node_index]["cpu"], node_cpu_indices),
-                    (node_tokens[node_index]["memory"], node_memory_indices),
-                )
-                for index in indices
+                for selection in (node_cpu_indices, node_memory_indices)
             ]
-            + [0.0]
         )
         start = max(resource_ready, *(planned_finishes[d]
                     for d in declared_dependencies), 0.0)
@@ -318,32 +373,32 @@ def _schedule_resource_tasks(items: Sequence[Mapping[str, object]], *,
         allocation_templates[signature] = template
         return template
 
-    unscheduled = dict(item_by_id)
     scheduled_items: List[Dict[str, object]] = []
-    while unscheduled:
-        ready_items = [
-            item for item_id, item in unscheduled.items()
-            if all(
-                dependency in planned_finishes
-                for dependency in declared_dependencies_by_id[item_id]
-            )
-        ]
-        if not ready_items:
+    while len(scheduled_items) < len(item_by_id):
+        if not ready_groups:
             raise ResourceScheduleError(
                 "execution plan contains a dependency cycle among: "
-                + ", ".join(sorted(unscheduled))
+                + ", ".join(sorted(set(item_by_id) - set(planned_finishes)))
             )
-        candidates = [
-            (item, candidate_allocation(item)) for item in ready_items
-        ]
+        candidates = []
+        # Equal footprints select exactly the same resource tokens. Compare
+        # their dependency times and static priorities before constructing an
+        # allocation record. This is the same lexicographic minimum, not a new
+        # packing heuristic. The final index preserves the original stable tie.
+        for ready_ids in ready_groups.values():
+            first_id = next(iter(ready_ids))
+            first_allocation = candidate_allocation(item_by_id[first_id])
+            resource_ready = first_allocation["resource_ready"]
+            best_id = min(ready_ids, key=lambda key: (
+                max(resource_ready, dependency_ready[key]), priorities[key]))
+            item = item_by_id[best_id]
+            allocation = (first_allocation if best_id == first_id else candidate_allocation(item))
+            candidates.append((item, allocation))
         item, allocation = min(
             candidates,
             key=lambda row: (
                 float(row[1]["start"]),
-                -critical_rank(str(row[0]["item_id"])),
-                -float(row[0]["memory_gib"]),
-                -int(row[0]["cpu_slots"]),
-                str(row[0].get("schedule_order_key", row[0]["item_id"])),
+                priorities[str(row[0]["item_id"])],
             ),
         )
         scheduling_id = str(item["item_id"])
@@ -361,28 +416,26 @@ def _schedule_resource_tasks(items: Sequence[Mapping[str, object]], *,
         item["planned_resource_finish_hours"] = finish
         item["memory_token_count"] = memory_count
         item["memory_token_quantum_gib"] = memory_quantum_gib
-        for index in allocation["cpu_indices"]:
-            cpu_tokens[index] = {"available": finish, "owner": scheduling_id}
-        for index in allocation["memory_indices"]:
-            memory_tokens[index] = {
-                "available": finish, "owner": scheduling_id
-            }
+        cpu_tokens.assign(allocation["cpu_indices"], finish, scheduling_id)
+        memory_tokens.assign(allocation["memory_indices"], finish, scheduling_id)
         for (
             node_index, node_cpu_indices, node_memory_indices
         ) in allocation["selected_node_tokens"]:
-            for index in node_cpu_indices:
-                node_tokens[node_index]["cpu"][index] = {
-                    "available": finish, "owner": scheduling_id,
-                }
-            for index in node_memory_indices:
-                node_tokens[node_index]["memory"][index] = {
-                    "available": finish, "owner": scheduling_id,
-                }
+            if node_tokens[node_index]["cpu"] is not cpu_tokens:
+                node_tokens[node_index]["cpu"].assign(node_cpu_indices, finish, scheduling_id)
+            if node_tokens[node_index]["memory"] is not memory_tokens:
+                node_tokens[node_index]["memory"].assign(node_memory_indices, finish, scheduling_id)
         planned_finishes[scheduling_id] = finish
-        token_orders.clear()
         allocation_templates.clear()
         scheduled_items.append(item)
-        del unscheduled[scheduling_id]
+        group = ready_groups[signatures[scheduling_id]]
+        del group[scheduling_id]
+        if not group:
+            del ready_groups[signatures[scheduling_id]]
+        for successor in successors[scheduling_id]:
+            remaining_dependencies[successor] -= 1
+            if not remaining_dependencies[successor]:
+                mark_ready(successor)
 
     requested_finishes: Dict[str, float] = {}
     for item in scheduled_items:
