@@ -659,6 +659,16 @@ def _build_resource_calibration_catalog_command(
     return 0 if result["technical_status"] == "complete" else 2
 
 
+def _planning_failure_outcome(plan):
+    recommendation = plan.get("method_reduction_recommendation", {})
+    status = recommendation.get("recommendation_status") if isinstance(recommendation, Mapping) else None
+    if plan.get("planning_search_failed") or status == "planning_search_failed":
+        return "planning_search_failed", "PLANNING_SEARCH_FAILED"
+    if plan.get("protected_core_rejected") or status == "no_feasible_subset_found":
+        return "no_acceptable_reduced_plan", "NO_ACCEPTABLE_REDUCED_PLAN"
+    return "infeasible_requested_plan", None
+
+
 def _campaign_plan_terminal_summary(
     plan: Mapping[str, object],
 ) -> dict[str, object]:
@@ -670,6 +680,9 @@ def _campaign_plan_terminal_summary(
     recommendation = recommendation if isinstance(recommendation, Mapping) else {}
     reduced_plan = recommendation.get("recommended_plan")
     reduced_plan = reduced_plan if isinstance(reduced_plan, Mapping) else {}
+    protected_plan = recommendation.get("protected_core_plan")
+    if not isinstance(protected_plan, Mapping):
+        protected_plan = plan if plan.get("protected_core_rejected") else reduced_plan
     protected_request = recommendation.get(
         "best_protected_subset_minimum_resource_request"
     )
@@ -699,7 +712,7 @@ def _campaign_plan_terminal_summary(
         "reduction_status": recommendation.get("recommendation_status"),
         "reduction_message": recommendation.get("recommendation_message"),
         "protected_module_ids": recommendation.get("protected_module_ids", []),
-        "protected_subset_minimum_critical_path_hours": reduced_plan.get(
+        "protected_subset_minimum_critical_path_hours": protected_plan.get(
             "minimum_wall_hours_lower_bound"
         ),
         "protected_subset_minimum_request_status": protected_request.get(
@@ -797,18 +810,10 @@ def _prepare_analysis_command(
             }],
         }
         if isinstance(exc, QuickstartPlanningError):
-            recommendation = exc.plan.get("method_reduction_recommendation")
-            recommendation_status = (
-                recommendation.get("recommendation_status")
-                if isinstance(recommendation, Mapping) else None
-            )
+            outcome, issue_code = _planning_failure_outcome(exc.plan)
             report.update({
                 "planning_mode": "plan_only" if plan_only else "preparation",
-                "planning_outcome": (
-                    "no_acceptable_reduced_plan"
-                    if recommendation_status == "no_feasible_subset_found"
-                    else "infeasible_requested_plan"
-                ),
+                "planning_outcome": outcome,
                 "execution_started": False,
                 "jobs_submitted": False,
                 "warning_count": int(exc.plan.get("warning_count", 0)),
@@ -817,8 +822,8 @@ def _prepare_analysis_command(
                 "campaign_resource_plan": exc.plan,
                 "partial_output_directory": str(exc.output_directory),
             })
-            if recommendation_status == "no_feasible_subset_found":
-                report["issues"][0]["code"] = "NO_ACCEPTABLE_REDUCED_PLAN"
+            if issue_code is not None:
+                report["issues"][0]["code"] = issue_code
         if isinstance(exc, QuickstartMemoryError):
             report["memory_feasibility"] = exc.plan.get(
                 "memory_feasibility"
@@ -885,18 +890,10 @@ def _prepare_comparison_command(
             }],
         }
         if isinstance(exc, QuickstartPlanningError):
-            recommendation = exc.plan.get("method_reduction_recommendation")
-            recommendation_status = (
-                recommendation.get("recommendation_status")
-                if isinstance(recommendation, Mapping) else None
-            )
+            outcome, issue_code = _planning_failure_outcome(exc.plan)
             report.update({
                 "planning_mode": "plan_only" if plan_only else "preparation",
-                "planning_outcome": (
-                    "no_acceptable_reduced_plan"
-                    if recommendation_status == "no_feasible_subset_found"
-                    else "infeasible_requested_plan"
-                ),
+                "planning_outcome": outcome,
                 "execution_started": False,
                 "jobs_submitted": False,
                 "warning_count": int(exc.plan.get("warning_count", 0)),
@@ -905,8 +902,8 @@ def _prepare_comparison_command(
                 "campaign_resource_plan": exc.plan,
                 "partial_output_directory": str(exc.output_directory),
             })
-            if recommendation_status == "no_feasible_subset_found":
-                report["issues"][0]["code"] = "NO_ACCEPTABLE_REDUCED_PLAN"
+            if issue_code is not None:
+                report["issues"][0]["code"] = issue_code
         if isinstance(exc, QuickstartMemoryError):
             report["memory_feasibility"] = exc.plan.get(
                 "memory_feasibility"
@@ -1721,7 +1718,7 @@ def build_parser() -> argparse.ArgumentParser:
     prepare_fit_group.add_argument(
         "--auto-disable-optional-to-fit-resources", action="store_true",
         help=(
-            "Opt in to the planner's dependency-closed optional reduction when "
+            "Validate the protected core first; opt in to optional reduction when "
             "the complete workflow exceeds CPU, wall-time, or memory limits. "
             "Protected modules are never disabled; preparation fails if the "
             "protected core cannot fit. Requested and resolved configs are both "
@@ -1925,7 +1922,7 @@ def build_parser() -> argparse.ArgumentParser:
     comparison_fit_group.add_argument(
         "--auto-disable-optional-to-fit-resources", action="store_true",
         help=(
-            "Opt in to dependency-closed optional reduction for CPU, wall-time, "
+            "Validate the protected core first; opt in to optional reduction for CPU, wall-time, "
             "or memory limits. Protected comparison and QC modules remain enabled; "
             "preparation fails if that protected core cannot fit."
         ),

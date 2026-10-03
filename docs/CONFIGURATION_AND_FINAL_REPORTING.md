@@ -431,11 +431,33 @@ salsbury-md-analysis prepare-analysis ... --config analysis.json \
   --auto-disable-optional-to-fit-resources
 ```
 
-The comparison initializer accepts the same flag. This mode preserves the
-requested config and plan, applies only the planner-recommended optional
-switches and their dependents, and writes `analysis-config.resource-fit.json`
-and `resource-fit-report.json`. It succeeds only if all protected modules fit
-without relaxing their configured sampling minima.
+The comparison initializer accepts the same flag. It first prepares the
+protected core through the native planner and execution adapter. This includes
+the required cache, QC, motion, PCA/FES, representative structures and comparison
+reporting. A core resource rejection stops preparation before the full search.
+A search failure is reported as unknown feasibility, not as proof that the core
+cannot fit.
+
+After the core passes, the initializer tries the full requested scope. If it
+does not fit, it tries dependency-closed optional removals, recalculating the
+scope's reporting costs and sampling each time. Zero immediate relief does not
+end the search when several parallel bottlenecks need removal. It retains the
+validated core as a fallback if optional planning fails. This deterministic
+search does not guarantee the globally best subset.
+
+State trajectory files can be removed with
+`views.<view_id>.state_trajectory_exports_enabled: false`; the protected
+state-coordinate module still writes representative structures. No method's
+scientific minimum, chemistry or explicit fixed-sampling contract is relaxed.
+Fixed-schedule requests are validated without pruning.
+
+The output preserves `analysis-config.requested.json`, the explicit selected
+switches in `analysis-config.resource-fit.json`, and `resource-fit-report.json`.
+The latter records the fallback reason, disabled methods and trial evidence.
+`planning-report.md` gives the final effective strides and resource estimates.
+The sibling `<output>.resource-fit-evidence/` journal preserves completed and
+failed preparation trials even if a later search is interrupted. These are
+planning receipts, not scientific results or runnable replacement campaigns.
 
 Measured catalogs describe the systems on which they were collected; they are
 not universal per-frame constants. Planner tasks may therefore carry an

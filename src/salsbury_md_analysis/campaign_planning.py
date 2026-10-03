@@ -33,6 +33,7 @@ from .memory_policy import (
     resolve_memory_uncertainty_policy,
 )
 from .resource_planning import (
+    PlanningSearchError,
     ResourcePlanningError,
     alternative_clustering_fit_profiles,
     alternative_clustering_performance_model,
@@ -1482,6 +1483,9 @@ def _view_tasks(
                     "state_trajectories_and_representatives"
                     if write_trajectories else "representatives_only"
                 ),
+                "representatives_only_fixed_cpu_hours": max(
+                    float(_VIEW_MODELS[module_id]["fixed_cpu_hours"]), 0.20
+                ),
                 "state_trajectory_exports_enabled": write_trajectories,
                 "maximum_trajectory_frames": (
                     maximum_total_frames if write_trajectories else 0
@@ -2216,6 +2220,7 @@ def plan_and_apply_complete_campaign(
     context_project_files: Sequence[str] = (),
     context_frame_counts_by_id: Mapping[str, Sequence[int]] | None = None,
     time_safety_factor: float = 1.5,
+    recommend_reductions: bool = True,
 ) -> Dict[str, object]:
     """Plan and apply one hard envelope to every currently generated task."""
 
@@ -2662,6 +2667,33 @@ def plan_and_apply_complete_campaign(
         )
         return built, current_base
 
+    def rebuild_subset(rows, switches):
+        from .analysis_config import make_resource_fit_config, enabled_modules
+
+        reduced_config, _, _ = make_resource_fit_config(analysis_config, switches)
+        enabled = enabled_modules(reduced_config)
+        rebuilt = [deepcopy(dict(row)) for row in rows
+                   if row["module_id"] not in {"workflow_preflight", "workflow_integrated_reporting", "workflow_final_reporting"}
+                   and (row["module_id"] == "coordinate_cache" or row["module_id"] in enabled)]
+        overhead = orchestration_tasks(
+            root, view_paths, rebuilt, reduced_config,
+            time_safety_factor=time_safety_factor,
+            maximum_atom_count=int(dimensions["maximum_atom_count"]),
+            coordinate_cache_enabled=coordinate_cache_enabled,
+            raw_view_frame_counts={
+                path.stem.removeprefix("project-"): list(
+                    (view_frame_counts_by_id or {}).get(path.stem.removeprefix("project-"), source_counts))
+                for path in view_paths},
+        )
+        apply_memory_calibration_uncertainty(overhead, memory_uncertainty_policy)
+        rebuilt.extend(annotate_task_parallelism(row) for row in overhead)
+        annotate_planning_dependencies(
+            rebuilt, root=root, base_project=load_json(base_project_path),
+            view_paths=view_paths, context_paths=context_paths, config=reduced_config,
+            cache_enabled=coordinate_cache_enabled,
+        )
+        return rebuilt
+
     previous_signature: object = None
     iteration_history: List[Dict[str, object]] = []
     plan: Dict[str, object] = {}
@@ -2748,6 +2780,11 @@ def plan_and_apply_complete_campaign(
                 )
             else:
                 plan = plan_campaign_resource_budget(tasks, **planning_kwargs)
+        except PlanningSearchError as exc:
+            raise CampaignPlanningError(str(exc), plan={
+                "feasibility_status": "unknown", "planning_search_failed": True,
+                "search_error": str(exc), "search_diagnostics": exc.diagnostics,
+            }) from exc
         except (ResourcePlanningError, FixedSamplingError) as exc:
             raise CampaignPlanningError(str(exc)) from exc
         plan["comparison_clustering_consistency_skips"] = consistency_skips
@@ -2817,8 +2854,14 @@ def plan_and_apply_complete_campaign(
                 and bool(execution.get("fail_if_minimum_coverage_unaffordable", True))
             )
         ):
+            if not recommend_reductions:
+                raise CampaignPlanningError(
+                    "No acceptable protected-core plan: " + _campaign_infeasibility_detail(plan),
+                    plan=plan,
+                )
             recommendation = recommend_scientifically_valid_task_subset(
                 tasks,
+                rebuild_subset=rebuild_subset,
                 use_global_stride_coupling=(
                     coordinate_cache_build_required
                     and cache_materialization == "planned_strided"

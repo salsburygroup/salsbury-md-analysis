@@ -1177,6 +1177,10 @@ def make_resource_fit_config(
     if not isinstance(modules, dict):
         raise AnalysisConfigError("analysis config has no module mapping")
     requested = sorted(set(str(value) for value in configuration_switches))
+    protected = set(PROTECTED_MODULES) | {
+        name for name, row in modules.items()
+        if isinstance(row, Mapping) and row.get("protected") is True
+    }
     direct = []
     for module_id in requested:
         if module_id in {"coordinate_cache", "execution.coordinate_cache"}:
@@ -1210,9 +1214,16 @@ def make_resource_fit_config(
             pald["enabled"] = False
             pald["community_msm_enabled"] = False
             direct.append(module_id)
+        elif module_id.startswith("views.") and module_id.endswith(".state_trajectory_exports_enabled"):
+            view_id = module_id[len("views.") : -len(".state_trajectory_exports_enabled")]
+            row = output.get("views", {}).get(view_id)
+            if not isinstance(row, dict):
+                raise AnalysisConfigError(f"resource-fit view switch is invalid: {module_id}")
+            row["state_trajectory_exports_enabled"] = False
+            direct.append(module_id)
         elif module_id.startswith("modules.") and module_id.endswith(".enabled"):
             resolved_module_id = module_id[len("modules.") : -len(".enabled")]
-            if resolved_module_id in PROTECTED_MODULES:
+            if resolved_module_id in protected:
                 raise AnalysisConfigError(
                     "no acceptable reduced configuration: protected module "
                     f"{resolved_module_id} cannot be disabled"
@@ -1225,7 +1236,7 @@ def make_resource_fit_config(
             row["enabled"] = False
             direct.append(module_id)
         elif module_id in modules:
-            if module_id in PROTECTED_MODULES:
+            if module_id in protected:
                 raise AnalysisConfigError(
                     "no acceptable reduced configuration: protected module "
                     f"{module_id} cannot be disabled"
@@ -1235,8 +1246,14 @@ def make_resource_fit_config(
                 raise AnalysisConfigError(f"module {module_id} config is invalid")
             row["enabled"] = False
             direct.append(module_id)
+        else:
+            raise AnalysisConfigError(f"resource-fit switch is invalid: {module_id}")
 
     effective = enabled_modules(output)
+    required = protected.intersection(enabled_modules(config))
+    if not required.issubset(effective):
+        raise AnalysisConfigError("resource-fit switches disable protected prerequisites: "
+                                  + ", ".join(sorted(required - effective)))
     originally_enabled = {
         module_id for module_id, row in modules.items()
         if isinstance(row, dict) and row.get("enabled") is True
