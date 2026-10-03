@@ -486,6 +486,7 @@ class ExecutionAdapterTests(unittest.TestCase):
             context.write_text(
                 common
                 + "PROJECTS=(\n  'project-chemical_a.json'\n)\n"
+                + 'PROJECT="${PROJECTS[$SLURM_ARRAY_TASK_ID]}"\n'
                 + "COMMANDS=(\n  'ion-atmosphere'\n)\n",
                 encoding="utf-8",
             )
@@ -726,6 +727,7 @@ class ExecutionAdapterTests(unittest.TestCase):
             (root / "run_stage_0_array.slurm").write_text(
                 common
                 + f"PROJECTS=(\n  '{root / 'project.json'}'\n)\n"
+                + 'PROJECT="${PROJECTS[$SLURM_ARRAY_TASK_ID]}"\n'
                 + "COMMANDS=(\n  'structural-qc'\n)\n",
                 encoding="utf-8",
             )

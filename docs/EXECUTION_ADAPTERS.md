@@ -67,6 +67,32 @@ the contract's pooled scope. A task that declares an independent replica
 partition for one of those pooled estimators is rejected before launch. See
 [`ENSEMBLE_PARALLELISM.md`](ENSEMBLE_PARALLELISM.md).
 
+## Failures and preparation checks
+
+Each local or generated Slurm worker saves an atomic, attempt-scoped status
+receipt when it starts and ends. Failed workers are visible before independent
+workers finish. Receipts identify the prepared task contract; changing that
+contract prevents an old receipt from being treated as its current outcome.
+`status` reports allocation activity separately, so a running Slurm allocation
+does not conceal a failed task. Accepted final reports take precedence over old
+failure evidence. For older runs without receipts, complete failed temporary
+JSON reports can supply diagnostic evidence when the report belongs to one
+task and its module matches. Their attempt freshness is explicitly unverified;
+partial JSON and unrelated reports are ignored. Temporary files are never
+accepted as completed results.
+
+Preparation and native launch check the exact worker project path, accepting
+absolute paths or paths relative to the analysis directory, including spaces.
+A missing or double-prefixed path stops launch. Final selected PCA observation
+counts are checked against grouped-learning and representative-selection
+limits. These checks include equivalent oligomer members and use projection
+counts, not the smaller PCA fit count. A conflicting explicit limit is reported
+without changing sampling or raising the limit. Review it and replan resources.
+For tICA-derived clustering, omitted short segments do not contribute to the
+consumer count; this check waits for segment counts when they are unavailable.
+Cache inputs that have not yet been materialized are checked against the final
+allocation; their available files are checked again before execution.
+
 ## Local desktop or workstation
 
 Local mode is the default. It needs Python 3.10 or newer plus the package's analysis
