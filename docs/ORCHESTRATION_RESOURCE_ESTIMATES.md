@@ -1,5 +1,24 @@
 # Preflight and reporting resource estimates
 
+## Time spent preparing a plan
+
+Preparation time is separate from the predicted time of the analysis campaign.
+The sampling search evaluates dependency and resource schedules repeatedly.
+The scheduler compresses adjacent CPU and memory tokens with identical states
+and compares jobs with equal resource requests together. It preserves the
+quarter-GiB memory quantum, token-index tie-breaking, dependency edges, node
+limits and padding. Tests compare complete schedules with the previous policy.
+
+A preparation process stopped by an external timeout has not established
+feasibility or infeasibility. Its partial `sampling-plan.json` may describe only
+the preliminary direct estimators. Wait for successful full preparation and
+the final scheduler preview before treating an output directory as runnable.
+Scheduler microbenchmarks measure software overhead, not scientific runtime or
+the feasibility of a study. Larger coupled searches still need their own
+completion evidence.
+
+## Required jobs
+
 The campaign planner budgets the base preflight, each distinct view preflight,
 and final reporting as required jobs. Comparisons also budget their separate
 integrated-reporting job. These jobs appear under **Required execution overhead**
