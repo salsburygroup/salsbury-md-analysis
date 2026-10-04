@@ -186,6 +186,7 @@ class TaskRepairTests(unittest.TestCase):
             path = root / "project-view.json"
             path.write_text(json.dumps(project))
             _apply_view_allocation(path, {"view:view:common_pca": {
+                "source_frames_per_replica": [2, 4],
                 "selected_physical_frames_per_replica": [2, 4],
                 "frame_selection": {"mode": "fixed_stride_v1"}, "integer_stride": 1,
             }}, [2, 4], target_wall_hours=24,

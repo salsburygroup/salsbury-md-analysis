@@ -278,6 +278,20 @@ submission files are ready; increase resources or explicitly choose another
 schedule. Automatic method reduction and uniform-stride optimization cannot
 override a fixed schedule.
 
+Clustering-fit strides index the retained PCA projections. For example, a
+cache stride of 2, projection stride of 25, and fit stride of 8 give a fit
+stride of 400 relative to the raw trajectory. The planner checks the source
+and selected counts at each step, including when replaying a validated trial.
+Legacy schedules that fitted every projection retain that convention.
+
+Core-first resource fitting keeps the exact trial sampling schedule, sampling
+plan, projects and system manifests under
+`<output>.resource-fit-evidence/<trial>/`. Each trial receipt lists their
+SHA-256 hashes. The final output also contains these documents under
+`resource-fit-evidence/`, even if final materialization fails. They support
+reproduction of a preparation error; their presence does not mean the final
+plan passed validation or any analysis ran.
+
 This mode requires the same source declarations, replica/frame/segment/timing
 inventory, projects and task set. It rejects changed inputs, invalid sampling
 contracts and obsolete scientific minima. It does not transfer a schedule to
