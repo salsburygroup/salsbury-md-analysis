@@ -1,7 +1,9 @@
 """Core-first opt-in preparation shared by local and comparative workflows."""
 from copy import deepcopy
+import hashlib
 import json
 from pathlib import Path
+import shutil
 import tempfile
 
 from .analysis_config import make_resource_fit_config
@@ -44,6 +46,7 @@ def prepare_core_first_resource_fit(*, prepare, common, destination: Path,
     from .quickstart import QuickstartPlanningError, QuickstartError
 
     evidence = {}
+    trial_directories = {}
     selected_trial = "requested"
     fallback_reason = None
     journal = destination.with_name(destination.name + ".resource-fit-evidence")
@@ -53,6 +56,26 @@ def prepare_core_first_resource_fit(*, prepare, common, destination: Path,
 
     def preserve(target=journal):
         for name, value in evidence.items():
+            output = trial_directories[name]
+            # Keep byte-exact sampling inputs after the temporary trial goes
+            # away, including when final materialization raises. These are
+            # preparation documents, never trajectories or analysis results.
+            documents = [output / "fixed-sampling-schedule.json", output / "sampling-plan.json"]
+            documents.extend(sorted(output.glob("project*.json")))
+            documents.extend(sorted(output.glob("system*.json")))
+            hashes = {}
+            for source in documents:
+                if not source.is_file():
+                    continue
+                relative = f"{name}/{source.name}"
+                destination_file = target / relative
+                destination_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination_file)
+                hashes[relative] = hashlib.sha256(destination_file.read_bytes()).hexdigest()
+            value["preparation_documents"] = {
+                "sha256": hashes,
+                "scope": "byte-exact trial sampling and project/manifest declarations; not analysis results",
+            }
             _write(target / f"{name}.json", value)
 
     with tempfile.TemporaryDirectory(prefix="salsbury-core-first-fit-") as temporary:
@@ -60,6 +83,7 @@ def prepare_core_first_resource_fit(*, prepare, common, destination: Path,
 
         def trial(name, *, path=config_path, core=False, reductions=True):
             output = root / name
+            trial_directories[name] = output
             planning_event("resource_fit_trial_started", trial=name)
             try:
                 prepare(**{**common, "protected_core_only": core or common.get("protected_core_only", False)},
@@ -186,6 +210,8 @@ def prepare_core_first_resource_fit(*, prepare, common, destination: Path,
                  "resource-fit-report.json": fit_report}
         for name, value in files.items():
             _write(destination / name, value)
-        report["generated_files"].extend([*files, *[f"resource-fit-evidence/{name}.json" for name in evidence]])
+        report["generated_files"].extend([*files, *[f"resource-fit-evidence/{name}.json" for name in evidence],
+            *[f"resource-fit-evidence/{path}" for value in evidence.values()
+              for path in value["preparation_documents"]["sha256"]]])
         report["resource_fit"] = fit_report
         return report

@@ -752,6 +752,7 @@ def _view_pca_task(
     view_id: str,
     project: Mapping[str, object],
     source_counts: Sequence[int],
+    basis_source_counts: Optional[Sequence[int]] = None,
     system_ids_per_replica: Optional[Sequence[str]] = None,
     frame_intervals_ns_per_replica: Optional[Sequence[float]] = None,
     source_time_spans_ns_per_replica: Optional[Sequence[float]] = None,
@@ -789,7 +790,9 @@ def _view_pca_task(
     )
     base_rate = 11_640.163299 / reference_equivalent_frames
     rate = base_rate * feature_factor * (multiplier / 2.0)
-    basis_counts = _basis_physical_counts(project, source_counts)
+    basis_counts = _basis_physical_counts(
+        project, source_counts if basis_source_counts is None else basis_source_counts
+    )
     basis_cpu_hours = (
         base_rate
         * basis_equivalent_projection_weight
@@ -896,11 +899,8 @@ def _basis_physical_counts(
     ]
 
 
-def _projected_physical_counts(
-    project: Mapping[str, object], source_counts: Sequence[int]
-) -> List[int]:
-    """Return the current PCA-projection count for each physical replica."""
-
+def _projection_integer_stride(project: Mapping[str, object]) -> int:
+    """Resolve the projection selector on the current coordinate stream."""
     definitions = project.get("definitions")
     common_pca = definitions.get("common_pca") if isinstance(definitions, dict) else None
     if not isinstance(common_pca, dict):
@@ -924,6 +924,14 @@ def _projected_physical_counts(
         raise CampaignPlanningError(
             "campaign iteration requires an exact integer PCA projection stride"
         )
+    return stride
+
+
+def _projected_physical_counts(
+    project: Mapping[str, object], source_counts: Sequence[int]
+) -> List[int]:
+    """Return the current PCA-projection count for each physical replica."""
+    stride = _projection_integer_stride(project)
     return [integer_stride_selected_count(int(value), stride) for value in source_counts]
 
 
@@ -933,6 +941,7 @@ def _view_tasks(
     maximum_atom_count: int,
     *,
     time_safety_factor: float,
+    selector_source_integer_stride: int = 1,
     frame_intervals_ns_per_replica: Optional[Sequence[float]] = None,
     source_time_spans_ns_per_replica: Optional[Sequence[float]] = None,
 ) -> List[Dict[str, object]]:
@@ -943,6 +952,13 @@ def _view_tasks(
     requested = project.get("requested_modules")
     if not isinstance(requested, list) or "common_pca" not in requested:
         return []
+    # Generated selectors refer to the last selected cache, while ordinary
+    # resource search still needs the raw parent stream to compare candidates.
+    # Keep these two domains separate when reconstructing basis/fit workloads.
+    selector_source_counts = [
+        integer_stride_selected_count(int(count), selector_source_integer_stride)
+        for count in source_counts
+    ]
     system_manifest_value = project.get("system_manifest")
     system_ids_per_replica: Optional[list[str]] = None
     if isinstance(system_manifest_value, str):
@@ -964,13 +980,18 @@ def _view_tasks(
         view_id=view_id,
         project=project,
         source_counts=source_counts,
+        basis_source_counts=selector_source_counts,
         system_ids_per_replica=system_ids_per_replica,
         frame_intervals_ns_per_replica=frame_intervals_ns_per_replica,
         source_time_spans_ns_per_replica=source_time_spans_ns_per_replica,
         time_safety_factor=time_safety_factor,
     )
     multiplier = int(pca_task["member_observation_multiplier"])
-    projected_counts = _projected_physical_counts(project, source_counts)
+    projected_counts = _projected_physical_counts(project, selector_source_counts)
+    projected_timing = ({"frame_intervals_ns_per_replica": [
+        float(interval) * selector_source_integer_stride * _projection_integer_stride(project)
+        for interval in frame_intervals_ns_per_replica
+    ]} if frame_intervals_ns_per_replica is not None else {})
     tasks = [pca_task]
     for module_id in requested:
         if module_id == "common_pca" or module_id not in _VIEW_MODELS:
@@ -1359,6 +1380,7 @@ def _view_tasks(
                     "source_frames_per_replica": list(projected_counts),
                     "minimum_frames_per_replica": minimum_per_replica,
                     **scientific,
+                    **projected_timing,
                     "minimum_frame_role": (
                         "full_observation_fit_or_skip" if full_fit_only
                         else "algorithm_specific_technical_fit_minimum"
@@ -1555,6 +1577,13 @@ def _view_tasks(
             # the existing fit-grid proxy. No new measured rate is claimed.
             task.update({
                 "task_scope": "conformational_view_algorithm_fit",
+                # Fit strides index the parent projections, not coordinates.
+                # The normal coupling loop and fixed-schedule replay must
+                # construct the same input stream before validating it.
+                "source_frames_per_replica": list(projected_counts),
+                "maximum_frames_per_replica": max(projected_counts),
+                "projection_source_counts_iteration_input": list(projected_counts),
+                **projected_timing,
                 "algorithm_id": "intelligent_minkowski_weighted_kmeans",
                 "balance_group": f"{pca_task['balance_group']}:imwkmeans_fit",
                 "projection_source_task_id": pca_task["task_id"],
@@ -2052,7 +2081,7 @@ def _apply_view_allocation(
     basis_stride = max(projection_stride, existing_stride)
     basis_counts = [
         integer_stride_selected_count(source, basis_stride)
-        for source in source_counts
+        for source in allocation["source_frames_per_replica"]
     ]
     basis_budget = max(basis_counts)
     common_pca["frame_stride"] = 1
@@ -2598,6 +2627,9 @@ def plan_and_apply_complete_campaign(
                 and view_id in view_frame_counts_by_id
                 else source_counts
             )
+            view_intervals, view_spans = timing_for_counts(view_source_counts)
+            selector_source_stride = int(plan.get("global_stride_coupling", {}).get(
+                "selected_coordinate_cache_integer_stride", 1))
             if fixed_schedule is not None:
                 saved_projection = fixed_schedule["tasks"].get(f"view:{view_id}:common_pca")
                 if saved_projection is None:
@@ -2610,17 +2642,17 @@ def plan_and_apply_complete_campaign(
                 # The project selectors operate on the retained cache stream.
                 # Build basis and downstream-fit costs on that same stream.
                 view_source_counts = list(saved_projection["source_frames_per_replica"])
+                selector_source_stride = 1
+                if view_intervals is not None:
+                    view_intervals = [interval * cache_stride for interval in view_intervals]
             built.extend(_view_tasks(
                 path,
                 view_source_counts,
                 int(dimensions["maximum_atom_count"]),
                 time_safety_factor=time_safety_factor,
-                frame_intervals_ns_per_replica=timing_for_counts(
-                    view_source_counts
-                )[0],
-                source_time_spans_ns_per_replica=timing_for_counts(
-                    view_source_counts
-                )[1],
+                selector_source_integer_stride=selector_source_stride,
+                frame_intervals_ns_per_replica=view_intervals,
+                source_time_spans_ns_per_replica=view_spans,
             ))
         if fixed_schedule is not None:
             # Historical iMWK plans used every projection and expressed their
@@ -2630,6 +2662,12 @@ def plan_and_apply_complete_campaign(
                 saved = fixed_schedule["tasks"].get(task["task_id"], {})
                 if (task["module_id"] == "clustering_imwkmeans"
                         and saved.get("task_scope") == "conformational_view"):
+                    parent = next(row for row in built if row["task_id"] == task["projection_source_task_id"])
+                    task["source_frames_per_replica"] = list(parent["source_frames_per_replica"])
+                    task["maximum_frames_per_replica"] = parent["maximum_frames_per_replica"]
+                    if "frame_intervals_ns_per_replica" in parent:
+                        task["frame_intervals_ns_per_replica"] = list(parent["frame_intervals_ns_per_replica"])
+                    task.pop("projection_source_counts_iteration_input", None)
                     task["task_scope"] = "conformational_view"
                     task["balance_group"] = task["balance_group"].removesuffix(":imwkmeans_fit")
                     task.pop("projection_source_task_id", None)

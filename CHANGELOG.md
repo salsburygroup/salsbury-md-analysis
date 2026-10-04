@@ -14,6 +14,11 @@
 
 ## Unreleased
 
+- Reconstruct clustering-fit inputs from retained PCA projections during
+  fixed-sampling replay. Keep cache-relative basis/projection counts consistent
+  across planning iterations and preserve legacy all-projection schedules.
+  Retain byte-exact trial sampling documents and hashes on preparation failure.
+
 - Report rejected cache-stride searches before fixed-sampling export. Preserve
   resource and protected-core reduction diagnostics without treating an
   unselected candidate as an executable schedule.
