@@ -44,6 +44,7 @@ def prepare_core_first_resource_fit(*, prepare, common, destination: Path,
     from .quickstart import QuickstartPlanningError, QuickstartError
 
     evidence = {}
+    selected_trial = "requested"
     fallback_reason = None
     journal = destination.with_name(destination.name + ".resource-fit-evidence")
     if journal.exists():
@@ -120,12 +121,15 @@ def prepare_core_first_resource_fit(*, prepare, common, destination: Path,
                 candidate = root / "reduced-config.json"
                 _write(candidate, active_config)
                 active_config, _, failure = trial("reduced", path=candidate, reductions=False)
+                if failure is None:
+                    selected_trial = "reduced"
             if failure is not None:
                 # The exact native core has already passed; do not lose it to
                 # a stalled coupling search or an imperfect subset estimate.
                 active_config = deepcopy(core_config)
                 applied_switches = []
                 fallback_reason = str(failure)
+                selected_trial = "protected-core"
 
         all_disabled = _disabled_switches(requested_config, active_config)
         # Keep the explicit patch auditable, including dependency-induced loss.
@@ -140,11 +144,14 @@ def prepare_core_first_resource_fit(*, prepare, common, destination: Path,
         try:
             report = prepare(**common, output_directory=destination,
                              target_wall_hours=None, config_path=active_path,
-                             _recommend_reductions=False)
+                             _recommend_reductions=False,
+                             _fixed_sampling_replay=root / selected_trial / "fixed-sampling-schedule.json")
         finally:
             preserve()
             preserve(destination / "resource-fit-evidence")
         final_plan = load_json(destination / "campaign-resource-plan.json")
+        selected_plan = evidence[selected_trial]["plan"]
+        refinement = selected_plan.get("planning_refinement")
         planning_event("resource_fit_materialization_finished", status=final_plan.get("feasibility_status"))
         fit_report = {
             "report_schema": "salsbury-resource-fit-report-v1",
@@ -156,6 +163,9 @@ def prepare_core_first_resource_fit(*, prepare, common, destination: Path,
             "protected_core_fallback_used": fallback_reason is not None,
             "fallback_reason": fallback_reason,
             "optimality_proven": False,
+            "selected_validated_trial": selected_trial,
+            "validated_sampling_replayed": True,
+            "planning_refinement": refinement,
             "directly_disabled_configuration_switches": direct,
             "disabled_configuration_switches": all_disabled,
             "transitively_disabled_modules": transitive,

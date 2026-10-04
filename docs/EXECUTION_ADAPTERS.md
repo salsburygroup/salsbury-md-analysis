@@ -89,8 +89,11 @@ one second). Each invocation gets a separate directory beside the output:
 on standard error, leaving the command's normal JSON output unchanged.
 
 - `stack-traces.txt`: periodic Python call stacks, an exception traceback if one
-  escapes preparation, and a best-effort stack on SIGTERM where supported.
-- `events.jsonl`: preparation boundaries and core-first resource-fit trial stages.
+  escapes preparation, and best-effort SIGTERM and fatal-signal traces where
+  supported. An existing process-level fatal handler keeps its original output
+  destination; `metadata.json` records which handler owns those traces.
+- `events.jsonl`: preparation boundaries, core-first trials, refinement progress
+  and exact-input cache counters.
 - `metadata.json`: Python/package versions, process ID, elapsed time, process CPU
   time and exit status on normal completion. CPU time excludes child processes.
 
@@ -327,8 +330,8 @@ sampling, reporting costs and dependencies after each change. Tied bottlenecks
 can require several removals before wall time falls. Trajectory writing may be
 disabled separately; representative structures remain protected.
 
-After the full requested scope fails, reduction checks scientific-minimum
-schedules before spending time on extra sampling. It ranks optional removals using already-priced
+The full-scope trial checks scientific-minimum feasibility before refining
+sampling. If it does not fit, reduction ranks optional removals using already-priced
 blocking work and scientific-priority weights, then rebuilds and checks one
 dependency-closed removal at a time, then refines the fitting reduced subset.
 Each check still enforces overall scientific floors, PCA/clustering
@@ -336,15 +339,34 @@ source consistency, dependencies, memory padding and per-node limits. A parent
 PCA projection must supply its downstream fits; reducing it to its own smaller
 floor does not make those fits legitimately source-limited.
 If coupled integer streams make a protected-core minimum probe fail, the
-ordinary coupling search is still required before rejecting that core.
+coupling refinement is required before rejecting that core. If this search is
+interrupted, feasibility remains unknown.
+
+Native preparation limits sampling refinement to 512 new schedule constructions
+per planning call, shared across its coupling iterations. Minimum-feasibility
+checks and final validation still run; exact schedule-cache hits do not consume
+this allowance. Change `planning.maximum_refinement_schedule_calls` in the
+analysis configuration to adjust it. Zero keeps the validated minimum candidate
+without extra sampling refinement. The setting counts work, not seconds, so it
+does not guarantee a planning deadline.
+
+When refinement reaches the limit, preparation retains its validated minimum
+candidate and records `planning_refinement.status: validated_minimum_fallback`,
+the reason and call counts in the plan. This is a feasible fallback, not a claim
+of maximum information or optimality. The final launcher uses the selected
+trial's validated sampling schedule without repeating that optimization; input
+bindings, settings, scientific floors and the native schedule are checked again.
+User-supplied fixed schedules remain unchanged.
 
 Exact repeated calculations share a bounded in-memory cache within that
 preparation. Every task field and resolved planner argument is part of the key;
 changed sampling, costs, dependencies or resource limits require a fresh result.
 Returned plans are isolated copies. Nothing is reused from a previous invocation.
-The cache holds at most 32 results and 16 MiB of serialized content; Python heap
-usage is larger. A failed search is not cached. Diagnostic mode records hit and
-miss counts. Ranking is a heuristic: it avoids optimizing every alternative but
+The sampling-plan cache holds at most 32 results and 16 MiB of serialized content.
+A separate schedule cache holds at most 128 results and 8 MiB. Python heap usage
+is larger than these serialized sizes. Failed searches are not cached. Diagnostic
+mode records both caches' hit/miss counts, schedule-cache evictions, and the
+inner scheduler cache's hits and misses. Ranking is a heuristic: it avoids optimizing every alternative but
 does not prove the largest possible retained set. The final native preparation
 still validates the selected configuration and its emitted schedule.
 

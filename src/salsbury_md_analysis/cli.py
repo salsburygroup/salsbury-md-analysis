@@ -707,6 +707,7 @@ def _campaign_plan_terminal_summary(
             "effective_parallel_cpu_cap"
         ),
         "requested_plan_feasibility": plan.get("feasibility_status"),
+        "planning_refinement": plan.get("planning_refinement"),
         "requested_plan_minimum_critical_path_hours": plan.get(
             "minimum_wall_hours_lower_bound"
         ),

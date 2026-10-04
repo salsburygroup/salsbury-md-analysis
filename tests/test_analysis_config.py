@@ -201,6 +201,7 @@ class AnalysisConfigTests(unittest.TestCase):
             overridden["planning"], {
                 "module_selection": "protected_core_only",
                 "stride_mode": "balanced_per_method",
+                "maximum_refinement_schedule_calls": 512,
             }
         )
 

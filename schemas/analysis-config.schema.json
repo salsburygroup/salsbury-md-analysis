@@ -21,6 +21,12 @@
           "enum": ["balanced_per_method", "uniform_cache_stride"],
           "default": "balanced_per_method",
           "description": "Allow method-specific strides after the cache, or require every enabled method to consume one uniformly strided cache stream."
+        },
+        "maximum_refinement_schedule_calls": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 512,
+          "description": "Maximum new native schedule constructions for extra-sampling refinement per planning call. Zero retains a validated minimum candidate. Minimum feasibility and final validation are not charged."
         }
       }
     },

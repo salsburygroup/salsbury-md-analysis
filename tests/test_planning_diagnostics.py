@@ -158,6 +158,49 @@ print(record.directory)
         self.assertIn("named_planning_wait", (directory / "stack-traces.txt").read_text())
         self.assertIn("Timeout", (directory / "stack-traces.txt").read_text())
 
+    def test_existing_fatal_handler_is_not_replaced_or_disabled(self):
+        with patch("faulthandler.is_enabled", return_value=True), patch("faulthandler.enable") as enable, patch("faulthandler.disable") as disable, redirect_stderr(io.StringIO()):
+            with self.assertRaisesRegex(ValueError, "sentinel"):
+                with planning_diagnostics(self.root / "plan", command="test") as record:
+                    self.assertEqual(record.metadata["fatal_trace_destination"], "existing_process_handler")
+                    raise ValueError("sentinel")
+        enable.assert_not_called()
+        disable.assert_not_called()
+
+    @unittest.skipUnless(os.name == "posix", "fatal-signal subprocess test requires POSIX")
+    def test_fatal_signal_is_traced_without_suppressing_failure(self):
+        code = """
+import faulthandler, os, resource, signal, sys
+from pathlib import Path
+from salsbury_md_analysis.planning_diagnostics import planning_diagnostics
+resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+faulthandler.disable()
+def named_fatal_probe():
+    os.kill(os.getpid(), signal.SIGABRT)
+with planning_diagnostics(Path(sys.argv[1]), command='fatal-test'):
+    named_fatal_probe()
+"""
+        result = subprocess.run([sys.executable, "-c", code, str(self.root / "plan")],
+                                capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, -signal.SIGABRT, result.stderr)
+        directory = next((self.root / "plan.planning-diagnostics").iterdir())
+        trace = (directory / "stack-traces.txt").read_text()
+        self.assertIn("Fatal Python error", trace)
+        self.assertIn("named_fatal_probe", trace)
+        metadata = json.loads((directory / "metadata.json").read_text())
+        self.assertTrue(metadata["fatal_trace_enabled"])
+        self.assertEqual(metadata["fatal_trace_destination"], "stack-traces.txt")
+        self.assertEqual(metadata["status"], "running")  # interrupted, not accepted
+        self.assertFalse((self.root / "plan").exists())
+
+    def test_owned_fatal_handler_is_released_on_setup_failure(self):
+        with patch("faulthandler.is_enabled", return_value=False), patch("faulthandler.enable") as enable, patch("faulthandler.disable") as disable, patch("faulthandler.dump_traceback_later", side_effect=RuntimeError("setup failed")), redirect_stderr(io.StringIO()):
+            with self.assertRaisesRegex(RuntimeError, "setup failed"):
+                with planning_diagnostics(self.root / "plan", command="test"):
+                    self.fail("setup must fail")
+        enable.assert_called_once()
+        disable.assert_called_once()
+
     @unittest.skipUnless(os.name == "posix", "SIGTERM chaining is POSIX-specific")
     def test_sigterm_captures_stack_and_preserves_termination(self):
         code = """

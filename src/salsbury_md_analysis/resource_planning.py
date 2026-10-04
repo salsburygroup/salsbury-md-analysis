@@ -15,6 +15,7 @@ from .orchestration_resources import refresh_cache_preflight_task
 from typing import Callable, Dict, Mapping, Optional, Sequence
 from .resource_schedule import ResourceScheduleError, schedule_resource_tasks
 from .planning_reuse import memoized_planning, reuse_planning_work
+from .planning_search import record_inner_schedule_cache
 
 from .frame_sampling import (
     integer_stride_for_budget,
@@ -1815,13 +1816,17 @@ def plan_campaign_resource_budget(
                 ):
                     return all(
                         retained_count >= min(
-                            source_count, resolved_scientific_minimum
+                            source_count, max(resolved_scientific_minimum,
+                                              int(row["minimum_frames_per_replica"]))
                         )
                         for retained_count, source_count in zip(
                             retained, source
                         )
                     )
-                return True
+                # Runtime-specific lag/group contracts can be stronger than
+                # the generic profile. Integer rounding must satisfy both.
+                return all(count >= min(available, int(row["minimum_frames_per_replica"]))
+                           for count, available in zip(retained, source))
             if row["replica_sampling_mode"] == "balanced_pooled":
                 # The declared pilot is a pooled technical minimum.  A single
                 # common stride preserves temporal spacing and each replica's
@@ -2264,10 +2269,13 @@ def plan_campaign_resource_budget(
         if len(costs) != len(normalized):
             return None, []
         if native_dependencies:
+            before_cache = native_schedule.cache_info()
             try:
                 return native_schedule(tuple(tuple(selection[tid]) for tid in normalized_by_id))
             except ResourceScheduleError:
                 return None, []
+            finally:
+                record_inner_schedule_cache(before_cache, native_schedule.cache_info())
         stages = []
         total_wall = 0.0
         try:
@@ -4636,10 +4644,11 @@ def recommend_scientifically_valid_task_subset(
 
     evaluations = {"minimum_feasibility": 0, "sampling_refinement": 0}
 
-    def run_planner(rows: Sequence[Mapping[str, object]], *, minimum_only=True) -> Dict[str, object]:
+    def run_planner(rows: Sequence[Mapping[str, object]], *, minimum_only=True, minimum_plan=None) -> Dict[str, object]:
+        from .planning_search import minimum_then_refine
         evaluations["minimum_feasibility" if minimum_only else "sampling_refinement"] += 1
         if use_global_stride_coupling:
-            return plan_global_stride_projection_coupled_campaign_resource_budget(
+            return minimum_then_refine(plan_global_stride_projection_coupled_campaign_resource_budget,
                 rows,
                 coordinate_cache_minimum_frames_per_replica=(
                     coordinate_cache_minimum_frames_per_replica
@@ -4652,10 +4661,13 @@ def recommend_scientifically_valid_task_subset(
                 ),
                 protected_module_ids=tuple(protected_module_ids),
                 uniform_cache_stride=uniform_cache_stride,
-                _minimum_only=minimum_only,
+                minimum_only=minimum_only,
+                _minimum_plan=minimum_plan,
+                verify_rejected_minimum=not minimum_only,
                 **planner_kwargs,
             )
-        return plan_campaign_resource_budget(rows, _minimum_only=minimum_only, **planner_kwargs)
+        return minimum_then_refine(plan_campaign_resource_budget, rows,
+            minimum_only=minimum_only, _minimum_plan=minimum_plan, **planner_kwargs)
     original = [deepcopy(dict(task)) for task in tasks]
     if not original:
         raise ResourcePlanningError("task-subset recommendation requires tasks")
@@ -4763,9 +4775,9 @@ def recommend_scientifically_valid_task_subset(
                 edges["wait_for_bundle_ids"] = sorted(set(edges.get("wait_for_bundle_ids", [])) & bundles)
         return result
 
-    def evaluate(rows, switches, *, minimum_only=True):
+    def evaluate(rows, switches, *, minimum_only=True, minimum_plan=None):
         try:
-            return run_planner(rows, minimum_only=minimum_only)
+            return run_planner(rows, minimum_only=minimum_only, minimum_plan=minimum_plan)
         except PlanningSearchError as exc:
             search_errors.append({"disabled_configuration_switches": list(switches),
                                   "message": str(exc), "diagnostics": exc.diagnostics})
@@ -4778,7 +4790,7 @@ def recommend_scientifically_valid_task_subset(
             and core_plan["feasibility_status"] != "feasible"):
         # Coupled integer streams are not strictly monotonic in their costs.
         # Never reject the protected core solely on the cheap floor probe.
-        core_plan = evaluate(core_tasks, core_switches, minimum_only=False)
+        core_plan = evaluate(core_tasks, core_switches, minimum_only=False, minimum_plan=core_plan)
     core_feasible = core_plan is not None and core_plan["feasibility_status"] == "feasible"
     working = core_tasks
     current_plan = core_plan
@@ -4786,11 +4798,9 @@ def recommend_scientifically_valid_task_subset(
     full_plan = None
     if core_feasible:
         working = rebuild(original, [])
-        # The normal native path has usually priced this exact scope already;
-        # invocation-local reuse avoids repeating that expensive search. Keep
-        # the ordinary full-scope check so a cheap coupled-floor probe cannot
-        # reject a previously feasible all-method configuration.
-        full_plan = evaluate(working, [], minimum_only=False)
+        # Check full-scope minimum feasibility before spending extra schedule
+        # calls on sampling refinement. Exact-input reuse may supply this probe.
+        full_plan = evaluate(working, [], minimum_only=True)
         current_plan = full_plan
     current_score = _resource_shortfall_score(current_plan) if current_plan else float("inf")
     while core_feasible and current_plan is not None and current_plan["feasibility_status"] != "feasible":
@@ -4871,10 +4881,11 @@ def recommend_scientifically_valid_task_subset(
         fallback_used = True
     refinement_fallback = False
     if (current_plan is not None and current_plan["feasibility_status"] == "feasible"
-            and current_plan is not full_plan):
-        refined = evaluate(working, disabled_switches, minimum_only=False)
+            ):
+        refined = evaluate(working, disabled_switches, minimum_only=False, minimum_plan=current_plan)
         if refined is not None and refined["feasibility_status"] == "feasible":
             current_plan = refined
+            refinement_fallback = refined.get("planning_refinement", {}).get("status") == "validated_minimum_fallback"
         else:
             # An optimization failure cannot invalidate a completed minimum
             # schedule. Native preparation still verifies any emitted plan.

@@ -451,6 +451,17 @@ state-coordinate module still writes representative structures. No method's
 scientific minimum, chemistry or explicit fixed-sampling contract is relaxed.
 Fixed-schedule requests are validated without pruning.
 
+`planning.maximum_refinement_schedule_calls` bounds extra-sampling search after
+minimum feasibility has been checked. The default is 512 new native schedule
+constructions per planning call; zero retains the validated minimum candidate.
+It does not change scientific floors or impose a wall-clock timeout. When the
+allowance is exhausted, `planning_refinement` in the campaign plan records the
+fallback and its reason. Increase the setting if you want more refinement work.
+Final preparation replays the selected trial's sampling schedule and validates
+the inputs and native resource schedule again. See
+[`EXECUTION_ADAPTERS.md`](EXECUTION_ADAPTERS.md#diagnosing-slow-planning) for
+diagnostic stacks and planning-work counters.
+
 The output preserves `analysis-config.requested.json`, the explicit selected
 switches in `analysis-config.resource-fit.json`, and `resource-fit-report.json`.
 The latter records the fallback reason, disabled methods and trial evidence.

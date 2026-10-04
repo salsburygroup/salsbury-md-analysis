@@ -277,6 +277,7 @@ def default_analysis_config(
         "planning": {
             "module_selection": "all_enabled",
             "stride_mode": "balanced_per_method",
+            "maximum_refinement_schedule_calls": 512,
         },
         "module_groups": module_groups,
         "modules": module_rows,
@@ -577,12 +578,15 @@ def load_analysis_config(
     raw_planning = supplied.get("planning", {})
     if (
         not isinstance(raw_planning, dict)
-        or set(raw_planning).difference({"module_selection", "stride_mode"})
+        or set(raw_planning).difference({"module_selection", "stride_mode", "maximum_refinement_schedule_calls"})
     ):
         raise AnalysisConfigError("planning configuration is invalid")
     planning = config["planning"]
     assert isinstance(planning, dict)
     planning.update(deepcopy(raw_planning))
+    limit = planning["maximum_refinement_schedule_calls"]
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+        raise AnalysisConfigError("planning.maximum_refinement_schedule_calls must be a nonnegative integer")
     if planning["module_selection"] not in MODULE_SELECTION_MODES:
         raise AnalysisConfigError(
             "planning.module_selection must be all_enabled or "

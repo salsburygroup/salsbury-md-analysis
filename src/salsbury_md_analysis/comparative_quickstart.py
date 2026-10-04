@@ -371,6 +371,7 @@ def prepare_comparative_analysis(
     protected_core_only: bool = False,
     uniform_cache_stride: bool = False,
     _recommend_reductions: bool = True,
+    _fixed_sampling_replay: Optional[Path] = None,
 ) -> Dict[str, object]:
     """Prepare one shared-basis, common-grid workflow for two or more systems."""
 
@@ -955,6 +956,7 @@ def prepare_comparative_analysis(
     try:
         campaign_resource_plan = plan_and_apply_complete_campaign(
             recommend_reductions=_recommend_reductions,
+            fixed_sampling_replay=_fixed_sampling_replay,
             root=root,
             sampling_plan=sampling_plan,
             analysis_config=analysis_config,

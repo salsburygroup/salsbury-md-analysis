@@ -168,7 +168,14 @@ class PreparationContractTests(unittest.TestCase):
             report = prepare_comparative_analysis(request_path=request, output_directory=good, project_id="C031-test", config_path=config)
             self.assertEqual(report["technical_status"], "complete")
             project = json.loads((good / "project.json").read_text())
-            self.assertEqual(project["definitions"]["convergence_uncertainty"]["block_size_frames"], 100)
+            sampling = json.loads((good / "sampling-plan.json").read_text())
+            contract = sampling["convergence_preparation_contract"]
+            # This integration allows the planner to select its sampling. The
+            # fixed 1,000-observation/100-frame case is tested separately above.
+            self.assertEqual(project["definitions"]["convergence_uncertainty"]["block_size_frames"],
+                             contract["minimum_selected_observations_per_segment"] // 10)
+            self.assertLessEqual(contract["minimum_required_observations"],
+                                 contract["minimum_selected_observations_per_segment"])
             self.assertEqual(project["definitions"]["convergence_uncertainty"]["minimum_blocks"], 4)
             self.assertTrue((good / "run-local.sh").exists())
             self.assertFalse(list((good / "results").iterdir()))
@@ -202,7 +209,7 @@ class PreparationContractTests(unittest.TestCase):
             settings["modules"] = {"convergence_uncertainty": {"options": {"block_size_frames": 1000}}}
             config.write_text(json.dumps(settings))
             bad_blocks = root / "invalid-blocks"
-            with self.assertRaisesRegex(ValueError, "TBAE6_ddC16/rep1/chunk_001: 1000 selected observations cannot yield 4 blocks of 1000"):
+            with self.assertRaisesRegex(ValueError, "TBAE6_ddC16/rep1/chunk_001: [0-9]+ selected observations cannot yield 4 blocks of 1000"):
                 prepare_comparative_analysis(request_path=request, output_directory=bad_blocks, project_id="C031-test-blocks", config_path=config)
             self.assertFalse((bad_blocks / "run-local.sh").exists())
             for path, expected_hash in input_hashes.items():
