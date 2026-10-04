@@ -78,11 +78,11 @@ class CoreFirstPruningTests(unittest.TestCase):
         tasks = [task("qc", "structural_integrity_qc"), task("sasa", "solvent_accessible_surface_area")]
         calls = []
         def observe(rows, **kwargs):
-            calls.append([r["task_id"] for r in rows])
+            calls.append(([r["task_id"] for r in rows], kwargs.get("_minimum_only", False)))
             return plan_campaign_resource_budget(rows, **kwargs)
         with patch("salsbury_md_analysis.resource_planning.plan_campaign_resource_budget", side_effect=observe):
             report = recommend_scientifically_valid_task_subset(tasks, **LIMITS)
-        self.assertEqual(calls, [["qc"], ["qc", "sasa"]])
+        self.assertEqual(calls, [(["qc"], True), (["qc", "sasa"], False)])
         self.assertEqual(report["configuration_patch"], {})
         self.assertEqual(report["retained_task_ids"], ["qc", "sasa"])
 

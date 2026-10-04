@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Dict, Mapping, Optional, Sequence
 
 from .atom_mapping import AtomMappingError, read_pdb_atoms
+from .planning_reuse import reuse_planning_work
 from .analysis_config import (
     COMMAND_MODULES,
     AnalysisConfigError,
@@ -2585,6 +2586,7 @@ printf 'Results will appear under %s/results.\\n' "$ROOT"
     ]
 
 
+@reuse_planning_work
 def prepare_standard_analysis(
     *,
     pdb_path: Path,

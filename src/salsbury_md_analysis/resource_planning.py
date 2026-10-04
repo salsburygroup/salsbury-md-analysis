@@ -14,6 +14,7 @@ from functools import lru_cache
 from .orchestration_resources import refresh_cache_preflight_task
 from typing import Callable, Dict, Mapping, Optional, Sequence
 from .resource_schedule import ResourceScheduleError, schedule_resource_tasks
+from .planning_reuse import memoized_planning, reuse_planning_work
 
 from .frame_sampling import (
     integer_stride_for_budget,
@@ -1320,6 +1321,7 @@ def _nonnegative_number(value: object, label: str) -> float:
     return float(value)
 
 
+@memoized_planning
 def plan_campaign_resource_budget(
     tasks: Sequence[Mapping[str, object]],
     *,
@@ -1335,6 +1337,7 @@ def plan_campaign_resource_budget(
     maximum_cpus_per_node: Optional[int] = None,
     maximum_memory_gib_per_node: Optional[float] = None,
     maximum_nodes: Optional[int] = None,
+    _minimum_only: bool = False,
 ) -> Dict[str, object]:
     """Allocate one hard CPU/wall envelope across an analysis campaign.
 
@@ -2562,11 +2565,11 @@ def plan_campaign_resource_budget(
         minimum_known_cpu_hours / maximum_parallel_cpus,
         0.0 if minimum_wall is None else minimum_wall,
     )
-    allocation_stop_reason = "allocation_not_attempted"
+    allocation_stop_reason = "minimum_feasibility_only" if _minimum_only else "allocation_not_attempted"
     final_upgrade_candidates: list[Dict[str, object]] = []
     final_memory_blocked_groups: list[str] = []
     final_groups_at_ceiling: list[str] = []
-    if not infeasibility_reasons and not calibration_required:
+    if not infeasibility_reasons and not calibration_required and not _minimum_only:
         # An affordable full-coverage endpoint dominates every intermediate
         # sampling upgrade. Verify it once; never skip a resource/coverage gate.
         ceiling_selection = {key: list(values) for key, values in selected.items()}
@@ -2879,7 +2882,9 @@ def plan_campaign_resource_budget(
         )
         if final_upgrade_candidates else None
     )
-    if unused_science_cpu_hours <= 1.0e-12:
+    if _minimum_only:
+        unused_interpretation = "Scientific-minimum feasibility check; extra-sampling refinement was not attempted."
+    elif unused_science_cpu_hours <= 1.0e-12:
         unused_interpretation = "The science CPU-hour budget is fully allocated."
     elif (
         science_wall_time_fraction is not None
@@ -3151,6 +3156,7 @@ def plan_campaign_resource_budget(
     }
 
 
+@memoized_planning
 def plan_projection_coupled_campaign_resource_budget(
     tasks: Sequence[Mapping[str, object]],
     *,
@@ -3167,6 +3173,7 @@ def plan_projection_coupled_campaign_resource_budget(
     maximum_memory_gib_per_node: Optional[float] = None,
     maximum_nodes: Optional[int] = None,
     maximum_coupling_iterations: int = 12,
+    _minimum_only: bool = False,
 ) -> Dict[str, object]:
     """Replan PCA projections and their clustering fits to one fixed point.
 
@@ -3228,6 +3235,31 @@ def plan_projection_coupled_campaign_resource_budget(
                 f"clustering workflow {workflow_id} has no common-PCA projection task"
             )
 
+    if _minimum_only:
+        # A parent at its own floor may undersupply a child with a higher
+        # floor. Preserve the declared child requirement in the feasibility
+        # pass instead of manufacturing a source-limited clustering stream.
+        for workflow_id, parent_id in parent_ids.items():
+            parent = next(row for row in working if str(row["task_id"]) == parent_id)
+            needed = max([int(parent["minimum_frames_per_replica"])] + [
+                int(row.get("projection_declared_minimum_frames_per_replica", row["minimum_frames_per_replica"]))
+                for row in working if row.get("task_scope") == "conformational_view_algorithm_fit"
+                and row.get("workflow_id") == workflow_id])
+            if needed <= int(parent["maximum_frames_per_replica"]):
+                parent["minimum_frames_per_replica"] = needed
+            else:
+                # A configured parent ceiling/short source needs the existing
+                # full coupling checks, not a new interpretation of its floor.
+                return plan_projection_coupled_campaign_resource_budget(
+                    tasks, maximum_parallel_cpus=maximum_parallel_cpus,
+                    maximum_wall_hours=maximum_wall_hours, maximum_memory_gib=maximum_memory_gib,
+                    planning_utilization=planning_utilization, pilot_budget_fraction=pilot_budget_fraction,
+                    finalization_headroom_fraction=finalization_headroom_fraction,
+                    memory_safety_factor=memory_safety_factor, memory_overhead_gib=memory_overhead_gib,
+                    minimum_scheduler_memory_gib=minimum_scheduler_memory_gib,
+                    maximum_cpus_per_node=maximum_cpus_per_node, maximum_memory_gib_per_node=maximum_memory_gib_per_node,
+                    maximum_nodes=maximum_nodes, maximum_coupling_iterations=maximum_coupling_iterations)
+
     history = []
     updated_task_ids = set()
     cycle_resolutions = []
@@ -3248,6 +3280,7 @@ def plan_projection_coupled_campaign_resource_budget(
             maximum_cpus_per_node=maximum_cpus_per_node,
             maximum_memory_gib_per_node=maximum_memory_gib_per_node,
             maximum_nodes=maximum_nodes,
+            _minimum_only=_minimum_only,
         )
         planned_rows = {
             str(row["task_id"]): row
@@ -3649,6 +3682,8 @@ def _global_stride_information_upper_bound(
     return 1.0 if total_weight <= 0.0 else weighted / total_weight
 
 
+@reuse_planning_work
+@memoized_planning
 def plan_global_stride_projection_coupled_campaign_resource_budget(
     tasks: Sequence[Mapping[str, object]],
     *,
@@ -3670,6 +3705,7 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
     maximum_nodes: Optional[int] = None,
     maximum_coupling_iterations: int = 12,
     uniform_cache_stride: bool = False,
+    _minimum_only: bool = False,
     protected_module_ids: Sequence[str] = (
         "coordinate_cache", "provenance_manifest", "preflight_inventory",
         "common_atom_mapping", "structural_integrity_qc", "replica_rmsd_rg",
@@ -4175,6 +4211,7 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
                 maximum_memory_gib_per_node=maximum_memory_gib_per_node,
                 maximum_nodes=maximum_nodes,
                 maximum_coupling_iterations=maximum_coupling_iterations,
+                _minimum_only=_minimum_only,
             )
         except PlanningSearchError as exc:
             search_failures.append({
@@ -4257,7 +4294,7 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
                 best_feasible_information,
                 information["balanced_information_utility"],
             )
-            if uniform_cache_stride:
+            if uniform_cache_stride or _minimum_only:
                 early_terminated_candidates = list(
                     candidates[candidate_index + 1:]
                 )
@@ -4397,6 +4434,7 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
         "converged": True,
         "candidate_search_failures": search_failures,
         "search_complete": not search_failures,
+        "search_goal": "minimum_feasibility" if _minimum_only else "sampling_refinement",
         "selected_overall_trajectory_integer_stride": selected_stride,
         "selected_coordinate_cache_integer_stride": selected_stride,
         "minimum_retained_frames_per_replica": declared_minimum,
@@ -4417,6 +4455,9 @@ def plan_global_stride_projection_coupled_campaign_resource_budget(
         "candidate_evaluations": evaluations,
         "planner_total_wall_seconds": time.monotonic() - overall_planning_started,
         "candidate_policy": (
+            "Check scientific-minimum schedules at valid integer cache strides; "
+            "stop at the first feasible candidate. Extra-sampling refinement is deferred."
+            if _minimum_only else
             "Evaluate cache strides from finest to coarsest. Every enabled "
             "analysis must consume every retained cache frame without a further "
             "method or projection-fit stride; reject candidates outside any "
@@ -4532,6 +4573,7 @@ def _resource_shortfall_score(plan: Mapping[str, object]) -> float:
     return score
 
 
+@reuse_planning_work
 def recommend_scientifically_valid_task_subset(
     tasks: Sequence[Mapping[str, object]],
     *,
@@ -4563,7 +4605,7 @@ def recommend_scientifically_valid_task_subset(
         Sequence[Mapping[str, object]],
     ]] = None,
 ) -> Dict[str, object]:
-    """Propose the broadest scientifically valid task subset for an envelope.
+    """Find a validated dependency-closed task subset for an envelope.
 
     The recommendation never mutates a requested configuration. Validate a
     dependency-closed protected fallback before trying the full scope. Reprice
@@ -4592,7 +4634,10 @@ def recommend_scientifically_valid_task_subset(
         "maximum_nodes": maximum_nodes,
     }
 
-    def run_planner(rows: Sequence[Mapping[str, object]]) -> Dict[str, object]:
+    evaluations = {"minimum_feasibility": 0, "sampling_refinement": 0}
+
+    def run_planner(rows: Sequence[Mapping[str, object]], *, minimum_only=True) -> Dict[str, object]:
+        evaluations["minimum_feasibility" if minimum_only else "sampling_refinement"] += 1
         if use_global_stride_coupling:
             return plan_global_stride_projection_coupled_campaign_resource_budget(
                 rows,
@@ -4607,9 +4652,10 @@ def recommend_scientifically_valid_task_subset(
                 ),
                 protected_module_ids=tuple(protected_module_ids),
                 uniform_cache_stride=uniform_cache_stride,
+                _minimum_only=minimum_only,
                 **planner_kwargs,
             )
-        return plan_campaign_resource_budget(rows, **planner_kwargs)
+        return plan_campaign_resource_budget(rows, _minimum_only=minimum_only, **planner_kwargs)
     original = [deepcopy(dict(task)) for task in tasks]
     if not original:
         raise ResourcePlanningError("task-subset recommendation requires tasks")
@@ -4717,9 +4763,9 @@ def recommend_scientifically_valid_task_subset(
                 edges["wait_for_bundle_ids"] = sorted(set(edges.get("wait_for_bundle_ids", [])) & bundles)
         return result
 
-    def evaluate(rows, switches):
+    def evaluate(rows, switches, *, minimum_only=True):
         try:
-            return run_planner(rows)
+            return run_planner(rows, minimum_only=minimum_only)
         except PlanningSearchError as exc:
             search_errors.append({"disabled_configuration_switches": list(switches),
                                   "message": str(exc), "diagnostics": exc.diagnostics})
@@ -4728,6 +4774,11 @@ def recommend_scientifically_valid_task_subset(
     core_switches = switches_for(original)
     core_tasks = rebuild([row for row in original if str(row["task_id"]) in protected_task_ids], core_switches)
     core_plan = evaluate(core_tasks, core_switches)
+    if (use_global_stride_coupling and core_plan is not None
+            and core_plan["feasibility_status"] != "feasible"):
+        # Coupled integer streams are not strictly monotonic in their costs.
+        # Never reject the protected core solely on the cheap floor probe.
+        core_plan = evaluate(core_tasks, core_switches, minimum_only=False)
     core_feasible = core_plan is not None and core_plan["feasibility_status"] == "feasible"
     working = core_tasks
     current_plan = core_plan
@@ -4735,12 +4786,20 @@ def recommend_scientifically_valid_task_subset(
     full_plan = None
     if core_feasible:
         working = rebuild(original, [])
-        full_plan = evaluate(working, [])
+        # The normal native path has usually priced this exact scope already;
+        # invocation-local reuse avoids repeating that expensive search. Keep
+        # the ordinary full-scope check so a cheap coupled-floor probe cannot
+        # reject a previously feasible all-method configuration.
+        full_plan = evaluate(working, [], minimum_only=False)
         current_plan = full_plan
     current_score = _resource_shortfall_score(current_plan) if current_plan else float("inf")
     while core_feasible and current_plan is not None and current_plan["feasibility_status"] != "feasible":
         switches = switches_for(working)
         candidates = []
+        priced = {str(row["task_id"]): row for row in current_plan.get("tasks", [])}
+        hard_blockers = set(current_plan.get("tasks_requiring_project_pilots", []))
+        hard_blockers.update(str(row["task_id"]) for row in current_plan.get("optional_scientific_minimum_failures", []))
+        hard_blockers.update(str(row["task_id"]) for row in current_plan.get("memory_feasibility", {}).get("oversized_tasks", []))
         for switch in switches:
             removed_ids = task_ids_for_switch(working, switch)
             if removed_ids.intersection(protected_task_ids):
@@ -4750,16 +4809,6 @@ def recommend_scientifically_valid_task_subset(
             ]
             if not candidate_tasks:
                 continue
-            candidate_tasks = rebuild(candidate_tasks, [*disabled_switches, switch])
-            removed_ids = {str(row["task_id"]) for row in working} - {
-                str(row["task_id"]) for row in candidate_tasks}
-            candidate_plan = evaluate(candidate_tasks, [*disabled_switches, switch])
-            if candidate_plan is None:
-                continue
-            candidate_score = _resource_shortfall_score(candidate_plan)
-            relief = current_score - candidate_score
-            if relief < -1.0e-12:
-                continue
             removed_rows = [
                 row for row in working if str(row["task_id"]) in removed_ids
             ]
@@ -4768,29 +4817,36 @@ def recommend_scientifically_valid_task_subset(
             )
             if not removed_ids:  # optional trajectory writing, not representatives
                 priority_loss = 1.0
-            # A tied maximum hides the benefit of removing one slow worker.
-            # Prefer eliminating more minimum work before unrelated cheap
-            # methods when no candidate yet changes that maximum.
-            plateau_work_relief = max(
-                0.0, float(current_plan["minimum_known_cpu_hours"])
-                - float(candidate_plan["minimum_known_cpu_hours"])
-            ) if abs(relief) <= 1.0e-12 else 0.0
-            candidates.append((
-                relief / max(1.0e-12, priority_loss),
-                relief,
-                plateau_work_relief,
-                -priority_loss,
-                switch,
-                candidate_tasks,
-                candidate_plan,
-                sorted(removed_ids),
-            ))
+            # Rank using already-priced minimum work, not a full optimization
+            # of every possible removal. Ranking is a heuristic, never evidence
+            # that the proposed reduced graph fits its resource envelope.
+            costs = [priced[task_id] for task_id in removed_ids if task_id in priced]
+            cpu_relief = sum(float(row.get("estimated_cpu_hours") or 0) for row in costs)
+            wall_relief = max((float(row.get("estimated_wall_hours_at_effective_cpu_cap") or 0) for row in costs), default=0.0)
+            if not removed_ids:
+                cpu_relief = sum(max(0.0, float(row.get("fixed_cpu_hours", 0))
+                    - float(row.get("representatives_only_fixed_cpu_hours", 0)))
+                    for row in working if _trajectory_export_switch(row) == switch)
+                wall_relief = cpu_relief
+            weight = max(1.0e-12, priority_loss)
+            rank = (len(hard_blockers & removed_ids) / weight,
+                    max(cpu_relief / max(1.0e-12, float(current_plan["science_budget_cpu_hours"])),
+                        wall_relief / max(1.0e-12, float(current_plan["science_budget_wall_hours"]))) / weight,
+                    cpu_relief, -priority_loss, switch)
+            candidates.append((rank, switch, candidate_tasks, priority_loss))
         if not candidates:
             break
-        (
-            _, relief, _, negative_priority, switch, candidate_tasks,
-            candidate_plan, removed_ids,
-        ) = max(candidates, key=lambda value: value[:5])
+        candidate_plan = None
+        for _, switch, candidate_tasks, priority_loss in sorted(candidates, key=lambda value: value[0], reverse=True):
+            candidate_tasks = rebuild(candidate_tasks, [*disabled_switches, switch])
+            candidate_plan = evaluate(candidate_tasks, [*disabled_switches, switch])
+            if candidate_plan is not None:
+                break
+        if candidate_plan is None:
+            break
+        removed_ids = sorted({str(row["task_id"]) for row in working}
+                             - {str(row["task_id"]) for row in candidate_tasks})
+        relief = current_score - _resource_shortfall_score(candidate_plan)
         decisions.append({
             "iteration": len(decisions) + 1,
             "disabled_configuration_switch": switch,
@@ -4800,8 +4856,10 @@ def recommend_scientifically_valid_task_subset(
                 candidate_plan
             ),
             "shortfall_relief": relief,
-            "scientific_priority_removed": -negative_priority,
+            "scientific_priority_removed": priority_loss,
             "tied_bottleneck_step": abs(relief) <= 1.0e-12,
+            "ranking_is_estimate_only": True,
+            "candidate_evaluation": "minimum_feasibility",
         })
         disabled_switches.append(switch)
         working = candidate_tasks
@@ -4811,6 +4869,16 @@ def recommend_scientifically_valid_task_subset(
         working, current_plan = core_tasks, core_plan
         disabled_switches = core_switches
         fallback_used = True
+    refinement_fallback = False
+    if (current_plan is not None and current_plan["feasibility_status"] == "feasible"
+            and current_plan is not full_plan):
+        refined = evaluate(working, disabled_switches, minimum_only=False)
+        if refined is not None and refined["feasibility_status"] == "feasible":
+            current_plan = refined
+        else:
+            # An optimization failure cannot invalidate a completed minimum
+            # schedule. Native preparation still verifies any emitted plan.
+            refinement_fallback = True
     feasible = current_plan is not None and current_plan["feasibility_status"] == "feasible"
     protected_minimum_request = deepcopy(
         (core_plan or {}).get("permissive_minimum_resource_request", {})
@@ -4843,6 +4911,8 @@ def recommend_scientifically_valid_task_subset(
         "full_requested_plan": full_plan,
         "protected_core_fallback_used": fallback_used,
         "search_errors": search_errors,
+        "planning_evaluations": evaluations,
+        "minimum_plan_retained_after_refinement_failure": refinement_fallback,
         "optimality_proven": False,
         "protected_module_ids": sorted(protected),
         "protected_task_ids": sorted(protected_task_ids),
@@ -4871,9 +4941,11 @@ def recommend_scientifically_valid_task_subset(
         "recommended_plan": current_plan,
         "planner_wall_seconds": time.monotonic() - started,
         "strategy": (
-            "protected core first, full scope second, validated fallback retained; "
-            "deterministic dependency-closed removal including tied bottlenecks by normalized CPU, wall, "
-            "and memory shortfall relief per lost scientific-priority weight; "
+            "scientific-minimum core first (full coupling check before rejection), "
+            "reuse the full-scope check; rank optional "
+            "dependency-closed removals by already-priced blocking work per "
+            "priority weight, validate one removal at a time, then refine "
+            "sampling once for the fitting subset; validated fallback retained; "
             + (
                 (
                     "every subset is repriced with one uniform cache stride and "

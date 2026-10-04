@@ -324,6 +324,27 @@ sampling, reporting costs and dependencies after each change. Tied bottlenecks
 can require several removals before wall time falls. Trajectory writing may be
 disabled separately; representative structures remain protected.
 
+After the full requested scope fails, reduction checks scientific-minimum
+schedules before spending time on extra sampling. It ranks optional removals using already-priced
+blocking work and scientific-priority weights, then rebuilds and checks one
+dependency-closed removal at a time, then refines the fitting reduced subset.
+Each check still enforces overall scientific floors, PCA/clustering
+source consistency, dependencies, memory padding and per-node limits. A parent
+PCA projection must supply its downstream fits; reducing it to its own smaller
+floor does not make those fits legitimately source-limited.
+If coupled integer streams make a protected-core minimum probe fail, the
+ordinary coupling search is still required before rejecting that core.
+
+Exact repeated calculations share a bounded in-memory cache within that
+preparation. Every task field and resolved planner argument is part of the key;
+changed sampling, costs, dependencies or resource limits require a fresh result.
+Returned plans are isolated copies. Nothing is reused from a previous invocation.
+The cache holds at most 32 results and 16 MiB of serialized content; Python heap
+usage is larger. A failed search is not cached. Diagnostic mode records hit and
+miss counts. Ranking is a heuristic: it avoids optimizing every alternative but
+does not prove the largest possible retained set. The final native preparation
+still validates the selected configuration and its emitted schedule.
+
 Review `analysis-config.resource-fit.json` and `resource-fit-report.json` for
 every disabled switch and whether the protected fallback was used;
 `planning-report.md` gives the final strides. The completed protected preparation is retained if an optional

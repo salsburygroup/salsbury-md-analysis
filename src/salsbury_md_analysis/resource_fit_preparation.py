@@ -7,6 +7,7 @@ import tempfile
 from .analysis_config import make_resource_fit_config
 from .manifests import load_json
 from .planning_diagnostics import planning_event
+from .planning_reuse import reuse_planning_work
 
 
 def _write(path, value):
@@ -31,6 +32,7 @@ def _disabled_switches(requested, selected):
     return sorted(switches)
 
 
+@reuse_planning_work
 def prepare_core_first_resource_fit(*, prepare, common, destination: Path,
                                     target_wall_hours, config_path):
     """Validate the native core, then full/reduced scopes, before materializing.
