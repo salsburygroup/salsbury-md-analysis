@@ -156,6 +156,7 @@ def schedule_document(root: Path, plan, sampling_plan, project_paths=None):
         "global_stride_coupling": deepcopy(plan.get("global_stride_coupling")),
         "comparison_clustering_consistency_skips": deepcopy(plan.get("comparison_clustering_consistency_skips", {})),
         "source_plan_sha256": _digest(plan),
+        "planning_refinement": deepcopy(plan.get("planning_refinement")),
     }
     _validate_document(body)
     return {**body, "content_sha256": _digest(body)}

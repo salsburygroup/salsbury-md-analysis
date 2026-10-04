@@ -82,7 +82,7 @@ class CoreFirstPruningTests(unittest.TestCase):
             return plan_campaign_resource_budget(rows, **kwargs)
         with patch("salsbury_md_analysis.resource_planning.plan_campaign_resource_budget", side_effect=observe):
             report = recommend_scientifically_valid_task_subset(tasks, **LIMITS)
-        self.assertEqual(calls, [(["qc"], True), (["qc", "sasa"], False)])
+        self.assertEqual(calls, [(["qc"], True), (["qc", "sasa"], True), (["qc", "sasa"], False)])
         self.assertEqual(report["configuration_patch"], {})
         self.assertEqual(report["retained_task_ids"], ["qc", "sasa"])
 

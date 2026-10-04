@@ -2605,6 +2605,7 @@ def prepare_standard_analysis(
     protected_core_only: bool = False,
     uniform_cache_stride: bool = False,
     _recommend_reductions: bool = True,
+    _fixed_sampling_replay: Optional[Path] = None,
 ) -> Dict[str, object]:
     """Prepare manifests, budgets, and a local or Slurm workflow without touching inputs."""
 
@@ -2915,6 +2916,7 @@ def prepare_standard_analysis(
     try:
         campaign_resource_plan = plan_and_apply_complete_campaign(
             recommend_reductions=_recommend_reductions,
+            fixed_sampling_replay=_fixed_sampling_replay,
             root=root,
             sampling_plan=sampling_plan,
             analysis_config=analysis_config,

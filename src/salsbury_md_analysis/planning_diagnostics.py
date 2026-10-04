@@ -95,6 +95,7 @@ def planning_diagnostics(output_directory, *, command, interval_seconds=60.0):
     except OSError as exc:
         raise PlanningDiagnosticsSetupError(str(exc)) from exc
     registered = False
+    fatal_owned = False
     timer_started = False
     ready = False
     error = None
@@ -102,6 +103,15 @@ def planning_diagnostics(output_directory, *, command, interval_seconds=60.0):
         diagnostics.stacks.write(f"Planning diagnostics started {diagnostics.metadata['started_at']}\n"
                                  f"PID {os.getpid()}; repeated Python stack snapshots every {interval:g} seconds\n")
         diagnostics.stacks.flush()
+        # Python exposes no getter for an existing fatal-handler destination.
+        # Leave an existing handler untouched; its caller owns that stream.
+        existing_fatal = faulthandler.is_enabled()
+        if not existing_fatal:
+            faulthandler.enable(file=diagnostics.stacks, all_threads=True)
+            fatal_owned = True
+        diagnostics.metadata["fatal_trace_enabled"] = True
+        diagnostics.metadata["fatal_trace_destination"] = (
+            "existing_process_handler" if existing_fatal else "stack-traces.txt")
         # Preserve the command's termination behavior. Windows has no register;
         # its periodic snapshots still work. SIGKILL cannot be intercepted.
         if hasattr(faulthandler, "register") and hasattr(signal, "SIGTERM"):
@@ -136,6 +146,8 @@ def planning_diagnostics(output_directory, *, command, interval_seconds=60.0):
             faulthandler.cancel_dump_traceback_later()
         if registered:
             faulthandler.unregister(signal.SIGTERM)
+        if fatal_owned:
+            faulthandler.disable()
         diagnostics.metadata.update({
             "finished_at": _utc(), "elapsed_seconds": time.monotonic() - diagnostics.started,
             "process_cpu_seconds": time.process_time() - diagnostics.cpu_started,

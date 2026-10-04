@@ -28,6 +28,7 @@ from .fixed_sampling import (
 )
 from .manifests import load_json, validate_project
 from .planning_reuse import reuse_planning_work
+from .planning_search import bounded_campaign_search, minimum_then_refine
 from .memory_policy import (
     MemoryPolicyError,
     apply_memory_calibration_uncertainty,
@@ -2232,6 +2233,7 @@ def _consistent_comparison_clustering_tasks(
 
 
 @reuse_planning_work
+@bounded_campaign_search
 def plan_and_apply_complete_campaign(
     *,
     root: Path,
@@ -2244,6 +2246,7 @@ def plan_and_apply_complete_campaign(
     context_frame_counts_by_id: Mapping[str, Sequence[int]] | None = None,
     time_safety_factor: float = 1.5,
     recommend_reductions: bool = True,
+    fixed_sampling_replay: Path | None = None,
 ) -> Dict[str, object]:
     """Plan and apply one hard envelope to every currently generated task."""
 
@@ -2313,7 +2316,7 @@ def plan_and_apply_complete_campaign(
     ]
     context_paths = [root / filename for filename in context_project_files]
     fixed_schedule = None
-    fixed_path = sampling_configuration.get("fixed_schedule_file")
+    fixed_path = fixed_sampling_replay or sampling_configuration.get("fixed_schedule_file")
     if fixed_path is not None:
         try:
             fixed_schedule = load_fixed_schedule(
@@ -2812,10 +2815,13 @@ def plan_and_apply_complete_campaign(
                     uniform_cache_stride=uniform_cache_stride,
                     **planning_kwargs,
                 )
-                plan = plan_global_stride_projection_coupled_campaign_resource_budget(
-                    tasks, **global_kwargs)
+                plan = minimum_then_refine(
+                    plan_global_stride_projection_coupled_campaign_resource_budget,
+                    tasks, verify_rejected_minimum=(
+                        analysis_config.get("planning", {}).get("module_selection") == "protected_core_only"),
+                    **global_kwargs)
             else:
-                plan = plan_campaign_resource_budget(tasks, **planning_kwargs)
+                plan = minimum_then_refine(plan_campaign_resource_budget, tasks, **planning_kwargs)
         except PlanningSearchError as exc:
             raise CampaignPlanningError(str(exc), plan={
                 "feasibility_status": "unknown", "planning_search_failed": True,
@@ -3191,6 +3197,10 @@ def plan_and_apply_complete_campaign(
         ),
     })
     sampling_plan["campaign_resource_plan"] = plan
+    if fixed_sampling_replay is not None:
+        plan["internal_validated_sampling_replay"] = True
+        if fixed_schedule.get("planning_refinement") is not None:
+            plan["planning_refinement"] = deepcopy(fixed_schedule["planning_refinement"])
     snapshot = schedule_document(
         root, plan, sampling_plan,
         [base_project_path, *view_paths, *context_paths],

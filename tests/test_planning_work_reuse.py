@@ -188,7 +188,7 @@ class PlanningReuseTests(unittest.TestCase):
             self.assertEqual(result["retained_task_ids"], ["qc"])
             self.assertEqual(len(result["decisions"]), count)
             self.assertEqual(planner.call_count, count + 3)
-            self.assertEqual(result["planning_evaluations"], {"minimum_feasibility": count + 1, "sampling_refinement": 2})
+            self.assertEqual(result["planning_evaluations"], {"minimum_feasibility": count + 2, "sampling_refinement": 1})
             self.assertEqual(result["recommended_plan"]["feasibility_status"], "feasible")
 
     def test_refinement_failure_retains_validated_minimum_plan(self):

@@ -5,6 +5,9 @@ import math
 from bisect import bisect_left
 from typing import Dict, List, Mapping, NamedTuple, Sequence
 
+from .planning_reuse import memoized_schedule
+from .planning_search import record_schedule_work
+
 
 class ResourceScheduleError(ValueError):
     """Invalid or unschedulable task/resource contract."""
@@ -92,6 +95,7 @@ class _TokenPool:
         self._selections.clear()
 
 
+@memoized_schedule
 def schedule_resource_tasks(items: Sequence[Mapping[str, object]], *,
                             maximum_cpus: int, maximum_memory: float,
                             node_policy: Mapping[str, object]) -> List[Dict[str, object]]:
@@ -100,6 +104,7 @@ def schedule_resource_tasks(items: Sequence[Mapping[str, object]], *,
     Limits are ceilings, not requirements to occupy every available node.
     Every placement is independently resource validated by the same scheduler.
     """
+    record_schedule_work()
     nodes = node_policy.get("maximum_nodes_per_campaign")
     if nodes is None or node_policy.get("cpus_per_node") is None:
         return _schedule_resource_tasks(items, maximum_cpus=maximum_cpus,

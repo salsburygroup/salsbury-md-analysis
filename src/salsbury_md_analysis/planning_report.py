@@ -575,6 +575,7 @@ def build_planning_report(root: Path) -> Dict[str, object]:
             ),
             "resource_warnings": resources.get("resource_warnings", []),
         },
+        "planning_refinement": resources.get("planning_refinement"),
         "sampling": {
             "task_count": len(rows),
             "below_floor_task_count": len(below),
@@ -639,6 +640,7 @@ def render_planning_report_markdown(report: Mapping[str, object]) -> str:
     ]
     estimated_hours = envelope.get("estimated_scheduled_execution_hours")
     requested_hours = _mapping(envelope.get("campaign_walltime_request")).get("requested_wall_hours")
+    refinement = _mapping(report.get("planning_refinement"))
     lines = [
         "# Analysis planning report",
         "",
@@ -660,6 +662,12 @@ def render_planning_report_markdown(report: Mapping[str, object]) -> str:
         f"- Planned sampling tasks: `{sampling.get('task_count')}`",
         f"- Tasks below a declared sampling floor: `{sampling.get('below_floor_task_count')}`",
         f"- Source-limited tasks: `{sampling.get('source_limited_task_count', 0)}`. Short supplied inputs are reported separately; using all available frames does not establish adequate scientific sampling.",
+        *([
+            f"- Sampling refinement: `{refinement.get('status')}`; new schedule calls `{refinement.get('used_schedule_calls')}/{refinement.get('maximum_schedule_calls')}`.",
+            *(["- Validated minimum sampling retained: " + str(refinement.get("reason")) +
+               ". This plan is feasible; maximum information or optimality has not been established."]
+              if refinement.get("status") == "validated_minimum_fallback" else []),
+        ] if refinement else []),
         "",
         "## How to read the strides",
         "",
