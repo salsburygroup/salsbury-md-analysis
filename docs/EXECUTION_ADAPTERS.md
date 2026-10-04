@@ -22,6 +22,9 @@ Required preflight and final-reporting jobs have their own
 [workload estimates](ORCHESTRATION_RESOURCE_ESTIMATES.md). The planner includes
 their costs in the campaign budget and lists them separately from sampled
 analyses. Their timeout allowances are separate from estimated durations.
+See [runtime and memory qualification](RESOURCE_MODEL_QUALIFICATION.md) for
+iMWKMeans grid costs, task-scoped memory evidence, local resource reservations
+and the distinction between a timeout and a task that never started.
 
 To compare several prepared envelopes in the compact matrix form, run:
 

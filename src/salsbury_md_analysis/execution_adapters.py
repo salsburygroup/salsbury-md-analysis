@@ -3037,6 +3037,7 @@ def build_local_execution_plan(
     plan: Dict[str, object] = {
         "local_execution_plan_schema": "salsbury-local-execution-plan-v6",
         "dependency_model": "task_dag_v1",
+        "resource_admission_policy": "native_resource_token_reservations_v1",
         "maximum_parallel_cpus": maximum_cpus,
         "maximum_campaign_wall_hours": float(execution["maximum_hours_per_cpu"]),
         "maximum_parallel_memory_gib": float(execution["maximum_memory_gib"]),
@@ -3543,6 +3544,8 @@ def _run_local_task(
             "requested_wall_minutes": wall_minutes,
             "status": "reused_complete", "exit_code": 0,
             "wall_seconds": 0.0,
+            "execution_started": False,
+            "runtime_calibration_eligible": False,
         }
     slots.acquire(cpu_slots, memory_gib)
     try:
@@ -3569,6 +3572,7 @@ def _run_local_task(
         attempts = []
         exit_code = None
         timed_out = False
+        execution_started = False
         attempt_limit = maximum_task_attempts if autorecovery else 1
         for attempt_number in range(1, attempt_limit + 1):
             attempt_start = time.monotonic()
@@ -3579,10 +3583,13 @@ def _run_local_task(
             stdout_path = root / "logs" / f"{stem}-attempt-{attempt_number:02d}.out"
             stderr_path = root / "logs" / f"{stem}-attempt-{attempt_number:02d}.err"
             if timeout_seconds <= 0.0:
-                timed_out = True
+                if attempts:
+                    break  # Preserve the last executed attempt's outcome.
                 attempts.append({
                     "attempt_number": attempt_number,
-                    "status": "timed_out",
+                    "status": "not_started_deadline",
+                    "execution_started": False,
+                    "runtime_calibration_eligible": False,
                     "exit_code": None,
                     "wall_seconds": 0.0,
                     "allowed_wall_minutes": 0.0,
@@ -3602,6 +3609,7 @@ def _run_local_task(
                     ["bash", str(script)], cwd=root, env=env,
                     stdout=stdout, stderr=stderr, start_new_session=True,
                 )
+                execution_started = True
                 try:
                     exit_code = process.wait(timeout=timeout_seconds)
                 except subprocess.TimeoutExpired:
@@ -3632,6 +3640,8 @@ def _run_local_task(
             attempts.append({
                 "attempt_number": attempt_number,
                 "status": attempt_status,
+                "execution_started": True,
+                "runtime_calibration_eligible": attempt_status in {"complete", "timed_out"},
                 "exit_code": exit_code,
                 "child_exit_code": child_exit_code,
                 "completion_reports_valid": completion_reports_valid,
@@ -3658,7 +3668,9 @@ def _run_local_task(
             "planner_task_ids": task.get("planner_task_ids", []),
             "status": final_status,
             "exit_code": exit_code,
-            "wall_seconds": time.monotonic() - task_start,
+            "wall_seconds": time.monotonic() - task_start if execution_started else 0.0,
+            "execution_started": execution_started,
+            "runtime_calibration_eligible": execution_started and final_status in {"complete", "recovered_complete", "timed_out"},
             "autorecovery_enabled": autorecovery,
             "maximum_task_attempts": maximum_task_attempts,
             "attempt_count": len(attempts),
@@ -3689,6 +3701,25 @@ def _run_ready_dag(
         | set(map(str, task.get("wait_for_task_ids", [])))
         for key, (_, _, task) in entries.items()
     }
+    # Replay the same token reservations used by native planning/Slurm.
+    # These edges only release capacity; failure never poisons their successors.
+    # Legacy plans can be replayed without changing their immutable contracts.
+    resource_phases = [{"phase_id": phase["phase_id"], "tasks": [dict(task,
+        script=task.get("script", str(task["task_id"])),
+        planned_wall_hours=task.get("planned_wall_hours", float(task.get("requested_wall_minutes", 60)) / 60),
+        requested_wall_minutes=task.get("requested_wall_minutes", 60),
+        requested_memory_gib=task.get("requested_memory_gib", 1.0))
+        for task in phase["tasks"]]} for phase in phases]
+    epochs = _slurm_resource_epochs({
+        "maximum_parallel_cpus": slots.cpu_capacity,
+        "maximum_parallel_memory_gib": slots.memory_capacity_gib,
+        "phases": resource_phases}, {}, {}, {},
+        {"large_memory_threshold_gib": float("inf")}, {})
+    ordered = [item for epoch in epochs for item in epoch["scheduled_items"]]
+    resource_waits = {str(item["task_id"]): set(item["resource_predecessor_task_ids"])
+                      for item in ordered}
+    for key in prerequisites:
+        prerequisites[key].update(resource_waits[key])
     remaining = set(entries)
     visited = set()
     while remaining:
@@ -3700,12 +3731,13 @@ def _run_ready_dag(
 
     successful = {"complete", "recovered_complete", "reused_complete"}
     results: Dict[str, Dict[str, object]] = {}
-    pending = dict(entries)
+    pending = {str(item["task_id"]): entries[str(item["task_id"])] for item in ordered}
     running = {}
     reserved_cpus, reserved_memory = 0, 0.0
 
     def terminal(task, status, **extra):
-        record = {**task, "status": status, "exit_code": None, "wall_seconds": 0.0, **extra}
+        record = {**task, "status": status, "exit_code": None, "wall_seconds": 0.0,
+                  "execution_started": False, "runtime_calibration_eligible": False, **extra}
         persist_task_status(root, task, attempt_id, record)
         return record
 
@@ -3719,7 +3751,9 @@ def _run_ready_dag(
                     del pending[key]
                     continue
                 if time.monotonic() >= deadline:
-                    results[key] = terminal(task, "timed_out", error="campaign deadline reached before dispatch")
+                    results[key] = terminal(task, "not_started_deadline", error="campaign deadline reached before dispatch",
+                        pending_dependency_task_ids=sorted(set(task.get("depends_on_task_ids", [])) - results.keys()),
+                        pending_resource_task_ids=sorted(resource_waits[key] - results.keys()))
                     del pending[key]
                     continue
                 cpus = int(task["cpu_slots"])
@@ -3959,7 +3993,7 @@ def _run_local_workflow_locked(root: Path, *, maximum_wall_hours: Optional[float
             ),
             "terminal_failure_count": sum(
                 row.get("status") in {
-                    "failed", "timed_out", "skipped_dependency",
+                    "failed", "timed_out", "skipped_dependency", "not_started_deadline",
                 }
                 for phase in phase_reports for row in phase["tasks"]
             ),

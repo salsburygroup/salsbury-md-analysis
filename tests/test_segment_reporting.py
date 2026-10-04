@@ -11,9 +11,9 @@ from salsbury_md_analysis.accepted_artifacts import reports_complete, validate_c
 from salsbury_md_analysis.finding_picker import (
     _compact_cross_report, _hydrogen_bond_candidates, _quality_control_records,
     _integrated_comparison_candidates, FindingPickerError, finding_sidecar_evidence,
-    prioritize_findings,
+    prioritize_findings, _hydrogen_bond_chemical_summary,
 )
-from salsbury_md_analysis.hydrogen_bond_reporting import occupancy_accounting
+from salsbury_md_analysis.hydrogen_bond_reporting import occupancy_accounting, system_view
 from salsbury_md_analysis.scalar_distributions import analyze_scalar_distribution, ScalarDistributionError
 from salsbury_md_analysis.presentation_artifacts import validate_manifest, PresentationArtifactError
 
@@ -39,6 +39,44 @@ def report():
 
 
 class SegmentReportingTests(unittest.TestCase):
+    def test_native_system_views_scope_inherited_occupancies(self):
+        doc = report()
+        doc["atom_dictionary"] = [dict(atom_index=i, identity=dict(chain_id="A",
+            residue_number=i+1, residue_name="GUA", atom_name=name))
+            for i, name in enumerate(("N1", "H1", "O6"))]
+        doc["system_feature_spaces"] = [dict(
+            system_id=system, candidate_dictionary=doc["candidate_dictionary"],
+            atom_dictionary=doc["atom_dictionary"], frame_bond_matrix=[
+                row for row in doc["frame_bond_matrix"] if row["system_id"] == system])
+            for system in ("A", "B")]
+        before = copy.deepcopy(doc)
+        compact = _compact_cross_report(doc, "hydrogen_bond_discovery")
+        self.assertEqual(_hydrogen_bond_candidates(doc, Path("s")),
+                         _hydrogen_bond_candidates(compact, Path("s")))
+        for source in (doc, compact):
+            for view in source["system_feature_spaces"]:
+                scoped = system_view(source, view)
+                accounting = occupancy_accounting(scoped)
+                self.assertEqual(accounting["totals"], {view["system_id"]: 100})
+                self.assertEqual(len(accounting["segment_frame_counts"]), 4)
+                _, values = _hydrogen_bond_chemical_summary(source, view["system_id"])
+                self.assertAlmostEqual(next(iter(values.values())), .06 if view["system_id"] == "A" else .18)
+        self.assertEqual(_hydrogen_bond_chemical_summary(doc, "A"),
+                         _hydrogen_bond_chemical_summary(compact, "A"))
+        self.assertEqual(doc, before)
+        bad = copy.deepcopy(doc["system_feature_spaces"][0])
+        bad["occupancies"] = doc["occupancies"]
+        with self.assertRaisesRegex(ValueError, "another system"):
+            system_view(doc, bad)
+        bad.pop("occupancies")
+        bad["candidate_dictionary"] = []
+        with self.assertRaisesRegex(ValueError, "undeclared bond"):
+            system_view(doc, bad)
+        bad = copy.deepcopy(doc["system_feature_spaces"][0])
+        bad["frame_bond_matrix"] = bad["frame_bond_matrix"][:-40]
+        with self.assertRaisesRegex(ValueError, "omits or duplicates"):
+            system_view(doc, bad)
+
     def test_full_compact_parity_and_zero_event_denominators(self):
         doc = report()
         compact = _compact_cross_report(doc, "hydrogen_bond_discovery")
@@ -89,7 +127,7 @@ class SegmentReportingTests(unittest.TestCase):
             _integrated_comparison_candidates(
                 {"comparison_findings": [{"module_id": "hydrogen_bond_discovery"}]}, Path("x"))
         self.assertEqual(finding_sidecar_evidence(report(), Path("x"))["finding_evidence_schema"],
-                         "salsbury-finding-evidence-v3")
+                         "salsbury-finding-evidence-v4")
 
     def test_empty_segments_histogram_and_residence_are_independent(self):
         records = [dict(value=float(i), source_frame_index=i) for i in range(4)]

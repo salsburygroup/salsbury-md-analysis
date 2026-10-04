@@ -2,6 +2,53 @@
 from collections import Counter
 
 
+def system_view(report, view):
+    """Scope inherited rows without inferring denominators from sparse events.
+
+    Native views retain global bond IDs but have system-local candidate lists
+    and frame ledgers. Inheriting other systems' occupancy rows is invalid.
+    Explicit local rows must already belong to the declared system.
+    """
+    system = view.get("system_id")
+    if not isinstance(system, str) or not system:
+        raise ValueError("hydrogen-bond system view requires a system_id")
+    scoped = dict(report)
+    scoped.pop("system_feature_spaces", None)
+    scoped.update(view)
+    for field in ("occupancies", "frame_bond_matrix", "segment_frame_counts"):
+        rows = scoped.get(field)
+        if not isinstance(rows, list):
+            continue
+        if field in view and any(str(row.get("system_id")) != system for row in rows):
+            raise ValueError(f"hydrogen-bond {field} contains another system in view {system}")
+        scoped[field] = [row for row in rows if str(row.get("system_id")) == system]
+    totals = scoped.get("evaluated_frame_count_by_system")
+    if isinstance(totals, dict):
+        scoped["evaluated_frame_count_by_system"] = {
+            key: value for key, value in totals.items() if str(key) == system}
+    accounting = scoped.get("observation_accounting")
+    if isinstance(accounting, dict):
+        scoped["observation_accounting"] = dict(accounting)
+        totals = accounting.get("selected_physical_frame_count_by_system")
+        if isinstance(totals, dict):
+            scoped["observation_accounting"]["selected_physical_frame_count_by_system"] = {
+                key: value for key, value in totals.items() if str(key) == system}
+    candidates = scoped.get("candidate_dictionary")
+    if isinstance(candidates, list):
+        known = {row["bond_id"] for row in candidates}
+        if any(row.get("bond_id") not in known for row in scoped.get("occupancies", [])):
+            raise ValueError(f"hydrogen-bond occupancy references an undeclared bond in view {system}")
+    parent_frames = report.get("frame_bond_matrix")
+    view_frames = view.get("frame_bond_matrix")
+    if isinstance(parent_frames, list) and isinstance(view_frames, list):
+        def ledger(rows):
+            return Counter((str(row.get("replica_id", "")), str(row.get("segment_id", "")))
+                           for row in rows if str(row.get("system_id")) == system)
+        if ledger(parent_frames) != ledger(view_frames):
+            raise ValueError(f"hydrogen-bond view {system} omits or duplicates evaluated frames")
+    return scoped
+
+
 def occupancy_accounting(report):
     """Require a complete denominator, including frames with no observed bond.
 

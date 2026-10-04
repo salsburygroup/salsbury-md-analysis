@@ -26,6 +26,17 @@ PREVIOUS_SCHEMA = "salsbury-measured-resource-calibration-catalog-v2"
 SCHEMA = "salsbury-measured-resource-calibration-catalog-v3"
 TIMEOUT_SCHEMA = "salsbury-censored-timeout-resource-evidence-v1"
 MEMORY_REPLACEMENT_MIN_COMPLETE_MEASUREMENTS = 2
+TASK_SCOPED_MEMORY_MODULES = {"solvent_accessible_surface_area", "water_mediated_hydrogen_bond_networks"}
+
+
+def task_memory_scope_known(row):
+    """Aggregate Slurm MaxRSS is not a per-analysis or per-worker RSS peak."""
+    return row.get("measurement_scope") in {
+        "one fresh child process for one analysis command",
+        "isolated invocation; child CPU includes reaped descendants; RSS scope is explicit",
+    } and row.get("memory_measurement_scope") in {
+        "validated_simultaneous_peak", "sampled_process_tree_and_largest_child", "largest_child_only",
+    }
 
 
 def _sha256(path: Path) -> str:
@@ -81,6 +92,7 @@ def _entry_from_sidecar(path: Path) -> Dict[str, object]:
             "conceptual_candidate_frame_count", "spatial_neighbor_pair_count",
             "explicit_geometry_evaluation_count", "present_event_count",
             "maximum_spatial_endpoint_count_per_system",
+            "imwkmeans_workload", "memory_workload",
         )
         if evidence.get(key) is not None
     }
@@ -119,6 +131,11 @@ def _entry_from_timeout(path: Path) -> Dict[str, object]:
         or record.get("technical_status") != "timeout"
     ):
         raise ResourceCalibrationError(f"invalid censored timeout evidence: {path}")
+    if (record.get("execution_started") is False
+            or record.get("runtime_calibration_eligible") is False
+            or record.get("status") in {"not_started_deadline", "skipped_dependency", "failed"}
+            or record.get("wall_seconds") == 0):
+        raise ResourceCalibrationError(f"timeout evidence does not describe an executed timeout: {path}")
     module_id = str(record.get("module_id", "")).strip()
     if not module_id:
         raise ResourceCalibrationError(f"timeout evidence lacks module_id: {path}")
@@ -172,6 +189,7 @@ def _entry_from_timeout(path: Path) -> Dict[str, object]:
         "source_timeout_path": str(path),
         "source_timeout_sha256": _sha256(path),
         "resource_context": deepcopy(record.get("resource_context", {})),
+        "imwkmeans_workload": deepcopy(record.get("imwkmeans_workload", {})),
         "scientific_status": record.get("scientific_status", "not evaluated"),
     }
 
@@ -474,6 +492,8 @@ def load_resource_calibration_catalog(
             raise ResourceCalibrationError("resource calibration entry must be an object")
         if not isinstance(row.get("resource_context", {}), dict):
             raise ResourceCalibrationError("resource_context must be an object")
+        if row.get("execution_started") is False or row.get("runtime_calibration_eligible") is False:
+            raise ResourceCalibrationError("resource calibration cannot include an unexecuted or ineligible task")
         module_id = str(row.get("module_id", "")).strip()
         status = str(row.get("evidence_status", "complete_execution"))
         if status not in {"complete_execution", "right_censored_timeout"}:
@@ -605,12 +625,14 @@ def _aggregate_calibrations(grouped, catalog_path, catalog_sha256, validated_mod
             float(row["maximum_resident_memory_mib"])
             for row in complete_rows
             if row.get("maximum_resident_memory_mib") is not None
+            and (module_id not in TASK_SCOPED_MEMORY_MODULES or task_memory_scope_known(row))
         ]
         qualified_censored_memories = [
             float(row["maximum_resident_memory_mib"])
             for row in timeout_rows
             if row.get("maximum_resident_memory_mib") is not None
             and int(row.get("allocated_cpu_count", 0)) == 1
+            and (module_id not in TASK_SCOPED_MEMORY_MODULES or task_memory_scope_known(row))
         ]
         planning_memories = [
             *completed_memories, *qualified_censored_memories,
@@ -648,6 +670,7 @@ def _aggregate_calibrations(grouped, catalog_path, catalog_sha256, validated_mod
             sum(
                 row.get("memory_replacement_qualified") is True
                 and row.get("maximum_resident_memory_mib") is not None
+                and (module_id not in TASK_SCOPED_MEMORY_MODULES or task_memory_scope_known(row))
                 for row in complete_rows
             )
             >= MEMORY_REPLACEMENT_MIN_COMPLETE_MEASUREMENTS
@@ -802,7 +825,7 @@ def _aggregate_calibrations(grouped, catalog_path, catalog_sha256, validated_mod
     return result
 
 
-def qualify_calibration(calibration: Mapping, context: Mapping) -> tuple[dict | None, dict]:
+def qualify_calibration(calibration: Mapping, context: Mapping, *, memory_workload=None) -> tuple[dict | None, dict]:
     """Exclude known implementation/input/workload mismatches, retaining evidence.
 
     Unscoped historical evidence remains a conservative fallback. It cannot
@@ -813,11 +836,13 @@ def qualify_calibration(calibration: Mapping, context: Mapping) -> tuple[dict | 
         # An old aggregate cannot prove that its completed RSS measurements
         # match this implementation/input scope. Keep runtime/censor bounds,
         # but do not use it to reduce the task's memory baseline.
-        return {**calibration, "memory_replacement_qualified": False,
+        scoped = ({"maximum_resident_memory_mib": 0.0, "maximum_completed_resident_memory_mib": 0.0}
+                  if calibration["module_id"] in TASK_SCOPED_MEMORY_MODULES else {})
+        return {**calibration, **scoped, "memory_replacement_qualified": False,
                 "per_worker_memory_replacement_qualified": False,
                 "memory_replacement_policy": "retain_legacy_baseline_and_use_measurement_as_lower_bound"}, {
                     "status": "legacy_aggregate_scope_unknown", "target_context": dict(context)}
-    retained, excluded, unknown = [], [], []
+    retained, excluded, unknown, memory_rejections = [], [], [], []
     for row in rows:
         declared = row.get("resource_context", {})
         mismatched = [key for key, value in declared.items()
@@ -832,11 +857,37 @@ def qualify_calibration(calibration: Mapping, context: Mapping) -> tuple[dict | 
             if unresolved or any(key not in declared for key in context):
                 unknown.append(evidence_id)
                 kept["memory_replacement_qualified"] = False
+            if calibration["module_id"] in TASK_SCOPED_MEMORY_MODULES:
+                measured_work = row.get("memory_workload", {})
+                target = memory_workload or {}
+                # A lower request requires like-for-like implementation/settings
+                # and a measured workload at least as large along every axis.
+                reasons = []
+                if not task_memory_scope_known(row):
+                    reasons.append("aggregate_or_unknown_measurement_scope")
+                if row.get("memory_measurement_scope") != "validated_simultaneous_peak":
+                    reasons.append("rss_lower_bound_is_not_a_validated_peak")
+                if not target or not measured_work:
+                    reasons.append("missing_memory_workload")
+                for key, value in target.items():
+                    measured_value = measured_work.get(key)
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        matches = (isinstance(measured_value, (int, float)) and not isinstance(measured_value, bool)
+                                   and math.isfinite(measured_value) and measured_value >= value > 0)
+                    else:
+                        matches = value is not None and measured_value == value
+                    if not matches:
+                        reasons.append("uncovered_" + key)
+                if reasons:
+                    kept["memory_replacement_qualified"] = False
+                    memory_rejections.append({"evidence_sha256": evidence_id, "reasons": reasons})
             retained.append(kept)
     audit = {"status": "matched_with_legacy_fallback" if unknown else "context_matched",
              "target_context": dict(context), "retained_count": len(retained),
              "excluded_evidence": excluded, "scope_unknown_evidence_sha256": unknown,
              "excluded_evidence_preserved_in_catalog": True}
+    audit["memory_workload"] = memory_workload
+    audit["memory_replacement_rejections"] = memory_rejections
     if not retained:
         audit["status"] = "no_applicable_measurement_use_provisional_model"
         return None, audit

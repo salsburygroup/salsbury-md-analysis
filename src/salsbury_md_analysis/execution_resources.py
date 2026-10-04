@@ -98,6 +98,12 @@ def run_instrumented_project_command(
         "stderr_tail": completed.stderr[-4000:] if completed.stderr.strip() else None,
     }
     project = load_json(source) if source.is_file() else None
+    if (isinstance(project, dict) and report.get("module_id") in {
+            "solvent_accessible_surface_area", "water_mediated_hydrogen_bond_networks"}):
+        report["resource_context"] = {
+            "coordinate_source": "validated_coordinate_cache" if project.get("preprocessed_coordinate_source") else "raw_source",
+            "task_scope": "direct_trajectory_estimator",
+        }
     physical_count, observation_count = _observation_counts(report, project)
     report["planner_benchmark"] = {
         "technical_status": report.get("technical_status"),
@@ -647,6 +653,13 @@ def analysis_report_sidecar(
     if physical is None or observations is None:
         raise ExecutionResourceError("analysis report lacks exact frame/observation accounting")
     from .finding_picker import finding_sidecar_evidence
+    from .memory_workload import report_memory_workload
+    workload = {"memory_workload": report_memory_workload(report, physical)}
+    if (report.get("module_id") == "clustering_imwkmeans"
+            and all(key in report for key in ("settings", "fit_observation_count", "full_assignment_observation_count"))):
+        from .imwkmeans_resources import runtime_workload
+        workload["imwkmeans_workload"] = runtime_workload(report["settings"],
+            report["fit_observation_count"], report["full_assignment_observation_count"])
     return {
         "sidecar_schema": "salsbury-analysis-report-sidecar-v1",
         "technical_status": "complete",
@@ -659,6 +672,8 @@ def analysis_report_sidecar(
             "symmetry_expanded_observations": observations,
             **_analysis_workload_counts(report, physical, observations),
             "execution_resources": resources,
+            **workload,
+            "resource_context": report.get("resource_context", {}),
         },
         "finding_evidence": finding_sidecar_evidence(report, path),
     }

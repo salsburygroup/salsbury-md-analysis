@@ -902,9 +902,8 @@ def _hydrogen_bond_candidates(
         for view in system_views:
             if not isinstance(view, dict):
                 continue
-            scoped = dict(report)
-            scoped.pop("system_feature_spaces", None)
-            scoped.update(view)
+            from .hydrogen_bond_reporting import system_view
+            scoped = system_view(report, view)
             findings.extend(candidate for candidate in _hydrogen_bond_candidates(scoped, path)
                             if len(candidate.get("system_ids", [])) == 1)
         comparative = dict(report)
@@ -1045,10 +1044,8 @@ def _hydrogen_bond_chemical_summary(
         ]
         if len(selected) != 1:
             return set(), {}
-        scoped = dict(report)
-        scoped.pop("system_feature_spaces", None)
-        scoped.update(selected[0])
-        report = scoped
+        from .hydrogen_bond_reporting import system_view
+        report = system_view(report, selected[0])
     atoms = report.get("atom_dictionary")
     candidates = report.get("candidate_dictionary")
     occupancies = report.get("occupancies")
@@ -1705,7 +1702,7 @@ def _compact_cross_report(
                         for row in source if isinstance(row, dict)
                     ]
     if module_id == "hydrogen_bond_discovery":
-        from .hydrogen_bond_reporting import occupancy_accounting
+        from .hydrogen_bond_reporting import occupancy_accounting, system_view
         accounting = occupancy_accounting(report)
         if accounting["status"] == "complete":
             compact["evaluated_frame_count_by_system"] = accounting["totals"]
@@ -1724,6 +1721,13 @@ def _compact_cross_report(
                     {field: row.get(field) for field in fields}
                     for row in source if isinstance(row, dict)
                 ]
+        views = report.get("system_feature_spaces")
+        if isinstance(views, list):
+            compact["system_feature_spaces"] = [
+                dict(_compact_cross_report(system_view(report, view), module_id),
+                     system_id=view["system_id"])
+                for view in views if isinstance(view, dict)
+            ]
     return compact
 
 
@@ -1737,7 +1741,7 @@ def finding_sidecar_evidence(
     candidates = _report_candidates(path, report)
     quality_control = _quality_control_records(report, path)
     return {
-        "finding_evidence_schema": "salsbury-finding-evidence-v3",
+        "finding_evidence_schema": "salsbury-finding-evidence-v4",
         "module_id": module_id,
         "report_path": str(path),
         "candidates": candidates,
@@ -2961,9 +2965,10 @@ def prioritize_findings(
             if not isinstance(evidence, dict) or not isinstance(evidence.get("candidates"), list):
                 raise FindingPickerError(f"analysis sidecar lacks finding evidence: {sidecar_path}")
             if (sidecar.get("module_id") == "hydrogen_bond_discovery"
-                    and evidence.get("finding_evidence_schema") != "salsbury-finding-evidence-v3"):
+                    and evidence.get("finding_evidence_schema") != "salsbury-finding-evidence-v4"):
                 # Recompute reporting summaries only, leaving the source report
-                # and old sidecar immutable. Older compact rows lost zero events.
+                # and old sidecar immutable. Older summaries lost zero events
+                # or the native per-system feature spaces.
                 evidence = finding_sidecar_evidence(load_json(path), path)
             report_candidates = [
                 row for row in evidence["candidates"] if isinstance(row, dict)
