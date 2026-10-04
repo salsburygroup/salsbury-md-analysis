@@ -69,6 +69,44 @@ partition for one of those pooled estimators is rejected before launch. See
 
 ## Failures and preparation checks
 
+### Diagnosing slow planning
+
+Add `--diagnose-planning` to your existing `prepare-analysis` or
+`prepare-comparison` command. For example, keeping the same inputs and limits:
+
+```bash
+salsbury-md-analysis prepare-comparison systems.json \
+  --output my-plan --project-id my-study --config analysis-config.json \
+  --plan-only --diagnose-planning --planning-stack-interval-seconds 60
+```
+
+This writes a Python stack snapshot every 60 seconds (configurable, at least
+one second). Each invocation gets a separate directory beside the output:
+`my-plan.planning-diagnostics/<process-id>-<unique-suffix>/`. Its path is printed
+on standard error, leaving the command's normal JSON output unchanged.
+
+- `stack-traces.txt`: periodic Python call stacks, an exception traceback if one
+  escapes preparation, and a best-effort stack on SIGTERM where supported.
+- `events.jsonl`: preparation boundaries and core-first resource-fit trial stages.
+- `metadata.json`: Python/package versions, process ID, elapsed time, process CPU
+  time and exit status on normal completion. CPU time excludes child processes.
+
+The mode uses Python's standard-library watchdog, not per-call tracing. It
+creates no diagnostic files or watchdog when off, and needs no extra package.
+Snapshots briefly interrupt execution; shorter intervals and more threads cost
+more. Start with 60 seconds. The mode does not change sampling, resource limits,
+deadlines, pruning decisions or submission behavior, and does not recover a
+stopped planner. SIGTERM keeps its prior termination behavior; SIGKILL cannot
+be captured. An interrupted session may retain `status: running` in its metadata;
+that is not evidence of a live process or a feasible plan. A later diagnostic
+write failure warns on standard error without replacing the preparation result.
+
+Stacks contain Python file paths, function names and line numbers, not local
+variables or trajectory arrays. They do not profile native C/BLAS execution.
+Exception messages can include input paths; review the bundle before sharing it.
+
+### Worker receipts and preparation checks
+
 Each local or generated Slurm worker saves an atomic, attempt-scoped status
 receipt when it starts and ends. Failed workers are visible before independent
 workers finish. Receipts identify the prepared task contract; changing that
