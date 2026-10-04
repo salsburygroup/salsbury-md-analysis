@@ -69,6 +69,44 @@ partition for one of those pooled estimators is rejected before launch. See
 
 ## Failures and preparation checks
 
+### Diagnosing slow planning
+
+Add `--diagnose-planning` to your existing `prepare-analysis` or
+`prepare-comparison` command. For example, keeping the same inputs and limits:
+
+```bash
+salsbury-md-analysis prepare-comparison systems.json \
+  --output my-plan --project-id my-study --config analysis-config.json \
+  --plan-only --diagnose-planning --planning-stack-interval-seconds 60
+```
+
+This writes a Python stack snapshot every 60 seconds (configurable, at least
+one second). Each invocation gets a separate directory beside the output:
+`my-plan.planning-diagnostics/<process-id>-<unique-suffix>/`. Its path is printed
+on standard error, leaving the command's normal JSON output unchanged.
+
+- `stack-traces.txt`: periodic Python call stacks, an exception traceback if one
+  escapes preparation, and a best-effort stack on SIGTERM where supported.
+- `events.jsonl`: preparation boundaries and core-first resource-fit trial stages.
+- `metadata.json`: Python/package versions, process ID, elapsed time, process CPU
+  time and exit status on normal completion. CPU time excludes child processes.
+
+The mode uses Python's standard-library watchdog, not per-call tracing. It
+creates no diagnostic files or watchdog when off, and needs no extra package.
+Snapshots briefly interrupt execution; shorter intervals and more threads cost
+more. Start with 60 seconds. The mode does not change sampling, resource limits,
+deadlines, pruning decisions or submission behavior, and does not recover a
+stopped planner. SIGTERM keeps its prior termination behavior; SIGKILL cannot
+be captured. An interrupted session may retain `status: running` in its metadata;
+that is not evidence of a live process or a feasible plan. A later diagnostic
+write failure warns on standard error without replacing the preparation result.
+
+Stacks contain Python file paths, function names and line numbers, not local
+variables or trajectory arrays. They do not profile native C/BLAS execution.
+Exception messages can include input paths; review the bundle before sharing it.
+
+### Worker receipts and preparation checks
+
 Each local or generated Slurm worker saves an atomic, attempt-scoped status
 receipt when it starts and ends. Failed workers are visible before independent
 workers finish. Receipts identify the prepared task contract; changing that
@@ -285,6 +323,27 @@ when necessary, it removes optional configuration bundles and recalculates
 sampling, reporting costs and dependencies after each change. Tied bottlenecks
 can require several removals before wall time falls. Trajectory writing may be
 disabled separately; representative structures remain protected.
+
+After the full requested scope fails, reduction checks scientific-minimum
+schedules before spending time on extra sampling. It ranks optional removals using already-priced
+blocking work and scientific-priority weights, then rebuilds and checks one
+dependency-closed removal at a time, then refines the fitting reduced subset.
+Each check still enforces overall scientific floors, PCA/clustering
+source consistency, dependencies, memory padding and per-node limits. A parent
+PCA projection must supply its downstream fits; reducing it to its own smaller
+floor does not make those fits legitimately source-limited.
+If coupled integer streams make a protected-core minimum probe fail, the
+ordinary coupling search is still required before rejecting that core.
+
+Exact repeated calculations share a bounded in-memory cache within that
+preparation. Every task field and resolved planner argument is part of the key;
+changed sampling, costs, dependencies or resource limits require a fresh result.
+Returned plans are isolated copies. Nothing is reused from a previous invocation.
+The cache holds at most 32 results and 16 MiB of serialized content; Python heap
+usage is larger. A failed search is not cached. Diagnostic mode records hit and
+miss counts. Ranking is a heuristic: it avoids optimizing every alternative but
+does not prove the largest possible retained set. The final native preparation
+still validates the selected configuration and its emitted schedule.
 
 Review `analysis-config.resource-fit.json` and `resource-fit-report.json` for
 every disabled switch and whether the protected fallback was used;

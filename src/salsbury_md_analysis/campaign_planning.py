@@ -27,6 +27,7 @@ from .fixed_sampling import (
     schedule_document, verify_fixed_plan,
 )
 from .manifests import load_json, validate_project
+from .planning_reuse import reuse_planning_work
 from .memory_policy import (
     MemoryPolicyError,
     apply_memory_calibration_uncertainty,
@@ -2209,6 +2210,7 @@ def _consistent_comparison_clustering_tasks(
     return [row for row in tasks if str(row["task_id"]) not in skips], skips
 
 
+@reuse_planning_work
 def plan_and_apply_complete_campaign(
     *,
     root: Path,
@@ -2764,8 +2766,7 @@ def plan_and_apply_complete_campaign(
                 coordinate_cache_build_required
                 and cache_materialization == "planned_strided"
             ):
-                plan = plan_global_stride_projection_coupled_campaign_resource_budget(
-                    tasks,
+                global_kwargs = dict(
                     coordinate_cache_minimum_frames_per_replica=1,
                     coordinate_cache_full_scan_fraction=float(
                         execution.get("coordinate_cache_full_scan_fraction", 1.0)
@@ -2778,6 +2779,8 @@ def plan_and_apply_complete_campaign(
                     uniform_cache_stride=uniform_cache_stride,
                     **planning_kwargs,
                 )
+                plan = plan_global_stride_projection_coupled_campaign_resource_budget(
+                    tasks, **global_kwargs)
             else:
                 plan = plan_campaign_resource_budget(tasks, **planning_kwargs)
         except PlanningSearchError as exc:

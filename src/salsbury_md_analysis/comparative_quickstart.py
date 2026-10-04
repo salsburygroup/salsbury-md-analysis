@@ -18,6 +18,7 @@ from .analysis_config import (
     make_resource_fit_config,
 )
 from .atom_mapping import AtomMappingError, read_pdb_atoms
+from .planning_reuse import reuse_planning_work
 from .automatic_sampling import automatic_sampling_plan
 from .automatic_chemistry import (
     AutomaticChemistryError,
@@ -357,6 +358,7 @@ rm "$TMP" "$SUMMARY_TMP"
     return generated, stage_counts
 
 
+@reuse_planning_work
 def prepare_comparative_analysis(
     *,
     request_path: Path,

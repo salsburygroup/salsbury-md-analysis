@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
@@ -738,6 +739,39 @@ def _campaign_plan_terminal_summary(
         ),
         "configuration_patch": recommendation.get("configuration_patch", {}),
     }
+
+
+def _planning_stack_interval(value):
+    try:
+        interval = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("planning stack interval must be a number") from exc
+    if not math.isfinite(interval) or interval < 1:
+        raise argparse.ArgumentTypeError("planning stack interval must be finite and at least 1 second")
+    return interval
+
+
+def _add_planning_diagnostics_arguments(parser):
+    parser.add_argument("--diagnose-planning", action="store_true",
+                        help="Write periodic Python stack traces and preparation timing beside the output; does not change the plan or run science.")
+    parser.add_argument("--planning-stack-interval-seconds", type=_planning_stack_interval, default=60.0,
+                        help="Stack snapshot interval for --diagnose-planning (default: 60 seconds; minimum: 1).")
+
+
+def _run_preparation_command(args, operation, *parameters):
+    if not args.diagnose_planning:
+        return operation(*parameters)
+    from .planning_diagnostics import PlanningDiagnosticsSetupError, planning_diagnostics
+    try:
+        with planning_diagnostics(args.output, command=args.command,
+                                  interval_seconds=args.planning_stack_interval_seconds) as diagnostics:
+            code = operation(*parameters)
+            diagnostics.exit_code = code
+            return code
+    except PlanningDiagnosticsSetupError as exc:
+        print(json.dumps({"technical_status": "failed", "issues": [{
+            "severity": "error", "code": "PLANNING_DIAGNOSTICS_FAILED", "message": str(exc)}]}))
+        return 2
 
 
 def _prepare_analysis_command(
@@ -1680,6 +1714,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Replica DCD path; repeat once per replica.",
     )
     prepare_parser.add_argument("--output", type=Path, required=True)
+    _add_planning_diagnostics_arguments(prepare_parser)
     prepare_parser.add_argument("--project-id", required=True)
     prepare_parser.add_argument(
         "--frame-interval-ps", type=float, required=True,
@@ -1911,6 +1946,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     comparison_fit_group = comparison_parser.add_mutually_exclusive_group()
+    _add_planning_diagnostics_arguments(comparison_parser)
     comparison_fit_group.add_argument(
         "--auto-disable-to-fit-memory", action="store_true",
         help=(
@@ -2334,7 +2370,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.time_safety_factor,
         )
     if args.command == "prepare-analysis":
-        return _prepare_analysis_command(
+        return _run_preparation_command(args, _prepare_analysis_command,
             args.pdb,
             args.psf,
             args.trajectory,
@@ -2355,7 +2391,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.uniform_cache_stride,
         )
     if args.command == "prepare-comparison":
-        return _prepare_comparison_command(
+        return _run_preparation_command(args, _prepare_comparison_command,
             args.request,
             args.output,
             args.project_id,

@@ -6,6 +6,8 @@ import tempfile
 
 from .analysis_config import make_resource_fit_config
 from .manifests import load_json
+from .planning_diagnostics import planning_event
+from .planning_reuse import reuse_planning_work
 
 
 def _write(path, value):
@@ -30,6 +32,7 @@ def _disabled_switches(requested, selected):
     return sorted(switches)
 
 
+@reuse_planning_work
 def prepare_core_first_resource_fit(*, prepare, common, destination: Path,
                                     target_wall_hours, config_path):
     """Validate the native core, then full/reduced scopes, before materializing.
@@ -56,16 +59,20 @@ def prepare_core_first_resource_fit(*, prepare, common, destination: Path,
 
         def trial(name, *, path=config_path, core=False, reductions=True):
             output = root / name
+            planning_event("resource_fit_trial_started", trial=name)
             try:
                 prepare(**{**common, "protected_core_only": core or common.get("protected_core_only", False)},
                         output_directory=output, target_wall_hours=target_wall_hours,
                         config_path=path, _recommend_reductions=reductions)
             except QuickstartPlanningError as exc:
+                planning_event("resource_fit_trial_finished", trial=name,
+                               status="search_failed" if exc.plan.get("planning_search_failed") else "rejected")
                 evidence[name] = {"status": "search_failed" if exc.plan.get("planning_search_failed") else "rejected",
                                   "message": str(exc), "config": exc.analysis_config, "plan": exc.plan}
                 preserve()
                 return exc.analysis_config, exc.plan, exc
             except QuickstartError as exc:
+                planning_event("resource_fit_trial_finished", trial=name, status="preparation_error")
                 evidence[name] = {"status": "invalid_input_or_preparation_error", "message": str(exc)}
                 preserve()
                 raise
@@ -76,6 +83,7 @@ def prepare_core_first_resource_fit(*, prepare, common, destination: Path,
             evidence[name] = {"status": "validated", "config": config, "plan": plan,
                               "execution_adapter": load_json(output / "execution-adapter.json")}
             preserve()
+            planning_event("resource_fit_trial_finished", trial=name, status="validated")
             return config, plan, None
 
         raw_config = load_json(config_path) if config_path is not None else {}
@@ -128,6 +136,7 @@ def prepare_core_first_resource_fit(*, prepare, common, destination: Path,
         # Native prepare requires an empty directory. Preserve all trial
         # receipts after materialization, even if that final step fails.
         report = None
+        planning_event("resource_fit_materialization_started")
         try:
             report = prepare(**common, output_directory=destination,
                              target_wall_hours=None, config_path=active_path,
@@ -136,6 +145,7 @@ def prepare_core_first_resource_fit(*, prepare, common, destination: Path,
             preserve()
             preserve(destination / "resource-fit-evidence")
         final_plan = load_json(destination / "campaign-resource-plan.json")
+        planning_event("resource_fit_materialization_finished", status=final_plan.get("feasibility_status"))
         fit_report = {
             "report_schema": "salsbury-resource-fit-report-v1",
             "technical_status": "complete",
