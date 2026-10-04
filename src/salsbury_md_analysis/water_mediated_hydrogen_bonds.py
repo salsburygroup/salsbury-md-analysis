@@ -694,6 +694,7 @@ def _water_mediated_hydrogen_bond_networks_project_serial(
             chemistry_reports.append({
                 "system_id": system_id, "replica_id": replica_id, **chemistry_report,
                 "water_molecule_count": len(waters),
+                "source_atom_count": len(atoms),
             })
             provisional = int(
                 chemistry_report["chemistry_confidence_atom_counts"].get("provisional", 0)

@@ -486,6 +486,7 @@ def _solvent_accessible_surface_area_project_serial(
                 "replica_id": replica_id,
                 "topology_path": str(topology_path),
                 "surface_atom_count": len(surface_atoms),
+                "source_atom_count": len(atoms),
                 "occluder_atom_count": len(occluder_atoms),
                 "evaluated_frame_count": len(total_timeseries),
                 "total_sasa_summary_angstrom2": sample_summary(

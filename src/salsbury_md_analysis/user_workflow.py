@@ -274,7 +274,7 @@ def workflow_status(root):
         row = states[task["task_id"]]
         row["artifact_state"] = row["state"]
         if not complete:
-            if attempt.get("status") in {"failed", "timed_out"}:
+            if attempt.get("status") in {"failed", "timed_out", "not_started_deadline", "skipped_dependency"}:
                 row["state"] = attempt["status"]
             elif not attempt and all(report_owners[str(name)] == 1 for name in names):
                 evidence = temporary_failure_evidence(root, task)
@@ -300,7 +300,7 @@ def workflow_status(root):
                 row = states[task_id]
                 row.setdefault("slurm_jobs", []).append(job)
                 row["allocation_state"] = job["state"]
-                if row["state"] in {"complete", "failed", "timed_out", "invalid_output"}:
+                if row["state"] in {"complete", "failed", "timed_out", "invalid_output", "not_started_deadline", "skipped_dependency"}:
                     continue
                 row["state"] = "running" if job["state"] in {"RUNNING", "COMPLETING"} else "queued"
     rows = list(states.values())

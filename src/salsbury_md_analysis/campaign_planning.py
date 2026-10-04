@@ -195,10 +195,22 @@ def _apply_measured_resource_calibrations(
     for task in tasks:
         module_id = str(task.get("module_id", ""))
         calibration = measured.get(module_id)
+        if module_id == "clustering_imwkmeans" and task.get("imwkmeans_settings"):
+            from .imwkmeans_resources import runtime_model
+            model = runtime_model(task["imwkmeans_settings"],
+                                  calibration.get("measurement_rows", []) if calibration else ())
+            task["imwkmeans_runtime_model"] = model
+            task["cpu_seconds_per_physical_frame"] = (model["seconds_per_work_unit"]
+                * model["work_units_per_fit_observation"]
+                * int(task["member_observation_multiplier"]) * time_safety_factor)
+            task["fixed_cpu_hours"] = model["fixed_overhead_seconds"] * time_safety_factor / 3600
+            task["calibration_status"] = model["status"]
+            continue
         if calibration is None or task.get("measured_calibration_eligible", True) is False:
             continue
-        if task.get("resource_context"):
-            calibration, audit = qualify_calibration(calibration, task["resource_context"])
+        if task.get("resource_context") or module_id in {"solvent_accessible_surface_area", "water_mediated_hydrogen_bond_networks"}:
+            calibration, audit = qualify_calibration({"module_id": module_id, **calibration}, task.get("resource_context", {}),
+                                                    memory_workload=task.get("memory_workload"))
             task["calibration_applicability"] = audit
             if calibration is None:
                 task["baseline_calibration_status"] = task.get("calibration_status")
@@ -206,6 +218,10 @@ def _apply_measured_resource_calibrations(
                 continue
         rate_multiplier = task.get("measured_cpu_rate_multiplier", 1.0)
         memory_multiplier = task.get("measured_memory_multiplier", 1.0)
+        if module_id in {"solvent_accessible_surface_area", "water_mediated_hydrogen_bond_networks"}:
+            # Workload coverage is checked explicitly; do not shrink a measured
+            # task peak again with the generic atom-count scaling heuristic.
+            memory_multiplier = 1.0
         for value, label in (
             (rate_multiplier, "measured_cpu_rate_multiplier"),
             (memory_multiplier, "measured_memory_multiplier"),
@@ -1531,9 +1547,9 @@ def _view_tasks(
             **method_specific,
         }
         if module_id == "clustering_imwkmeans":
+            from .imwkmeans_resources import runtime_model
             definition = project["definitions"][module_id]
-            dimensions = len(definition.get("component_indices", [1, 2, 3]))
-            largest_k = max(definition["k_values"])
+            work_model = runtime_model(definition)
             # Provisional assignment/serialization allowance, separate from
             # the existing fit-grid proxy. No new measured rate is claimed.
             task.update({
@@ -1542,10 +1558,15 @@ def _view_tasks(
                 "balance_group": f"{pca_task['balance_group']}:imwkmeans_fit",
                 "projection_source_task_id": pca_task["task_id"],
                 "full_assignment_seconds_per_observation": (
-                    (0.002 + 3.0 * dimensions * largest_k / 1_000_000) * time_safety_factor),
+                    work_model["assignment_seconds_per_observation"] * time_safety_factor),
                 "assignment_cost_basis": "provisional_linear_assignment_and_record_serialization_v1",
                 "measured_calibration_eligible": False,
                 "calibration_status": "provisional_separate_fit_and_assignment",
+                "imwkmeans_settings": deepcopy(definition),
+                "imwkmeans_runtime_model": work_model,
+                "calibration_id": "imwkmeans-workload-grid-v1",
+                "cpu_seconds_per_physical_frame": work_model["seconds_per_work_unit"] * work_model["work_units_per_fit_observation"] * multiplier * time_safety_factor,
+                "fixed_cpu_hours": work_model["fixed_overhead_seconds"] * time_safety_factor / 3600,
             })
         tasks.append(task)
     return tasks
@@ -2651,6 +2672,18 @@ def plan_and_apply_complete_campaign(
                      or task.get("module_id") in cached_modules) else "raw_source"),
                 "task_scope": str(task.get("task_scope", "unspecified")),
             }
+            if task.get("module_id") in {"solvent_accessible_surface_area", "water_mediated_hydrogen_bond_networks"}:
+                from .memory_workload import memory_workload
+                definition = current_base.get("definitions", {}).get(task["module_id"], {})
+                task["memory_workload"] = memory_workload(
+                    task["module_id"], definition,
+                    maximum_atom_count=int(dimensions["maximum_atom_count"]),
+                    selected_frames=sum(task["source_frames_per_replica"]),
+                    workers=int(task.get("parallel_worker_count") or task["effective_cpu_cap"]))
+                # Use the full supplied frame ceiling before sampling is
+                # selected. This cannot understate a later chosen workload.
+                task["memory_workload_basis"] = "source_frame_ceiling_before_sampling"
+                task["measured_memory_observation_scaling_eligible"] = False
         _apply_measured_resource_calibrations(
             built, measured_calibrations,
             time_safety_factor=time_safety_factor,

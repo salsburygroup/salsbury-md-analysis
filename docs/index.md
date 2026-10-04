@@ -60,6 +60,7 @@ they still agree with the source.
 - [Methods and citations](METHODS_AND_CITATIONS.md)
 - [Prioritized findings and complete module accounting](FINDING_PICKER.md)
 - [Automatic and pooled frame sampling](FRAME_SAMPLING.md)
+- [Runtime, memory and resource waits](RESOURCE_MODEL_QUALIFICATION.md)
 - [Comparative states, ions, and hydrogen bonds](COMPARATIVE_STATES_INTERACTIONS.md)
 - [RDF and native-contact observables](RDF_NATIVE_CONTACTS.md)
 - [Nucleic-acid and bound-ion geometry](NUCLEIC_ACID_ION_GEOMETRY.md)
