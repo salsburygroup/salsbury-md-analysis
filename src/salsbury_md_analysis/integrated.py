@@ -221,6 +221,7 @@ def integrated_comparison_results(root: Path) -> Dict[str, object]:
         "analysis_config_sha256": sha256_file(config_path),
         "module_coverage_path": str(coverage_path),
         "module_coverage_sha256": sha256_file(coverage_path),
+        "hydrogen_bond_accounting_version": "pooled_frames_v1",
         "comparison_policy": comparison_policy,
         "comparison_system_ids": [str(value) for value in comparison_system_ids],
         "integration_contract": {

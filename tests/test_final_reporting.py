@@ -885,6 +885,7 @@ class FinalReportingTests(unittest.TestCase):
                 )
                 hbond_path.parent.mkdir(parents=True)
                 hbond_path.write_text(json.dumps({
+                    "evaluated_frame_count_by_system": {system_id: 100},
                     "module_id": "hydrogen_bond_discovery",
                     "technical_status": "complete",
                     "atom_dictionary": [
@@ -1073,6 +1074,7 @@ class FinalReportingTests(unittest.TestCase):
                     "hydrogen_atom_index": 2, "acceptor_atom_index": 1,
                 }],
                 "atom_dictionary": [atom(0, "N2"), atom(1, "O6")],
+                "evaluated_frame_count_by_system": {"control": 100, "variant": 100},
                 "occupancies": [
                     {
                         "system_id": system_id, "replica_id": "replica-1",

@@ -180,8 +180,9 @@ def write_finding_reader_reports(root: Path, findings: dict, context=None):
         ordered_systems = list(context.get("systems", {})) + sorted(systems - set(context.get("systems", {})))
         for sid in ordered_systems:
             definition = context.get("systems", {}).get(sid, {}).get("description", "")
-            intro.append(f'<tr><td>{escape(labels[sid])}</td><td>{escape(definition)}</td></tr>')
-            md.append(f"| {_md(labels[sid])} | {_md(definition)} |")
+            display_definition = definition or "Composition not supplied in report context."
+            intro.append(f'<tr><td>{escape(labels[sid])}</td><td>{escape(display_definition)}</td></tr>')
+            md.append(f"| {_md(labels[sid])} | {_md(display_definition)} |")
             if not definition:
                 gaps.append({"system_id": sid, "issue": "system composition/condition was not supplied"})
         intro.append('</table></section>')

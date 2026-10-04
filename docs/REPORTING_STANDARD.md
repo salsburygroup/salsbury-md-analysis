@@ -1,5 +1,37 @@
 # Scientific reporting standard
 
+## Segments, denominators and preserved evidence
+
+Discovered hydrogen-bond occupancies pool present-frame counts over all
+evaluated frames for each system. Each segment and replica retains its identity;
+zero-event segments still contribute to the denominator. Compact finding
+summaries retain these counts. Sparse event rows without a complete denominator
+produce a visible coverage warning instead of an inferred population.
+Chemistry-matched summaries of several donor hydrogens report the maximum
+individual-hydrogen occupancy, not an inferred union of overlapping events.
+
+Older hydrogen-bond finding sidecars are recalculated from the unchanged source
+report when read. An integrated comparison containing old occupancy summaries
+requires a new integration/reporting output; the toolkit does not overwrite or
+accept those summaries silently. This does not require recomputing trajectories.
+
+Scalar histograms use all selected finite observations. Empty segments contribute
+zero observations and remain in the coverage table. Residence runs, when
+requested, stay within individual nonempty segments. Distribution-only callers
+can disable residence evaluation independently; changing the campaign's kinetic
+policy is unnecessary. Scott's rule and the existing observation checks are
+unchanged.
+
+Presentation paths distinguish systems and conformational views. Duplicate paths
+are rejected even if their file hashes match; existing figure and table files are
+not overwritten. Equal-time coskewness tensors are exported as component-labeled
+slices and CSV tables on a shared color scale. Unavailable distributions receive
+their recorded reasons, never a fabricated histogram.
+
+Completion checks reuse file hashes only within one validation operation.
+File-identity changes trigger a new read; report contracts and provenance are
+still checked. A reporting repair is not scientific acceptance.
+
 The machine-readable policy is
 [`reporting/reporting_standard_v1.json`](../reporting/reporting_standard_v1.json).
 It is a presentation contract, not a claim that a displayed difference is
