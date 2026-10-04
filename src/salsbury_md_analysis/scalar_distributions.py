@@ -119,19 +119,22 @@ def analyze_scalar_distribution(
     maximum_bins: int = 100,
     retain_assignments: bool = True,
     retain_residence_runs: bool = True,
+    evaluate_residence: bool = True,
 ) -> Dict[str, object]:
     """Return histogram and segment-safe residence evidence.
 
     Assignment and individual-run rows are retained by default.  High-
     dimensional callers that already retain the raw time series may disable
     either duplicated table while preserving exact histograms and aggregated
-    boundary-censored residence summaries.
+    boundary-censored residence summaries. Set evaluate_residence=False for
+    distribution-only callers. Empty segments remain in segment_coverage and
+    never connect the residence runs on either side.
     """
 
     if not isinstance(retain_assignments, bool) or not isinstance(
         retain_residence_runs, bool
-    ):
-        raise ScalarDistributionError("retention controls must be boolean")
+    ) or not isinstance(evaluate_residence, bool):
+        raise ScalarDistributionError("retention and evaluation controls must be boolean")
 
     def records_from(source):
         return iter(source() if callable(source) else source)
@@ -244,8 +247,9 @@ def analyze_scalar_distribution(
         return max(0, min(selected_bin_count - 1, int((value - lower) / width)))
 
     counts = [0] * selected_bin_count
-    static = static_ensemble_enabled()
+    static = static_ensemble_enabled() or not evaluate_residence
     retain_residence_runs = retain_residence_runs and not static
+    segment_coverage = []
     assignments = []
     runs = []
     run_lengths_by_bin = [[] for _ in range(selected_bin_count)]
@@ -256,6 +260,7 @@ def analyze_scalar_distribution(
         run_last_frame = None
         run_length = 0
         run_ordinal = 0
+        selected_count = 0
 
         def finish_run(*, right_censored: bool) -> None:
             nonlocal run_ordinal
@@ -280,6 +285,7 @@ def analyze_scalar_distribution(
         for row in records_from(record_source):
             value = float(row["value"])
             bin_id = assign(value)
+            selected_count += 1
             counts[bin_id] += 1
             if retain_assignments:
                 assignments.append({**identity, **row, "bin_id": bin_id + 1})
@@ -298,12 +304,14 @@ def analyze_scalar_distribution(
                 run_start_frame = frame_index
                 run_length = 1
             run_last_frame = frame_index
-        if static:
+        segment_coverage.append({
+            **identity, "observation_count": selected_count,
+            "residence_status": ("not_requested" if static else
+                                 "complete" if selected_count else "not_estimable"),
+            "reason": None if selected_count else "no selected observations in this segment",
+        })
+        if static or run_bin is None:
             continue
-        if run_bin is None:
-            raise ScalarDistributionError(
-                "scalar distribution contains an empty trajectory segment"
-            )
         finish_run(right_censored=True)
     histogram = [
         {
@@ -345,7 +353,8 @@ def analyze_scalar_distribution(
         "residence_runs": runs if retain_residence_runs else None,
         "residence_runs_retained": retain_residence_runs,
         "residence_by_bin": residence,
-        "temporal_output_policy": temporal_output_policy(),
+        "segment_coverage": segment_coverage,
+        "temporal_output_policy": (temporal_output_policy() if evaluate_residence else "not requested: distribution only"),
     }
 
 

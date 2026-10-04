@@ -286,6 +286,7 @@ def _distribution_reports(
                 maximum_bins=int(settings["maximum_histogram_bins"]),
                 retain_assignments=False,
                 retain_residence_runs=False,
+                evaluate_residence=False,
             )
             reports.append({"metric_id": metric_id, "status": "complete", **report})
         except ScalarDistributionError as exc:

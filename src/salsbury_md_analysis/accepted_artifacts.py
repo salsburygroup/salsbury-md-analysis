@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Mapping
-from .manifests import sha256_file
+from .manifests import content_hash_session, sha256_file
 
 
 class ArtifactValidationError(ValueError):
@@ -38,6 +38,7 @@ def _complete(payload, label):
         raise ArtifactValidationError(f"{label} contains technical errors")
 
 
+@content_hash_session()
 def validate_complete_report(path: Path, *, expected_module=None, expected_project=None,
                              require_sidecar=False, verify_inputs=False, _seen=None):
     """Validate immutable bytes; never repair or overwrite failed evidence."""
@@ -169,6 +170,7 @@ def validate_complete_report(path: Path, *, expected_module=None, expected_proje
     return report
 
 
+@content_hash_session()
 def reports_complete(root: Path, names, task: Mapping[str, object] | None = None) -> bool:
     root = Path(root).resolve(strict=True)
     task = task or {}

@@ -197,6 +197,7 @@ def validate_manifest(manifest: Mapping[str, object]) -> None:
     if not isinstance(rows, list):
         raise PresentationArtifactError("presentation manifest artifacts must be an array")
     seen = set()
+    seen_paths = set()
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise PresentationArtifactError(f"artifact {index} must be an object")
@@ -211,6 +212,9 @@ def validate_manifest(manifest: Mapping[str, object]) -> None:
         path = Path(str(row.get("relative_path", "")))
         if path.is_absolute() or ".." in path.parts or not path.parts:
             raise PresentationArtifactError(f"artifact {artifact_id} has unsafe path")
+        if str(path) in seen_paths:
+            raise PresentationArtifactError(f"duplicate artifact path: {path}")
+        seen_paths.add(str(path))
         sources = row.get("source_report_paths")
         hashes = row.get("source_report_sha256")
         if (
@@ -296,7 +300,7 @@ def human_label(value: object) -> str:
 
 def _write_csv(path: Path, fieldnames: Sequence[str], rows: Sequence[Mapping[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as handle:
+    with path.open("x", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
@@ -318,7 +322,8 @@ def _svg_document(width: int, height: int, body: str, title: str) -> str:
 
 def _write_svg(path: Path, width: int, height: int, body: str, title: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_svg_document(width, height, body, title), encoding="utf-8")
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(_svg_document(width, height, body, title))
 
 
 def _state_population_rows(comparison: object) -> List[Dict[str, object]]:
@@ -1570,7 +1575,7 @@ def _distribution_report_artifacts(
         _register_pair(
             output_root, path, artifacts, module_id=module_id,
             purpose=f"distribution_{metric}", title=title,
-            directory=output_root / _slug(module_id) / "distributions",
+            directory=_view_artifact_directory(output_root, module_id, context) / "distributions",
             rows=histogram,
             fieldnames=sorted({str(key) for row in histogram for key in row}),
             svg=_line_svg(
@@ -1664,6 +1669,31 @@ def _occupancy_artifacts(
     row_key: str, id_keys: Sequence[str], artifacts: List[Dict[str, object]],
 ) -> None:
     source_rows = [row for row in report.get(row_key, []) if isinstance(row, dict)]
+    discovery = module_id == "hydrogen_bond_discovery"
+    if discovery:
+        from .hydrogen_bond_reporting import occupancy_accounting
+        accounting = occupancy_accounting(report)
+        pooled = []
+        bonds = sorted({str(row["bond_id"]) for row in report.get("candidate_dictionary", [])
+                        if isinstance(row, dict) and isinstance(row.get("bond_id"), str)})
+        for system, denominator in sorted(accounting["totals"].items()):
+            if not denominator:
+                continue
+            for bond in bonds:
+                count = accounting["counts"].get(system, {}).get(bond, 0)
+                pooled.append(dict(feature=f"{system} · {bond}", system_id=system,
+                    bond_id=bond, present_frame_count=count, evaluated_frame_count=denominator,
+                    occupancy_fraction=count / denominator))
+        if pooled:
+            pooled.sort(key=lambda row: row["occupancy_fraction"], reverse=True)
+            context = _report_context(path, report)
+            title = "Discovered hydrogen bonds: pooled frame occupancies"
+            _register_pair(output_root, path, artifacts, module_id=module_id,
+                purpose="pooled_frame_occupancy", title=title,
+                directory=_view_artifact_directory(output_root, module_id, context) / "occupancies",
+                rows=pooled, fieldnames=tuple(pooled[0]),
+                svg=_bar_svg(pooled, title, "feature", "occupancy_fraction", "Evaluated-frame fraction", maximum_rows=50),
+                context={**context, "denominator_policy": "all_evaluated_frames_including_zero_events"})
     if not source_rows:
         return
     rows = []
@@ -1671,19 +1701,21 @@ def _occupancy_artifacts(
         value = _finite(row.get("occupancy_fraction", row.get("bound_fraction", row.get("inner_shell_occupancy"))))
         if value is None:
             continue
-        label = " · ".join(str(row.get(key, "")) for key in id_keys if row.get(key) is not None)
+        label_keys = (*id_keys, "segment_id") if discovery else id_keys
+        label = " · ".join(str(row.get(key, "")) for key in label_keys if row.get(key) is not None)
         rows.append({"feature": label, "occupancy_fraction": value, **row})
     rows.sort(key=lambda row: float(row["occupancy_fraction"]), reverse=True)
     if not rows:
         return
-    title = f"{human_label(module_id)} occupancies"
+    title = f"{human_label(module_id)} {'segment-local ' if discovery else ''}occupancies"
     _register_pair(
         output_root, path, artifacts, module_id=module_id,
         purpose=f"{row_key}_occupancy", title=title,
-        directory=output_root / _slug(module_id) / "occupancies",
+        directory=_view_artifact_directory(output_root, module_id, _report_context(path, report)) / "occupancies",
         rows=rows, fieldnames=sorted({str(key) for row in rows for key in row if not isinstance(row[key], (dict, list))}),
         svg=_bar_svg(rows, title, "feature", "occupancy_fraction", "Frame fraction", maximum_rows=50),
         context=_report_context(path, report),
+        primary_human_output=not discovery,
     )
 
 
@@ -1782,7 +1814,9 @@ def _matrix_report_artifacts(
     sources, hashes = _source(path)
     for name, matrix, matrix_context in candidates:
         title = f"{human_label(module_id)}: {human_label(name)}"
-        figure_path = output_root / _slug(module_id) / _slug(matrix_context.get("system_id", matrix_context.get("view_id", "all"))) / f"{_slug(name)}.svg"
+        figure_path = (_view_artifact_directory(output_root, module_id, matrix_context)
+                       / _slug(matrix_context.get("analysis_scope", "unspecified"))
+                       / f"{_slug(name)}.svg")
         values = [_finite(value) for row in matrix if isinstance(row, list) for value in row]
         difference = any(value is not None and value < 0 for value in values)
         width, height, body = _matrix_svg(matrix, title, human_label(name), difference=difference)
@@ -2302,6 +2336,11 @@ def generate_presentation_artifacts(
     report_records.sort(
         key=lambda item: (item[2] == "integrated_comparison", str(item[0]))
     )
+    from .presentation_tensors import distribution_abstentions, tensor_values, coskewness_artifacts
+    shared_coskewness_bound = max(
+        (abs(value) for _, doc, module in report_records
+         if module == "information_dynamics" and doc.get("technical_status") == "complete"
+         for value in tensor_values(doc)), default=1.0)
     for path, report, module_id in report_records:
         if report.get("technical_status") != "complete":
             continue
@@ -2351,6 +2390,8 @@ def generate_presentation_artifacts(
             _distribution_report_artifacts(
                 destination, path, report, module_id, artifacts
             )
+            unavailable = distribution_abstentions(
+                destination, path, report, module_id, artifacts) or unavailable
         elif module_id == "hydrogen_bonds":
             _occupancy_artifacts(
                 destination, path, report, module_id, "occupancies",
@@ -2383,6 +2424,8 @@ def generate_presentation_artifacts(
             _matrix_report_artifacts(
                 destination, path, report, module_id, artifacts
             )
+            if module_id == "information_dynamics":
+                coskewness_artifacts(destination, path, report, artifacts, shared_coskewness_bound)
         elif module_id == "correlation_networks":
             _network_artifacts(destination, path, report, artifacts)
         elif module_id == "markov_state_models":

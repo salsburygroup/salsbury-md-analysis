@@ -905,7 +905,8 @@ def _hydrogen_bond_candidates(
             scoped = dict(report)
             scoped.pop("system_feature_spaces", None)
             scoped.update(view)
-            findings.extend(_hydrogen_bond_candidates(scoped, path))
+            findings.extend(candidate for candidate in _hydrogen_bond_candidates(scoped, path)
+                            if len(candidate.get("system_ids", [])) == 1)
         comparative = dict(report)
         comparative.pop("system_feature_spaces", None)
         findings.extend(
@@ -935,47 +936,10 @@ def _hydrogen_bond_candidates(
     counts: Dict[str, Dict[str, int]] = {}
     totals: Dict[str, int] = {}
     if isinstance(occupancy_rows, list):
-        if isinstance(frame_rows, list):
-            for row in frame_rows:
-                if isinstance(row, dict) and isinstance(row.get("system_id"), str):
-                    system_id = str(row["system_id"])
-                    totals[system_id] = totals.get(system_id, 0) + 1
-        else:
-            replica_totals: Dict[tuple[str, str], int] = {}
-            for row in occupancy_rows:
-                if not isinstance(row, dict):
-                    continue
-                system_id = row.get("system_id")
-                replica_id = row.get("replica_id")
-                evaluated = row.get("evaluated_frame_count")
-                if (
-                    not isinstance(system_id, str)
-                    or not isinstance(replica_id, str)
-                    or isinstance(evaluated, bool)
-                    or not isinstance(evaluated, int)
-                    or evaluated < 1
-                ):
-                    continue
-                key = (system_id, replica_id)
-                replica_totals[key] = max(replica_totals.get(key, 0), evaluated)
-            for (system_id, _), evaluated in replica_totals.items():
-                totals[system_id] = totals.get(system_id, 0) + evaluated
-        for row in occupancy_rows:
-            if not isinstance(row, dict):
-                continue
-            system_id = str(row.get("system_id"))
-            bond_id = row.get("bond_id")
-            evaluated = row.get("evaluated_frame_count")
-            present = row.get("present_frame_count")
-            if (
-                not isinstance(bond_id, str)
-                or isinstance(evaluated, bool) or not isinstance(evaluated, int)
-                or isinstance(present, bool) or not isinstance(present, int)
-                or evaluated < 1 or present < 0 or present > evaluated
-            ):
-                continue
-            system_counts = counts.setdefault(system_id, {})
-            system_counts[bond_id] = system_counts.get(bond_id, 0) + present
+        from .hydrogen_bond_reporting import occupancy_accounting
+        accounting = occupancy_accounting(report)
+        totals = accounting["totals"]
+        counts = accounting["counts"]
     else:
         for row in frame_rows or []:
             if not isinstance(row, dict) or not isinstance(row.get("present_bond_ids"), list):
@@ -1108,27 +1072,17 @@ def _hydrogen_bond_chemical_summary(
         tuple[tuple[str, str, int, str, str], tuple[str, str, int, str, str]],
         List[float],
     ] = {}
-    for row in occupancies:
-        if not isinstance(row, dict) or str(row.get("system_id")) != system_id:
-            continue
-        key = endpoints_by_bond.get(str(row.get("bond_id")))
-        if key is None:
-            continue
-        occupancy = _numeric(row.get("occupancy_fraction"))
-        if occupancy is None:
-            evaluated = row.get("evaluated_frame_count")
-            present = row.get("present_frame_count")
-            if (
-                isinstance(evaluated, int) and not isinstance(evaluated, bool)
-                and evaluated > 0 and isinstance(present, int)
-                and not isinstance(present, bool)
-            ):
-                occupancy = present / evaluated
-        if occupancy is not None:
-            values.setdefault(key, []).append(occupancy)
-    # Equivalent donor hydrogens map to one donor-heavy/acceptor-heavy event.
-    # The maximum occupancy is a conservative bounded summary when only compact
-    # per-hydrogen occupancy evidence, rather than the frame matrix, is present.
+    from .hydrogen_bond_reporting import occupancy_accounting
+    accounting = occupancy_accounting(report)
+    total = accounting["totals"].get(system_id, 0)
+    if not total:
+        return set(), {}
+    for bond, count in accounting["counts"].get(system_id, {}).items():
+        key = endpoints_by_bond.get(bond)
+        if key is not None:
+            values.setdefault(key, []).append(count / total)
+    # This is the largest individual hydrogen occupancy, not the union of
+    # several hydrogens. Event overlap cannot be inferred from marginals.
     return present_atoms, {key: max(rows) for key, rows in values.items()}
 
 
@@ -1164,8 +1118,8 @@ def _cross_report_hydrogen_bond_candidates(
         candidate = _candidate(
             module_id="hydrogen_bond_discovery", category="other_physical",
             statement=(
-                "Largest descriptive chemistry-matched direct-hydrogen-bond "
-                f"occupancy difference between {left} and {right} is "
+                "Largest chemistry-matched difference in maximum individual-hydrogen "
+                f"occupancy between {left} and {right} is "
                 f"{_chemical_atom_key_label(key[0])} to "
                 f"{_chemical_atom_key_label(key[1])}: {effect:+.1%} "
                 f"({left} minus {right})."
@@ -1714,7 +1668,7 @@ def _compact_cross_report(
         elif module_id == "hydrogen_bond_discovery":
             kept = {
                 key: row.get(key) for key in (
-                    "system_id", "replica_id", "bond_id",
+                    "system_id", "replica_id", "segment_id", "bond_id",
                     "evaluated_frame_count", "present_frame_count",
                     "occupancy_fraction",
                 )
@@ -1751,6 +1705,12 @@ def _compact_cross_report(
                         for row in source if isinstance(row, dict)
                     ]
     if module_id == "hydrogen_bond_discovery":
+        from .hydrogen_bond_reporting import occupancy_accounting
+        accounting = occupancy_accounting(report)
+        if accounting["status"] == "complete":
+            compact["evaluated_frame_count_by_system"] = accounting["totals"]
+            compact["segment_frame_counts"] = accounting["segment_frame_counts"]
+        compact["occupancy_accounting_status"] = accounting["status"]
         for key, fields in (
             ("candidate_dictionary", (
                 "bond_id", "donor_atom_index", "hydrogen_atom_index",
@@ -1777,7 +1737,7 @@ def finding_sidecar_evidence(
     candidates = _report_candidates(path, report)
     quality_control = _quality_control_records(report, path)
     return {
-        "finding_evidence_schema": "salsbury-finding-evidence-v2",
+        "finding_evidence_schema": "salsbury-finding-evidence-v3",
         "module_id": module_id,
         "report_path": str(path),
         "candidates": candidates,
@@ -1810,6 +1770,9 @@ def _row_coverage(row: Mapping[str, object]) -> int:
 def _report_system_coverage(
     report: Mapping[str, object], module_id: str
 ) -> Dict[str, int]:
+    if module_id == "hydrogen_bond_discovery":
+        from .hydrogen_bond_reporting import occupancy_accounting
+        return occupancy_accounting(report)["totals"]
     row_key = _CROSS_REPORT_ROWS[module_id]
     rows = report.get(row_key)
     if not isinstance(rows, list):
@@ -1903,6 +1866,12 @@ def _integrated_comparison_candidates(
         raise FindingPickerError(
             "integrated comparison report lacks comparison_findings"
         )
+    if (any(isinstance(row, dict) and row.get("module_id") == "hydrogen_bond_discovery"
+            for row in raw)
+            and report.get("hydrogen_bond_accounting_version") != "pooled_frames_v1"):
+        raise FindingPickerError(
+            "integrated hydrogen-bond comparisons predate pooled-frame accounting; "
+            "rebuild integration and reporting in a new output directory from the unchanged source reports")
     findings = []
     for index, value in enumerate(raw):
         if not isinstance(value, dict):
@@ -2120,6 +2089,15 @@ def _quality_control_records(
 ) -> List[Dict[str, object]]:
     module_id = str(report.get("module_id", path.parent.name))
     records: List[Dict[str, object]] = []
+    if module_id == "hydrogen_bond_discovery" and isinstance(report.get("occupancies"), list):
+        from .hydrogen_bond_reporting import occupancy_accounting
+        accounting = occupancy_accounting(report)
+        if accounting["status"] != "complete":
+            records.append({
+                "module_id": module_id, "severity": "warning",
+                "status": "occupancy_not_estimable", "statement": accounting["reason"],
+                "report_path": str(path),
+            })
     if module_id == "structural_integrity_qc":
         status = str(report.get("qc_status", "not reported"))
         records.append({
@@ -2960,6 +2938,7 @@ def prioritize_findings(
             raise FindingPickerError(
                 "integrated comparison exists but is not technically complete"
             )
+        _integrated_comparison_candidates(integrated_report, integrated_path)
     for path in ([] if candidate_snapshot is not None else sorted((analysis_root / "results").glob("**/report.json"))):
         sidecar_path = Path(str(path) + ".summary.json")
         if sidecar_path.is_file():
@@ -2981,6 +2960,11 @@ def prioritize_findings(
             evidence = sidecar.get("finding_evidence")
             if not isinstance(evidence, dict) or not isinstance(evidence.get("candidates"), list):
                 raise FindingPickerError(f"analysis sidecar lacks finding evidence: {sidecar_path}")
+            if (sidecar.get("module_id") == "hydrogen_bond_discovery"
+                    and evidence.get("finding_evidence_schema") != "salsbury-finding-evidence-v3"):
+                # Recompute reporting summaries only, leaving the source report
+                # and old sidecar immutable. Older compact rows lost zero events.
+                evidence = finding_sidecar_evidence(load_json(path), path)
             report_candidates = [
                 row for row in evidence["candidates"] if isinstance(row, dict)
             ]
