@@ -310,8 +310,11 @@ def connected_components(atom_count: int, bonds: Sequence[Bond]) -> Tuple[Tuple[
         adjacency[second].append(first)
     components = []
     unseen = set(range(atom_count))
-    while unseen:
-        root = min(unseen)
+    # Advancing once through atom order preserves the previous deterministic
+    # root/BFS ordering without repeatedly scanning a large solvent set.
+    for root in range(atom_count):
+        if root not in unseen:
+            continue
         queue = deque((root,))
         unseen.remove(root)
         component = []
@@ -525,6 +528,18 @@ class PeriodicFrameProcessor:
         independent_frames = independent_frames or static_ensemble_enabled()
         declared_policy = str(project.get("periodic_coordinate_policy"))
         settings = reconstruction_settings(project, declared_policy)
+        if declared_policy == "unwrap_continuous":
+            from .validated_cache_coordinates import discover_cached_replica
+            try:
+                cached = discover_cached_replica(
+                    system_manifest_path, replica, atom_count,
+                    static=static_ensemble_enabled(),
+                )
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise PeriodicReconstructionError(str(exc)) from exc
+            if cached is not None:
+                return cls(_PREPROCESSED_POLICY, atom_count, settings=settings,
+                           preprocessed_cache_identity=cached)
         policy = (
             "make_whole"
             if independent_frames and declared_policy == "unwrap_continuous"
@@ -584,26 +599,14 @@ class PeriodicFrameProcessor:
                 raise PeriodicReconstructionError(
                     "preprocessed coordinate cache report lacks manifest identity"
                 )
-            reported_manifest_path = resolve_manifest_path(
-                cached_manifest, report_path
-            )
             actual_manifest_path = Path(system_manifest_path).expanduser().resolve(
                 strict=False
             )
-            if reported_manifest_path != actual_manifest_path:
-                raise PeriodicReconstructionError(
-                    "preprocessed cache report names a different system manifest"
-                )
             try:
-                manifest_digest = hashlib.sha256(
-                    actual_manifest_path.read_bytes()
-                ).hexdigest()
-            except OSError as exc:
+                from .validated_cache_coordinates import cache_manifest_digest
+                manifest_digest = cache_manifest_digest(report, report_path, actual_manifest_path)
+            except (OSError, ValueError) as exc:
                 raise PeriodicReconstructionError(str(exc)) from exc
-            if manifest_digest.lower() != cached_manifest_digest.lower():
-                raise PeriodicReconstructionError(
-                    "preprocessed cache system manifest hash does not match"
-                )
             return cls(
                 policy,
                 atom_count,

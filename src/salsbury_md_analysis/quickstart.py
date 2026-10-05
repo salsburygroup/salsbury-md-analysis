@@ -1076,6 +1076,36 @@ def _configure_coordinate_cache_views(
     return ["coordinate-cache-contract.json"]
 
 
+def _configure_base_cache_routing(
+    root: Path, *, cache_stride: int, cache_directory: Optional[Path] = None,
+) -> list[str]:
+    """Use the same base-cache routing in single and comparative preparation."""
+
+    project = load_json(root / "project.json")
+    if not isinstance(project, dict):
+        raise QuickstartError("base project is unavailable for cache routing")
+    try:
+        routing = cache_routing_plan(project)
+        routing.update({
+            "routing_status": ("validated_external_cache" if cache_directory is not None
+                               else "planned_after_coordinate_cache_validation"),
+            "source_project": "project.json",
+            "runtime_cache_project": "project-cache-base.json",
+            "cache_stride": cache_stride,
+        })
+        _json_write(root / "base-cache-routing.json", routing)
+        files = ["base-cache-routing.json"]
+        if cache_directory is not None:
+            validated = materialize_cache_backed_base_project(
+                root / "project.json", cache_directory, root / "project-cache-base.json"
+            )
+            _json_write(root / "base-cache-routing.validated.json", validated)
+            files.extend(["base-cache-routing.validated.json", "project-cache-base.json"])
+        return files
+    except (CacheRoutingError, OSError, ValueError) as exc:
+        raise QuickstartError("base coordinate-cache routing failed: " + str(exc)) from exc
+
+
 def _configure_structural_qc_parallel_execution(
     root: Path,
     campaign_resource_plan: Mapping[str, object],
@@ -1622,6 +1652,8 @@ COMMANDS=(
 )
 COMMAND="${{COMMANDS[$SLURM_ARRAY_TASK_ID]}}"
 PYTHON_DEFAULT={json.dumps(python_executable)}
+export SALSBURY_MD_ANALYSIS_PREPARED_ROOT="$ROOT"
+export SALSBURY_MD_ANALYSIS_PREPARED_COMMAND="$COMMAND"
 PYTHON="${{SALSBURY_MD_ANALYSIS_PYTHON:-$PYTHON_DEFAULT}}"
 PACKAGE_ROOT_DEFAULT={json.dumps(package_root)}
 PACKAGE_ROOT="${{SALSBURY_MD_ANALYSIS_PYTHONPATH:-$PACKAGE_ROOT_DEFAULT}}"
@@ -1772,9 +1804,9 @@ def _execution_config_for_parallel_cpu_cap(
 def _validated_cache_export_shell(
     variable: str, report_path: Optional[Path], module_id: str, *,
     report_shell_expression: Optional[str] = None,
-    fallback_action: str = "recomputing from project inputs",
+    fallback_action: str = "checking whether upstream recomputation is budgeted",
 ) -> str:
-    """Render a cache export that falls back to project recomputation safely.
+    """Export a validated report; execution enforces any warm-cache requirement.
 
     A complete report and sidecar are not enough: recovery projects may change
     module definitions or input manifests while retaining the same output
@@ -2103,6 +2135,21 @@ rm "$TMP" "$SUMMARY_TMP"
         )),
     }
 
+    # The original-source preflight cannot validate a molecular-cache report.
+    # These consumers hash their current cache inputs through the normal
+    # context compiler rather than accepting an unrelated manifest signature.
+    for stage in (1, 2):
+        cache_exports[stage] = cache_exports[stage].replace(
+            f"export SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT="
+            f"{json.dumps(str(root / 'preflight.report.json'))}",
+            'if [[ "$PROJECT" == "$ROOT/project-cache-base.json" ]]; then\n'
+            '  unset SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT\n'
+            'else\n'
+            f"  export SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT="
+            f"{json.dumps(str(root / 'preflight.report.json'))}\n"
+            'fi',
+        )
+
     def worker_text(stage: int, stage_commands: Sequence[str]) -> str:
         command_lines = "\n".join(
             f"  {json.dumps(command)}" for command in stage_commands
@@ -2137,6 +2184,8 @@ PROJECTS=(
 )
 COMMAND="${{COMMANDS[$SLURM_ARRAY_TASK_ID]}}"
 PROJECT="${{PROJECTS[$SLURM_ARRAY_TASK_ID]}}"
+export SALSBURY_MD_ANALYSIS_PREPARED_ROOT="$ROOT"
+export SALSBURY_MD_ANALYSIS_PREPARED_COMMAND="$COMMAND"
 if [[ "$PROJECT" != /* ]]; then PROJECT="$ROOT/$PROJECT"; fi
 PYTHON_DEFAULT={json.dumps(python_executable)}
 PYTHON="${{SALSBURY_MD_ANALYSIS_PYTHON:-$PYTHON_DEFAULT}}"
@@ -3001,41 +3050,11 @@ def prepare_standard_analysis(
                 else root / "coordinate-cache"
             ),
         )
-        base_project = load_json(root / "project.json")
-        if not isinstance(base_project, dict):
-            raise QuickstartError("base project is unavailable for cache routing")
-        try:
-            base_cache_routing = cache_routing_plan(base_project)
-            base_cache_routing.update({
-                "routing_status": (
-                    "validated_external_cache"
-                    if coordinate_cache_input is not None else
-                    "planned_after_coordinate_cache_validation"
-                ),
-                "source_project": "project.json",
-                "runtime_cache_project": "project-cache-base.json",
-                "cache_stride": coordinate_cache_stride,
-            })
-            _json_write(root / "base-cache-routing.json", base_cache_routing)
-            if coordinate_cache_input is not None:
-                validated_routing = materialize_cache_backed_base_project(
-                    root / "project.json",
-                    Path(str(coordinate_cache_input)),
-                    root / "project-cache-base.json",
-                )
-                _json_write(
-                    root / "base-cache-routing.validated.json",
-                    validated_routing,
-                )
-        except (CacheRoutingError, OSError, ValueError) as exc:
-            raise QuickstartError("base coordinate-cache routing failed: " + str(exc)) from exc
-        coordinate_cache_files.extend([
-            "base-cache-routing.json",
-            *(
-                ["base-cache-routing.validated.json", "project-cache-base.json"]
-                if coordinate_cache_input is not None else []
-            ),
-        ])
+        coordinate_cache_files.extend(_configure_base_cache_routing(
+            root, cache_stride=coordinate_cache_stride,
+            cache_directory=(Path(str(coordinate_cache_input))
+                             if coordinate_cache_input is not None else None),
+        ))
         if structural_qc_runtime_project is not None:
             coordinate_cache_files.append(structural_qc_runtime_project.name)
     deferred = {

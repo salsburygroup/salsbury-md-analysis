@@ -2869,11 +2869,9 @@ def _apply_task_dependency_graph(
                 }:
                     required_modules.add("trajectory_features")
             for requirement in required_modules:
-                # Generated workers validate and reuse these reports when they
-                # are complete.  If the producer fails, the consumer unsets
-                # the cache variable and recomputes from its project inputs.
-                # Waiting for completion avoids duplicate work without making
-                # an unrelated producer failure a false afterok gate.
+                # Wait for the artifact, not for scheduler success. A valid
+                # report remains reusable after a producer's later failure;
+                # missing artifacts cannot trigger an unbudgeted cold rebuild.
                 completion_waits.update(module_tasks.get(
                     (str(task["scope_id"]), requirement), []
                 ))
@@ -2881,6 +2879,12 @@ def _apply_task_dependency_graph(
         completion_waits.discard(str(task["task_id"]))
         task["depends_on_task_ids"] = sorted(dependencies)
         task["wait_for_task_ids"] = sorted(completion_waits)
+        task["required_cache_modules"] = sorted({
+            str(candidate["module_id"]) for candidate in tasks
+            if candidate["task_id"] in completion_waits
+            and candidate.get("scope_id") == task.get("scope_id")
+            and candidate.get("module_id")
+        }) if task.get("module_id") not in {"integrated_comparison", "workflow_final_reporting"} else []
 
     task_by_id = {str(task["task_id"]): task for task in tasks}
     if len(task_by_id) != len(tasks):
@@ -3556,7 +3560,16 @@ def _run_local_task(
         suffix = "single" if task.get("array_task_id") is None else str(task["array_task_id"])
         stem = f"{attempt_id}-{phase_id}-{task_index}-{suffix}"
         env = os.environ.copy()
+        env.pop("SALSBURY_MD_ANALYSIS_REQUIRED_CACHE_MODULES", None)
+        from .upstream_cache import _ENVIRONMENT_VARIABLES
+        required_caches = task.get("required_cache_modules")
+        if required_caches is not None:
+            env["SALSBURY_MD_ANALYSIS_REQUIRED_CACHE_MODULES"] = json.dumps([
+                value for value in required_caches if value in _ENVIRONMENT_VARIABLES
+            ])
         env.update({
+            "SALSBURY_MD_ANALYSIS_PREPARED_ROOT": str(root.resolve()),
+            "SALSBURY_MD_ANALYSIS_PREPARED_COMMAND": str(task.get("command") or ""),
             "SLURM_JOB_ID": stem,
             "SLURM_ARRAY_JOB_ID": f"{attempt_id}-{phase_id}",
             "SLURM_CPUS_PER_TASK": str(cpu_slots),

@@ -695,7 +695,7 @@ class QuickstartTests(unittest.TestCase):
             self.assertIn("SALSBURY_MD_ANALYSIS_RMSD_RG_REPORT", workers[1])
             self.assertIn("SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT", workers[1])
             self.assertIn(
-                "Validated cache unavailable for common_pca; recomputing",
+                "Validated cache unavailable for common_pca; checking whether upstream recomputation is budgeted",
                 workers[1],
             )
             self.assertIn(
@@ -704,12 +704,12 @@ class QuickstartTests(unittest.TestCase):
             )
             self.assertIn(
                 "printf 'Validated cache unavailable for common_pca; "
-                "recomputing from project inputs.\\n'\n",
+                "checking whether upstream recomputation is budgeted.\\n'\n",
                 workers[1],
             )
             self.assertNotIn(
                 "Validated cache unavailable for common_pca; "
-                "recomputing from project inputs.\\n' >&2",
+                "checking whether upstream recomputation is budgeted.\\n' >&2",
                 workers[1],
             )
             self.assertIn(
@@ -731,7 +731,7 @@ class QuickstartTests(unittest.TestCase):
                 "SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT", combined_view_workers
             )
             self.assertIn(
-                "Validated cache unavailable for clustering_kmeans; recomputing",
+                "Validated cache unavailable for clustering_kmeans; checking whether upstream recomputation is budgeted",
                 combined_view_workers,
             )
             for view_worker in view_workers:

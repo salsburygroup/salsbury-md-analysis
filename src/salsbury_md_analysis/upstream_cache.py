@@ -30,6 +30,43 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 _PREFLIGHT_ENVIRONMENT_VARIABLE = "SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT"
 
 
+def planned_cache_modules(project_path: Path) -> list[str]:
+    """A warm-costed consumer may not launch an unbudgeted upstream rebuild.
+
+    This is an execution-resource contract, not an after-success dependency.
+    Valid artifacts remain usable even when their producer's job failed later.
+    Standalone module calls keep their compute-from-project behavior.
+    """
+    declared = os.environ.get("SALSBURY_MD_ANALYSIS_REQUIRED_CACHE_MODULES")
+    if declared is not None:
+        values = json.loads(declared)
+        if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+            raise ValueError("required cache modules must be a JSON string array")
+        return values
+    root_text = os.environ.get("SALSBURY_MD_ANALYSIS_PREPARED_ROOT")
+    command = os.environ.get("SALSBURY_MD_ANALYSIS_PREPARED_COMMAND")
+    if not root_text or not command:
+        return []
+    root = Path(root_text).resolve()
+    plan = load_json(root / "local-execution-plan.json")
+    tasks = [t for p in plan["phases"] for t in p["tasks"]]
+    matches = [t for t in tasks if t.get("command") == command
+               and t.get("project_filename")
+               and resolve_manifest_path(t["project_filename"], root / "plan.json")
+               == Path(project_path).resolve()]
+    if len(matches) != 1:
+        raise ValueError("prepared cache consumer does not match exactly one execution task")
+    task = matches[0]
+    required = task.get("required_cache_modules")
+    if required is None:
+        # Read older, frozen execution plans without rewriting their inputs.
+        waited = set(task.get("wait_for_task_ids", []))
+        required = [t.get("module_id") for t in tasks
+                    if t.get("task_id") in waited
+                    and t.get("scope_id") == task.get("scope_id")]
+    return [value for value in required if value in _ENVIRONMENT_VARIABLES]
+
+
 def project_module_contract_sha256(
     module_id: str, project_path: Path
 ) -> str:
@@ -80,6 +117,13 @@ def load_cached_project_report(
         raise error_type(f"unsupported upstream cache module: {module_id}") from exc
     declared = os.environ.get(variable)
     if not declared:
+        if module_id in planned_cache_modules(project_path):
+            raise error_type(
+                f"Required validated {module_id} cache is unavailable. This prepared "
+                "consumer is budgeted for cache reuse, not upstream recomputation. "
+                "Recover the exact upstream producer or prepare a separately costed "
+                "cold execution; sampling and scientific requirements are unchanged."
+            )
         return None
     report_path = Path(declared).expanduser().resolve(strict=False)
     if not report_path.is_file():

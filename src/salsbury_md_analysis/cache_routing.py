@@ -34,12 +34,23 @@ _ORIGINAL_SOLVATED_MODULES = {
     "radial_distribution_functions",
 }
 
+_CACHE_DERIVED_PREREQUISITES = {
+    "convergence_uncertainty": "replica_rmsd_rg",
+    "correlation_networks": "dccm",
+}
+
 
 def cache_compatibility(
     module_id: str, project: Mapping[str, object]
 ) -> Dict[str, object]:
     """Return one explicit base-project cache routing decision."""
 
+    if module_id in _CACHE_DERIVED_PREREQUISITES:
+        producer = _CACHE_DERIVED_PREREQUISITES[module_id]
+        decision = cache_compatibility(producer, project)
+        return {**decision, "module_id": module_id,
+                "reason": f"uses the same coordinate/project contract as {producer}: "
+                          + str(decision["reason"])}
     if module_id in _ORIGINAL_SOLVATED_MODULES:
         return {
             "module_id": module_id,
@@ -75,6 +86,17 @@ def cache_compatibility(
                 "multi-system cache cannot apply one remapping to every system"
             ),
         }
+    selections = project.get("selections", {})
+    if any(
+        isinstance(selections.get(name), Mapping)
+        and selections[name].get("preset") in {"all", "heavy"}
+        for name in _selection_names(definition)
+    ):
+        return {
+            "module_id": module_id,
+            "cache_compatible": False,
+            "reason": "a required selection may contain solvent removed from the cache",
+        }
     if module_id == "hydrogen_bond_discovery":
         if not isinstance(definition, Mapping) or definition.get("water_policy") != "exclude":
             return {
@@ -88,6 +110,19 @@ def cache_compatibility(
         "route": "validated_cache_backed_base_project",
         "reason": "all required atoms are in the molecular-payload cache",
     }
+
+
+def _selection_names(value: object) -> set[str]:
+    names: set[str] = set()
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            if str(key).endswith("_selection") and isinstance(nested, str):
+                names.add(nested)
+            names.update(_selection_names(nested))
+    elif isinstance(value, list):
+        for item in value:
+            names.update(_selection_names(item))
+    return names
 
 
 def _contains_explicit_atom_indices(value: object) -> bool:
@@ -220,12 +255,42 @@ def materialize_cache_backed_base_project(
     definitions = project.get("definitions")
     if not isinstance(definitions, dict):
         raise CacheRoutingError("source project lacks definitions")
+    # Named/custom selections must not silently lose solvent atoms either.
+    from .atom_mapping import read_pdb_atoms
+    from .selections import select_atoms
+    from .manifests import resolve_manifest_path
+    source_systems = load_json(source_manifest)["systems"]
+    selection_names = set().union(*(
+        _selection_names(definitions.get(module)) for module in cache_modules
+    ))
+    for row in report_rows:
+        replicas = [r for s in source_systems if s["system_id"] == row["system_id"]
+                    for r in s["replicas"] if r["replica_id"] == row["replica_id"]]
+        if len(replicas) != 1:
+            raise CacheRoutingError("cache row does not match one source replica")
+        atoms = read_pdb_atoms(resolve_manifest_path(replicas[0]["topology"], source_manifest))
+        retained = set(row["source_atom_indices_in_cache_order"])
+        for name in selection_names:
+            definition = project.get("selections", {}).get(name)
+            if definition is not None and any(
+                atom.atom_index not in retained for atom in select_atoms(atoms, definition, name)
+            ):
+                raise CacheRoutingError(
+                    f"selection {name!r} contains atoms absent from the molecular cache; "
+                    "use the original project without changing the selection"
+                )
     mapping_is_shared = all(value == mappings[0] for value in mappings[1:])
     source_to_cache = {
         source_index: cache_index
         for cache_index, source_index in enumerate(mappings[0])
     }
     remapped_definitions = deepcopy(definitions)
+    cache_stride = int(validation["cache_stride"])
+    for module_id in cache_modules:
+        definition = remapped_definitions.get(module_id)
+        if not isinstance(definition, dict) or cache_stride == 1:
+            continue
+        _cache_relative_sampling(definition, module_id, cache_stride, report_rows)
     if mapping_is_shared:
         for module_id in cache_modules:
             if module_id in remapped_definitions:
@@ -358,3 +423,34 @@ def materialize_cache_backed_base_project(
         "per_system_cache_projects": per_system_cache_projects,
     })
     return routing
+
+
+def _cache_relative_sampling(definition, module_id, cache_stride, report_rows):
+    """Convert raw selectors exactly; never choose a new scientific sample."""
+    for prefix in ("", "projection_"):
+        stride_key, selection_key = prefix + "frame_stride", prefix + "frame_selection"
+        if stride_key not in definition:
+            continue
+        selection = definition.get(selection_key, {"mode": "fixed_stride_v1"})
+        mode = selection.get("mode") if isinstance(selection, dict) else None
+        raw_stride = (selection.get("stride") if mode == "integer_stride_per_replica_v1"
+                      else definition[stride_key])
+        if (mode not in {"integer_stride_per_replica_v1", "fixed_stride_v1"}
+                or isinstance(raw_stride, bool) or not isinstance(raw_stride, int)
+                or raw_stride < 1 or raw_stride % cache_stride):
+            raise CacheRoutingError(
+                f"{module_id}.{selection_key}: source sampling is not exactly representable "
+                f"on cache stride {cache_stride}; use the original project or replan"
+            )
+        if mode == "fixed_stride_v1" and any(
+            s.get("first_retained_source_frame_index") not in {None, 0}
+            for row in report_rows for s in row.get("segments", [])
+        ):
+            raise CacheRoutingError(
+                f"{module_id}: segment-local sampling has a different cache phase; "
+                "use the original project or replan, without dropping observations"
+            )
+        if mode == "integer_stride_per_replica_v1":
+            selection["stride"] = raw_stride // cache_stride
+        else:
+            definition[stride_key] = raw_stride // cache_stride

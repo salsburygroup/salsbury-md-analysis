@@ -402,10 +402,41 @@ leaving it pending indefinitely. The complete mapping remains visible in
 Ordinary module relationships appear as `wait_for_task_ids`. They delay a
 consumer until a possible cache producer finishes, but they do not require that
 producer to succeed. The worker validates any completed cache against the
-current project, system, content signature, report hash, and sidecar; otherwise
-it unsets the cache and recomputes from the project inputs. RMSF permutation is
-submitted separately with RMSF as its only success-required report.
+current project, system, content signature, report hash, and sidecar. A prepared
+consumer budgeted for reuse requires that validated upstream report. If it is
+missing or invalid, the consumer reports the exact cache needed and stops before
+rebuilding it. Recover that producer first, or prepare a separately costed cold
+execution. A failed producer job can still leave a valid, reusable artifact;
+the job's status alone does not decide whether it can be used. Unrelated tasks
+continue. Standalone module calls retain compute-from-project behavior.
+RMSF permutation is submitted separately with RMSF as its only success-required report.
 Integrated comparison is also separate and does not wait for structural QC.
+
+Single-system and comparative preparations route cache-compatible base analyses
+through the same validated molecular-payload cache. Base-method strides are
+converted from source-frame to cache-frame units without dropping selected
+observations. An unrepresentable stride or segment phase is rejected. Water-dependent
+methods still use the original solvated inputs.
+Convergence and correlation-network consumers follow their producer's cached
+project identity. Their reuse checks hash those cache inputs; the original
+solvated-manifest preflight cannot stand in for the cached-manifest check.
+Selections that require excluded solvent atoms remain on the original inputs
+or are rejected before cache-backed execution.
+
+Conformational views recognize generated, already-unwrapped cache manifests by
+their declared provenance and verify their report, manifest, topology, connectivity
+and trajectory hashes before skipping reconstruction. A cache title alone is
+insufficient. Coordinate arrays, boxes, physical times and frame identities remain
+unchanged; alignment and pooled basis fitting still occur in each declared view.
+The source trajectories must still be scanned in order when building the cache.
+
+These changes do not edit a previously prepared campaign. For recovery, preserve
+its original inputs, logs and completed reports; validate the completed artifacts
+in their original context, and prepare only the failed tasks and their affected
+consumers. Recheck worker project arguments, cache-relative selections and the
+native resource schedule before resubmitting. A timeout remains a censored timing
+observation, not a completed calibration or proof that a larger request will finish.
+
 Before submission, run:
 
 ```bash
