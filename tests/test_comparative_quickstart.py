@@ -55,6 +55,22 @@ class ComparativeQuickstartTests(unittest.TestCase):
                 target_wall_hours=32.0,
             )
             self.assertEqual(report["technical_status"], "complete")
+            routing = json.loads((output / "base-cache-routing.json").read_text())
+            self.assertIn("replica_rmsd_rg", routing["cache_project_modules"])
+            self.assertIn("convergence_uncertainty", routing["cache_project_modules"])
+            local = json.loads((output / "local-execution-plan.json").read_text())
+            tasks = [t for p in local["phases"] for t in p["tasks"]]
+            for task in tasks:
+                if task.get("module_id") in {"replica_rmsd_rg", "pooled_rmsf"}:
+                    self.assertEqual(Path(task["project_filename"]).name, "project-cache-base.json")
+                    self.assertIn("task:run_coordinate_cache.slurm:single", task["depends_on_task_ids"])
+                if task.get("module_id") == "convergence_uncertainty":
+                    self.assertEqual(Path(task["project_filename"]).name, "project-cache-base.json")
+                    producer = next(t for t in tasks if t.get("module_id") == "replica_rmsd_rg")
+                    self.assertIn(producer["task_id"], task["wait_for_task_ids"])
+                    self.assertEqual(task["required_cache_modules"], ["replica_rmsd_rg"])
+                    self.assertIn('unset SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT',
+                                  (output / task["script"]).read_text())
             resource_fit = json.loads(
                 (output / "resource-fit-report.json").read_text()
             )
@@ -157,7 +173,7 @@ class ComparativeQuickstartTests(unittest.TestCase):
                 "SALSBURY_MD_ANALYSIS_TRAJECTORY_FEATURES_REPORT", stage_one
             )
             self.assertIn(
-                "Validated cache unavailable for trajectory_features; recomputing",
+                "Validated cache unavailable for trajectory_features; checking whether upstream recomputation is budgeted",
                 stage_one,
             )
             self.assertIn(

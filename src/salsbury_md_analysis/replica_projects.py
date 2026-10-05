@@ -22,6 +22,7 @@ from .manifests import (
     validate_system,
 )
 from .replica_execution import ReplicaShard
+from .static_ensemble import static_ensemble_enabled
 
 
 class ReplicaProjectError(ValueError):
@@ -81,7 +82,8 @@ def _validated_preprocessed_cache_report(
         not isinstance(report, dict)
         or report.get("technical_status") != "complete"
         or report.get("coordinate_representation")
-        != "continuous_unwrap_unaligned_strided"
+        != ("independent_make_whole_unaligned_strided" if static_ensemble_enabled()
+            else "continuous_unwrap_unaligned_strided")
         or report.get("selection") != "molecular_payload"
     ):
         raise ReplicaProjectError(
@@ -95,15 +97,11 @@ def _validated_preprocessed_cache_report(
         raise ReplicaProjectError(
             "preprocessed coordinate cache report lacks manifest identity"
         )
-    reported_manifest = resolve_manifest_path(cached_manifest, report_path)
-    if reported_manifest != system_source:
-        raise ReplicaProjectError(
-            "preprocessed cache report names a different system manifest"
-        )
-    if sha256_file(system_source).lower() != cached_manifest_digest.lower():
-        raise ReplicaProjectError(
-            "preprocessed cache system manifest hash does not match"
-        )
+    from .validated_cache_coordinates import cache_manifest_digest
+    try:
+        cache_manifest_digest(report, report_path, system_source)
+    except (OSError, ValueError) as exc:
+        raise ReplicaProjectError(str(exc)) from exc
     return report_path, actual_digest, report
 
 

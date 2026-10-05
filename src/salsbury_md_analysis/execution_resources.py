@@ -63,6 +63,12 @@ def run_instrumented_project_command(
         argv.append("--hash-content")
     started = time.perf_counter()
     child_environment = os.environ.copy()
+    from .upstream_cache import planned_cache_modules
+    # Resolve once against the actual prepared project before replica workers
+    # create temporary shard manifests. Their inherited contract is unchanged.
+    child_environment["SALSBURY_MD_ANALYSIS_REQUIRED_CACHE_MODULES"] = json.dumps(
+        planned_cache_modules(source)
+    )
     if columnar_artifact_root is not None:
         child_environment["SALSBURY_MD_ANALYSIS_COLUMNAR_ARTIFACT_ROOT"] = str(
             Path(columnar_artifact_root).expanduser().resolve(strict=False)

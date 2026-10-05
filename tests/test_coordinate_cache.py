@@ -14,6 +14,7 @@ from salsbury_md_analysis.coordinate_cache import (
     validate_reusable_coordinate_cache,
 )
 from salsbury_md_analysis.cache_routing import (
+    CacheRoutingError,
     cache_compatibility,
     materialize_cache_backed_base_project,
 )
@@ -22,6 +23,8 @@ from salsbury_md_analysis.manifests import load_json, validate_system
 from salsbury_md_analysis.preflight import probe_trajectory
 from salsbury_md_analysis.rmsd_rg import replica_rmsd_rg_project
 from salsbury_md_analysis.structural_qc import structural_qc_project
+from salsbury_md_analysis.periodic import PeriodicFrameProcessor, PeriodicReconstructionError
+from salsbury_md_analysis.replica_projects import materialized_replica_project_shards
 
 
 def record(payload: bytes) -> bytes:
@@ -155,6 +158,22 @@ class CoordinateCacheTests(unittest.TestCase):
             reuse = validate_reusable_coordinate_cache(output, manifest)
             self.assertEqual(reuse["technical_status"], "complete")
             self.assertEqual(reuse["replica_count"], 1)
+            declared_policy = {"periodic_coordinate_policy": "unwrap_continuous",
+                               "periodic_reconstruction": {
+                                   "maximum_bond_length_angstrom": 3.0,
+                                   "cycle_closure_tolerance_angstrom": 0.25,
+                                   "maximum_anchor_displacement_angstrom": 20.0}}
+            for current_manifest in (cached_manifest_path, output / per_system["path"]):
+                processor = PeriodicFrameProcessor.from_replica(
+                    declared_policy, replica, current_manifest, 3)
+                self.assertEqual(processor.policy, "preprocessed_make_whole")
+                with patch("salsbury_md_analysis.periodic._make_whole_components",
+                           side_effect=AssertionError("must not unwrap a validated cache again")):
+                    for frame in frames:
+                        observed = processor.process(frame, "fixture")
+                        self.assertIs(observed.coordinates_angstrom, frame.coordinates_angstrom)
+                        self.assertEqual(observed.cell_vectors_angstrom, frame.cell_vectors_angstrom)
+                        self.assertEqual(observed.frame_index, frame.frame_index)
             # Reuse must reject changed materialized bytes even when the
             # original source and cached manifest are unchanged.
             for companion in (trajectory, output / replica["topology"],
@@ -163,6 +182,9 @@ class CoordinateCacheTests(unittest.TestCase):
                 companion.write_bytes(original + b"changed")
                 with self.assertRaises(CoordinateCacheError):
                     validate_reusable_coordinate_cache(output, manifest)
+                with self.assertRaises(PeriodicReconstructionError):
+                    PeriodicFrameProcessor.from_replica(declared_policy, replica,
+                                                       cached_manifest_path, 3)
                 companion.write_bytes(original)
             self.assertEqual(validate_reusable_coordinate_cache(output, manifest)["technical_status"], "complete")
             failed = build_coordinate_cache_safe(manifest, output)
@@ -214,8 +236,8 @@ class CoordinateCacheTests(unittest.TestCase):
                 "reference_structure": str(pdb),
                 "reference_connectivity": str(bonds),
                 "selections": {
-                    "alignment": {"preset": "heavy"},
-                    "analysis": {"preset": "heavy"},
+                    "alignment": {"preset": "molecular_payload"},
+                    "analysis": {"preset": "molecular_payload"},
                 },
                 "definitions": {"replica_rmsd_rg": {
                     "alignment_selection": "alignment",
@@ -228,11 +250,18 @@ class CoordinateCacheTests(unittest.TestCase):
                 "protected_locations": [],
             }), encoding="utf-8")
             cache_project = root / "project-cache-base.json"
+            with self.assertRaisesRegex(CacheRoutingError, "not exactly representable"):
+                materialize_cache_backed_base_project(
+                    cache_source_project, strided_output, cache_project)
+            source_project = load_json(cache_source_project)
+            source_project["definitions"]["replica_rmsd_rg"]["frame_stride"] = 2
+            cache_source_project.write_text(json.dumps(source_project))
             routing = materialize_cache_backed_base_project(
                 cache_source_project, strided_output, cache_project
             )
             self.assertEqual(routing["technical_status"], "complete")
             cached_project = load_json(cache_project)
+            self.assertEqual(cached_project["definitions"]["replica_rmsd_rg"]["frame_stride"], 1)
             self.assertEqual(
                 cached_project["periodic_coordinate_policy"],
                 "preprocessed_make_whole",
@@ -245,6 +274,52 @@ class CoordinateCacheTests(unittest.TestCase):
             self.assertEqual(
                 cached_rmsd["replica_execution"]["shard_count"], 1
             )
+            # Compare actual values and physical times, not only report status.
+            for stride, cache_root in ((1, output), (2, strided_output)):
+                source_project["definitions"]["replica_rmsd_rg"]["frame_stride"] = stride
+                cache_source_project.write_text(json.dumps(source_project))
+                original_inputs = {p: p.read_bytes() for p in (manifest, pdb, bonds, dcd)}
+                raw_rmsd = replica_rmsd_rg_project(cache_source_project, hash_content=True)
+                self.assertEqual(raw_rmsd["technical_status"], "complete", raw_rmsd)
+                materialize_cache_backed_base_project(cache_source_project, cache_root, cache_project)
+                cached_rmsd = replica_rmsd_rg_project(cache_project, hash_content=True)
+                self.assertEqual(cached_rmsd["technical_status"], "complete", cached_rmsd)
+                raw_rows = raw_rmsd["systems"][0]["replicas"][0]["segments"][0]["timeseries"]
+                cache_rows = cached_rmsd["systems"][0]["replicas"][0]["segments"][0]["timeseries"]
+                self.assertEqual(len(raw_rows), len(cache_rows))
+                for raw, derived in zip(raw_rows, cache_rows):
+                    self.assertEqual(raw["time"], derived["time"])
+                    self.assertEqual(raw["frame_index"], derived["frame_index"] * stride)
+                    for metric in ("rmsd_angstrom", "alignment_rmsd_angstrom",
+                                   "radius_of_gyration_angstrom"):
+                        self.assertAlmostEqual(raw[metric], derived[metric], places=5)
+                self.assertTrue(all(p.read_bytes() == data for p, data in original_inputs.items()))
+            custom_solvent_project = load_json(cache_source_project)
+            custom_solvent_project["selections"]["analysis"] = {"atom_names": ["O"]}
+            cache_source_project.write_text(json.dumps(custom_solvent_project))
+            with self.assertRaisesRegex(CacheRoutingError, "contains atoms absent"):
+                materialize_cache_backed_base_project(cache_source_project, output, cache_project)
+            cache_source_project.write_text(json.dumps(source_project))
+
+            with patch.dict(os.environ, {"SALSBURY_STATIC_ENSEMBLE": "1"}):
+                static_root = root / "static-cache"
+                build_coordinate_cache(manifest, static_root, cache_stride=2)
+                static_manifest = static_root / "system-cache.json"
+                static_replica = load_json(static_manifest)["systems"][0]["replicas"][0]
+                processor = PeriodicFrameProcessor.from_replica(
+                    declared_policy, static_replica, static_manifest, 3)
+                self.assertEqual(processor.policy, "preprocessed_make_whole")
+                materialize_cache_backed_base_project(cache_source_project, static_root, cache_project)
+                with materialized_replica_project_shards(cache_project) as (shards, _):
+                    shard_project = load_json(Path(shards[0].payload["project_path"]))
+                    shard_manifest = Path(shard_project["system_manifest"])
+                    shard_replica = load_json(shard_manifest)["systems"][0]["replicas"][0]
+                    self.assertEqual(PeriodicFrameProcessor.from_replica(
+                        shard_project, shard_replica, shard_manifest, 3).policy,
+                        "preprocessed_make_whole")
+            with self.assertRaisesRegex(PeriodicReconstructionError, "matching reconstruction"):
+                PeriodicFrameProcessor.from_replica(
+                    declared_policy, static_replica, static_manifest, 3)
 
             second_replica = json.loads(json.dumps(
                 system["systems"][0]["replicas"][0]

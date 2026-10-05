@@ -24,6 +24,32 @@ def _seal_report(report):
 
 
 class UpstreamCacheTests(unittest.TestCase):
+    def test_prepared_consumer_refuses_unbudgeted_cold_recomputation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project, _, report, preflight = self._fixture(root)
+            task = {"task_id": "consumer", "scope_id": "view:shared",
+                    "command": "pca-fes-basins", "project_filename": str(project),
+                    "wait_for_task_ids": ["producer"]}
+            producer = {"task_id": "producer", "scope_id": "view:shared",
+                        "module_id": "common_pca", "command": "common-pca"}
+            (root / "local-execution-plan.json").write_text(json.dumps({
+                "phases": [{"tasks": [task, producer]}]}))
+            env = {"SALSBURY_MD_ANALYSIS_PREPARED_ROOT": str(root),
+                   "SALSBURY_MD_ANALYSIS_PREPARED_COMMAND": "pca-fes-basins"}
+            with patch.dict(os.environ, env, clear=True):
+                with self.assertRaisesRegex(ValueError, "budgeted for cache reuse"):
+                    load_cached_project_report("common_pca", project,
+                                               hash_content=True, error_type=ValueError)
+                # A valid artifact is sufficient, regardless of producer job status.
+                os.environ["SALSBURY_MD_ANALYSIS_COMMON_PCA_REPORT"] = str(report)
+                os.environ["SALSBURY_MD_ANALYSIS_PREFLIGHT_REPORT"] = str(preflight)
+                self.assertEqual(load_cached_project_report("common_pca", project,
+                    hash_content=True, error_type=ValueError)["technical_status"], "complete")
+            with patch.dict(os.environ, {}, clear=True):
+                self.assertIsNone(load_cached_project_report("common_pca", project,
+                    hash_content=True, error_type=ValueError))
+
     def _fixture(self, root: Path):
         system = root / "system.json"
         system.write_text('{"systems": []}\n', encoding="utf-8")

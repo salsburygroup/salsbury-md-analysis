@@ -7,6 +7,7 @@ import numpy as np
 
 from salsbury_md_analysis.coordinates import CoordinateFrame
 from salsbury_md_analysis.periodic import (
+    connected_components,
     PeriodicFrameProcessor,
     PeriodicReconstructionError,
     load_connectivity,
@@ -20,6 +21,16 @@ TRICLINIC = ((10.0, 0.0, 0.0), (4.0, 8.0, 0.0), (1.0, 2.0, 9.0))
 
 
 class PeriodicReconstructionTests(unittest.TestCase):
+    def test_component_traversal_keeps_order_without_repeated_minimum_scans(self):
+        from unittest.mock import patch
+        bonds = [(i, i + 1) for i in range(0, 6000, 3)]
+        with patch("salsbury_md_analysis.periodic.min",
+                   side_effect=AssertionError("quadratic root scanning"), create=True):
+            components = connected_components(6002, list(reversed(bonds)))
+        expected = [part for i in range(0, 6000, 3)
+                    for part in ((i, i + 1), (i + 2,))] + [(6000,), (6001,)]
+        self.assertEqual(components, tuple(expected))
+
     def test_make_whole_rebuilds_boundary_crossing_bond(self):
         rebuilt = make_whole_coordinates(
             ((9.5, 1.0, 1.0), (0.5, 1.0, 1.0)),

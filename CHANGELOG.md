@@ -14,6 +14,14 @@
 
 ## Unreleased
 
+- Route comparative base tasks through the validated coordinate cache, preserving
+  source-frame sampling when converting strides. Reuse verified unwrapped view
+  coordinates instead of reconstructing them on each pass. Keep connectivity
+  traversal deterministic without repeated scans of the remaining solvent atoms.
+- Stop prepared warm-cache consumers before an unbudgeted upstream rebuild when
+  their required report is unavailable. Preserve standalone recomputation, artifact
+  validation, failure-tolerant waits and independent task execution.
+
 - Reconstruct clustering-fit inputs from retained PCA projections during
   fixed-sampling replay. Keep cache-relative basis/projection counts consistent
   across planning iterations and preserve legacy all-projection schedules.

@@ -48,6 +48,7 @@ from .quickstart import (
     _composition,
     _applicable_sampling_modules,
     _configure_coordinate_cache_views,
+    _configure_base_cache_routing,
     _configure_structural_qc_parallel_execution,
     _conformational_view_projects,
     _conformational_view_slurm_files,
@@ -306,6 +307,8 @@ PROJECT="${{PROJECTS[$SLURM_ARRAY_TASK_ID]}}"
 if [[ "$PROJECT" != /* ]]; then PROJECT="$ROOT/$PROJECT"; fi
 COMMAND="${{COMMANDS[$SLURM_ARRAY_TASK_ID]}}"
 OUTPUT="${{OUTPUTS[$SLURM_ARRAY_TASK_ID]}}"
+export SALSBURY_MD_ANALYSIS_PREPARED_ROOT="$ROOT"
+export SALSBURY_MD_ANALYSIS_PREPARED_COMMAND="$COMMAND"
 PYTHON_DEFAULT={python_executable!r}
 PYTHON="${{SALSBURY_MD_ANALYSIS_PYTHON:-$PYTHON_DEFAULT}}"
 PACKAGE_ROOT_DEFAULT={package_root!r}
@@ -1034,6 +1037,11 @@ def prepare_comparative_analysis(
     )
     structural_qc_runtime_project: Optional[Path] = None
     if coordinate_cache_enabled:
+        coordinate_cache_files.extend(_configure_base_cache_routing(
+            root, cache_stride=coordinate_cache_stride,
+            cache_directory=(Path(str(coordinate_cache_input))
+                             if coordinate_cache_input is not None else None),
+        ))
         structural_qc_runtime_project = _configure_structural_qc_parallel_execution(
             root,
             campaign_resource_plan,
