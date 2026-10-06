@@ -6,6 +6,9 @@ from unittest.mock import patch
 
 from salsbury_md_analysis.state_coordinate_exports import (
     _member_payload_map,
+    _pdb_atom_line,
+    _write_pdb,
+    StateCoordinateExportError,
     state_coordinate_exports_project,
     state_coordinate_exports_project_safe,
 )
@@ -56,6 +59,80 @@ def _export_project(root: Path) -> Path:
 
 
 class StateCoordinateExportTests(unittest.TestCase):
+    @staticmethod
+    def _coordinate_test_atom():
+        return AtomRecord(
+            atom_index=0, serial=1, atom_name="C", altloc="",
+            residue_name="ALA", chain_id="A", residue_number=1,
+            insertion_code="", element="C",
+        )
+
+    def test_pdb_coordinate_columns_roundtrip_at_asymmetric_limits(self):
+        atom = self._coordinate_test_atom()
+        for coordinate in (
+            (1.2344, -2.3456, 0.0),
+            (-999.999, 9999.999, -0.0001),
+            (-999.9994, 9999.9994, 42.5),
+        ):
+            with self.subTest(coordinate=coordinate):
+                line = _pdb_atom_line(atom, coordinate)
+                self.assertEqual(len(line.rstrip("\n")), 78)
+                parsed = [float(line[start:start + 8]) for start in (30, 38, 46)]
+                for actual, expected in zip(parsed, coordinate):
+                    self.assertLessEqual(abs(actual - expected), 0.000500001)
+                self.assertEqual(float(line[54:60]), 1.0)
+                self.assertEqual(line[76:78].strip(), "C")
+
+    def test_pdb_rejects_overflow_after_rounding_and_nonfinite_coordinates(self):
+        atom = self._coordinate_test_atom()
+        for value in (-1470.723, -1000.0, 10000.0, -999.9996, 9999.9996,
+                      float("nan"), float("inf"), float("-inf")):
+            for axis in range(3):
+                coordinate = [0.0, 0.0, 0.0]
+                coordinate[axis] = value
+                with self.subTest(value=value, axis=axis):
+                    with self.assertRaises(StateCoordinateExportError):
+                        _pdb_atom_line(atom, coordinate)
+
+    def test_bad_later_model_does_not_publish_partial_pdb(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "trajectory.pdb"
+            frames = [({}, [(0.0, 0.0, 0.0)]), ({}, [(-1470.723, 0.0, 0.0)])]
+            with self.assertRaises(StateCoordinateExportError):
+                _write_pdb(target, [self._coordinate_test_atom()], frames, True)
+            self.assertFalse(target.exists())
+
+    def test_overflow_removes_temporary_export_and_preserves_existing_exports(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = _export_project(root)
+            parent = root / "outputs/08_clustering/state_coordinate_exports"
+            previous = parent / "previous-export"
+            previous.mkdir(parents=True)
+            sentinel = previous / "export-manifest.json"
+            sentinel.write_text('{"preserved": true}\n')
+
+            def capture(_project, _path, _system, requested):
+                return (
+                    {key: ((-1470.723 if key[3] >= 3 else 0.0, 0.0, 0.0),)
+                     for key in requested},
+                    {("ai", "r1"): ([self._coordinate_test_atom()], root / "reference.pdb")},
+                    {("ai", "r1", "samples"): 0}, [], {}, {},
+                )
+
+            with patch(
+                "salsbury_md_analysis.state_coordinate_exports.clustering_kmeans_project",
+                return_value=_source_report(),
+            ), patch(
+                "salsbury_md_analysis.state_coordinate_exports._capture_coordinates",
+                side_effect=capture,
+            ):
+                report = state_coordinate_exports_project_safe(path)
+            self.assertEqual(report["technical_status"], "failed")
+            self.assertIn("fixed-column range", report["issues"][0]["message"])
+            self.assertEqual(list(parent.iterdir()), [previous])
+            self.assertEqual(sentinel.read_text(), '{"preserved": true}\n')
+
     def test_member_payload_keeps_hydrogens_and_chain_heteroatoms_but_not_water(self):
         atoms = []
         for chain in ("A", "B"):
