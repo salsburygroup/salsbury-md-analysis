@@ -343,13 +343,21 @@ def _pdb_atom_line(atom: AtomRecord, coordinate: Coordinate) -> str:
         raise StateCoordinateExportError(
             "PDB export requires residue numbers representable in four columns"
         )
-    x, y, z = coordinate
-    if max(abs(x), abs(y), abs(z)) >= 10000.0:
-        raise StateCoordinateExportError("PDB coordinate exceeds fixed-column range")
+    fields = []
+    for value in coordinate:
+        if not math.isfinite(value):
+            raise StateCoordinateExportError("PDB coordinates must be finite")
+        field = f"{value:8.3f}"
+        if len(field) != 8:
+            raise StateCoordinateExportError(
+                "PDB coordinate exceeds fixed-column range after 8.3 formatting"
+            )
+        fields.append(field)
+    x, y, z = fields
     return (
         f"ATOM  {atom.serial:5d} {atom.atom_name:^4s}{atom.altloc[:1]:1s}"
         f"{atom.residue_name:>3s} {atom.chain_id[:1]:1s}{atom.residue_number:4d}"
-        f"{atom.insertion_code[:1]:1s}   {x:8.3f}{y:8.3f}{z:8.3f}"
+        f"{atom.insertion_code[:1]:1s}   {x}{y}{z}"
         f"  1.00  0.00          {atom.element[:2]:>2s}\n"
     )
 

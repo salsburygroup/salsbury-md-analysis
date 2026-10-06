@@ -144,6 +144,23 @@ water and free ions. If the field is absent, the backwards-compatible behavior
 exports every topology atom. The selected atom identities and topology hash are
 retained in the export evidence.
 
+PDB coordinates must be finite and fit each eight-column, three-decimal field
+**after rounding**. Negative coordinates have one fewer digit available than
+positive coordinates. An unrepresentable coordinate fails the export; values
+are never clipped, truncated, or individually wrapped to fit. This check also
+applies to the representative PDBs when the trajectory format is XYZ. Failed
+exports do not publish a final directory or completed manifest. Existing export
+IDs remain unchanged. Previously written PDBs with displaced fixed columns
+require re-export from their original source frames; guessing column boundaries
+cannot recover trustworthy coordinates.
+
+`representative_frames` reports frame locators; it does not promise coordinate
+files. Before a downstream structural comparison, check that each selected
+representative has coordinates from the same source partition, system, replica,
+segment, and frame. A PCA/FES coordinate export does not cover a K-means locator
+merely because both states have the same integer label. Keep separately chosen
+partition exports under distinct export IDs and their authorized resource bounds.
+
 The exporter streams source trajectories read-only, applies the project's
 declared connectivity-aware periodic reconstruction, and never combines unlike
 system/replica topologies. It writes to
