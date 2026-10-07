@@ -10,7 +10,7 @@ import re
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .alternative_clustering import (
     AlternativeClusteringError,
@@ -51,6 +51,7 @@ from .state_ion_stability import analyze_state_ion_stability
 from .selections import build_common_correspondences
 from .selections import select_atoms
 from .validation import positive_integer
+from .upstream_cache import load_cached_project_report
 
 
 class StateCoordinateExportError(ValueError):
@@ -265,31 +266,53 @@ def _settings(project: Mapping[str, object]) -> Dict[str, object]:
 
 
 def _source_candidates(
-    project_path: Path, settings: Mapping[str, object], hash_content: bool
+    project_path: Path, settings: Mapping[str, object], hash_content: bool,
+    *, cached_only: bool = False,
 ) -> Tuple[Dict[str, object], List[Dict[str, object]], str, str]:
     source = str(settings["source"])
+    cached_report = None
+    if cached_only:
+        cached_report = load_cached_project_report(
+            source, project_path, hash_content=hash_content,
+            error_type=StateCoordinateExportError,
+        )
+        if cached_report is None:
+            raise StateCoordinateExportError(
+                f"diagnostic requires a validated saved {source} report; "
+                "upstream recomputation is prohibited"
+            )
     if source == "clustering_kmeans":
-        report = clustering_kmeans_project(project_path, hash_content=hash_content)
+        report = cached_report if cached_report is not None else clustering_kmeans_project(
+            project_path, hash_content=hash_content
+        )
         rows = report.get("assignments")
         state_field = "cluster_id"
         distance_field = "squared_distance_in_clustering_space"
     elif source == "clustering_imwkmeans":
-        report = clustering_imwkmeans_project(project_path, hash_content=hash_content)
+        report = cached_report if cached_report is not None else clustering_imwkmeans_project(
+            project_path, hash_content=hash_content
+        )
         rows = report.get("assignments")
         state_field = "cluster_id"
         distance_field = "weighted_minkowski_distance_power"
     elif source == "clustering_hdbscan":
-        report = clustering_hdbscan_project(project_path, hash_content=hash_content)
+        report = cached_report if cached_report is not None else clustering_hdbscan_project(
+            project_path, hash_content=hash_content
+        )
         rows = report.get("assignments")
         state_field = "cluster_id"
         distance_field = "squared_distance_in_clustering_space"
     elif source == "pca_fes_basins":
-        report = pca_fes_basins_project(project_path, hash_content=hash_content)
+        report = cached_report if cached_report is not None else pca_fes_basins_project(
+            project_path, hash_content=hash_content
+        )
         rows = _basin_candidates(report, settings.get("fes_smoothing_sigma_bins"))
         state_field = "basin_id"
         distance_field = "distance_to_basin_root_squared"
     else:
-        report = alternative_clustering_project(project_path, hash_content=hash_content)
+        report = cached_report if cached_report is not None else alternative_clustering_project(
+            project_path, hash_content=hash_content
+        )
         results = report.get("algorithm_results")
         matches = [
             row for row in results
@@ -718,15 +741,10 @@ def _capture_member_coordinates(
     ).get("coordinate_selection")
     if selection_name is None:
         output_atoms = [reference_atoms[int(index)] for index in analysis_indices]
-        reference_payload_identity = None
     elif selection_name == "molecular_payload":
-        reference_payload_identity, reference_output_indices = _member_payload_map(
-            reference_atoms,
-            plan,
-            str(reference_member["member_id"]),
-            policy=str(project["common_atom_policy"]),
-        )
-        output_atoms = [reference_atoms[index] for index in reference_output_indices]
+        # Common feature/alignment atoms do not define a cross-system chemical
+        # payload. Establish a strict canonical payload independently per system.
+        output_atoms = []
     else:
         selections = project.get("selections")
         if not isinstance(selections, dict):
@@ -739,7 +757,6 @@ def _capture_member_coordinates(
         output_atoms = list(select_atoms(
             reference_atoms, definition, str(selection_name)
         ))
-        reference_payload_identity = None
     output_identity = tuple(
         atom.match_key(str(project["common_atom_policy"])) for atom in output_atoms
     )
@@ -756,6 +773,9 @@ def _capture_member_coordinates(
         system_id = str(system_row["system_id"])
         replicas = system_row["replicas"]
         assert isinstance(replicas, list)
+        system_payload_identity = None
+        system_output_atoms = None
+        system_topology_path = None
         for replica in replicas:
             assert isinstance(replica, dict)
             replica_id = str(replica["replica_id"])
@@ -828,22 +848,23 @@ def _capture_member_coordinates(
                 output_indices = None
                 output_indices_by_member = None
             elif selection_name == "molecular_payload":
-                if reference_payload_identity is None:
-                    raise StateCoordinateExportError(
-                        "canonical member molecular payload identity is unavailable"
-                    )
                 output_indices_by_member = {}
                 for member_id in sorted(by_member):
                     payload_identity, payload_indices = _member_payload_map(
                         atoms,
                         plan,
                         member_id,
-                        policy=str(project["common_atom_policy"]),
+                        policy="strict",
                     )
-                    if payload_identity != reference_payload_identity:
+                    if system_payload_identity is None:
+                        system_payload_identity = payload_identity
+                        system_output_atoms = [atoms[index] for index in payload_indices]
+                        system_topology_path = topology_path
+                    if payload_identity != system_payload_identity:
                         raise StateCoordinateExportError(
-                            f"member {member_id!r} molecular payload does not exactly "
-                            "match the canonical member topology"
+                            f"system {system_id!r}, replica {replica_id!r}, member "
+                            f"{member_id!r} molecular payload does not exactly match "
+                            "the system's canonical member topology (strict chemistry)"
                         )
                     output_indices_by_member[member_id] = payload_indices
                 output_indices = None
@@ -864,7 +885,11 @@ def _capture_member_coordinates(
                     )
                 output_indices = tuple(atom.atom_index for atom in selected_output)
                 output_indices_by_member = None
-            topologies[(system_id, replica_id)] = (output_atoms, reference_path)
+            if selection_name == "molecular_payload":
+                assert system_output_atoms is not None and system_topology_path is not None
+                topologies[(system_id, replica_id)] = (system_output_atoms, system_topology_path)
+            else:
+                topologies[(system_id, replica_id)] = (output_atoms, reference_path)
             reconstruction = tuple(sorted({
                 int(atom_index)
                 for member in members if isinstance(member, dict)
@@ -971,17 +996,29 @@ def _capture_member_coordinates(
 
 
 def state_coordinate_exports_project(
-    project_path: Path, hash_content: bool = False
+    project_path: Path, hash_content: bool = False, *,
+    diagnostic_only: bool = False,
+    phase_observer: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, object]:
-    """Materialize declared state trajectories without changing any source file."""
+    """Materialize declared state trajectories without changing any source file.
 
+    Diagnostic mode requires validated saved upstream reports and returns before
+    any output directory or coordinate file is created. It exercises coordinate
+    reading/alignment but is not an export or scientific acceptance report.
+    """
+
+    phase = phase_observer if phase_observer is not None else lambda name: None
+    phase("configuration")
     source_path = Path(project_path).expanduser().resolve(strict=False)
     project = load_json(source_path)
     settings = _settings(project)
+    phase("context_validation")
     context = compile_project_context_file(source_path, hash_content=hash_content)
+    phase("saved_source_validation_and_candidates")
     source_report, candidates, state_field, distance_field = _source_candidates(
-        source_path, settings, hash_content
+        source_path, settings, hash_content, cached_only=diagnostic_only
     )
+    phase("state_frame_selection")
     selected = (
         _selected_state_rows(candidates, state_field, settings)
         if settings["write_trajectories"] else []
@@ -1007,6 +1044,7 @@ def state_coordinate_exports_project(
             "state assignments mix symmetry-expanded and physical-frame identities"
         )
     system_path = Path(str(context["system_manifest_path"]))
+    phase("coordinate_capture_and_alignment")
     if member_mode:
         common_pca = project.get("definitions", {}).get("common_pca", {})
         plan = common_pca.get("symmetry_expansion") if isinstance(common_pca, dict) else None
@@ -1040,6 +1078,7 @@ def state_coordinate_exports_project(
             captured_ions, ion_topologies,
         ) = _capture_coordinates(project, source_path, system_path, requested)
 
+    phase("state_conditioned_ion_stability")
     if not ion_settings["enabled"]:
         ion_stability_report: Dict[str, object] = {
             "module_id": "state_conditioned_ion_stability",
@@ -1085,6 +1124,29 @@ def state_coordinate_exports_project(
             },
         })
 
+    if diagnostic_only:
+        phase("diagnostic_complete")
+        return {
+            "module_id": "state_coordinate_export_diagnostic",
+            "technical_status": "complete",
+            "scientific_status": "not_evaluated",
+            "coordinate_files_written": 0,
+            "upstream_recomputation_allowed": False,
+            "project_manifest_sha256": sha256_file(source_path),
+            "system_manifest_sha256": sha256_file(system_path),
+            "source_contract_signature_sha256": source_report.get("contract_signature_sha256"),
+            "candidate_observations": len(candidates),
+            "representative_observations": len(representatives),
+            "trajectory_observations": len(selected),
+            "captured_observations": len(captured),
+            "state_count": len({row["state_id"] for row in representatives}),
+            "payload_atom_counts": [
+                {"system_id": key[0], "replica_id": key[1], "atom_count": len(value[0])}
+                for key, value in sorted(topologies.items())
+            ],
+            "limitation": "Read/validation/alignment timing only; export writing and scientific validity are not evaluated.",
+        }
+    phase("coordinate_and_manifest_writing")
     output_root = resolve_manifest_path(str(project["analysis_output_root"]), source_path)
     parent = output_root / "08_clustering" / "state_coordinate_exports"
     final_directory = parent / str(settings["export_id"])

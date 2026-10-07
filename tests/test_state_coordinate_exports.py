@@ -1,4 +1,5 @@
 import json
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,12 +7,17 @@ from unittest.mock import patch
 
 from salsbury_md_analysis.state_coordinate_exports import (
     _member_payload_map,
+    StateCoordinateExportError,
     state_coordinate_exports_project,
     state_coordinate_exports_project_safe,
 )
 from salsbury_md_analysis.atom_mapping import AtomRecord
 
 from tests.test_pca_fes import _write_ai_project
+from tests.test_quickstart import _write_oligomer_inputs
+from salsbury_md_analysis.quickstart import _composition
+from salsbury_md_analysis.atom_mapping import read_topology_atoms
+from salsbury_md_analysis.coordinates import iter_coordinate_frames
 
 
 def _source_report() -> dict:
@@ -56,6 +62,80 @@ def _export_project(root: Path) -> Path:
 
 
 class StateCoordinateExportTests(unittest.TestCase):
+    def test_member_exports_preserve_system_chemistry_and_replica_lineage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path, source = _chemical_member_fixture(root)
+            originals = {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in root.iterdir() if p.is_file()}
+            with patch("salsbury_md_analysis.state_coordinate_exports.clustering_kmeans_project", return_value=source):
+                report = state_coordinate_exports_project(path, hash_content=True)
+            self.assertEqual(report["technical_status"], "complete")
+            self.assertEqual(report["exported_frame_count"], 16)
+            for system_id, names, count in (("control", {"H8"}, 9), ("lesion", {"H7", "O8"}, 10)):
+                outputs = [r for r in report["outputs"] if r["system_id"] == system_id]
+                self.assertTrue(outputs)
+                for output in outputs:
+                    self.assertEqual(output["pooled_member_ids"], ["member-1", "member-2"])
+                    self.assertEqual(output["pooled_replica_ids"], ["r1", "r2"])
+                    self.assertEqual(
+                        {(r["replica_id"], r["member_id"], r["source_frame_index"]) for r in output["trajectory_frame_provenance"]},
+                        {(replica, member, output["state_id"] - 1) for replica in ("r1", "r2") for member in ("member-1", "member-2")},
+                    )
+                files = list(Path(report["export_directory"]).rglob(f"*{system_id}*/trajectory.pdb"))
+                self.assertEqual(len(files), 2)
+                for filename in files:
+                    _, atoms = read_topology_atoms(filename)
+                    self.assertEqual(len(atoms), count)
+                    self.assertTrue(names.issubset({a.atom_name for a in atoms}))
+                    self.assertNotIn("H8" if system_id == "lesion" else "O8", {a.atom_name for a in atoms})
+                    frames = list(iter_coordinate_frames(filename, "angstrom"))
+                    self.assertEqual(len(frames), 4)
+                    for frame in frames:
+                        for atom, coordinate in zip(atoms, frame.coordinates_angstrom):
+                            if atom.atom_name in names:
+                                self.assertAlmostEqual(coordinate[0], 3.0, places=3)
+                                self.assertAlmostEqual(coordinate[1], 4.0, places=3)
+            for filename, digest in originals.items():
+                self.assertEqual(hashlib.sha256(filename.read_bytes()).hexdigest(), digest)
+
+    def test_member_payload_mismatch_within_system_still_fails(self):
+        for change in ("missing_atom", "residue_identity", "member_identity"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                path, source = _chemical_member_fixture(root)
+                topology = root / "lesion-r2.pdb"
+                text = topology.read_text()
+                if change == "missing_atom":
+                    text = "\n".join(line for line in text.splitlines() if " O8 " not in line) + "\n"
+                elif change == "residue_identity":
+                    text = text.replace("8OG", " DG")
+                else:
+                    text = "\n".join(
+                        line.replace("8OG", " DG") if line.startswith("ATOM") and line[21] == "D" else line
+                        for line in text.splitlines()
+                    ) + "\n"
+                topology.write_text(text)
+                with patch("salsbury_md_analysis.state_coordinate_exports.clustering_kmeans_project", return_value=source):
+                    with self.assertRaisesRegex(ValueError, "canonical member topology|atom count"):
+                        state_coordinate_exports_project(path)
+                self.assertFalse((root / "outputs" / "08_clustering").exists())
+
+    def test_diagnostic_never_computes_upstream_or_writes_exports(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = _export_project(root)
+            phases = []
+            with patch("salsbury_md_analysis.state_coordinate_exports.load_cached_project_report", return_value=_source_report()), patch("salsbury_md_analysis.state_coordinate_exports.clustering_kmeans_project", side_effect=AssertionError("must not rebuild")):
+                report = state_coordinate_exports_project(path, diagnostic_only=True, phase_observer=phases.append)
+            self.assertEqual(report["captured_observations"], 6)
+            self.assertEqual(report["coordinate_files_written"], 0)
+            self.assertEqual(phases[-1], "diagnostic_complete")
+            self.assertIn("coordinate_capture_and_alignment", phases)
+            self.assertFalse((root / "outputs").exists())
+            with patch("salsbury_md_analysis.state_coordinate_exports.load_cached_project_report", return_value=None):
+                with self.assertRaisesRegex(StateCoordinateExportError, "upstream recomputation is prohibited"):
+                    state_coordinate_exports_project(path, diagnostic_only=True)
+
     def test_member_payload_keeps_hydrogens_and_chain_heteroatoms_but_not_water(self):
         atoms = []
         for chain in ("A", "B"):
@@ -278,6 +358,48 @@ class StateCoordinateExportTests(unittest.TestCase):
                 report["outputs"][0]["pooled_member_ids"],
                 ["member-1", "member-2"],
             )
+
+
+def _chemical_member_fixture(root):
+    path = _export_project(root)
+    reference, _, _ = _write_oligomer_inputs(root)
+    plan = _composition(reference)["conformational_view_plan"]["equivalent_oligomer"]
+    base = reference.read_text().splitlines()[:-1]
+    systems, assignments = [], []
+    for system_id, payload in (("control", (("H8", "H"),)), ("lesion", (("H7", "H"), ("O8", "O")))):
+        replicas = []
+        for replica_id in ("r1", "r2"):
+            rows = list(base)
+            for chain, offset in (("C", 0), ("D", 30)):
+                for name, element in payload:
+                    serial = len(rows) + 1
+                    rows.append(f"ATOM  {serial:5d} {name:^4s} {'DG':>3s} {chain}{10:4d}    {offset+3:8.3f}{4:8.3f}{0:8.3f}  1.00  0.00          {element:>2s}")
+            if system_id == "lesion":
+                rows = [line.replace(" DG ", "8OG ") for line in rows]
+            if replica_id == "r2":
+                rows.reverse()  # Coordinate order may vary; chemical identities may not.
+            topology = root / f"{system_id}-{replica_id}.pdb"
+            topology.write_text("\n".join(rows) + "\nEND\n")
+            trajectory = topology.with_suffix(".xyz")
+            trajectory.write_text("".join(
+                f"{len(rows)}\nframe-{frame}\n" + "".join(
+                    f"{line[76:78].strip()} {float(line[30:38])+frame} {line[38:46]} {line[46:54]}\n"
+                    for line in rows
+                ) for frame in range(2)
+            ))
+            replicas.append({"replica_id": replica_id, "topology": topology.name, "segments": [{"segment_id": "samples", "trajectory": trajectory.name, "sample_axis": {"first_sample_index": 0, "sample_interval": 1}}]})
+            for frame in range(2):
+                for member in ("member-1", "member-2"):
+                    assignments.append({"system_id": system_id, "replica_id": replica_id, "segment_id": "samples", "source_frame_index": frame, "sample_index": frame, "member_id": member, "cluster_id": frame + 1, "squared_distance_in_clustering_space": 0.0})
+        systems.append({"system_id": system_id, "replicas": replicas})
+    (root / "system.json").write_text(json.dumps({"systems": systems}))
+    project = json.loads(path.read_text())
+    project.update(reference_structure="control-r1.pdb", reference_system="control", common_atom_policy="position")
+    project["selections"] = {"alignment": {"atom_names": ["N", "CA", "C", "O"]}, "analysis": {"atom_names": ["CB"]}, "molecular_payload": {"preset": "molecular_payload"}}
+    project["definitions"]["common_pca"]["symmetry_expansion"] = plan
+    project["definitions"]["state_coordinate_exports"].update(coordinate_selection="molecular_payload", trajectory_format="pdb")
+    path.write_text(json.dumps(project))
+    return path, {**_source_report(), "assignments": assignments}
 
 
 if __name__ == "__main__":

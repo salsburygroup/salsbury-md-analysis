@@ -398,6 +398,20 @@ class QuickstartTests(unittest.TestCase):
                 ["maximum_states"],
                 250,
             )
+            self.assertEqual(project["definitions"]["representative_frames"]["maximum_states"], 250)
+            from salsbury_md_analysis.analysis_config import apply_module_configuration
+            configuration = json.loads((output / "analysis-config.json").read_text())
+            configuration["clustering"]["methods"]["kmeans"]["enabled"] = False
+            adjusted, _, _, _ = apply_module_configuration(
+                project["definitions"], [], project["requested_modules"], configuration
+            )
+            self.assertEqual(adjusted["representative_frames"]["source"], "pca_fes_basins")
+            self.assertEqual(adjusted["representative_frames"]["maximum_states"], 250)
+            configuration["modules"]["representative_frames"]["options"] = {"maximum_states": 50}
+            adjusted, _, _, _ = apply_module_configuration(
+                project["definitions"], [], project["requested_modules"], configuration
+            )
+            self.assertEqual(adjusted["representative_frames"]["maximum_states"], 50)
             self.assertEqual(
                 project["definitions"]["state_coordinate_exports"]
                 ["maximum_total_frames"],
