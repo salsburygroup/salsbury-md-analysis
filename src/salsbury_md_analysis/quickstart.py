@@ -735,7 +735,7 @@ def _generic_definitions(
         "representative_frames": {
             "source": "clustering_kmeans",
             "representatives_per_state": 1,
-            "maximum_states": 50,
+            "maximum_states": 250,
             "maximum_candidates": max(1, total_frames),
         },
         "markov_state_models": {

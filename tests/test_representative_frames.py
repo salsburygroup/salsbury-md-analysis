@@ -39,6 +39,18 @@ def _lineage() -> dict:
 
 
 class RepresentativeFrameTests(unittest.TestCase):
+    def test_operational_state_cap_never_truncates_states(self):
+        for count in (50, 51, 57, 70, 250, 251):
+            rows = [{"system_id": "s", "replica_id": "r", "segment_id": "x", "source_frame_index": n, "cluster_id": n + 1, "distance": 0.0} for n in range(count)]
+            for cap in (50, 250):
+                with self.subTest(count=count, cap=cap):
+                    if count > cap:
+                        with self.assertRaisesRegex(ValueError, "exceeds maximum_states"):
+                            select_state_representatives(rows, state_field="cluster_id", distance_field="distance", representatives_per_state=1, maximum_states=cap, maximum_candidates=300)
+                    else:
+                        selected = select_state_representatives(rows, state_field="cluster_id", distance_field="distance", representatives_per_state=1, maximum_states=cap, maximum_candidates=300)
+                        self.assertEqual([r["state_id"] for r in selected], list(range(1, count + 1)))
+
     def test_nearest_selection_is_state_sorted_and_identity_tie_broken(self):
         candidates = [
             {

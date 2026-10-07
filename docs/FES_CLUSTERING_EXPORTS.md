@@ -122,7 +122,7 @@ itself establish adequate sampling, metastability, kinetics, or mechanism.
 `state_coordinate_exports` converts a declared FES smoothing partition or
 selected clustering partition into coordinate files:
 
-- one multi-frame PDB or XYZ trajectory for each state/system/replica group;
+- one multi-frame PDB or XYZ trajectory for each state/system group, pooling replicas;
 - one or more observed representative PDB structures nearest the fitted center,
   medoid, or FES minimum;
 - a checksummed export manifest containing every source frame identity and input
@@ -138,20 +138,60 @@ medoid for an explicitly supplied, prealigned ensemble, but it is quadratic in
 the number of frames and is not a separate default campaign analysis.
 
 An optional `coordinate_selection` names a project selection to materialize.
-Routine conformational-view workflows use the full solute-heavy selection, so
-FES trajectories retain the protein–nucleic-acid context while omitting bulk
-water and free ions. If the field is absent, the backwards-compatible behavior
-exports every topology atom. The selected atom identities and topology hash are
-retained in the export evidence.
+Routine conformational-view workflows use `molecular_payload`, including
+hydrogens and the selected molecular context rather than only PCA feature atoms.
+For equivalent-member views, that payload contains all non-water atoms on the
+member's protein and nucleic-acid chains, including chain-associated ligands,
+cofactors and ions. Mobile ions without a member-chain assignment are not assigned
+to members. Each system has its own complete member topology: different systems
+may have different chemistry and atom counts while sharing a common alignment
+basis and state definition. Members and replicas pooled within a system must
+match strictly in chemical identity; atom order is mapped to the system's
+canonical member. No atoms are discarded to make two systems match.
+
+Without `coordinate_selection`, ordinary exports retain every topology atom;
+equivalent-member exports retain the declared member analysis atoms. The export
+manifest records topology hashes and every replica, segment, frame and member
+identity.
+
+New quickstart projects give representative selection and state-coordinate
+export the same 250-state operational capacity. Explicit smaller limits still
+fail if exceeded; neither path silently drops states. Existing saved projects
+are not rewritten by installing an update. Preserve their state definitions and
+review any capacity change explicitly.
 
 The exporter streams source trajectories read-only, applies the project's
 declared connectivity-aware periodic reconstruction, and never combines unlike
-system/replica topologies. It writes to
+chemical topologies into a single trajectory. It writes to
 `analysis_output_root/08_clustering/state_coordinate_exports/<export_id>` using a
 temporary sibling directory followed by an atomic rename. `existing_output_policy`
 must be `fail`; an existing export ID is never overwritten or merged. Publication
 repositories should lock selected export manifests and parameters rather than
 forking the reusable implementation.
+
+### Read-only export timing
+
+For a stalled exporter, `scripts/diagnose_state_exports.py` measures validation,
+saved-report loading, selection, coordinate capture/alignment and ion-stability
+phases. Run it in the failed task's saved-report environment, with a new evidence
+directory outside the study tree and an explicit diagnostic deadline:
+
+```bash
+python scripts/diagnose_state_exports.py \
+  --project /study/project-view.json \
+  --output-directory /diagnostics/export-attempt-1 \
+  --maximum-seconds 120
+```
+
+The parent evidence directory must exist. The script requires a validated saved
+source report through the usual cache environment variables; it never falls back
+to recalculating PCA, FES or clustering. It stops before export writing and saves
+phase timings, effective periodic-processing policies, processed-frame counts,
+process peak memory and a CPU profile. Frame counts include reference processing.
+The diagnostic requires POSIX timers. A timeout provides a lower runtime bound;
+profiling overhead and export-write time must be considered separately before
+changing resource estimates. Existing exports and `existing_output_policy=fail`
+are untouched.
 
 ## Weighted K-means fit and assignment coverage
 
