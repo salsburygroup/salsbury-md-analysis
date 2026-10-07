@@ -9,6 +9,7 @@ import numpy as np
 from salsbury_md_analysis.ion_atmosphere import (
     _distance, _nearest_distances, ion_atmosphere_project,
 )
+from salsbury_md_analysis.campaign_planning import _apply_automatic_context_allocation
 
 
 def _atom(record, serial, name, residue, chain, number, x, element):
@@ -60,6 +61,48 @@ def _write_project(root: Path) -> Path:
 
 
 class IonAtmosphereTests(unittest.TestCase):
+    def test_campaign_allocation_is_used_by_replica_workers(self):
+        # The planner's selected count must describe execution, not only its
+        # budget table. Cover base chemistry and comparative chemical contexts.
+        for namespace, stride in (("base", 1), ("context:chemical_control", 2)):
+            with self.subTest(namespace=namespace), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                path = _write_project(root)
+                system_path = root / "system.json"
+                system = json.loads(system_path.read_text())
+                original = system["systems"][0]["replicas"][0]
+                system["systems"][0]["replicas"] = [
+                    {**original, "replica_id": f"r{i}"} for i in range(6)
+                ]
+                system_path.write_text(json.dumps(system))
+                source_before = {p: p.read_bytes() for p in (
+                    system_path, root / "topology.pdb", root / "trajectory.pdb"
+                )}
+                chemistry_before = json.loads(path.read_text())["definitions"]["ion_atmosphere"]
+                selection = {"mode": "integer_stride_per_replica_v1", "stride": stride}
+                allocation = {
+                    "selected_physical_frames_per_replica": [2 // stride] * 6,
+                    "integer_stride": stride, "frame_selection": selection,
+                }
+                _apply_automatic_context_allocation(
+                    path, {f"{namespace}:ion_atmosphere": allocation}, [2] * 6,
+                    context_id="ions", task_namespace=namespace,
+                )
+                definition = json.loads(path.read_text())["definitions"]["ion_atmosphere"]
+                self.assertEqual(definition["frame_selection"], selection)
+                self.assertEqual(definition["maximum_frames"], 12 // stride)
+                for field in ("ion_groups", "target_groups", "shell_cutoffs_angstrom"):
+                    self.assertEqual(definition[field], chemistry_before[field])
+                with patch.dict("os.environ", {"SALSBURY_MD_ANALYSIS_REPLICA_WORKERS": "1"}):
+                    report = ion_atmosphere_project(path)
+                self.assertEqual(report["technical_status"], "complete")
+                self.assertEqual(report["frame_selection"]["selected_frame_count"], 12 // stride)
+                observed = {(row["replica_id"], row["frame_index"]) for row in report["frame_records"]}
+                expected = {(f"r{i}", frame) for i in range(6) for frame in range(0, 2, stride)}
+                self.assertEqual(observed, expected)
+                for source, before in source_before.items():
+                    self.assertEqual(source.read_bytes(), before)
+
     def test_vectorized_orthogonal_distances_match_exact_scalar_geometry(self):
         generator = np.random.default_rng(90210)
         ions = generator.uniform(-20.0, 20.0, size=(7, 3))

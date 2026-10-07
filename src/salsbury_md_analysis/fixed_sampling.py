@@ -122,6 +122,43 @@ def _validate_document(document):
                 or not isinstance(project.get("sampling_fields"), dict)
                 or not isinstance(project.get("requested_modules"), list)):
             raise FixedSamplingError(f"invalid fixed sampling project: {name}")
+    # A frozen task budget must agree with the worker settings it preserves.
+    # Older preparations omitted the ion-atmosphere allocation from the worker
+    # project; replaying both records unchanged would repeat a full-frame run
+    # while pricing a sparse one. Reject that contradiction before restoration.
+    for task_id, row in document["tasks"].items():
+        if row.get("module_id") != "ion_atmosphere":
+            continue
+        name = (
+            f"project-{row['workflow_id']}.json"
+            if row.get("task_scope") == "automatic_chemical_context"
+            else "project.json"
+        )
+        fields = document["projects"].get(name, {}).get("sampling_fields", {})
+        definition = fields.get("ion_atmosphere", {})
+        if not isinstance(definition, dict):
+            raise FixedSamplingError(f"invalid ion-atmosphere worker settings: {name}")
+        selection = definition.get("frame_selection", {"mode": "fixed_stride_v1"})
+        if not isinstance(selection, dict):
+            raise FixedSamplingError(f"invalid ion-atmosphere frame selection: {name}")
+        mode = selection.get("mode")
+        stride = (
+            selection.get("stride") if mode == "integer_stride_per_replica_v1"
+            else definition.get("frame_stride", 1)
+        )
+        maximum = definition.get("maximum_frames")
+        if (not definition or mode not in {"fixed_stride_v1", "integer_stride_per_replica_v1"}
+                or isinstance(stride, bool) or not isinstance(stride, int)
+                or stride != row["integer_stride"]
+                or (mode == "integer_stride_per_replica_v1" and definition.get("frame_stride", 1) != 1)
+                or isinstance(maximum, bool) or not isinstance(maximum, int)
+                or maximum < sum(row["selected_physical_frames_per_replica"])):
+            raise FixedSamplingError(
+                f"fixed sampling worker mismatch: {task_id} in {name}; "
+                f"planned stride {row['integer_stride']}, worker stride {stride}. "
+                "Preserve the original preparation; generate and review a corrected "
+                "worker configuration before replay. No sampling was changed."
+            )
 
 
 def schedule_document(root: Path, plan, sampling_plan, project_paths=None):

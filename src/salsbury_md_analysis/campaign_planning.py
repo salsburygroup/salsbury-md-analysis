@@ -1980,11 +1980,13 @@ def _apply_automatic_context_allocation(
             "scalar_feature_distributions", "scalar_threshold_states",
         }:
             feature_family_budget = max(selected)
-        elif module_id == "radial_distribution_functions":
+        elif module_id in {"radial_distribution_functions", "ion_atmosphere"}:
             definition = definitions.get(module_id)
             if isinstance(definition, dict):
                 definition["frame_stride"] = 1
                 definition["frame_selection"] = deepcopy(selection)
+                if module_id == "ion_atmosphere":
+                    definition["maximum_frames"] = selected_total
         elif module_id in {
             "nucleic_acid_geometry", "ion_coordination_geometry",
         }:

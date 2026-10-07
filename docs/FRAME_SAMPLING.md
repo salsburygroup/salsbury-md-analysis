@@ -278,6 +278,14 @@ submission files are ready; increase resources or explicitly choose another
 schedule. Automatic method reduction and uniform-stride optimization cannot
 override a fixed schedule.
 
+Ion-atmosphere worker settings must match the frozen task stride and allow its
+selected frame count. Preparation rejects an inconsistent historical schedule
+instead of replaying a full-frame calculation under a sparse-frame budget.
+Preserve that preparation and review a corrected copy before reuse. A value of
+`frame_stride: 1` alone does not mean all frames are selected: modules such as
+RDF, water networks and ion atmosphere can carry the chosen stride in
+`frame_selection` with mode `integer_stride_per_replica_v1`.
+
 Clustering-fit strides index the retained PCA projections. For example, a
 cache stride of 2, projection stride of 25, and fit stride of 8 give a fit
 stride of 400 relative to the raw trajectory. The planner checks the source

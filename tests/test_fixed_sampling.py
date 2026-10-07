@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from salsbury_md_analysis.fixed_sampling import (
-    FixedSamplingError, _digest, export_fixed_sampling_schedule,
+    FixedSamplingError, _digest, _validate_document, export_fixed_sampling_schedule,
     freeze_task_sampling, sampling_fields, verify_fixed_plan,
 )
 from salsbury_md_analysis.quickstart import prepare_standard_analysis, QuickstartError
@@ -32,6 +32,32 @@ def _rdf_task():
 
 
 class FixedSamplingTests(unittest.TestCase):
+    def test_ion_worker_selection_must_match_frozen_task(self):
+        for scope in ("automatic_chemical_context", "base_automatic_chemistry"):
+            name = "project-chemical_A.json" if scope == "automatic_chemical_context" else "project.json"
+            task = {
+                "module_id": "ion_atmosphere", "task_scope": scope,
+                "workflow_id": "chemical_A", "integer_stride": 498,
+                "source_frames_per_replica": [100_000] * 6,
+                "selected_physical_frames_per_replica": [200] * 6,
+            }
+            definition = {"frame_stride": 1, "maximum_frames": 600_000}
+            document = {
+                "projects": {name: {"requested_modules": ["ion_atmosphere"],
+                                     "sampling_fields": {"ion_atmosphere": definition}}},
+                "tasks": {"ions": task}, "source_identity": {"test": True},
+                "replicas": [{"test": True}],
+            }
+            with self.subTest(scope=scope):
+                with self.assertRaisesRegex(FixedSamplingError, "worker mismatch: ions.*planned stride 498, worker stride 1"):
+                    _validate_document(document)
+                definition.update({"frame_selection": {"mode": "integer_stride_per_replica_v1", "stride": 498},
+                                   "maximum_frames": 1200})
+                _validate_document(document)
+                definition["maximum_frames"] = 1199
+                with self.assertRaisesRegex(FixedSamplingError, "worker mismatch"):
+                    _validate_document(document)
+
     @patch("salsbury_md_analysis.comparative_quickstart._discover_dssp_executable", return_value=None)
     def test_five_system_fixed_schedule_with_strided_cache(self, _dssp):
         for protected in (True, False):
