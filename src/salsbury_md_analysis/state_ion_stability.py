@@ -13,6 +13,7 @@ from typing import Dict, List, Mapping, Sequence, Tuple
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
+from scipy.spatial import cKDTree
 
 
 class StateIonStabilityError(ValueError):
@@ -128,26 +129,52 @@ def _discover_centers(
     if not observations:
         return []
     points = np.asarray([row[2] for row in observations], dtype=np.float64)
-    remaining = list(range(len(points)))
+    # Squaring subnormal displacements can underflow in the original norm.
+    # Preserve that accepted-input behavior where a spatial bound is unsafe.
+    if radius <= float(np.sqrt(np.finfo(np.float64).tiny)):
+        remaining = list(range(len(points)))
+        centers = []
+        while remaining and len(centers) < maximum_sites:
+            best_index = min(remaining, key=lambda candidate: (
+                -sum(float(np.linalg.norm(points[candidate] - points[other])) <= radius
+                     for other in remaining), candidate))
+            selected = [other for other in remaining
+                        if float(np.linalg.norm(points[best_index] - points[other])) <= radius]
+            centers.append(np.mean(points[selected], axis=0))
+            removed = set(selected)
+            remaining = [index for index in remaining if index not in removed]
+        return centers
+    # The spatial index only supplies a conservative candidate set. Retain the
+    # original scalar norm comparison, index tie-break and sorted mean order.
+    # No dense pairwise matrix or persistent adjacency list is constructed.
+    tree = cKDTree(points)
+    query_radius = float(np.nextafter(radius, np.inf))
+
+    def neighbors(index):
+        candidates = tree.query_ball_point(points[index], query_radius, p=np.inf)
+        return np.asarray([
+            other for other in sorted(candidates)
+            if float(np.linalg.norm(points[index] - points[other])) <= radius
+        ], dtype=np.intp)
+
+    counts = np.asarray([len(neighbors(i)) for i in range(len(points))], dtype=np.int64)
+    active = np.ones(len(points), dtype=bool)
     centers = []
-    while remaining and len(centers) < maximum_sites:
-        best_index = min(
-            remaining,
-            key=lambda candidate: (
-                -sum(
-                    float(np.linalg.norm(points[candidate] - points[other])) <= radius
-                    for other in remaining
-                ),
-                candidate,
-            ),
-        )
-        neighbors = [
-            other for other in remaining
-            if float(np.linalg.norm(points[best_index] - points[other])) <= radius
-        ]
-        centers.append(np.mean(points[neighbors], axis=0))
-        removed = set(neighbors)
-        remaining = [index for index in remaining if index not in removed]
+    while np.any(active) and len(centers) < maximum_sites:
+        best_index = int(np.argmax(counts))
+        selected = neighbors(best_index)
+        selected = selected[active[selected]]
+        centers.append(np.mean(points[selected], axis=0))
+        active[selected] = False
+        if not np.any(active) or len(centers) >= maximum_sites:
+            break
+        # Each removed observation reduces its still-active neighbors' density
+        # by one. Symmetry preserves the original greedy density objective.
+        for removed in selected:
+            affected = neighbors(int(removed))
+            affected = affected[active[affected]]
+            counts[affected] -= 1
+        counts[~active] = -1
     return centers
 
 
