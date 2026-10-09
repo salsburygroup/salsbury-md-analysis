@@ -60,6 +60,20 @@ For one node, inspect `./submit.sh --single-allocation --preview`, then use
 recommended campaign limit. Multi-node plans retain the ordinary per-task
 launcher; see [execution adapters](../docs/EXECUTION_ADAPTERS.md).
 
+The default `./submit.sh` submits independent jobs with task-specific requests.
+Their combined reservations may exceed the scientific plan envelope across
+nodes; Slurm places them. Set separate `packaging.maximum_concurrent_cpus` or
+`packaging.maximum_concurrent_memory_gib` limits in the Slurm profile if that
+combined usage must be capped. These limits do not change sampling or run Pareto
+planning again. An indivisible task that exceeds a limit is rejected.
+
+For recovery, inspect `salsbury-md-analysis package-slurm /path/to/campaign`
+before `salsbury-md-analysis resume /path/to/campaign --execute`. The preview
+queries scheduler state, reuses validated reports, and shows only unfinished
+jobs. Keep all previous logs and submission ledgers. Unknown accounting or a
+partial submission prevents duplicate work until reconciled; a completed job
+with missing report evidence needs diagnosis, not an automatic rerun.
+
 Preflight estimates now depend on input bytes, file reads, replicas, and topology
 size. Reporting estimates depend on report bundles, views, system size, and
 enabled output components. These are conservative workload models, not fitted

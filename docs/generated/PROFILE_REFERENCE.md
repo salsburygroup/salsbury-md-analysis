@@ -90,7 +90,7 @@ Source: `profiles/slurm/deac.json`
 - Default partition: `small`
 - Analysis partition: `small`
 - Conformational partition: `small`
-- Large-memory partition: `large`
+- Large-memory partition: `small`
 - Partition node limits: `{"large": 16, "small": 1}`
 - Large-memory threshold GiB: `96`
 - Python executable: `/deac/phy/salsburyGrp/software/salsbury-md-analysis/environments/v76/bin/python3.12`

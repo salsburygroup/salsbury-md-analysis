@@ -238,7 +238,8 @@ class QuickstartTests(unittest.TestCase):
         self.assertEqual(retained["account"], "salsburygrp")
         self.assertIn("#SBATCH --account=salsburygrp", worker)
         self.assertIn("#SBATCH --partition=small", worker)
-        self.assertIn("/opt/scyld/slurm/bin/sbatch", submit)
+        self.assertIn('run "$ROOT"', submit)
+        self.assertEqual(retained["submit_command"], "/opt/scyld/slurm/bin/sbatch")
         stage_request = scheduler["scripts"]["run_stage_0_array.slurm"]
         self.assertTrue(stage_request["planner_task_ids"])
         self.assertIn(f"#SBATCH --time={stage_request['slurm_time']}", worker)

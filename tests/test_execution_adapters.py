@@ -32,6 +32,15 @@ def _valid_report_command():
     return shlex.quote(sys.executable) + " -c " + shlex.quote(code) + "\n"
 
 
+def _task_submission(root, profile, scheduler):
+    """Inspect the internal launch payload; submit.sh is now the guarded CLI."""
+    public = (root / "submit.sh").read_text()
+    assert 'package-slurm "$ROOT"' in public
+    assert 'run "$ROOT"' in public
+    return _render_resource_bounded_submit(root, profile, root / "slurm-profile.json",
+        scheduler["resource_epochs"], scheduler["submission_preview"]["submission_permitted"])
+
+
 class ExecutionAdapterTests(unittest.TestCase):
     def test_shipped_slurm_profiles_do_not_repeat_planner_time_factor(self):
         repository = Path(__file__).resolve().parents[1]
@@ -280,7 +289,7 @@ class ExecutionAdapterTests(unittest.TestCase):
                 }]}],
             })
             worker = (root / "run_stage_0_array.slurm").read_text(encoding="utf-8")
-            submit = (root / "submit.sh").read_text(encoding="utf-8")
+            submit = _task_submission(root, profile, scheduler)
         self.assertIn("#SBATCH --account=salsburygrp", worker)
         self.assertIn("#SBATCH --partition=small", worker)
         self.assertIn("#SBATCH --qos=normal", worker)
@@ -377,7 +386,7 @@ class ExecutionAdapterTests(unittest.TestCase):
                     "memory_request_limited_by_campaign_cap": False,
                 }]}],
             })
-            submit = (root / "submit.sh").read_text(encoding="utf-8")
+            submit = _task_submission(root, profile, scheduler)
         request = scheduler["scripts"][worker.name]
         self.assertEqual(request["selected_partition"], "large")
         self.assertEqual(request["selected_partition_role"], "long_wall")
@@ -566,7 +575,7 @@ class ExecutionAdapterTests(unittest.TestCase):
             self.assertEqual(alternative["planned_peak_memory_gib"], 100)
             scheduler = apply_slurm_profile(root, profile, plan)
             view_text = view.read_text(encoding="utf-8")
-        self.assertIn("#SBATCH --partition=large", view_text)
+        self.assertIn("#SBATCH --partition=small", view_text)
         self.assertIn("#SBATCH --mem=151G", view_text)
         self.assertEqual(
             scheduler["scripts"][view.name]["selected_partition_role"],
@@ -1046,7 +1055,7 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertIn("--array=3%1 --time=01:00:00 --mem=7G", submit)
         self.assertIn("--array=5%1 --time=00:45:00 --mem=5G", submit)
         self.assertIn(
-            "--array=6%1 --time=02:00:00 --mem=389G --partition=large",
+            "--array=6%1 --time=02:00:00 --mem=389G --partition=small",
             submit,
         )
         self.assertIn(
@@ -1065,6 +1074,7 @@ class ExecutionAdapterTests(unittest.TestCase):
     def test_tiered_array_preserves_a_single_cpu_throttle_with_dependencies(self):
         repository = Path(__file__).resolve().parents[1]
         profile = load_slurm_profile(repository / "profiles/slurm/deac.json")
+        profile["packaging"]["maximum_concurrent_cpus"] = 1
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "slurm-profile.json").write_text("{}\n", encoding="utf-8")
@@ -1103,7 +1113,7 @@ class ExecutionAdapterTests(unittest.TestCase):
                     task(0, 4), task(1, 128),
                 ]}],
             })
-            submit = (root / "submit.sh").read_text(encoding="utf-8")
+            submit = _task_submission(root, profile, scheduler)
             syntax = subprocess.run(
                 ["bash", "-n", str(root / "submit.sh")],
                 check=False,
@@ -1112,7 +1122,7 @@ class ExecutionAdapterTests(unittest.TestCase):
             )
 
         self.assertEqual(syntax.returncode, 0, syntax.stderr)
-        self.assertIn("--mem=128G --partition=large --array=1", submit)
+        self.assertIn("--mem=128G --partition=small --array=1", submit)
         self.assertIn("--mem=4G --partition=small --array=0", submit)
         self.assertIn('--dependency="afterany:${JOB_T0000}"', submit)
         self.assertEqual(scheduler["resource_lanes"], [])
@@ -1120,9 +1130,10 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertEqual(token_schedule["policy"]["cpu_token_count"], 1)
         self.assertEqual(len(token_schedule["scheduled_items"]), 2)
 
-    def test_canonical_slurm_launcher_enforces_aggregate_memory_waves(self):
+    def test_slurm_launcher_enforces_explicit_aggregate_memory_cap(self):
         repository = Path(__file__).resolve().parents[1]
         profile = load_slurm_profile(repository / "profiles/slurm/deac.json")
+        profile["packaging"]["maximum_concurrent_memory_gib"] = 185
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "slurm-profile.json").write_text("{}\n", encoding="utf-8")
@@ -1159,22 +1170,15 @@ class ExecutionAdapterTests(unittest.TestCase):
                     task(0, 100), task(1, 90), task(2, 80),
                 ]}],
             })
-            submit = (root / "submit.sh").read_text(encoding="utf-8")
+            submit = _task_submission(root, profile, scheduler)
             syntax = subprocess.run(
                 ["bash", "-n", str(root / "submit.sh")],
                 check=False,
                 capture_output=True,
                 text=True,
             )
-            preview_run = subprocess.run(
-                [str(root / "submit.sh"), "--preview"],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            preview = json.loads(preview_run.stdout)
+            preview = json.loads((root / "slurm-submission-preview.json").read_text())
         self.assertEqual(syntax.returncode, 0, syntax.stderr)
-        self.assertEqual(preview_run.returncode, 0, preview_run.stderr)
         self.assertEqual(scheduler["resource_lanes"], [])
         token_schedule = scheduler["resource_token_schedules"][0]
         self.assertEqual(len(token_schedule["scheduled_items"]), 3)
@@ -1189,7 +1193,7 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertEqual(preview["maximum_parallel_memory_gib_in_generated_waves"], 180)
         # A permitted second node is unnecessary for this same two-hour
         # schedule: the concurrent 100 + 80 GiB pair fits one node.
-        self.assertEqual(preview["planned_node_count"], 1)
+        self.assertIsNone(preview["planned_node_count"])
         self.assertTrue(all(
             row["reserved_memory_gib_per_node"] <= 185.0
             for row in preview["planned_node_reservations"]
@@ -1201,11 +1205,7 @@ class ExecutionAdapterTests(unittest.TestCase):
         self.assertEqual(
             preview["scheduler_time_limit_reservation_critical_path_hours"], 2,
         )
-        self.assertEqual(preview["warning_count"], 1)
-        self.assertEqual(
-            preview["warnings"][0]["code"],
-            "REQUESTED_CPUS_EXCEED_GENERATED_PARALLELISM",
-        )
+        self.assertEqual(preview["warning_count"], 0)
         self.assertEqual(
             scheduler["submission_preview_file"],
             "slurm-submission-preview.json",
@@ -1214,6 +1214,8 @@ class ExecutionAdapterTests(unittest.TestCase):
     def test_slurm_releases_lane_memory_between_dependency_epochs(self):
         repository = Path(__file__).resolve().parents[1]
         profile = load_slurm_profile(repository / "profiles/slurm/deac.json")
+        profile["packaging"]["maximum_concurrent_cpus"] = 44
+        profile["packaging"]["maximum_concurrent_memory_gib"] = 185
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "slurm-profile.json").write_text("{}\n", encoding="utf-8")
@@ -1263,7 +1265,7 @@ class ExecutionAdapterTests(unittest.TestCase):
                 ],
             })
             preview = scheduler["submission_preview"]
-            submit = (root / "submit.sh").read_text(encoding="utf-8")
+            submit = _task_submission(root, profile, scheduler)
 
         self.assertEqual(preview["resource_epoch_count"], 1)
         self.assertEqual(preview["maximum_parallel_memory_gib_in_generated_waves"], 181)
@@ -1277,6 +1279,7 @@ class ExecutionAdapterTests(unittest.TestCase):
     def test_slurm_refuses_a_generated_schedule_over_campaign_wall_limit(self):
         repository = Path(__file__).resolve().parents[1]
         profile = load_slurm_profile(repository / "profiles/slurm/deac.json")
+        profile["packaging"]["maximum_concurrent_cpus"] = 1
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "slurm-profile.json").write_text("{}\n", encoding="utf-8")
@@ -1320,7 +1323,7 @@ class ExecutionAdapterTests(unittest.TestCase):
                 ],
             })
             preview = scheduler["submission_preview"]
-            submit = (root / "submit.sh").read_text(encoding="utf-8")
+            submit = _task_submission(root, profile, scheduler)
 
         self.assertEqual(preview["generated_schedule_feasibility_status"], "infeasible")
         self.assertFalse(preview["submission_permitted"])
@@ -1334,6 +1337,7 @@ class ExecutionAdapterTests(unittest.TestCase):
     def test_task_dag_uses_afterany_resource_barriers_and_afterok_inputs(self):
         repository = Path(__file__).resolve().parents[1]
         profile = load_slurm_profile(repository / "profiles/slurm/deac.json")
+        profile["packaging"]["maximum_concurrent_memory_gib"] = 100
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "slurm-profile.json").write_text("{}\n", encoding="utf-8")
@@ -1379,7 +1383,7 @@ class ExecutionAdapterTests(unittest.TestCase):
                     ]},
                 ],
             })
-            submit = (root / "submit.sh").read_text(encoding="utf-8")
+            submit = _task_submission(root, profile, scheduler)
             syntax = subprocess.run(
                 ["bash", "-n", str(root / "submit.sh")], check=False,
                 capture_output=True, text=True,

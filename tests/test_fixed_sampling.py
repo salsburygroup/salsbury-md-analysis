@@ -158,7 +158,11 @@ class FixedSamplingTests(unittest.TestCase):
                     # Raw counts must not already have been cache-strided.
                     self.assertTrue(all(n == 2000 for n in raw_counts))
             preview = json.loads((second / "slurm-submission-preview.json").read_text())
-            self.assertAlmostEqual(native["estimated_execution_hours"], preview["planner_estimated_dependency_critical_path_hours"])
+            # Science planning keeps its bounded envelope. Submission may
+            # overlap independent jobs across additional physical nodes.
+            self.assertLessEqual(preview["planner_estimated_dependency_critical_path_hours"], native["estimated_execution_hours"] + 1e-9)
+            self.assertTrue(preview["submission_permitted"])
+            self.assertEqual(preview["resource_token_edge_count"], 0)
             # A frozen historical block size must still be feasible; freezing
             # does not authorize changing scientific validity requirements.
             if not protected:

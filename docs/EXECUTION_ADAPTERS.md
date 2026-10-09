@@ -383,16 +383,13 @@ schedule is checked unchanged, without optional pruning.
 Slurm requests can be larger than the estimated working set because the
 planner reads explicit adjustments from the site profile. It applies those
 terms before testing memory feasibility. A profile may also declare its CPU and
-memory per node. Planning then rejects an adjusted task request that cannot fit
-one node and assigns each task global and per-node CPU and padded-memory tokens.
-The sum of concurrently held tokens cannot exceed either the campaign envelope
-or a node's CPU and memory shape. A task waits only for its own scientific
-inputs, explicit completion waits, and prior users of the tokens it needs.
-Among dependency-ready tasks, the adapter schedules the earliest resource fit
-first and uses the remaining declared critical path to break ties. This lets a
-downstream-critical task use an available node instead of waiting behind an
-unrelated long task that happened to appear earlier in the generated plan.
-`submit.sh` uses `afterany` for token and completion-only predecessors, so a
+memory per node. Planning rejects an indivisible adjusted request that cannot fit
+one node and models concurrency within the planning envelope. Local execution
+keeps that envelope. Independent Slurm jobs retain their own CPU, memory and
+time requests, but may collectively exceed the planning envelope across nodes.
+Slurm chooses where and when they run. Only explicit `packaging` concurrency
+limits add resource-token waits at submission.
+`submit.sh` uses `afterany` for explicit token and completion-only predecessors, so a
 failed job releases capacity without becoming an accidental scientific gate.
 It uses `afterok` only for a task's `depends_on_task_ids` and
 asks Slurm to terminate a descendant whose required job failed instead of
@@ -443,15 +440,61 @@ Before submission, run:
 ./submit.sh --preview
 ```
 
-This prints `slurm-submission-preview.json` and exits without calling Slurm. The
-preview gives the exact job and dependency counts, configured CPU and
-aggregate-memory caps, resource-token edges, peak scheduled resources, the planner's
-estimated dependency critical path, and the sum of scheduler time-limit
-reservations. It warns when the prepared dependency and token schedule cannot use
-all requested cores. If the generated dependency/resource critical path exceeds
-the campaign wall limit, the preview marks the schedule infeasible and
-`submit.sh` refuses to submit it. Running `./submit.sh` prints the same contract
-immediately before the first submission.
+This queries scheduler state and validates existing results, then prints the
+unfinished-task packaging preview without submitting jobs. Preparation also saves
+`slurm-submission-preview.json` for offline inspection. The live preview lists
+each remaining job's CPU, per-node and total memory, timeout, real dependencies,
+and any explicitly configured aggregate limits. It reports reused task IDs and
+the source execution-plan hash. The printed peak describes possible overlapping
+reservations, not measured usage or a promised physical node count. Queue waiting
+is excluded. Native launch refuses an infeasible schedule and prints its reviewed
+contract before the first submission.
+
+### Independent jobs and optional submission limits
+
+```bash
+salsbury-md-analysis package-slurm /path/to/prepared-campaign --json
+salsbury-md-analysis resume /path/to/prepared-campaign --execute
+```
+
+The first command only inspects. The second submits unfinished work after checking
+validated reports, the campaign lock, live jobs and prior submission records.
+Both use the saved Slurm profile. Neither reruns scientific planning, changes a
+stride, splits a pooled estimator, or changes a scientific prerequisite.
+
+The profile's `packaging` fields default to `null`:
+
+| Field | Meaning |
+| --- | --- |
+| `maximum_job_cpus` | Optional CPU ceiling for one job; otherwise the plan's CPU envelope. |
+| `maximum_job_memory_gib` | Optional total memory ceiling for one job, across its requested nodes; otherwise the plan's memory envelope. |
+| `maximum_concurrent_cpus` | Separately authorized concurrent CPU cap across submitted jobs. Null adds no aggregate CPU barrier. |
+| `maximum_concurrent_memory_gib` | Separately authorized cap on summed job memory reservations. Null adds no aggregate memory barrier. |
+| `maximum_reserved_cpu_hours` | Optional cap on CPU slots × requested hours × configured maximum attempts for this submission. This is a reservation bound, not measured CPU time or a cluster billing estimate. |
+
+For example, six independent one-CPU jobs requesting 64 GiB each may all be
+submitted from a 4-CPU/185-GiB scientific plan. Each fits a 185-GiB node; Slurm
+may spread the jobs across nodes. A separate concurrent-memory cap of 128 GiB
+would instead permit two at a time. No node affinity or exclusive allocation
+is added. A job that exceeds its individual or per-node ceiling is rejected;
+the adapter does not silently reduce its workers or observations. Slurm requests
+retain the planner's padded memory once, rounded to the same whole-GiB value
+used for validation. Native numerical-library thread pools are limited to one
+thread per application worker. CUDA device visibility is unchanged.
+
+The public `submit.sh` delegates to the guarded native launcher. Each attempt
+saves a launch script, preview, source-plan hash, submission intent, and job-ID
+ledger. A partial or interrupted submission blocks replay until its scheduler
+IDs and evidence are reconciled. An empty queue alone does not permit retry:
+`accounting_command` (default `sacct`) must establish that previously submitted,
+unfinished jobs are terminal failures. A completed job without a validated report
+requires diagnosis. Preserve all earlier logs and outputs. Do not execute the
+internal `reviewed-launch-*.sh` files manually.
+
+The optional single-allocation launcher retains the original bounded local
+executor. It is unavailable for recovery after some tasks have completed, where
+it would reserve the stale full-campaign envelope. Use independent recovery jobs.
+Custom launchers continue to receive their existing bounded contract.
 
 ## Slurm cluster
 
@@ -574,17 +617,20 @@ budget merely to shorten a Slurm request.
 
 `scheduler-resource-requests.json` records every mapped planner task, safety
 margin, selected partition, final request, and resource-token schedule.
-`slurm-submission-preview.json` also records the planned node count, each task's
-conceptual node assignment, per-node padded reservation, runtime estimate,
+`slurm-submission-preview.json` also records each task's
+per-node padded reservation, runtime estimate,
 campaign time request and diagnostic timeout path. Replica-final modules
 and coordinate-cache construction can use an
 identity-preserving `srun` worker group across several nodes; pooled reducers
 still run once after all replica workers finish. Non-distributed modules remain
 single-node jobs, and independent tasks provide additional cross-node
 parallelism. The canonical `submit.sh` submits individual array
-elements when needed so that both CPU and memory are bounded across all jobs that
-can run at the same time. Only requests that cross
-`large_memory_threshold_gib` use the `large_memory` partition role. Use the
+elements with their own reservations. Aggregate limits apply only when explicitly
+set in `packaging`. Requests that cross `large_memory_threshold_gib` use the
+`large_memory` partition role. DEAC maps that role to `small`: small and large
+share the same hardware pool, so high memory alone does not require the
+lower-priority large partition. Requests over 24 hours or more than one node
+still route to `large`. Other sites should set these roles to their own policy. Use the
 generated `submit.sh` for a planned campaign: it applies the task-specific node,
 task-count, CPU, memory, and time requests. Individual worker scripts are
 implementation artifacts, not a substitute for the resource-bounded launcher.

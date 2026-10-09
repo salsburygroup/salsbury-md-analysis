@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import importlib.util
 import json
 import math
 import os
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -17,7 +19,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-COMMANDS = {"init", "doctor", "plan", "status", "run", "resume"}
+COMMANDS = {"init", "doctor", "plan", "status", "run", "resume", "package-slurm"}
 
 
 def add_parsers(subparsers):
@@ -39,15 +41,18 @@ def add_parsers(subparsers):
     plan = subparsers.add_parser("plan", help="Prepare a study for review; never submit or execute it.")
     plan.add_argument("study", type=Path)
     plan.add_argument("--output", type=Path, help="New prepared directory; defaults to study directory/analysis.")
-    for command in ("status", "run", "resume"):
+    for command in ("status", "run", "resume", "package-slurm"):
         parser = subparsers.add_parser(command, help={
             "status":"Show task completion, blockers, logs, and next actions.",
             "run":"Execute a reviewed local plan or submit its Slurm jobs.",
             "resume":"Review safe recovery; add --execute to run only unfinished tasks.",
+            "package-slurm":"Preview independent unfinished Slurm jobs without changing the scientific plan.",
         }[command])
         parser.add_argument("root", type=Path)
-        if command == "status":
+        if command in {"status", "package-slurm"}:
             parser.add_argument("--json", action="store_true")
+        if command in {"run", "package-slurm"}:
+            parser.add_argument("--single-allocation", action="store_true")
         if command == "resume":
             parser.add_argument("--execute", action="store_true")
 
@@ -65,6 +70,8 @@ def _positive(value, name):
 def _write_new(path, value):
     with Path(path).open("x", encoding="utf-8") as handle:
         handle.write(json.dumps(value, indent=2) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def initialize(args):
@@ -313,10 +320,18 @@ def workflow_status(root):
 
 
 @contextmanager
-def campaign_lock(root):
+def campaign_lock(root, *, create=True):
     """One entry-point lock shared by native local runs and reviewed submission."""
     import fcntl
-    with (Path(root) / ".user-workflow.lock").open("a+") as lock:
+    path = Path(root) / ".user-workflow.lock"
+    try:
+        handle = path.open("a+" if create else "r")
+    except FileNotFoundError:
+        if create:
+            raise
+        yield  # Activity observation only; launch always acquires a real lock.
+        return
+    with handle as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
@@ -337,7 +352,7 @@ def campaign_activity(root):
     """Report live activity separately from artifact acceptance."""
     activity = {"local_controller": "idle", "slurm_jobs": [], "scheduler_query": "not_applicable"}
     try:
-        with campaign_lock(root):
+        with campaign_lock(root, create=False):
             pass
     except ValueError:
         activity["local_controller"] = "active"
@@ -365,16 +380,60 @@ def campaign_activity(root):
     return activity
 
 
-def execute_workflow(root, *, resume=False, execute=True):
+def _check_submission_history(root, unfinished, profile):
+    """Require positive terminal accounting before reusing a submitted task ID.
+
+    An empty queue alone is insufficient immediately after sbatch or during an
+    accounting outage. Ambiguous/partial submissions require reconciliation.
+    """
+    for intent in sorted((root / "submission-intents").glob("*.json")):
+        result = intent.with_suffix(".result")
+        if not result.is_file() or _json(result).get("status") != "submitted":
+            raise ValueError(f"Unresolved submission intent {intent}; reconcile scheduler IDs and "
+                             "the submission ledger before retrying. Nothing was submitted.")
+        record = _json(intent)
+        ledger = Path(record["ledger"])
+        if not ledger.is_file() or ledger.parent.resolve() != (root / "submission-ledgers").resolve():
+            raise ValueError(f"Missing or invalid submission ledger for {intent}")
+        actual_ids = {line.split("\t")[0] for line in ledger.read_text().splitlines()[1:]}
+        if actual_ids != set(record["ledger_task_ids"]):
+            raise ValueError(f"Incomplete submission ledger for {intent}; reconcile before retrying")
+    jobs = set()
+    for ledger in sorted((root / "submission-ledgers").glob("*.tsv")):
+        for line in ledger.read_text().splitlines()[1:]:
+            fields = line.split("\t")
+            if len(fields) != 2 or not re.fullmatch(r"[0-9]+(?:_[0-9]+)?(?:;[^;\s]+)?", fields[1]):
+                raise ValueError(f"Malformed submission ledger {ledger}; reconcile before retrying")
+            if fields[0] in unfinished or fields[0] == "campaign":
+                jobs.add(fields[1].split(";")[0])
+    if not jobs:
+        return
+    accounting = subprocess.run([profile["accounting_command"], "-X", "--noheader", "--parsable2",
+        "--format=JobIDRaw,State", "--jobs=" + ",".join(sorted(jobs))],
+        capture_output=True, text=True, check=True)
+    terminal = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY",
+                "NODE_FAIL", "BOOT_FAIL", "DEADLINE", "REVOKED", "PREEMPTED"}
+    for job in sorted(jobs):
+        states = [fields[1].split()[0].rstrip("+")
+            for line in accounting.stdout.splitlines()
+            if len(fields := line.split("|")) >= 2 and fields[1].strip()
+            and (fields[0] == job or fields[0].startswith(job + "_"))]
+        if not states or any(state not in terminal for state in states):
+            raise ValueError(f"Slurm job {job} is nonterminal or accounting is unknown; nothing was submitted")
+        if any(state == "COMPLETED" for state in states):
+            raise ValueError(f"Slurm job {job} completed but its report is not validated; diagnose missing evidence before rerunning")
+
+
+def execute_workflow(root, *, resume=False, execute=True, single_allocation=False):
     resolved = Path(root).expanduser().resolve(strict=True)
     adapter = _json(resolved / "analysis-config.json")["execution"].get("submission_adapter", "local")
     if adapter == "slurm" and execute:
         with campaign_lock(resolved):
-            return _execute_workflow(resolved, resume=resume, execute=execute)
-    return _execute_workflow(resolved, resume=resume, execute=execute)
+            return _execute_workflow(resolved, resume=resume, execute=execute, single_allocation=single_allocation)
+    return _execute_workflow(resolved, resume=resume, execute=execute, single_allocation=single_allocation)
 
 
-def _execute_workflow(root, *, resume=False, execute=True):
+def _execute_workflow(root, *, resume=False, execute=True, single_allocation=False):
     from .execution_adapters import run_local_workflow
     root = Path(root).expanduser().resolve(strict=True)
     status = workflow_status(root)
@@ -384,7 +443,7 @@ def _execute_workflow(root, *, resume=False, execute=True):
         raise ValueError("Existing output failed validation. Preserve it and diagnose the cause; automatic overwrite is forbidden.")
     config = _json(root / "analysis-config.json")
     adapter = config["execution"].get("submission_adapter","local")
-    if resume and not execute:
+    if not execute and adapter != "slurm":
         return dict(status,execution_started=False,jobs_submitted=False,
                     next=f"After checking active work: salsbury-md-analysis resume {shlex.quote(str(root))} --execute")
     if adapter == "custom":
@@ -398,7 +457,7 @@ def _execute_workflow(root, *, resume=False, execute=True):
             fields = line.split("|",2)
             if len(fields)==3 and Path(fields[2]).resolve()==root:
                 raise ValueError(f"Campaign still has Slurm job {fields[0]} ({fields[1]}). Nothing was submitted.")
-        from .execution_adapters import load_slurm_profile, _slurm_resource_epochs, _slurm_submission_preview, _render_resource_bounded_submit
+        from .execution_adapters import load_slurm_profile, _render_resource_bounded_submit
         plan = _json(root / "local-execution-plan.json")
         unfinished = {r["task_id"] for r in status["tasks"] if r["state"]!="complete"}
         reduced = copy.deepcopy(plan)
@@ -412,19 +471,58 @@ def _execute_workflow(root, *, resume=False, execute=True):
         if preview.get("generated_schedule_feasibility_status") != "feasible":
             raise ValueError("The prepared Slurm schedule is not feasible; replan before submission.")
         profile = load_slurm_profile(root / "slurm-profile.json")
-        epochs = _slurm_resource_epochs(reduced,profile["partitions"],profile["partition_maximum_wall_minutes"],
-            profile["partition_maximum_nodes"],profile["resource_policy"],plan.get("node_policy",{}))
-        reviewed = _slurm_submission_preview(reduced, epochs, plan.get("node_policy", {}))
+        _check_submission_history(root, unfinished, profile)
+        from .slurm_packaging import packaging_schedule, check_single_allocation
+        scheduling_profile = copy.deepcopy(profile)
+        if single_allocation:
+            # Single allocation spending is checked against its full reserved
+            # duration below, not against the sum of independent task attempts.
+            scheduling_profile["packaging"]["maximum_reserved_cpu_hours"] = None
+        reduced, epochs, reviewed = packaging_schedule(reduced, scheduling_profile)
+        reviewed["reused_task_ids"] = sorted(set(t["task_id"] for p in plan["phases"] for t in p["tasks"]) - unfinished)
+        reviewed["source_execution_plan_sha256"] = hashlib.sha256((root / "local-execution-plan.json").read_bytes()).hexdigest()
         if reviewed.get("generated_schedule_feasibility_status") != "feasible":
             raise ValueError("The unfinished-task schedule does not fit. Replan; no jobs were submitted.")
+        if single_allocation:
+            # A recovery should not reserve the original all-task envelope.
+            if reviewed["reused_task_ids"]:
+                raise ValueError("Single-allocation recovery would retain the original envelope; "
+                                 "use independent resume jobs for the unfinished task set.")
+            single = check_single_allocation(preview.get("single_allocation", {}), profile)
+            if not single.get("submission_permitted"):
+                raise ValueError(f"Prepared single allocation is not permitted: {single.get('packaging_errors', single)}")
+            reviewed["single_allocation"] = single
+            reviewed["packaging_contract"].update(strategy="single_allocation",
+                limits=profile["packaging"],
+                reserved_cpu_hours_upper_bound=single["reserved_cpu_hours_upper_bound"],
+                tasks=[{"task_id":"campaign", "cpus":single["cpus"], "nodes":1,
+                    "memory_gib_per_node":single["memory_gib"], "aggregate_memory_gib":single["memory_gib"],
+                    "wall_minutes":single["requested_wall_hours"] * 60, "maximum_attempts":1}])
+        if not execute:
+            return dict(status, execution_started=False, jobs_submitted=False, slurm_preview=reviewed,
+                        next=f"salsbury-md-analysis resume {shlex.quote(str(root))} --execute")
         script = root / ("reviewed-launch-"+datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")+".sh")
         preview_path = script.with_suffix(".preview.json")
         _write_new(preview_path, reviewed)
         with script.open("x") as handle:
             handle.write(_render_resource_bounded_submit(root,profile,root / "slurm-profile.json",epochs,True,
-                bool(config["execution"].get("autorecovery",True))).replace(
+                bool(config["execution"].get("autorecovery",True)), single_allocation_permitted=single_allocation).replace(
                     'PREVIEW="$ROOT/slurm-submission-preview.json"', f'PREVIEW={shlex.quote(str(preview_path))}'))
-        result = subprocess.run(["bash",str(script)],cwd=root,check=False)
+        intent_dir = root / "submission-intents"
+        intent_dir.mkdir(exist_ok=True)
+        intent = intent_dir / (script.stem + ".json")
+        ledger = root / "submission-ledgers" / (script.stem + ".tsv")
+        _write_new(intent, {"schema":"salsbury-submission-intent-v1", "launch_script":str(script),
+            "launch_sha256":hashlib.sha256(script.read_bytes()).hexdigest(),
+            "preview_sha256":hashlib.sha256(preview_path.read_bytes()).hexdigest(),
+            "source_execution_plan_sha256":reviewed["source_execution_plan_sha256"],
+            "submission_mode":reviewed["packaging_contract"]["strategy"],
+            "task_ids":sorted(unfinished), "ledger":str(ledger),
+            "ledger_task_ids":["campaign"] if single_allocation else sorted(unfinished), "status":"submission_started"})
+        result = subprocess.run(["bash",str(script)] + (["--single-allocation"] if single_allocation else []),
+            cwd=root,check=False,env={**os.environ, "SALSBURY_SUBMISSION_LEDGER":str(ledger)})
+        _write_new(intent.with_suffix(".result"), {"status":"submitted" if result.returncode == 0 else "uncertain",
+            "exit_code":result.returncode, "launch_script":str(script)})
         return {"technical_status":"complete" if result.returncode==0 else "failed", "submission_exit_code":result.returncode,
                 "jobs_submitted":True if result.returncode==0 else "possibly_partial_check_submission_ledger",
                 "launch_script":str(script),"task_count":len(unfinished)}
@@ -439,7 +537,9 @@ def run_command(args):
         elif args.command=="doctor": result=diagnose(args.path)
         elif args.command=="plan": result=prepare_study(args.study,args.output)
         elif args.command=="status": result=workflow_status(args.root)
-        else: result=execute_workflow(args.root,resume=args.command=="resume",execute=getattr(args,"execute",True))
+        else: result=execute_workflow(args.root,resume=args.command=="resume",
+            execute=False if args.command=="package-slurm" else getattr(args,"execute",True),
+            single_allocation=getattr(args,"single_allocation",False))
         if getattr(args,"json",False):
             print(json.dumps(result,indent=2))
         else:
@@ -453,6 +553,11 @@ def run_command(args):
                 report = Path(result["output"]) / "planning-report.md"
                 if report.is_file(): print(report.read_text())
             if result.get("next"): print(result["next"])
+            if "slurm_preview" in result:
+                print("Independent Slurm jobs (resources are reservations, not measured usage):")
+                for task in result["slurm_preview"]["packaging_contract"]["tasks"]:
+                    print(f"{task['task_id']}: {task['cpus']} CPUs, {task['aggregate_memory_gib']:g} GiB total, {task['wall_minutes']:g} min")
+                print("No scientific plan or sampling changes; queue waiting is not included.")
         return 2 if result.get("technical_status")=="failed" else 0
     except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError) as exc:
         print(f"{args.command}: {exc}",file=sys.stderr)
