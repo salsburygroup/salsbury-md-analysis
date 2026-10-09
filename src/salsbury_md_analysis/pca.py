@@ -489,14 +489,24 @@ def _scan_replica(
         processor.begin_segment(
             bool(segment.get("continuous_with_previous", False))
         )
-        reader_indices = reader_frame_indices(selected_indices, processor.policy)
+        # An empty selection is not an empty trajectory. Validate that segment's
+        # payload without contributing any observations to the fit/projection.
+        # Reading all of it keeps empty, truncated and malformed sources fatal.
+        validate_unselected_segment = selected_indices is not None and not selected_indices
+        reader_indices = (
+            None if validate_unselected_segment
+            else reader_frame_indices(selected_indices, processor.policy)
+        )
         for raw_frame in iter_coordinate_frames(
             trajectory_path, coordinate_unit, reader_indices
         ):
             selected = frame_selected(
                 raw_frame.frame_index, selected_indices, frame_stride
             )
-            if not selected and processor.policy != "unwrap_continuous":
+            if (
+                not selected and processor.policy != "unwrap_continuous"
+                and not validate_unselected_segment
+            ):
                 continue
             frame = processor.process(
                 raw_frame, f"{location}/frame-{raw_frame.frame_index}",
