@@ -121,7 +121,7 @@ class CampaignWalltimeTests(unittest.TestCase):
                     })
                 out = apply_slurm_profile(root, profile, plan)
                 self.assertFalse(out["single_allocation"]["submission_permitted"])
-                self.assertIn("SINGLE_ALLOCATION_ALLOWED=0", (root / "submit.sh").read_text())
+                self.assertIn('run "$ROOT" --single-allocation', (root / "submit.sh").read_text())
 
     def test_native_single_allocation_preview_and_mock_submission(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -131,15 +131,28 @@ class CampaignWalltimeTests(unittest.TestCase):
             submit.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "$(dirname "$0")/submitted.txt"\nprintf "12345\\n"\n')
             submit.chmod(0o755)
             profile["submit_command"] = str(submit)
+            queue = root / "fake-squeue"
+            queue.write_text("#!/bin/sh\nexit 0\n")
+            queue.chmod(0o755)
+            profile["status_command"] = str(queue)
+            for index, t in enumerate(plan["phases"][0]["tasks"]):
+                t["completion_reports"] = [f"report{index}.json"]
+            (root / "analysis-config.json").write_text(json.dumps({"execution":{"submission_adapter":"slurm"}}))
+            (root / "local-execution-plan.json").write_text(json.dumps(plan))
+            (root / "slurm-profile.json").write_text(json.dumps({k:v for k,v in profile.items() if k != "source_path"}))
             apply_slurm_profile(root, profile, plan)
             result = subprocess.run(["bash", str(root / "submit.sh"), "--single-allocation", "--preview"],
                                     capture_output=True, text=True, check=True)
-            self.assertEqual(json.loads(result.stdout)["campaign_walltime_request"]["requested_wall_hours"], 16)
+            displayed = json.loads(result.stdout)["slurm_preview"]
+            self.assertEqual(displayed["single_allocation"]["requested_wall_hours"], 16)
+            self.assertEqual(displayed["packaging_contract"]["strategy"], "single_allocation")
+            self.assertEqual(displayed["packaging_contract"]["reserved_cpu_hours_upper_bound"], 44 * 16)
             self.assertFalse((root / "submitted.txt").exists())
-            subprocess.run(["bash", str(root / "submit.sh"), "--single-allocation"],
-                           capture_output=True, text=True, check=True)
+            submitted = subprocess.run(["bash", str(root / "submit.sh"), "--single-allocation"],
+                           capture_output=True, text=True)
+            self.assertEqual(submitted.returncode, 0, submitted.stderr)
             args = (root / "submitted.txt").read_text().splitlines()
-            self.assertEqual(args, ["--parsable", f"--chdir={root}", str(root / "run-campaign.slurm")])
+            self.assertEqual(args, ["--parsable", f"--chdir={root.resolve()}", str(root.resolve() / "run-campaign.slurm")])
             ledgers = list((root / "submission-ledgers").glob("*.tsv"))
             self.assertEqual(len(ledgers), 1)
             self.assertIn("campaign\t12345", ledgers[0].read_text())

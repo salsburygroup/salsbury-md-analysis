@@ -28,6 +28,7 @@ from .manifests import load_json
 from .resource_planning import ResourcePlanningError, pack_resource_lanes
 from .campaign_walltime import CAMPAIGN_WALLTIME_DEFAULTS, campaign_walltime_budget, campaign_walltime_request
 from .task_status import persist_task_status
+from .slurm_packaging import packaging_schedule, validate_packaging, check_single_allocation
 
 
 class ExecutionAdapterError(ValueError):
@@ -41,10 +42,10 @@ _PARTITION_ROLES = {
 }
 _PROFILE_FIELDS = {
     "slurm_profile_schema", "profile_id", "cluster_name", "submit_command",
-    "status_command", "cancel_command", "account", "unix_group", "qos",
+    "status_command", "accounting_command", "cancel_command", "account", "unix_group", "qos",
     "partitions", "partition_maximum_wall_minutes", "partition_maximum_nodes",
     "environment", "paths", "resource_policy",
-    "node_policy", "additional_sbatch_directives",
+    "node_policy", "additional_sbatch_directives", "packaging",
 }
 _RESOURCE_POLICY_DEFAULTS = {
     **CAMPAIGN_WALLTIME_DEFAULTS,
@@ -118,6 +119,7 @@ def load_slurm_profile(path: Path) -> Dict[str, object]:
     for field, default in (
         ("submit_command", "sbatch"),
         ("status_command", "squeue"),
+        ("accounting_command", "sacct"),
         ("cancel_command", "scancel"),
     ):
         command = _plain_string(profile.get(field, default), field)
@@ -297,6 +299,10 @@ def load_slurm_profile(path: Path) -> Dict[str, object]:
     if checked_policy["campaign_walltime_rounding_minutes"] <= 0:
         raise ExecutionAdapterError("campaign_walltime_rounding_minutes must be positive")
     normalized["resource_policy"] = checked_policy
+    try:
+        normalized["packaging"] = validate_packaging(profile.get("packaging", {}))
+    except ValueError as exc:
+        raise ExecutionAdapterError(str(exc)) from exc
 
     node_policy = profile.get("node_policy", {})
     allowed_node_policy = {
@@ -1457,6 +1463,8 @@ def _slurm_resource_epochs(
             array_task_id = task.get("array_task_id")
             requested_wall_minutes = float(task["requested_wall_minutes"])
             requested_memory_gib = float(task["requested_memory_gib"])
+            if execution_plan.get("scheduler_reservation_rounding"):
+                requested_memory_gib = math.ceil(requested_memory_gib)
             route = _partition_for_request(
                 script,
                 requested_wall_minutes,
@@ -1803,8 +1811,31 @@ def _render_resource_bounded_submit(
     submission_permitted: bool,
     autorecovery: bool = False,
     single_allocation_permitted: bool = False,
+    native_entry: bool = False,
 ) -> str:
     """Render one launcher with scientific dependencies and resource epochs."""
+
+    if native_entry:
+        env = profile["environment"]
+        python = env.get("python_executable") or _active_python_executable()
+        package = env.get("package_root") or str(Path(__file__).resolve().parents[1])
+        lines = ["#!/usr/bin/env bash", "set -euo pipefail",
+            'ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)',
+            _profile_preamble(profile, profile_path),
+            f"PYTHON_DEFAULT={shlex.quote(str(python))}",
+            'PYTHON="${SALSBURY_MD_ANALYSIS_PYTHON:-$PYTHON_DEFAULT}"',
+            f"PACKAGE_ROOT_DEFAULT={shlex.quote(str(package))}",
+            'PACKAGE_ROOT="${SALSBURY_MD_ANALYSIS_PYTHONPATH:-$PACKAGE_ROOT_DEFAULT}"',
+            'export PYTHONPATH="$PACKAGE_ROOT${PYTHONPATH:+:$PYTHONPATH}"',
+            'case "${1:-}" in',
+            '  --preview) exec "$PYTHON" -m salsbury_md_analysis package-slurm "$ROOT" --json ;;',
+            '  --single-allocation)',
+            '    if [[ "${2:-}" == "--preview" ]]; then exec "$PYTHON" -m salsbury_md_analysis package-slurm "$ROOT" --single-allocation --json; fi',
+            '    exec "$PYTHON" -m salsbury_md_analysis run "$ROOT" --single-allocation ;;',
+            '  "") exec "$PYTHON" -m salsbury_md_analysis run "$ROOT" ;;',
+            '  *) printf "Usage: %s [--preview | --single-allocation [--preview]]\\n" "$0" >&2; exit 2 ;;',
+            'esac']
+        return _inject_package_source_validation("\n".join(lines) + "\n")
 
     submit_command = shlex.quote(str(profile["submit_command"]))
     lines = [
@@ -1829,7 +1860,7 @@ def _render_resource_bounded_submit(
         '      exit 3',
         '    fi',
         '    mkdir -p "$ROOT/submission-ledgers"',
-        '    LEDGER="$ROOT/submission-ledgers/single-$(date -u +%Y%m%dT%H%M%S)-$$.tsv"',
+        '    LEDGER="${SALSBURY_SUBMISSION_LEDGER:-$ROOT/submission-ledgers/single-$(date -u +%Y%m%dT%H%M%S)-$$.tsv}"',
         '    printf "task_id\\tjob_id\\n" > "$LEDGER"',
         '    JOB=$("$SUBMIT_COMMAND" --parsable --chdir="$ROOT" "$ROOT/run-campaign.slurm")',
         '    printf "campaign\\t%s\\n" "$JOB" >> "$LEDGER"',
@@ -1852,7 +1883,7 @@ def _render_resource_bounded_submit(
     lines.extend([
         'printf "Submitting the reviewed Slurm resource epochs now.\\n"',
         'mkdir -p "$ROOT/submission-ledgers"',
-        'LEDGER="$ROOT/submission-ledgers/$(date -u +%Y%m%dT%H%M%S)-$$.tsv"',
+        'LEDGER="${SALSBURY_SUBMISSION_LEDGER:-$ROOT/submission-ledgers/$(date -u +%Y%m%dT%H%M%S)-$$.tsv}"',
         'printf "task_id\\tjob_id\\n" > "$LEDGER"',
         'printf "Submission ledger: %s\\n" "$LEDGER"',
         "",
@@ -2246,6 +2277,8 @@ def apply_slurm_profile(
 ) -> Dict[str, object]:
     """Apply planner-derived scheduler requests and cluster environment settings."""
 
+    frozen_execution_plan = execution_plan
+
     profile_path = root / "slurm-profile.json"
     environment = profile["environment"]
     partitions = profile["partitions"]
@@ -2276,19 +2309,9 @@ def apply_slurm_profile(
         partition_node_limits,
         resource_policy,
     )
-    resource_epochs = _slurm_resource_epochs(
-        execution_plan,
-        partitions,
-        partition_limits,
-        partition_node_limits,
-        resource_policy,
-        node_policy,
-    )
-    submission_preview = _slurm_submission_preview(
-        execution_plan, resource_epochs, node_policy
-    )
+    execution_plan, resource_epochs, submission_preview = packaging_schedule(execution_plan, profile)
     validate_native_campaign_schedule(
-        root, execution_plan, adapter="slurm", resource_epochs=resource_epochs,
+        root, frozen_execution_plan, adapter="slurm",
     )
     for path in sorted(root.glob("*.slurm")):
         if path.name == "run-campaign.slurm":
@@ -2334,6 +2357,14 @@ def apply_slurm_profile(
             text, "cpus-per-task", str(int(request.get("cpu_slots", 1)))
         )
         text = text.replace("set -euo pipefail\n", f"set -euo pipefail\n{preamble}\n", 1)
+        # CPU slots describe application workers. Avoid multiplying each
+        # worker by an inherited BLAS/OpenMP pool; never change CUDA visibility.
+        thread_variables = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+                            "BLIS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS")
+        for variable in thread_variables:
+            text = re.sub(rf"^export {variable}=.*$", f"export {variable}=1", text, flags=re.MULTILINE)
+        thread_environment = "\n".join(f"export {variable}=1" for variable in thread_variables)
+        text = text.replace("set -euo pipefail\n", f"set -euo pipefail\n{thread_environment}\n", 1)
         python_path = environment.get("python_executable")
         package_root = environment.get("package_root")
         if python_path:
@@ -2376,7 +2407,11 @@ def apply_slurm_profile(
             )
         text = _inject_package_source_validation(text)
         path.write_text(text, encoding="utf-8")
-    single = _prepare_single_allocation(root, profile, execution_plan, submission_preview)
+    single_epochs = _slurm_resource_epochs(frozen_execution_plan, partitions, partition_limits,
+        partition_node_limits, resource_policy, node_policy)
+    single_preview = _slurm_submission_preview(frozen_execution_plan, single_epochs, node_policy)
+    single = _prepare_single_allocation(root, profile, frozen_execution_plan, single_preview)
+    single = check_single_allocation(single, profile)
     submission_preview["single_allocation"] = single
     (root / "slurm-submission-preview.json").write_text(
         json.dumps(submission_preview, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -2392,6 +2427,7 @@ def apply_slurm_profile(
                 bool(submission_preview["submission_permitted"]),
                 bool(execution_plan.get("autorecovery", True)),
                 bool(single["submission_permitted"]),
+                native_entry=True,
             ),
             encoding="utf-8",
         )
@@ -2445,18 +2481,7 @@ def apply_slurm_profile(
             ),
             "task_runner": "run-task-with-recovery.sh",
         },
-        "aggregate_resource_contract": (
-            "the complete task DAG is guarded by global and per-node CPU and "
-            "padded-memory tokens; tasks "
-            "wait only for true prerequisites, explicit completion-only inputs, "
-            "and prior users of the resource tokens they acquire, so unrelated "
-            "long tasks do not form whole-depth barriers; resource-only edges use "
-            "afterany while scientific inputs remain afterok"
-            if execution_plan.get("dependency_model") == "task_dag_v1" else
-            "tasks in one wave may run concurrently; every later wave waits "
-            "afterany for every job in the preceding wave, and each wave stays "
-            "within both campaign CPU and safety-adjusted memory limits"
-        ),
+        "aggregate_resource_contract": submission_preview["resource_contract"],
         "large_memory_routing": (
             "mixed-resource arrays are submitted as resource-matched subarrays; "
             "only tiers at or above the configured threshold use the large-memory role"

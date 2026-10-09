@@ -4,6 +4,7 @@
   "cluster_name": "replace-with-your-cluster-name",
   "submit_command": "sbatch",
   "status_command": "squeue",
+  "accounting_command": "sacct",
   "cancel_command": "scancel",
   "account": null,
   "unix_group": null,
@@ -47,6 +48,13 @@
     "cpus_per_node": null,
     "memory_gib_per_node": null,
     "maximum_nodes_per_campaign": null
+  },
+  "packaging": {
+    "maximum_job_cpus": null,
+    "maximum_job_memory_gib": null,
+    "maximum_concurrent_cpus": null,
+    "maximum_concurrent_memory_gib": null,
+    "maximum_reserved_cpu_hours": null
   },
   "additional_sbatch_directives": []
 }

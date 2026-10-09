@@ -4,6 +4,7 @@
   "cluster_name": "deac",
   "submit_command": "/opt/scyld/slurm/bin/sbatch",
   "status_command": "/opt/scyld/slurm/bin/squeue",
+  "accounting_command": "/opt/scyld/slurm/bin/sacct",
   "cancel_command": "/opt/scyld/slurm/bin/scancel",
   "account": "salsburygrp",
   "unix_group": "salsburyGrp",
@@ -15,7 +16,7 @@
     "analysis": "small",
     "conformational": "small",
     "finalizer": "small",
-    "large_memory": "large",
+    "large_memory": "small",
     "long_wall": "large"
   },
   "partition_maximum_wall_minutes": {
@@ -58,6 +59,13 @@
     "cpus_per_node": 44,
     "memory_gib_per_node": 185,
     "maximum_nodes_per_campaign": 16
+  },
+  "packaging": {
+    "maximum_job_cpus": null,
+    "maximum_job_memory_gib": null,
+    "maximum_concurrent_cpus": null,
+    "maximum_concurrent_memory_gib": null,
+    "maximum_reserved_cpu_hours": null
   },
   "additional_sbatch_directives": []
 }

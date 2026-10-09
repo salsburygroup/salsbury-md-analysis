@@ -209,7 +209,9 @@ The active choice is recorded in `execution-adapter.json`; local, Slurm, and
 custom-launcher modes execute the same worker scripts, dependency order, frame selections, atomic
 outputs, hashes, and resource instrumentation. Local execution enforces the
 configured aggregate CPU and memory caps; Slurm requests are derived from the same
-planner estimates and retained in `scheduler-resource-requests.json`. See
+planner estimates and retained in `scheduler-resource-requests.json`. Independent
+Slurm jobs may collectively exceed the plan envelope across nodes. Optional
+`packaging` limits in the cluster profile provide separate concurrency caps. See
 [`docs/EXECUTION_ADAPTERS.md`](docs/EXECUTION_ADAPTERS.md).
 
 On a Slurm login node, the optional `advise-slurm-capacity` command can inspect
@@ -312,10 +314,12 @@ The size-and-length CPU model has an independent multi-system TOP1 holdout in
 fell below the existing planning upper bounds, so the shipped coefficients were
 left unchanged.
 
-`execution.maximum_memory_gib` is the maximum simultaneous memory request for
-the complete campaign, not an allowance for every job. The planner first turns
+`execution.maximum_memory_gib` bounds simultaneous memory in scientific planning
+and local execution. Independent Slurm submission does not inherit that aggregate
+cap; set a separate packaging cap if needed. The planner first turns
 each estimated working set into a safety-adjusted scheduler request. With the
-DEAC profile this is `ceil(1.5 × working set + 1 GiB)`, with a 2 GiB minimum.
+DEAC profile the planner applies `1.5 × working set` per task and reserves
+1 GiB separately per node, with a 2 GiB minimum task request.
 It assigns global and per-node CPU and padded-memory tokens to every generated
 task. A task waits only for its scientific inputs, explicit completion waits,
 and prior users of the tokens it needs. Resource-only waits use Slurm
@@ -329,8 +333,10 @@ Reusable upstream reports use completion-only ordering, are validated against
 the current project and input hashes, and fall back to recomputation when they
 are missing, failed, or incompatible. A lower memory cap
 can therefore increase the integer strides or serialize work even when every
-individual task fits. The local executor and the generated `submit.sh` enforce
-the same limits. If the generated Slurm critical path exceeds the requested
+individual task fits. The local executor keeps the plan's aggregate limits.
+The generated `submit.sh` allows independent jobs to run across nodes; only
+separately explicit packaging caps add aggregate resource waits. Slurm enforces
+each job's reservation and physical node capacity. If the generated Slurm critical path exceeds the requested
 campaign wall limit, the preview marks it infeasible and `submit.sh` refuses to
 submit it.
 
@@ -343,8 +349,9 @@ uses an editable 44-CPU, 185-GiB node shape. For example, 63 workers with a
 3-GiB working-set estimate each are placed 40 plus 23 under the DEAC
 `1.5x + 1 GiB` padding rule. Forty-four such workers would request 199 GiB and
 cannot occupy one 185-GiB node. The submission preview reports every task's
-per-node padded reservation, conceptual node assignment, resource-token
-predecessors, and the aggregate campaign peak.
+per-node padded reservation, dependencies, explicit resource-token
+predecessors, and possible peak reservations. Slurm chooses physical placement;
+the plan's conceptual node count does not restrict separate jobs.
 Slurm emits the planner's final per-node reservation unchanged.
 
 For an insufficient memory cap, `campaign-resource-plan.json` and
