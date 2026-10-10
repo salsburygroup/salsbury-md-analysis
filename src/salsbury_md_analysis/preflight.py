@@ -498,7 +498,7 @@ def _frame_count(probe: Mapping[str, object]) -> Optional[int]:
 def preflight_system(
     data: Mapping[str, object], source_path: Path, hash_content: bool = False
 ) -> Dict[str, object]:
-    """Run format-aware metadata checks for every system-manifest input."""
+    """Check input metadata and mandatory provenance for recognized caches."""
 
     manifest_path = Path(source_path).expanduser().resolve(strict=False)
     inventory = inventory_system_inputs(data, manifest_path, hash_content=hash_content)
@@ -506,6 +506,14 @@ def preflight_system(
         str(record["resolved_path"]): record for record in inventory["entries"]
     }
     issues: List[Dict[str, str]] = []
+    from .validated_cache_coordinates import validate_cached_manifest
+    cache_provenance = []
+    try:
+        cache_provenance = validate_cached_manifest(data, manifest_path)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        issues.append(issue_record(
+            "error", "CACHE_PROVENANCE_INVALID", str(manifest_path), str(exc)
+        ))
     system_reports: List[Dict[str, object]] = []
     systems = data["systems"]
     assert isinstance(systems, list)
@@ -751,6 +759,7 @@ def preflight_system(
         "warning_count": warning_count,
         "issues": issues,
         "systems": system_reports,
+        "validated_coordinate_caches": cache_provenance,
         "limitations": [
             "Preflight metadata does not establish equilibration, convergence, adequate sampling, population meaning, or scientific validity.",
             "DCD support currently inspects declared header metadata only; coordinate records and actual frame counts require a later full reader backend.",

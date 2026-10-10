@@ -6,6 +6,39 @@ from typing import Mapping
 from .manifests import load_json, resolve_manifest_path, sha256_file
 
 
+_RECOGNIZED_CACHES = {"continuous_unwrap_strided_molecular_payload_v2",
+                      "independent_make_whole_molecular_payload_v1"}
+
+
+def validate_cached_manifest(data: Mapping, manifest: Path) -> list[dict]:
+    """Validate materialized recognized caches with the runtime contract.
+
+    Raw inputs need no cache sidecar. Cache payload digests are mandatory even
+    when ordinary preflight inventory hashing was not requested. Arbitrary
+    derived manifest names are valid only when the report binds their identity.
+    This function never exempts incomplete caches on the basis of a future job.
+    """
+    from .preflight import probe_topology
+
+    systems = data.get("systems", [])
+    if not any(s.get("metadata", {}).get("coordinate_cache") in _RECOGNIZED_CACHES
+               for s in systems):
+        return []
+    identities = []
+    for system in systems:
+        static = (system.get("metadata", {}).get("coordinate_cache")
+                  == "independent_make_whole_molecular_payload_v1")
+        for replica in system.get("replicas", []):
+            topology = resolve_manifest_path(replica["topology"], manifest)
+            atom_count = int(probe_topology(topology)["atom_count"])
+            identity = discover_cached_replica(manifest, replica, atom_count, static=static)
+            if identity is None:
+                raise ValueError("recognized cache is not declared in the saved system manifest")
+            identities.append({"system_id": system["system_id"],
+                               "replica_id": replica["replica_id"], **identity})
+    return identities
+
+
 def cache_manifest_digest(report: Mapping, report_path: Path, manifest: Path) -> str:
     """Resolve a pooled or declared per-system manifest, never an arbitrary subset."""
     manifest = manifest.resolve()
@@ -37,11 +70,9 @@ def discover_cached_replica(manifest: Path, replica: Mapping, atom_count: int,
     document = load_json(manifest)
     systems = document.get("systems", [])
     declarations = {s.get("metadata", {}).get("coordinate_cache") for s in systems}
-    recognized = {"continuous_unwrap_strided_molecular_payload_v2",
-                  "independent_make_whole_molecular_payload_v1"}
-    if not declarations.intersection(recognized):
+    if not declarations.intersection(_RECOGNIZED_CACHES):
         return None
-    if not declarations.issubset(recognized):
+    if not declarations.issubset(_RECOGNIZED_CACHES):
         raise ValueError("mixed raw/cache manifest cannot skip reconstruction")
     report_path = manifest.parent / "coordinate-cache-report.json"
     report = load_json(report_path)

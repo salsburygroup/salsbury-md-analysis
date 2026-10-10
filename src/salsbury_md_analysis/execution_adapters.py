@@ -2598,10 +2598,13 @@ def _task_project_filename(root: Path, task: Mapping[str, object]) -> Optional[s
 def validate_worker_projects(root: Path, plan: Mapping[str, object], *, allow_future_inputs: bool = True) -> None:
     """Check exact project arguments and final population guards before launch."""
     from .observation_guards import validate_project_observation_guards, validate_projection_guards
+    from .validated_cache_coordinates import validate_cached_manifest
+    from .manifests import resolve_manifest_path
     resource_path = root / "campaign-resource-plan.json"
     resources = load_json(resource_path) if resource_path.is_file() else {}
     allocations = {row.get("task_id"): row for row in resources.get("tasks", [])}
     checked = set()
+    checked_manifests = set()
     for phase in plan.get("phases", []):
         for task in phase.get("tasks", []):
             script = root / str(task["script"])
@@ -2638,6 +2641,12 @@ def validate_worker_projects(root: Path, plan: Mapping[str, object], *, allow_fu
             checked.add(path.resolve())
             project = load_json(path)
             try:
+                manifest_value = project.get("system_manifest")
+                if manifest_value:
+                    manifest = resolve_manifest_path(str(manifest_value), path)
+                    if manifest.is_file() and manifest not in checked_manifests:
+                        validate_cached_manifest(load_json(manifest), manifest)
+                        checked_manifests.add(manifest)
                 observed_count = validate_project_observation_guards(project, path)
                 # Cache-backed inputs may not be materialized yet. The final
                 # allocation still declares the selected pooled population.
@@ -2653,8 +2662,8 @@ def validate_worker_projects(root: Path, plan: Mapping[str, object], *, allow_fu
                             f"pooled observations but the resource plan costs {count}; "
                             "replan before launch. No sampling was changed."
                         )
-            except ValueError as exc:
-                raise ExecutionAdapterError(str(exc)) from exc
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise ExecutionAdapterError(f"worker {script.name}, project {path}: {exc}") from exc
 
 
 def _project_cached_modules(

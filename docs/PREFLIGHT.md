@@ -15,6 +15,21 @@ malformed manifest, unsupported format, malformed file, atom-count mismatch, or
 DCD continuity mismatch exits with status 2. Warnings do not change a complete
 technical status into a failure.
 
+Recognized molecular coordinate caches also require a sibling
+`coordinate-cache-report.json`. Preflight and worker-project validation use the
+same provenance checks as the coordinate reader: a complete reconstruction
+contract, the exact manifest path and hash, replica identities, and topology,
+connectivity and coordinate-file hashes. These cache hashes are checked even
+without `--hash-content`; checking them reads the cached files but does not
+recompute coordinates. Missing or mismatched evidence produces
+`CACHE_PROVENANCE_INVALID` in preflight and prevents worker admission.
+
+Copied or renamed cache manifests must be explicitly bound by path and hash in
+their provenance report. This applies to pooled aliases and per-system subsets.
+An unmaterialized cache-backed project may retain its existing explicit cache
+producer dependency during preparation. Once its manifest exists, the required
+provenance must validate; a future producer does not excuse an incomplete cache.
+
 ## Supported metadata probes
 
 | Format | Role | Current checks |
@@ -66,5 +81,5 @@ nonzero repeated header step remains an error.
 - Preflight says nothing about equilibration, convergence, adequate sampling,
   statistical independence, population meaning, or biological interpretation.
 
-The coordinate-reader backend can extend trajectory coverage without changing
-this deliberately metadata-only, fail-closed report contract.
+The coordinate-reader backend can extend trajectory coverage while preserving
+these format and provenance checks.
