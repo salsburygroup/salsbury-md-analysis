@@ -73,3 +73,78 @@ incorrect numerical result must be rerun, even if its inputs are unchanged.
 This command does not lower thresholds, invent missing analyses, certify
 unrecorded upstream calculations, or accept a repaired coordinate cache on the
 strength of an older failed cache. Resolve those dependencies separately.
+
+## Qualified-derived dihedral results
+
+`adopt-qualified-dihedral` accepts a separately reviewed dihedral result whose
+raw-input and coordinate-cache identities are historical. It checks the retained
+outputs and their evidence without decoding trajectories. Ordinary `adopt-report`
+and raw-report validation keep their current-input checks.
+
+```bash
+salsbury-md-analysis adopt-qualified-dihedral /qualified/report.json \
+  --prepared /campaign --task 'EXACT_TASK_ID' \
+  --qualification-receipt /qualified/proof.json \
+  --policy /qualified/approved-policy.json \
+  --policy-sha256 APPROVED_POLICY_SHA256
+```
+
+This command reviews the evidence without writing. Add `--apply` only after the
+review succeeds and the campaign is idle. The caller supplies a policy hash
+approved outside this command. An `accepted` or `eligible` flag in a report does
+not grant approval; the toolkit does not generate an approved policy.
+
+The policy binds the exact prepared plan, task, configuration, project, system,
+settings, historical input signature and qualification proof. Its six approval
+anchors cover historical lineage, cache qualification, numerical qualification,
+result review, assembly review and the scientific owner. Review the actual
+contents of those records before approving the policy hash. Hash verification
+cannot authenticate a reviewer or decide whether their scientific reasoning is
+sound.
+
+The proof inventories the report, summary, numerical supplement, population
+evidence and recursive retained dependencies. Every entry has an absolute,
+canonical, non-symlink path, SHA-256, byte count and `json` or `opaque` type. JSON
+references with paired path/hash fields and input/output hash maps must resolve
+within that inventory or the policy's historical input identities. The byte
+budget bounds the total retained inventory, not process memory. All retained
+files and their original paths must remain accessible. This is not a portable
+archive or a certificate that a current coordinate cache is unchanged.
+
+The normalized population evidence uses schema
+`salsbury-qualified-dihedral-population-v1`. It contains:
+
+- `population`: the proof's exact ordered segments, selected frame indices,
+  torsion series, selected-frame/series/observation totals and histogram-bin count.
+- `series_definitions`: one row per series, in the same order, with system,
+  replica, chain, residue, insertion-code and angle identity plus four distinct
+  zero-based `atom_indices`.
+- `degeneracy_masks`: a flattened Boolean array; `true` means the observation
+  was excluded as degenerate. This must come from the retained qualification,
+  not from an assumption that every torsion was valid.
+- `group_bounds`: contiguous half-open bounds into that mask, one per series.
+  Each group covers the selected frames of its own system/replica. Its
+  nondegenerate count must equal the reported series count.
+
+The validator checks identities, ordering, frame bounds, masks, counts,
+histogram boundaries and denominators. It preserves the numerical report and
+source sidecar byte-for-byte; it does not recompute torsions or circular
+statistics. The synthetic test in `tests/test_qualified_dihedral_acceptance.py`
+shows the complete policy/proof contract. Its synthetic approvals are test data,
+not templates for approving a scientific result.
+
+Publication requires the native campaign lock, known-idle scheduler state and
+terminal submission history. It writes a new versioned bundle under
+`.qualified-reports/.versions/`, then atomically creates a task registration
+without replacing the failed report or editing the prepared plan. Interrupted
+unregistered bundles remain evidence and do not count as completed results.
+Duplicate publication is rejected. Native completion, runtime reuse, resource
+summary and findings checks revalidate the registered evidence on each use.
+
+The validation basis is explicitly `retained-qualified-outputs;
+historical-raw-and-cache-identities`. Historical producer work, qualification
+work and zero-coordinate scalar assembly stay separate. Helper-generated finding
+candidates remain in the original sidecar but are withheld from the runtime
+findings view. Technical adoption does not release scientific findings or an
+interactive report. Dihedrals remains a leaf result; this command adds no
+upstream coordinate-cache mapping.

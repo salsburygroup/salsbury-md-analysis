@@ -14,6 +14,10 @@
 
 ## Unreleased
 
+- Add a caller-pinned, qualified-derived dihedral acceptance route with repeated
+  evidence checks and atomic registration. Preserve failed reports and ordinary
+  raw-input validation; technical adoption does not release scientific findings.
+
 - Route comparative base tasks through the validated coordinate cache, preserving
   source-frame sampling when converting strides. Reuse verified unwrapped view
   coordinates instead of reconstructing them on each pass. Keep connectivity

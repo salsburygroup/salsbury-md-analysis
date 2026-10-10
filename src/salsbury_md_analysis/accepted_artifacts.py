@@ -42,13 +42,25 @@ def _complete(payload, label):
 def validate_complete_report(path: Path, *, expected_module=None, expected_project=None,
                              require_sidecar=False, verify_inputs=False, _seen=None):
     """Validate immutable bytes; never repair or overwrite failed evidence."""
-    path = Path(path).resolve(strict=True)
+    from .qualified_dihedral_acceptance import effective_report_path, registered_validation, SCHEMA as QUALIFIED_SCHEMA
+    path = effective_report_path(path).resolve(strict=True)
+    qualified_receipt = Path(str(path) + ".adoption.json")
+    registered_qualified = path.parent.parent.name == ".versions" and path.parent.parent.parent.name == ".qualified-reports"
+    if qualified_receipt.is_file() or registered_qualified:
+        from .manifests import load_json
+        if registered_qualified or load_json(qualified_receipt).get("adoption_schema") == QUALIFIED_SCHEMA:
+            result = registered_validation(path, expected_project)
+            if expected_module and expected_module != result.report["module_id"]:
+                raise ArtifactValidationError("qualified report module differs from expected module")
+            return result.report
     ancestors = set() if _seen is None else set(_seen)
     if path in ancestors:
         raise ArtifactValidationError("cyclic report provenance")
     ancestors.add(path)
     report = json.loads(path.read_text(encoding="utf-8"))
     _complete(report, str(path))
+    if report.get("derived_execution", {}).get("historical_context_is_not_current_raw_validation") is True:
+        raise ArtifactValidationError("qualified-derived result requires its registered pinned policy and receipt")
     if path.name in {"final-resource-summary.json", "final-findings-summary.json"}:
         if not isinstance(report.get("source_report_records"), list):
             raise ArtifactValidationError("final summary lacks source-report integrity records")
@@ -182,7 +194,8 @@ def reports_complete(root: Path, names, task: Mapping[str, object] | None = None
             if len(matches) == 1:
                 task = matches[0]
         for name in names:
-            path = (root / name).resolve(strict=True)
+            from .qualified_dihedral_acceptance import effective_report_path
+            path = effective_report_path(root / name, root).resolve(strict=True)
             if root not in path.parents:
                 return False
             project = task.get("project_filename")
