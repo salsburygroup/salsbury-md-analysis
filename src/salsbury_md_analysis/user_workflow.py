@@ -348,14 +348,15 @@ def _queue_command(root):
             "--me", "--noheader", "--format=%i|%T|%Z"]
 
 
-def campaign_activity(root):
+def campaign_activity(root, *, _lock_held=False):
     """Report live activity separately from artifact acceptance."""
     activity = {"local_controller": "idle", "slurm_jobs": [], "scheduler_query": "not_applicable"}
-    try:
-        with campaign_lock(root, create=False):
-            pass
-    except ValueError:
-        activity["local_controller"] = "active"
+    if not _lock_held:
+        try:
+            with campaign_lock(root, create=False):
+                pass
+        except ValueError:
+            activity["local_controller"] = "active"
     config = _json(root / "analysis-config.json")
     if config.get("execution", {}).get("submission_adapter") != "slurm":
         return activity
@@ -380,7 +381,7 @@ def campaign_activity(root):
     return activity
 
 
-def _check_submission_history(root, unfinished, profile):
+def _check_submission_history(root, unfinished, profile, *, allow_completed=False):
     """Require positive terminal accounting before reusing a submitted task ID.
 
     An empty queue alone is insufficient immediately after sbatch or during an
@@ -420,7 +421,7 @@ def _check_submission_history(root, unfinished, profile):
             and (fields[0] == job or fields[0].startswith(job + "_"))]
         if not states or any(state not in terminal for state in states):
             raise ValueError(f"Slurm job {job} is nonterminal or accounting is unknown; nothing was submitted")
-        if any(state == "COMPLETED" for state in states):
+        if not allow_completed and any(state == "COMPLETED" for state in states):
             raise ValueError(f"Slurm job {job} completed but its report is not validated; diagnose missing evidence before rerunning")
 
 

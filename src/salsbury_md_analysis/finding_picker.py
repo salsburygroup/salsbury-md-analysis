@@ -2943,7 +2943,20 @@ def prioritize_findings(
                 "integrated comparison exists but is not technically complete"
             )
         _integrated_comparison_candidates(integrated_report, integrated_path)
-    for path in ([] if candidate_snapshot is not None else sorted((analysis_root / "results").glob("**/report.json"))):
+    from .qualified_dihedral_acceptance import active_report_paths, qualified_summary, is_qualified_report
+    for path in ([] if candidate_snapshot is not None else active_report_paths(analysis_root, (analysis_root / "results").glob("**/report.json"))):
+        registered_qualified = path.parent.parent.name == ".versions" and path.parent.parent.parent.name == ".qualified-reports"
+        if registered_qualified or is_qualified_report(path):
+            # Validate before the missing-sidecar fallback. Technical adoption
+            # releases no helper findings, including cross-report comparisons.
+            try:
+                sidecar = qualified_summary(path)
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise FindingPickerError(f"qualified finding evidence is not accepted: {exc}") from exc
+            record = _module_review_record(str(sidecar["module_id"]), path, 0, 0)
+            record["finding_release_status"] = "withheld; qualified technical adoption only"
+            module_reviews.append(record)
+            continue
         sidecar_path = Path(str(path) + ".summary.json")
         if sidecar_path.is_file():
             sidecar = load_json(sidecar_path)

@@ -2194,6 +2194,14 @@ def build_parser() -> argparse.ArgumentParser:
     reuse_parser.add_argument("--prepared", type=Path, required=True)
     reuse_parser.add_argument("--task", required=True, help="Exact task_id in local-execution-plan.json.")
     reuse_parser.add_argument("--apply", action="store_true", help="Copy the unchanged report and create a validated adoption receipt. Default: read-only review.")
+    qualified_parser = subparsers.add_parser("adopt-qualified-dihedral", help="Review a caller-pinned qualified-derived dihedral receipt; raw validation is unchanged.")
+    qualified_parser.add_argument("source", type=Path)
+    qualified_parser.add_argument("--prepared", type=Path, required=True)
+    qualified_parser.add_argument("--task", required=True)
+    qualified_parser.add_argument("--qualification-receipt", type=Path, required=True)
+    qualified_parser.add_argument("--policy", type=Path, required=True)
+    qualified_parser.add_argument("--policy-sha256", required=True, help="Externally reviewed and approved policy SHA-256, not an eligible flag.")
+    qualified_parser.add_argument("--apply", action="store_true", help="Publish under the native lock to a fresh recovered location; preserve prior failures.")
     from .user_workflow import add_parsers
     add_parsers(subparsers)
     return parser
@@ -2218,6 +2226,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         }))
         return 2
     from .user_workflow import COMMANDS, run_command
+    if args.command == "adopt-qualified-dihedral":
+        from .qualified_dihedral_acceptance import publish_qualified_dihedral
+        try:
+            result = publish_qualified_dihedral(args.source, args.prepared, args.task,
+                qualification_receipt=args.qualification_receipt, policy_path=args.policy,
+                policy_sha256=args.policy_sha256, apply=args.apply)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            print(json.dumps({"eligible": False, "reason": str(exc)}))
+            return 2
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
     if args.command == "adopt-report":
         from .report_reuse import adopt_prepared_task
         try:

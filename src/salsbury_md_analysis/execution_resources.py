@@ -740,13 +740,15 @@ def summarize_execution_resources(root: Path) -> Dict[str, object]:
                             results_root / "conformational-views" / view_id
                             / command / "report.json"
                         )
-    missing = sorted(path for path in expected if not path.is_file())
+    from .qualified_dihedral_acceptance import active_report_paths, effective_report_path, qualified_summary, is_qualified_report
+    missing = sorted(path for path in expected if not effective_report_path(path, analysis_root).is_file())
     if missing:
         raise ExecutionResourceError(
             f"{len(missing)} expected analysis reports are absent; first={missing[0]}"
         )
     rows = []
-    for path in sorted(results_root.glob("**/report.json")):
+    active_paths = active_report_paths(analysis_root, results_root.glob("**/report.json"))
+    for path in active_paths:
         from .accepted_artifacts import validate_complete_report
         try:
             validate_complete_report(path, verify_inputs=True)
@@ -754,7 +756,8 @@ def summarize_execution_resources(root: Path) -> Dict[str, object]:
             raise ExecutionResourceError(f"unaccepted analysis report {path}: {exc}") from exc
         sidecar_path = Path(str(path) + ".summary.json")
         if sidecar_path.is_file():
-            sidecar = load_json(sidecar_path)
+            sidecar = (qualified_summary(path) if is_qualified_report(path)
+                       else load_json(sidecar_path))
             if sidecar.get("technical_status") != "complete":
                 raise ExecutionResourceError(f"analysis sidecar is not complete: {sidecar_path}")
             if sidecar.get("report_path") != str(path.resolve()):
@@ -808,7 +811,9 @@ def summarize_execution_resources(root: Path) -> Dict[str, object]:
                 f"analysis report lacks exact physical/observation accounting: {path}"
             )
         rows.append({
-            "analysis_id": str(path.parent.relative_to(results_root)),
+            "analysis_id": ("qualified/" + path.parent.name if is_qualified_report(path)
+                            else str(path.parent.relative_to(results_root))),
+            "validation_basis": sidecar.get("qualified_validation_basis", "native_report_validation") if sidecar_path.is_file() else "native_report_validation",
             "module_id": module_id,
             "technical_status": "complete",
             "source_physical_frames_available": total_source,
@@ -902,6 +907,6 @@ def summarize_execution_resources(root: Path) -> Dict[str, object]:
         "markdown_sha256": _sha256_file(markdown_path),
         "source_report_records": [
             {"path": str(path.resolve()), "sha256": _sha256_file(path)}
-            for path in sorted(results_root.glob("**/report.json"))
+            for path in active_paths
         ],
     }

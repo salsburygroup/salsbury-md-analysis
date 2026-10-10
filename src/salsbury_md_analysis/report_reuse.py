@@ -290,6 +290,10 @@ def validate_adoption(path, target_project=None, *, _staging=False):
     """Revalidate the source and both contracts, not a saved 'eligible' flag."""
     path = Path(path).resolve(strict=True)
     receipt = load_json(receipt_path(path))
+    from .qualified_dihedral_acceptance import SCHEMA as QUALIFIED_SCHEMA, registered_validation
+    if receipt.get("adoption_schema") == QUALIFIED_SCHEMA:
+        qualified = registered_validation(path, target_project)
+        return {**receipt, "validation_basis": qualified.validation_basis}
     if receipt.get("adoption_schema") != SCHEMA:
         raise ReportReuseError("unknown report-adoption schema")
     if not _staging and str(path) != receipt.get("target_report_path"):
@@ -323,6 +327,13 @@ def validate_adoption(path, target_project=None, *, _staging=False):
 def runtime_report(path, target_project):
     """Return a derived in-memory view, with original provenance explicitly retained."""
     receipt = validate_adoption(path, target_project)
+    from .qualified_dihedral_acceptance import SCHEMA as QUALIFIED_SCHEMA, registered_validation
+    if receipt.get("adoption_schema") == QUALIFIED_SCHEMA:
+        qualified = registered_validation(path, target_project)
+        return {**deepcopy(qualified.report), "qualified_validation": {
+            "basis": qualified.validation_basis, "current_raw_validation": False,
+            "current_cache_validation": False, "scientific_acceptance": False,
+            "policy_sha256": qualified.policy_sha256}}
     report = load_json(path)
     context = compile_project_context_file(Path(target_project), hash_content=True)
     from .upstream_cache import project_module_contract_sha256
