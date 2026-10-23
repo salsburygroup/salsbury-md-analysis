@@ -793,6 +793,10 @@ def _aggregate_calibrations(grouped, catalog_path, catalog_sha256, validated_mod
             ),
             "measurement_count": len(rows),
             "complete_measurement_count": len(complete_rows),
+            "maximum_completed_wall_seconds_per_frame": max(
+                (float(row["wall_seconds"]) / int(row["selected_source_physical_frames"])
+                 for row in complete_rows), default=0.0,
+            ),
             "censored_timeout_count": len(timeout_rows),
             "memory_replacement_qualified": memory_replacement_qualified,
             "memory_replacement_policy": (
